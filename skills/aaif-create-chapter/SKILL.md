@@ -6,6 +6,21 @@ argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>]'
 
 # Create AAIF Chapter
 
+> **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
+> file goes through the `gws` CLI, driven from Python. **Prefer native Google
+> formats**: edit `application/vnd.google-apps.*` files with the Docs/Sheets/
+> Slides API. Drop to byte-level OOXML surgery on the `.docx`/`.pptx`/`.xlsx`
+> zip parts (embedded fonts and untouched parts survive) only when the file
+> genuinely is a stored Office file. **Never use LibreOffice / `soffice`** — not to edit, not to convert,
+> and not to render a "just checking it locally" preview: it substitutes local
+> system fonts for the brand fonts and drops OOXML it doesn't understand, so its
+> output and its renders both misrepresent the real file. Same for `unoconv` and
+> any desktop office suite. To *see* a file, render it through the API instead —
+> a slide via `aaif_events.slides_export.render_slide_png`, a doc via
+> `gws drive files copy` to a Google Doc → `gws drive files export` to PDF →
+> trash the copy. Never round-trip a native Doc through `.docx` — it strips
+> native features like Tabs.
+
 Spin up a new AAIF city "chapter" by cloning the **TemplateCity** folder in the
 **Chapters** Google Drive and rebranding every Office file from San Francisco to
 the new city. Each chapter folder is the standard template: `Event Tracker.docx`,
