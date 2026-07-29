@@ -17,6 +17,7 @@ sheets are already in sync. --write recomputes the proposal from a fresh read,
 applies it atomically, then re-reads and verifies the diff is empty.
 """
 import argparse, json, re, subprocess, sys, time, unicodedata, urllib.error, urllib.request
+from collections import namedtuple
 
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 INTAKE_TAB = "Organizers"
@@ -29,6 +30,9 @@ SYNC_STATUSES = ("Accepted", "Existing (from MLOps)")
 # Folded city -> Luma slug, for cities whose page doesn't follow the default
 # slug rule (same exceptions as aaif-create-chapter).
 SLUG_OVERRIDES = {"denver": "colorado"}
+
+# Feed columns a new row can't derive from the intake — left blank for a human.
+EDITORIAL_COLUMNS = ("Country", "Generated Geolocation", "Summary", "Image")
 
 # ----------------------------------------------------------------------------
 # gws helpers (same retry/JSON pattern as aaif-create-chapter)
@@ -80,6 +84,18 @@ def fold(s):
     s = "".join(c for c in s if not unicodedata.combining(c))
     return re.sub(r"\s+", " ", s).strip().casefold()
 
+def fold_city(s):
+    """City comparison key: fold(), with punctuation flattened to spaces.
+
+    'Washington, DC' and 'Washington DC' are one city; without this they compare
+    unequal AND fail the substring near-miss test, so the sync would append a
+    duplicate row for a city already on the list.
+    """
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", fold(s))).strip()
+
+def city_tokens(s):
+    return set(fold_city(s).split())
+
 def slugify(city):
     s = unicodedata.normalize("NFKD", city).encode("ascii", "ignore").decode()
     return SLUG_OVERRIDES.get(fold(city), re.sub(r"[^a-z0-9]", "", s.lower()))
@@ -94,6 +110,16 @@ def header_index(headers, sheet, *names):
             sys.exit("ABORT: column %r not found on %s — sheet layout changed?" % (n, sheet))
         idx.append(headers.index(n))
     return idx
+
+def col_letter(i):
+    """0-based column index -> A1 letter. Every write target is derived from the
+    header row through this, so a column reorder moves the writes with it."""
+    s = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        s = chr(ord("A") + r) + s
+    return s
 
 def luma_status(slug):
     """'live' (200) / 'absent' (404) / 'unknown' (couldn't verify)."""
@@ -150,11 +176,18 @@ def read_intake():
     return entries, unresolved, counts, dupes
 
 def read_chapters():
-    """Return (chapters, last_row). chapters = [{row, city, organizers_raw}]."""
-    rows = get_values(CHAPTERS_ID, "'%s'!A:D" % CHAPTERS_TAB)
+    """Return (chapters, last_row, layout). chapters = [{row, city, organizers_raw}].
+
+    layout = {headers, index: {name -> 0-based col}} — the tab is a website feed
+    whose columns have moved before (it was City|Organizers|MLOps|Luma until
+    2026-07-21), so read the whole width and resolve every column by header name.
+    """
+    rows = get_values(CHAPTERS_ID, "'%s'!A:Z" % CHAPTERS_TAB)
     if not rows:
         sys.exit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
-    i_city, i_org = header_index(rows[0], CHAPTERS_TAB, "City", "Organizers")
+    headers = [h.strip() for h in rows[0]]
+    i_city, i_org = header_index(headers, CHAPTERS_TAB, "City", "Organizers")
+    layout = {"headers": headers, "index": {h: i for i, h in enumerate(headers) if h}}
 
     chapters, last_row = [], 1
     for rownum, row in enumerate(rows[1:], start=2):
@@ -163,7 +196,7 @@ def read_chapters():
             continue   # never append into a gap; find the true last City row
         chapters.append({"row": rownum, "city": city, "organizers_raw": cell(row, i_org)})
         last_row = rownum
-    return chapters, last_row
+    return chapters, last_row, layout
 
 # ----------------------------------------------------------------------------
 # Diff
@@ -174,15 +207,18 @@ def parse_organizers(raw):
 def build_proposal(entries, chapters, last_row):
     """Return (adds, new_rows, near_misses).
 
-    adds       = [{row, city, names, new_value}]   merge into an existing B cell
+    adds       = [{row, city, names, new_value}]   merge into an Organizers cell
     new_rows   = [{row, city, names, slug}]        append after last_row
     near_misses= [{city, names, candidates}]       no exact row; never written
     """
     by_city = {}          # folded intake city -> {city, names[]}   (intake order)
     for e in entries:
-        by_city.setdefault(fold(e["city"]), {"city": e["city"], "names": []})["names"].append(e["name"])
+        by_city.setdefault(fold_city(e["city"]), {"city": e["city"], "names": []})["names"].append(e["name"])
 
-    chap_by_fold = {fold(c["city"]): c for c in chapters}
+    # Fold each chapter city once: the near-miss scan below is O(intake x chapters)
+    # and fold_city() is regex + unicode normalization.
+    folded = [(c, fold_city(c["city"])) for c in chapters]
+    chap_by_fold = {f: c for c, f in folded}
     adds, new_rows, near_misses = [], [], []
     next_row = last_row + 1
     for fc, grp in by_city.items():
@@ -190,14 +226,20 @@ def build_proposal(entries, chapters, last_row):
         if chap:
             existing = parse_organizers(chap["organizers_raw"])
             present = {fold(n) for n in existing}
-            # Merge, don't overwrite: keep every name already in B (manual
-            # entries included), append only the intake names missing from it.
+            # Merge, don't overwrite: keep every name already in Organizers
+            # (manual entries included), append only the intake names missing.
             missing = [n for n in grp["names"] if fold(n) not in present]
             if missing:
                 adds.append({"row": chap["row"], "city": chap["city"], "names": missing,
                              "new_value": "; ".join(existing + missing)})
             continue
-        cands = [c for c in chapters if fc in fold(c["city"]) or fold(c["city"]) in fc]
+        # Near-miss on substring OR any shared token: 'New Delhi' vs 'Delhi NCR'
+        # overlaps on neither substring test but is the same chapter. Over-
+        # reporting only costs a human confirmation; under-reporting silently
+        # forks a city into two rows.
+        toks = city_tokens(grp["city"])
+        cands = [c for c, cf in folded
+                 if fc in cf or cf in fc or (toks & set(cf.split()))]
         if cands:
             near_misses.append({"city": grp["city"], "names": grp["names"],
                                 "candidates": [(c["city"], c["row"]) for c in cands]})
@@ -222,7 +264,8 @@ def annotate_unresolved(unresolved, chapters):
 # Report
 # ----------------------------------------------------------------------------
 def print_report(entries, unresolved, counts, dupes, chapters, last_row,
-                 adds, new_rows, near_misses):
+                 adds, new_rows, near_misses, layout):
+    org_col = col_letter(layout["index"]["Organizers"])
     qual = " + ".join("%d %s" % (counts[s], s) for s in SYNC_STATUSES)
     print("Intake  : %d qualifying organizers (%s) across %d cities; %d unresolved; %d duplicate row(s)."
           % (len(entries), qual, len({fold(e["city"]) for e in entries}), len(unresolved), len(dupes)))
@@ -232,9 +275,13 @@ def print_report(entries, unresolved, counts, dupes, chapters, last_row,
         print("\nProposed adds to existing rows:")
         for a in adds:
             print("  %s (row %d): + %s" % (a["city"], a["row"], "; ".join(a["names"])))
-            print("      B%d -> %r" % (a["row"], a["new_value"]))
+            print("      %s%d -> %r" % (org_col, a["row"], a["new_value"]))
     if new_rows:
         print("\nProposed NEW city rows (appended after row %d):" % last_row)
+        blanks = [c for c in EDITORIAL_COLUMNS if c in layout["index"]]
+        if blanks:
+            print("  (%s left blank on new rows — fill them before the row goes live on the site)"
+                  % ", ".join(blanks))
         for n in new_rows:
             status = luma_status(n["slug"])
             note = {"live": "Luma page live",
@@ -269,19 +316,50 @@ def print_report(entries, unresolved, counts, dupes, chapters, last_row,
         print("\nNo changes needed — the chapters list is in sync with the intake.")
 
 # ----------------------------------------------------------------------------
+# Named, not a bare tuple: print_report() takes the whole thing positionally and
+# main() picks fields out of it, so a new field used to mean editing every
+# unpack site by hand (that's how `layout` landed).
+State = namedtuple("State", "entries unresolved counts dupes chapters last_row "
+                            "adds new_rows near_misses layout")
+
 def compute():
     entries, unresolved, counts, dupes = read_intake()
-    chapters, last_row = read_chapters()
+    chapters, last_row, layout = read_chapters()
     adds, new_rows, near_misses = build_proposal(entries, chapters, last_row)
     annotate_unresolved(unresolved, chapters)
-    return entries, unresolved, counts, dupes, chapters, last_row, adds, new_rows, near_misses
+    return State(entries, unresolved, counts, dupes, chapters, last_row,
+                 adds, new_rows, near_misses, layout)
 
-def apply_changes(adds, new_rows):
-    data = [{"range": "'%s'!B%d" % (CHAPTERS_TAB, a["row"]), "values": [[a["new_value"]]]}
+def new_row_values(n, layout):
+    """Full-width feed row for a brand-new city.
+
+    Only the columns derivable from the intake are filled; the editorial ones
+    (Country, Generated Geolocation, Summary, Image) are left blank for a human
+    — the report says so. Writing the whole width, rather than A:D, is what
+    keeps names out of Title/Country after the 2026-07 restructure.
+    """
+    luma = "https://luma.com/aaif-" + n["slug"]
+    derived = {"Title": "AAIF %s Chapter" % n["city"],
+               "City": n["city"],
+               "Organizers": "; ".join(n["names"]),
+               "CTA": "Stay Updated",
+               "URL for CTA": luma,
+               "Chapter Luma Link": luma}
+    vals = [""] * len(layout["headers"])
+    for name, v in derived.items():
+        i = layout["index"].get(name)
+        if i is not None:
+            vals[i] = v
+    return vals
+
+def apply_changes(adds, new_rows, layout):
+    org_col = col_letter(layout["index"]["Organizers"])
+    last_col = col_letter(len(layout["headers"]) - 1)
+    data = [{"range": "'%s'!%s%d" % (CHAPTERS_TAB, org_col, a["row"]),
+             "values": [[a["new_value"]]]}
             for a in adds]
-    data += [{"range": "'%s'!A%d:D%d" % (CHAPTERS_TAB, n["row"], n["row"]),
-              "values": [[n["city"], "; ".join(n["names"]), "",
-                          "https://luma.com/aaif-" + n["slug"]]]}
+    data += [{"range": "'%s'!A%d:%s%d" % (CHAPTERS_TAB, n["row"], last_col, n["row"]),
+              "values": [new_row_values(n, layout)]}
              for n in new_rows]
     # One batchUpdate for everything, so a partial failure can't half-sync the
     # sheet. RAW, not USER_ENTERED: a name starting with = + - @ must stay text,
@@ -300,22 +378,21 @@ def main():
     # --write recomputes from a fresh read here — a stale proposal is never applied.
     state = compute()
     print_report(*state)
-    adds, new_rows = state[6], state[7]
-    if not a.write or (not adds and not new_rows):
+    if not a.write or (not state.adds and not state.new_rows):
         return
 
     print("\nApplying %d cell update(s) + %d new row(s) in one batchUpdate..."
-          % (len(adds), len(new_rows)))
-    n = apply_changes(adds, new_rows)
+          % (len(state.adds), len(state.new_rows)))
+    n = apply_changes(state.adds, state.new_rows, state.layout)
     print("Wrote %d range(s)." % n)
 
     print("\nRe-verifying...")
-    _, _, _, _, _, _, adds2, new_rows2, _ = compute()
-    if adds2 or new_rows2:
+    after = compute()
+    if after.adds or after.new_rows:
         print("VERIFY FAILED — still out of sync after write:")
-        for x in adds2:
+        for x in after.adds:
             print("  row %d %s: + %s" % (x["row"], x["city"], "; ".join(x["names"])))
-        for x in new_rows2:
+        for x in after.new_rows:
             print("  new row %s: %s" % (x["city"], "; ".join(x["names"])))
         sys.exit(1)
     print("Verified: a fresh run proposes zero changes.")

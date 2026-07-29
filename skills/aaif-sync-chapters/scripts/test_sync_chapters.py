@@ -4,7 +4,14 @@ import sys, os
 from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sync_chapters
-from sync_chapters import fold, slugify, parse_organizers, build_proposal
+from sync_chapters import (fold, fold_city, slugify, parse_organizers, build_proposal,
+                           col_letter)
+
+# The live feed layout as of 2026-07-22 — writes are resolved through it by name.
+HEADERS = ["Title", "City", "Country", "Generated Geolocation", "Summary", "Image",
+           "CTA", "URL for CTA", "Organizers", "Chapter Luma Link",
+           "MLOps Community Organizers"]
+LAYOUT = {"headers": HEADERS, "index": {h: i for i, h in enumerate(HEADERS)}}
 
 def chap(row, city, orgs):
     return {"row": row, "city": city, "organizers_raw": orgs}
@@ -31,8 +38,8 @@ check("slug accents", slugify("Montréal"), "montreal")
 check("slug Denver override", slugify("Denver"), "colorado")
 
 # --- parse_organizers ----------------------------------------------------------
-check("parse B", parse_organizers(" Gleb Lukicov;  Alex Jones ; "), ["Gleb Lukicov", "Alex Jones"])
-check("parse empty B", parse_organizers(""), [])
+check("parse Organizers cell", parse_organizers(" Gleb Lukicov;  Alex Jones ; "), ["Gleb Lukicov", "Alex Jones"])
+check("parse empty Organizers cell", parse_organizers(""), [])
 
 CHAPTERS = [chap(2, "Boston", "Kranthi Manchikanti"),
             chap(3, "Delhi NCR", ""),
@@ -61,6 +68,20 @@ check("near-miss candidates", near,
       [{"city": "Delhi", "names": ["Kritika Parmar"],
         "candidates": [("Delhi NCR", 3)]}])
 
+# --- punctuation-only differences are the SAME city, not a new row ---------------
+check("fold_city flattens punctuation", fold_city("Washington, DC"), fold_city("Washington DC"))
+DC = [chap(2, "Washington DC", "Sushant Kumar")]
+adds, new_rows, near = build_proposal([entry(2, "Donte Small", "Washington, DC")], DC, 2)
+check("comma variant merges into the existing row", (adds[0]["row"], adds[0]["new_value"]),
+      (2, "Sushant Kumar; Donte Small"))
+check("comma variant creates no row", (new_rows, near), ([], []))
+
+# --- shared-token near-miss: 'New Delhi' must not fork 'Delhi NCR' ---------------
+adds, new_rows, near = build_proposal([entry(2, "Satyam Soni", "New Delhi")], CHAPTERS, 5)
+check("shared-token near-miss writes nothing", (adds, new_rows), ([], []))
+check("shared-token near-miss names the candidate",
+      [c[0] for c in near[0]["candidates"]], ["Delhi NCR"])
+
 # --- SF is NOT mirrored into Silicon Valley -------------------------------------
 adds, new_rows, near = build_proposal([entry(2, "Leo Walker", "San Francisco")], CHAPTERS, 5)
 check("SF row only, SV untouched", [a["row"] for a in adds], [4])
@@ -75,25 +96,49 @@ check("new rows numbered from last+1",
       [(6, "Pune", ["Imran Bagwan", "Someone Else"], "pune"),
        (7, "Montréal", ["Jaime Vélez"], "montreal")])
 
-# --- empty B everywhere (first-ever run) ----------------------------------------
+# --- empty Organizers everywhere (first-ever run) ----------------------------------------
 adds, _, _ = build_proposal([entry(2, "A B", "Delhi NCR")],
                             [chap(2, "Delhi NCR", "")], 2)
-check("empty B populated", adds[0]["new_value"], "A B")
+check("empty Organizers populated", adds[0]["new_value"], "A B")
+
+# --- col_letter: writes are addressed by index, not by hand ----------------------
+check("col_letter A/I/K", [col_letter(0), col_letter(8), col_letter(10)], ["A", "I", "K"])
+check("col_letter past Z", [col_letter(25), col_letter(26)], ["Z", "AA"])
 
 # --- apply_changes: exact ranges, column order, RAW (gws mocked, no network) -----
 with mock.patch.object(sync_chapters, "gws_json") as gj:
     n = sync_chapters.apply_changes(
         [{"row": 2, "city": "Boston", "names": ["New Person"],
           "new_value": "Kranthi Manchikanti; New Person"}],
-        [{"row": 6, "city": "Pune", "names": ["Imran Bagwan"], "slug": "pune"}])
+        [{"row": 6, "city": "Pune", "names": ["Imran Bagwan"], "slug": "pune"}],
+        LAYOUT)
     body = gj.call_args.kwargs["body"]
 check("apply_changes writes both changes", n, 2)
 check("apply_changes uses RAW (no formula injection)", body["valueInputOption"], "RAW")
 check("apply_changes ranges and column order", body["data"],
-      [{"range": "'%s'!B2" % sync_chapters.CHAPTERS_TAB,
+      [{"range": "'%s'!I2" % sync_chapters.CHAPTERS_TAB,
         "values": [["Kranthi Manchikanti; New Person"]]},
-       {"range": "'%s'!A6:D6" % sync_chapters.CHAPTERS_TAB,
-        "values": [["Pune", "Imran Bagwan", "", "https://luma.com/aaif-pune"]]}])
+       {"range": "'%s'!A6:K6" % sync_chapters.CHAPTERS_TAB,
+        "values": [["AAIF Pune Chapter", "Pune", "", "", "", "", "Stay Updated",
+                    "https://luma.com/aaif-pune", "Imran Bagwan",
+                    "https://luma.com/aaif-pune", ""]]}])
+
+# --- a column reorder must move the writes, not corrupt neighbours ---------------
+SWAPPED = ["City", "Organizers", "MLOps Community Organizers", "Chapter Luma Link"]
+with mock.patch.object(sync_chapters, "gws_json") as gj:
+    sync_chapters.apply_changes(
+        [{"row": 2, "city": "Boston", "names": ["X"], "new_value": "X"}], [],
+        {"headers": SWAPPED, "index": {h: i for i, h in enumerate(SWAPPED)}})
+    check("adds follow the Organizers header", gj.call_args.kwargs["body"]["data"][0]["range"],
+          "'%s'!B2" % sync_chapters.CHAPTERS_TAB)
+
+# --- new rows never write into the editorial columns -----------------------------
+vals = sync_chapters.new_row_values(
+    {"row": 6, "city": "Pune", "names": ["Imran Bagwan"], "slug": "pune"}, LAYOUT)
+check("new row is full feed width", len(vals), len(HEADERS))
+check("editorial columns left blank",
+      [vals[LAYOUT["index"][c]] for c in sync_chapters.EDITORIAL_COLUMNS], ["", "", "", ""])
+check("MLOps history untouched on new rows", vals[LAYOUT["index"]["MLOps Community Organizers"]], "")
 
 # --- gws_json survives U+2028 inside JSON string values (the splitlines() bug) ---
 raw = '{"a": "line1\u2028line2"}\n'
