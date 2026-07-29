@@ -91,8 +91,7 @@ keys are per-calendar). The script detects this itself and its dry-run says so:
 
 1. **Prepare the assets**: write the page copy with `aaif-luma-description` and
    save it as markdown; export the event banner to PNG for the cover via the
-   Slides API — **not LibreOffice/`soffice`**, which substitutes local system
-   fonts for the deck's brand fonts and silently produces a wrong-looking export:
+   Slides API (see the tooling rule at the top of this file):
    ```
    PYTHONPATH=lib python3 -c "
    from aaif_events.slides_export import render_slide_png

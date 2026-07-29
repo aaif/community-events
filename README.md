@@ -102,9 +102,11 @@ whether a human or an agent runs it.
 > back to byte-level OOXML surgery in Python (`.docx`/`.pptx`/`.xlsx` zip parts)
 > when the file genuinely *is* a stored Office file — a `.docx` round-trip of a
 > native Doc silently strips native features like Tabs. And never use LibreOffice
-> /`soffice` or any desktop office suite, not even to render a local preview: it
-> substitutes local system fonts for the brand fonts. To see a file, render it
-> through the API (`aaif_events.slides_export.render_slide_png` for a slide;
+> /`soffice`, `unoconv`, or any desktop office suite, not even to render a local
+> preview: it substitutes local system fonts for the brand fonts and drops OOXML it
+> doesn't understand, so its output and its renders both misrepresent the real file.
+> To see a file, render it through the API
+> (`aaif_events.slides_export.render_slide_png` for a slide;
 > `gws drive files copy` → `export` to PDF → trash the copy for a doc).
 
 Install `gws` (a Google Workspace command‑line tool), then authenticate with one of:
@@ -170,7 +172,7 @@ events/
 ├── skills/
 │   ├── aaif-announcement-post/SKILL.md
 │   ├── aaif-create-chapter/{SKILL.md, scripts/}
-│   └── …  (12 skills total)
+│   └── …  (17 skills total)
 └── README.md
 ```
 

@@ -116,9 +116,7 @@ override (see Verify) and re-run.
    it was moved). If the city is in **East Asia / Oceania** and the dot looks off,
    add a `PIXEL_OVERRIDES` entry in `create_chapter.py` (pixel coords on the
    1123×794 `image18.png`) and re-run. To recalibrate against a render, export
-   slide 5 to PNG via the Slides API (**not LibreOffice** — `soffice` silently
-   substitutes local system fonts for the deck's brand fonts, so a LibreOffice
-   render can look wrong in ways the live file isn't):
+   slide 5 to PNG via the Slides API (see the tooling rule at the top of this file):
    ```bash
    PYTHONPATH=lib python3 -c "
    from aaif_events.slides_export import render_slide_png
