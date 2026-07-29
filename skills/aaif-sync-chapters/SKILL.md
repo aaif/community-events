@@ -54,11 +54,15 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   accent-insensitively); names already there but absent from intake are left alone
   (manual entries live there). Written values keep original UTF-8 (`Médéric Hurier`
   stays accented).
-- **Near-miss cities** (e.g. intake `Delhi` vs row `Delhi NCR`) are reported, not
-  auto-matched — confirm the right row or fix the intake city, never create a
-  near-duplicate row.
-- **`MLOps Community Organizers` is read-only history — never modified.** (It was
-  headed `Previous MLOps Organizers` until 2026-07-28.) Its spellings can differ
+- **Near-miss cities** are reported, not auto-matched — confirm the right row or
+  fix the intake city, never create a near-duplicate row. A near-miss fires on a
+  substring (intake `Delhi` vs row `Delhi NCR`) **or a shared discriminating word**
+  (`New Delhi` vs `Delhi NCR`). Generic words are excluded — `new`, `san`, `city`,
+  `saint`, `north`… — because a near-miss is never written and has no override
+  flag, so a false positive doesn't cost one confirmation, it blocks the city
+  **permanently**. Without that stoplist `San Diego` matches `San Francisco` and
+  can never be added.
+- **`MLOps Community Organizers` is read-only history — never modified.** Its spellings can differ
   from intake (e.g. "Adam Lite" vs "Adam Liter"); intake wins for `Organizers`.
   San Francisco people are **not** mirrored into the Silicon Valley row —
   `Organizers` follows the intake city; the MLOps column is where the legacy
@@ -71,10 +75,20 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   removed; same exceptions as `aaif-create-chapter`, e.g. Denver → `aaif-colorado`).
   `Country`, `Generated Geolocation`, `Summary` and `Image` are left **blank for a
   human** — the report names them; the row isn't site-ready until they're filled.
-  The report says whether the Luma page is live — page creation is manual, and a
-  net-new city still needs its Drive folder/assets: run **`aaif-create-chapter`**
-  for it as the follow-up.
+  The report says whether the Luma page is live, and **`--write` refuses to create
+  a row whose page isn't live** (its CTA would point at a 404) unless you pass
+  `--allow-missing-luma`. Page creation is manual, and a net-new city still needs
+  its Drive folder/assets: run **`aaif-create-chapter`** for it as the follow-up.
 - Duplicate intake rows for the same person+city are deduped (first wins, reported).
+  Duplicate **chapter** rows (two rows for one city) are reported too — only the
+  last is ever updated, so merge them by hand.
+- **The run aborts rather than guessing** when: a header is duplicated (reads and
+  writes would resolve to different columns); any written column is missing; a row
+  below the last City row is non-empty (new rows are appended there and would wipe
+  it); a city has no ASCII characters, so its Luma slug would be empty; intake text
+  contains markup or control characters, or exceeds 120 chars; or the sheet changed
+  between building the proposal and writing it (row numbers are snapshot indices,
+  and the per-city Luma checks sit in that window).
 
 ## Verify
 
@@ -97,12 +111,15 @@ After any run (and after editing the engine):
 - Both tabs are read by **header name** (`Status`, `Full name`, `City (Existing)`,
   `City (New)`, `Run events before?`, `Why organize / ties`, `City`, `Organizers`),
   never by fixed column letter — the script aborts loudly if a header disappears.
-  **Writes** are addressed the same way: the chapters tab is read `A:Z` and every
-  write target is derived from the header row's index. The tab was
-  `City | Organizers | Previous MLOps Organizers | Chapter Luma Link` until
-  2026-07-21, when it became an 11-column website feed
-  (`Title | City | Country | Generated Geolocation | Summary | Image | CTA | URL for CTA | Organizers | Chapter Luma Link | MLOps Community Organizers`);
-  the old hardcoded `B`/`A:D` writes are why nothing may be addressed by letter again.
+  **Writes** are addressed the same way: the chapters tab is read `A:AZ` and every
+  write target is derived from the header row's index. Every column a new row
+  writes (`Title`, `City`, `Organizers`, `CTA`, `URL for CTA`, `Chapter Luma Link`)
+  is resolved up front and aborts if missing — a silently skipped one would publish
+  a chapter with no title or a dead CTA. The tab was restructured from
+  `City | Organizers | Previous MLOps Organizers | Chapter Luma Link` into the
+  11-column website feed it is now; the canonical column list lives in `HEADERS` in
+  `scripts/test_sync_chapters.py`, which is executable and therefore can't go stale.
+  The old hardcoded `B`/`A:D` writes are why nothing may be addressed by letter again.
   Note `Chapter Luma Link` is **hidden** in the sheet UI — hidden ≠ absent.
 - Quote the tab name in any manual A1 ranges (`'Chapters & Teams'!I11`) — it
   contains `&` and spaces.
