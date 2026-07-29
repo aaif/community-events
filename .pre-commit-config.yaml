@@ -60,3 +60,16 @@ repos:
         language: python
         additional_dependencies: [pyyaml]
         files: 'SKILL\.md$'
+
+  # --- Tooling-rule banner must not drift between its SKILL.md copies ---------
+  # The banner is duplicated on purpose (skills ship downstream without
+  # CLAUDE.md); this catches the copies silently diverging. Runs on the whole
+  # set, not just changed files, since drift is a property of the set.
+  - repo: local
+    hooks:
+      - id: check-tooling-banner
+        name: tooling-rule banner is identical across SKILL.md
+        entry: python3 scripts/check_tooling_banner.py
+        language: python
+        pass_filenames: false
+        files: 'SKILL\.md$'

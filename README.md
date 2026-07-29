@@ -92,15 +92,24 @@ These drive Google Drive / Sheets through the `gws` CLI (see below).
 
 ## Google Workspace access (for the ops skills)
 
-The ops skills read and write Google Drive/Sheets. Pick **one** of these ways to
-give your agent access. The bundled scripts call the **`gws` CLI** out of the box;
-the connector and MCP options are alternatives if you'd rather have Claude do the
-Drive/Sheets work through tools (you then follow the skill steps interactively
-instead of running the script).
+The ops skills read and write Google Drive/Sheets through **one** route: the
+**`gws` CLI**, driven from **Python**. There is no connector or MCP alternative —
+every skill, script, and manual step goes through `gws`, so behaviour is the same
+whether a human or an agent runs it.
 
-### Option A — `gws` CLI  *(what the scripts use)*
-The **`gws` CLI** (a Google Workspace command‑line tool) is what the scripts call.
-Install it, then authenticate with one of:
+> **Work in native Google formats wherever possible.** Prefer the Docs, Sheets,
+> and Slides APIs against native `application/vnd.google-apps.*` files. Only fall
+> back to byte-level OOXML surgery in Python (`.docx`/`.pptx`/`.xlsx` zip parts)
+> when the file genuinely *is* a stored Office file — a `.docx` round-trip of a
+> native Doc silently strips native features like Tabs. And never use LibreOffice
+> /`soffice`, `unoconv`, or any desktop office suite, not even to render a local
+> preview: it substitutes local system fonts for the brand fonts and drops OOXML it
+> doesn't understand, so its output and its renders both misrepresent the real file.
+> To see a file, render it through the API
+> (`aaif_events.slides_export.render_slide_png` for a slide;
+> `gws drive files copy` → `export` to PDF → trash the copy for a doc).
+
+Install `gws` (a Google Workspace command‑line tool), then authenticate with one of:
 
 - **Interactive OAuth:** `gws auth login`
 - **Credentials file:** set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/path/to/oauth_credentials.json`
@@ -115,8 +124,7 @@ read-only access passes the verify step below but then fails on the first write
 (form responses are read-only by nature, hence the `.readonly` scope). The
 bundled scripts use only the Sheets and Drive scopes; the Docs, Slides, and Forms
 scopes are for operating on those assets directly — the chapter/series source docs
-and decks, and the intake form (e.g. via Claude's Google connector or an MCP
-server):
+and decks, and the intake form:
 
 - `https://www.googleapis.com/auth/spreadsheets` — read/write the intake sheet *(scripts)*
 - `https://www.googleapis.com/auth/drive` — copy, create, and update Drive files,
@@ -131,24 +139,6 @@ Verify with:
 ```bash
 gws sheets spreadsheets get --params '{"spreadsheetId":"<your-sheet-id>"}'
 ```
-
-### Option B — Claude's Google Drive connector
-claude.ai and Claude Code can connect Google Drive/Sheets natively via
-**Connectors** (Settings → Connectors → Google Drive). Best when you want Claude to
-pull event details from Drive docs or read a sheet conversationally. To use it with
-the ops skills, run the skill's steps and let Claude operate the connected tools
-rather than invoking the `gws` script.
-
-### Option C — Google Workspace MCP server
-Run a Google Workspace **MCP server** and register it with Claude Code:
-
-```bash
-claude mcp add google-workspace -- <command to start the server>
-# or add it to .mcp.json in your project
-```
-
-Claude then reads/writes Sheets and Drive through MCP tools. As with the connector,
-follow the skill instructions interactively (the scripts themselves assume `gws`).
 
 ---
 
@@ -182,7 +172,7 @@ events/
 ├── skills/
 │   ├── aaif-announcement-post/SKILL.md
 │   ├── aaif-create-chapter/{SKILL.md, scripts/}
-│   └── …  (12 skills total)
+│   └── …  (17 skills total)
 └── README.md
 ```
 
