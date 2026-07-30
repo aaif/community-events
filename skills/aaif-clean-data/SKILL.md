@@ -47,32 +47,46 @@ by **header name**, never column letter.
    there's a genuine error — **missing/invalid email or a broken LinkedIn URL**. It
    auto-clears once fixed, and is distinct from the light-red "Denied" status.
    `City="Other"` is deliberately **NOT** an error (it's a normalization to resolve,
-   surfaced by `scan`), so it never turns a row red. Already installed — re-run only
-   to refresh after a column move.
+   surfaced by `scan`), so it never turns a row red. Already installed — re-run to
+   re-point the `Issues` formula after a column move; the existing red rule is
+   **kept** as-is (the run reports it as `kept`), not rewritten.
 
 4. **Install-colors (maintenance)** — label the two city columns and provenance-color
    the role tabs:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py install-colors
    ```
-   Labels the adjacent `City` / `Resolved City` pair the role-tab array formula
-   emits — **`City (Existing)`** / **`City (New)`**, at H/I today — and installs
-   three rules just **under** the bright-red error rule (so errors keep top
-   priority): **violet** whole-row when `Status = "Existing (from MLOps)"`,
-   **amber** on `City (New)` when it has a value (a net-new resolved city), and
-   **green** on `City (Existing)` when it holds a real city (non-empty, not
-   "Other").
+   **Overwrites the two header cells** of the adjacent `City` / `Resolved City`
+   pair the role-tab array formula emits, relabelling them **`City (Existing)`** /
+   **`City (New)`**, and installs three rules just **under** the bright-red error
+   rule (so errors keep top priority): **violet** whole-row when
+   `Status = "Existing (from MLOps)"`, **amber** on `City (New)` when it has a
+   value (a net-new resolved city), and **green** on `City (Existing)` when it
+   holds a real city (non-empty, not "Other").
 
    The pair is located **by header name at run time**, never by a fixed letter —
    it started at G/H and moved to H/I when a column was inserted upstream, which
-   made the hardcoded version abort every run. Idempotent across that move too:
-   the rules it owns are matched by formula *shape* (any column) plus one of its
-   three colors, so a refresh replaces them instead of stacking a second set at
-   the new position. Two traps that made the "safe to re-run" claim false before:
-   colors must be compared with a ±1 tolerance (Sheets floors the float→8-bit
-   conversion, so its own colors read back one unit low), and the bright-red
-   error rule is found by the `Issues` column it references, not by its color —
-   that red has been re-picked in the UI and no longer matches the constant.
+   made the hardcoded version abort every run. It **aborts before writing
+   anything** if a tab has no such pair, more than one, or a half-labelled one
+   (evidence a previous run died mid-way); all three role tabs are validated up
+   front, so a failure on one never leaves another half-applied.
+
+   Idempotent across a column move: the rules it owns are matched by formula
+   *shape* (any column) plus one of its three colors, so a refresh replaces them
+   instead of stacking a second set. Three traps that made the "safe to re-run"
+   claim false before:
+
+   - colors must be compared with a **±1 tolerance** — Sheets floors the
+     float→8-bit conversion, so its own colors read back one unit low. This
+     applies to the bright-red rule too, not just the three provenance colors;
+   - the bright-red error rule is found by the **`Issues` column it references**,
+     not by its color — that red has been re-picked in the UI and no longer
+     matches the constant. If it cannot be located at all, the run warns on
+     stderr rather than silently installing above it;
+   - every pattern must accept **any column**, including violet's — Sheets
+     rewrites stored rule formulas when a column is inserted, so a pattern
+     pinned to a letter stops matching exactly when it is needed most.
+
    `install-flags` now also runs this, so one command does the full setup.
 
 ## Procedure
@@ -83,8 +97,8 @@ by **header name**, never column letter.
    `City="Other"` row, read that person's free-text in `Form Responses` (their
    "Why organize / ties", "Have you helped run events before?", LinkedIn, etc.) and
    infer the real city — e.g. Bangalore, Frankfurt, Luxembourg. Write the inferred
-   value into the **`Resolved City`** source column (now at `CF`; shown in the role
-   tabs as **`City (New)`**), **never overwrite the submitted `City` dropdown**
+   value into the **`Resolved City`** source column (found by header name — shown in
+   the role tabs as **`City (New)`**), **never overwrite the submitted `City` dropdown**
    (shown as **`City (Existing)`**) — that's the non-destructive rule. `City (New)`
    holds **only net-new cities** (rows where `City = "Other"`); existing form cities
    stay in `City (Existing)` and must **not** be copied across. A row stops being

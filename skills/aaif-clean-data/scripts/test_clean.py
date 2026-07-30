@@ -1,3 +1,6 @@
+import contextlib
+import io
+import json
 import os
 import sys
 import unittest
@@ -7,25 +10,34 @@ import clean  # noqa: E402
 
 
 def _red_rule():
-    # Sheets round-trips BRIGHT_RED (0.91,0.26,0.21) at 8-bit: 232/66/54 over 255.
+    """The bright-red error rule AS SHEETS RETURNS IT.
+
+    Blue is 53, not 54: BRIGHT_RED's 0.21*255 = 53.55, and Sheets FLOORS where
+    round() rounds. The fixture used to say 54 — the round value — which made
+    the suite agree with the bug that `_is_red`'s exact compare could never
+    match a rule this module wrote."""
     return {"booleanRule": {
-        "format": {"backgroundColor": {"red": 232 / 255, "green": 66 / 255, "blue": 54 / 255}},
+        "format": {"backgroundColor": {"red": 232 / 255, "green": 66 / 255, "blue": 53 / 255}},
         "condition": {"type": "CUSTOM_FORMULA",
                       "values": [{"userEnteredValue": '=$I2<>""'}]}}}
 
 
 def _our_rule(formula, bg=None):
     """A provenance rule as Sheets returns it. `is_ours` requires one of OUR
-    colors as well as a matching formula shape, so tests must supply one."""
+    colors as well as a matching formula shape; this defaults to AMBER, so pass
+    `bg` explicitly when the specific color is what the test is about."""
     return {"booleanRule": {"condition": {"type": "CUSTOM_FORMULA",
             "values": [{"userEnteredValue": formula}]},
             "format": {"backgroundColor": bg if bg else clean.AMBER}}}
 
 
 class TestColletter(unittest.TestCase):
-    def test_city_columns_and_wraparound(self):
-        self.assertEqual(clean.colletter(8), "H")   # City (Existing), today
-        self.assertEqual(clean.colletter(9), "I")   # City (New), today
+    def test_colletter_arithmetic(self):
+        # Pure base-26; deliberately NOT annotated with which city column is
+        # where — that mapping moves, and a comment here would rot while the
+        # assertion stayed green. It is covered in TestFindCityCols instead.
+        self.assertEqual(clean.colletter(8), "H")
+        self.assertEqual(clean.colletter(9), "I")
         self.assertEqual(clean.colletter(27), "AA")
 
 
@@ -86,19 +98,19 @@ class TestIsRed(unittest.TestCase):
 
 class TestColorRulePlan(unittest.TestCase):
     def test_base_1_and_no_stale_when_only_red_present(self):
-        stale, base = clean.color_rule_plan([_red_rule()])
+        stale, base = clean.color_rule_plan([_red_rule()], None)
         self.assertEqual(base, 1)      # our rules go BELOW the red rule
         self.assertEqual(stale, [])
 
     def test_base_0_when_no_red(self):
-        _, base = clean.color_rule_plan([])
+        _, base = clean.color_rule_plan([], None)
         self.assertEqual(base, 0)
 
     def test_stale_lists_only_our_rules_descending(self):
         cfs = [_red_rule(),
                _our_rule(clean.VIOLET_FORMULA, clean.VIOLET),
                _our_rule(clean.amber_formula(9), clean.AMBER)]
-        stale, base = clean.color_rule_plan(cfs)
+        stale, base = clean.color_rule_plan(cfs, None)
         self.assertEqual(stale, [2, 1])   # descending, red at index 0 untouched
         self.assertEqual(base, 1)
 
@@ -106,14 +118,14 @@ class TestColorRulePlan(unittest.TestCase):
         # red is NOT at index 0 (a Status color rule precedes it); we must still
         # insert just below red, not at index 1.
         other = _our_rule('=$A2="In progress"')   # not ours, not red -> not stale
-        stale, base = clean.color_rule_plan([other, _red_rule()])
+        stale, base = clean.color_rule_plan([other, _red_rule()], None)
         self.assertEqual(stale, [])
         self.assertEqual(base, 2)                  # just below red at index 1
 
     def test_base_accounts_for_stale_deleted_above_red(self):
         # a stale rule sits above red; deleting it shifts red up by one.
         stale, base = clean.color_rule_plan(
-            [_our_rule(clean.amber_formula(9), clean.AMBER), _red_rule()])
+            [_our_rule(clean.amber_formula(9), clean.AMBER), _red_rule()], None)
         self.assertEqual(stale, [0])
         self.assertEqual(base, 1)                  # red -> index 0 after delete, insert at 1
 
@@ -124,17 +136,17 @@ class TestIsOurs(unittest.TestCase):
 
     def test_recognises_installed_rules_at_any_column(self):
         for col in (7, 8, 9, 30):
-            self.assertTrue(clean.is_ours(_our_rule(clean.amber_formula(col), clean.AMBER)),
+            self.assertTrue(clean.is_ours(_our_rule(clean.amber_formula(col), clean.AMBER), None),
                             f"amber at col {col}")
-            self.assertTrue(clean.is_ours(_our_rule(clean.green_formula(col), clean.GREEN)),
+            self.assertTrue(clean.is_ours(_our_rule(clean.green_formula(col), clean.GREEN), None),
                             f"green at col {col}")
-        self.assertTrue(clean.is_ours(_our_rule(clean.VIOLET_FORMULA, clean.VIOLET)))
+        self.assertTrue(clean.is_ours(_our_rule(clean.VIOLET_FORMULA, clean.VIOLET), None))
 
     def test_recognises_legacy_green(self):
         # Installed by an earlier release; must be deleted on refresh, not
         # stacked next to the new rule.
         legacy = _our_rule('=AND($G2<>"",$G2<>"Other")', clean.GREEN)
-        stale, base = clean.color_rule_plan([_red_rule(), legacy])
+        stale, base = clean.color_rule_plan([_red_rule(), legacy], None)
         self.assertEqual(stale, [1])
         self.assertEqual(base, 1)
 
@@ -142,15 +154,15 @@ class TestIsOurs(unittest.TestCase):
         # The regression that matters: the amber pattern (=$X2<>"") also matches
         # the Issues rule. Only the color test keeps us from deleting it and
         # silently dropping error highlighting.
-        self.assertFalse(clean.is_ours(_red_rule()))
-        stale, _ = clean.color_rule_plan([_red_rule()])
+        self.assertFalse(clean.is_ours(_red_rule(), None))
+        stale, _ = clean.color_rule_plan([_red_rule()], None)
         self.assertEqual(stale, [])
 
     def test_ignores_unrelated_and_uncolored_rules(self):
-        self.assertFalse(clean.is_ours(_our_rule('=$A2="In progress"', clean.AMBER)))
+        self.assertFalse(clean.is_ours(_our_rule('=$A2="In progress"', clean.AMBER), None))
         self.assertFalse(clean.is_ours({"booleanRule": {"condition": {
             "type": "CUSTOM_FORMULA",
-            "values": [{"userEnteredValue": '=$I2<>""'}]}}}))   # our shape, no color
+            "values": [{"userEnteredValue": '=$I2<>""'}]}}}, None))  # our shape, no color
 
     def test_recognises_rules_after_sheets_floors_the_color(self):
         """The idempotency regression: Sheets FLOORS float->8-bit where round()
@@ -158,9 +170,9 @@ class TestIsOurs(unittest.TestCase):
         finds nothing and a refresh stacks duplicates instead of replacing."""
         as_stored = {"red": 153 / 255, "green": 51 / 255, "blue": 229 / 255}   # violet, -1 blue
         self.assertNotEqual(clean._rgb8(as_stored), clean._rgb8(clean.VIOLET))
-        self.assertTrue(clean.is_ours(_our_rule(clean.VIOLET_FORMULA, as_stored)))
+        self.assertTrue(clean.is_ours(_our_rule(clean.VIOLET_FORMULA, as_stored), None))
         amber_stored = {"red": 252 / 255, "green": 193 / 255, "blue": 76 / 255}
-        self.assertTrue(clean.is_ours(_our_rule(clean.amber_formula(9), amber_stored)))
+        self.assertTrue(clean.is_ours(_our_rule(clean.amber_formula(9), amber_stored), None))
 
     def test_color_eq_still_rejects_a_genuinely_different_color(self):
         self.assertFalse(clean._color_eq(clean.AMBER, clean.GREEN))
@@ -198,6 +210,205 @@ class TestErrorRuleIdentification(unittest.TestCase):
                           "values": [{"userEnteredValue": '=$J2<>""'}]}}}
         # worst case: error rule shaped like amber AND coloured like amber
         self.assertFalse(clean.is_ours(drifted, clean.error_rule_formula(self.HDR)))
+
+
+class TestIsRedFlooredRoundTrip(unittest.TestCase):
+    """`_is_red` decides rule PRIORITY. If it cannot recognise the red rule this
+    module itself wrote, color_rule_plan falls through to base=0 and installs
+    the provenance rules ABOVE the error rule — the whole-row violet then hides
+    error highlighting on exactly the rows most likely to have errors."""
+
+    def test_recognises_its_own_red_after_sheets_floors_it(self):
+        self.assertTrue(clean._is_red(_red_rule()))          # blue 53, floored
+
+    def test_exact_8bit_equality_would_have_missed_it(self):
+        stored = _red_rule()["booleanRule"]["format"]["backgroundColor"]
+        self.assertNotEqual(clean._rgb8(stored), clean._rgb8(clean.BRIGHT_RED))
+        self.assertTrue(clean._color_eq(stored, clean.BRIGHT_RED))
+
+    def test_plan_puts_rules_below_a_floored_red_rule(self):
+        stale, base = clean.color_rule_plan([_red_rule()], None)
+        self.assertEqual((stale, base), ([], 1))   # 1 = below, 0 would be above
+
+
+class TestVioletSurvivesColumnInsert(unittest.TestCase):
+    """Sheets REWRITES stored conditional-format formulas on a column insert —
+    the event this whole module defends against. The violet pattern was pinned
+    to $A2 while amber/green accepted any column, so a single insert left of
+    Status made violet unrecognisable and it stacked a duplicate every run."""
+
+    def test_violet_recognised_after_the_insert_shifts_it(self):
+        shifted = '=$B2="Existing (from MLOps)"'
+        self.assertTrue(clean.is_ours(_our_rule(shifted, clean.VIOLET), None))
+
+    def test_violet_still_recognised_where_we_install_it(self):
+        self.assertTrue(clean.is_ours(_our_rule(clean.VIOLET_FORMULA, clean.VIOLET), None))
+
+    def test_shifted_violet_is_refreshed_not_stacked(self):
+        shifted = _our_rule('=$B2="Existing (from MLOps)"', clean.VIOLET)
+        stale, _ = clean.color_rule_plan([_red_rule(), shifted], None)
+        self.assertEqual(stale, [1])
+
+
+class TestGreenPatternBindsOneColumn(unittest.TestCase):
+    def test_rejects_a_rule_testing_two_different_columns(self):
+        # green_formula can never emit this; the pattern should not accept it.
+        self.assertFalse(clean.is_ours(
+            _our_rule('=AND($H2<>"",LEFT($Z2,5)<>"Other")', clean.GREEN), None))
+        self.assertFalse(clean.is_ours(
+            _our_rule('=AND($G2<>"",$Z2<>"Other")', clean.GREEN), None))
+
+    def test_still_accepts_the_matched_pair(self):
+        self.assertTrue(clean.is_ours(_our_rule(clean.green_formula(8), clean.GREEN), None))
+        self.assertTrue(clean.is_ours(
+            _our_rule('=AND($G2<>"",$G2<>"Other")', clean.GREEN), None))
+
+
+class TestColorEqTolerance(unittest.TestCase):
+    def test_tolerance_is_pinned_at_one(self):
+        """The pre-existing negative case (BRIGHT_RED vs the drifted UI red) has
+        a minimum per-channel gap of 18, so it still passed at tol=18 and did
+        not constrain the bound at all. Off-by-2 in a single channel does."""
+        off_by_two = {"red": 252 / 255, "green": 192 / 255, "blue": 76 / 255}
+        self.assertEqual(clean._rgb8(clean.AMBER), (252, 194, 76))
+        self.assertFalse(clean._color_eq(clean.AMBER, off_by_two))
+        off_by_one = {"red": 252 / 255, "green": 193 / 255, "blue": 76 / 255}
+        self.assertTrue(clean._color_eq(clean.AMBER, off_by_one))
+
+    def test_our_colors_never_collide_at_this_tolerance(self):
+        for a, b in ((clean.AMBER, clean.GREEN), (clean.AMBER, clean.VIOLET),
+                     (clean.GREEN, clean.VIOLET), (clean.AMBER, clean.BRIGHT_RED)):
+            self.assertFalse(clean._color_eq(a, b))
+
+
+class TestFindCityColsAmbiguity(unittest.TestCase):
+    def test_refuses_two_candidate_pairs(self):
+        # A migration that left a stale block beside the live one: taking the
+        # leftmost would relabel and recolor the stale pair.
+        with self.assertRaises(SystemExit):
+            clean.find_city_cols(
+                ["City", "Resolved City", "x", "City (Existing)", "City (New)"], "Organizers")
+
+    def test_refuses_a_half_labeled_pair(self):
+        # Can only arise from a run that died between the two header writes.
+        with self.assertRaises(SystemExit):
+            clean.find_city_cols(["a", "City (Existing)", "Resolved City"], "Organizers")
+        with self.assertRaises(SystemExit):
+            clean.find_city_cols(["a", "City", "City (New)"], "Organizers")
+
+
+class TestAutofixNote(unittest.TestCase):
+    """The dedupe that stops 'city resolved | city resolved | ...' accumulating.
+    Previously inline in apply(), so it had no coverage at all."""
+
+    def test_empty_prior_takes_the_note_verbatim(self):
+        self.assertEqual(clean.autofix_note("", ["city resolved"]), "city resolved")
+
+    def test_returns_none_when_the_cell_already_says_it(self):
+        self.assertIsNone(clean.autofix_note("city resolved", ["city resolved"]))
+
+    def test_splits_prior_on_both_separators(self):
+        self.assertIsNone(clean.autofix_note("a; city resolved", ["city resolved"]))
+        self.assertIsNone(clean.autofix_note("a | city resolved", ["city resolved"]))
+
+    def test_keeps_only_the_genuinely_new_phrase(self):
+        self.assertEqual(clean.autofix_note("email normalized", ["email normalized", "x"]),
+                         "email normalized | x")
+
+    def test_collapses_duplicates_within_one_run(self):
+        self.assertEqual(clean.autofix_note("", ["x", "x", "y"]), "x; y")
+
+    def test_a_second_edit_to_the_same_field_is_not_deduped_away(self):
+        # apply() carries the new value in the phrase precisely so this appends
+        # rather than silently recording nothing.
+        self.assertEqual(clean.autofix_note("city resolved -> Zurich",
+                                            ["city resolved -> Zürich"]),
+                         "city resolved -> Zurich | city resolved -> Zürich")
+
+
+class TestInstallColorsWiring(unittest.TestCase):
+    """install_colors had zero coverage: hardcoding the pair back to (7, 8), or
+    swapping a rule's painted range against its formula, passed the whole suite.
+    These drive it with gws stubbed and assert on the emitted requests."""
+
+    HDR = ["Status", "Full name", "Email", "LinkedIn", "City", "Resolved City", "Issues"]
+
+    def _run(self, hdr):
+        calls = []
+        # A red rule that references THIS header's Issues column, so the run
+        # takes the primary formula-match path rather than the color fallback.
+        red = _red_rule()
+        red["booleanRule"]["condition"]["values"][0]["userEnteredValue"] = \
+            clean.error_rule_formula(hdr)
+        orig_gws, orig_read, orig_cfs, orig_tabs = (
+            clean.gws, clean.read_tab, clean._all_conditional_formats, clean.ROLE_TABS)
+        clean.gws = lambda args: calls.append(args) or {}
+        clean.read_tab = lambda tab: (hdr, [])
+        clean._all_conditional_formats = lambda: {1: [red]}
+        clean.ROLE_TABS = {"Organizers": 1}
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                clean.install_colors()
+        finally:
+            (clean.gws, clean.read_tab, clean._all_conditional_formats,
+             clean.ROLE_TABS) = orig_gws, orig_read, orig_cfs, orig_tabs
+        labels = json.loads(calls[0][calls[0].index("--json") + 1])["data"]
+        rules = json.loads(calls[1][calls[1].index("--json") + 1])["requests"]
+        return labels, rules
+
+    def test_labels_and_rules_track_the_discovered_columns(self):
+        labels, rules = self._run(self.HDR)          # pair at E/F -> cols 5,6
+        self.assertEqual([d["range"] for d in labels], ["Organizers!E1", "Organizers!F1"])
+        self.assertEqual([d["values"][0][0] for d in labels],
+                         ["City (Existing)", "City (New)"])
+        adds = [r["addConditionalFormatRule"] for r in rules if "addConditionalFormatRule" in r]
+        self.assertEqual(len(adds), 3)
+        # amber paints City (New) = col 6, and its formula must test that SAME column
+        amber = adds[1]["rule"]
+        self.assertEqual(amber["ranges"][0]["startColumnIndex"], 5)
+        self.assertEqual(amber["ranges"][0]["endColumnIndex"], 6)
+        self.assertEqual(amber["booleanRule"]["condition"]["values"][0]["userEnteredValue"],
+                         clean.amber_formula(6))
+        # green paints City (Existing) = col 5, formula on the same column
+        green = adds[2]["rule"]
+        self.assertEqual(green["ranges"][0]["startColumnIndex"], 4)
+        self.assertEqual(green["ranges"][0]["endColumnIndex"], 5)
+        self.assertEqual(green["booleanRule"]["condition"]["values"][0]["userEnteredValue"],
+                         clean.green_formula(5))
+
+    def test_everything_shifts_when_a_column_is_inserted_upstream(self):
+        labels, rules = self._run(["NEW"] + self.HDR)   # pair now at F/G -> 6,7
+        self.assertEqual([d["range"] for d in labels], ["Organizers!F1", "Organizers!G1"])
+        adds = [r["addConditionalFormatRule"] for r in rules if "addConditionalFormatRule" in r]
+        self.assertEqual(adds[1]["rule"]["ranges"][0]["startColumnIndex"], 6)
+        self.assertEqual(adds[1]["rule"]["booleanRule"]["condition"]["values"][0]
+                         ["userEnteredValue"], clean.amber_formula(7))
+
+    def test_rules_are_installed_below_the_error_rule(self):
+        _, rules = self._run(self.HDR)
+        adds = [r["addConditionalFormatRule"] for r in rules if "addConditionalFormatRule" in r]
+        self.assertEqual([a["index"] for a in adds], [1, 2, 3])   # red sits at 0
+
+    def test_row_range_is_unbounded(self):
+        _, rules = self._run(self.HDR)
+        for r in rules:
+            if "addConditionalFormatRule" in r:
+                self.assertNotIn("endRowIndex", r["addConditionalFormatRule"]["rule"]["ranges"][0])
+
+    def test_no_tab_is_written_when_a_later_tab_fails_preflight(self):
+        calls = []
+        orig = (clean.gws, clean.read_tab, clean._all_conditional_formats, clean.ROLE_TABS)
+        clean.gws = lambda args: calls.append(args) or {}
+        clean.read_tab = lambda tab: (self.HDR if tab == "Organizers" else ["Status"], [])
+        clean._all_conditional_formats = lambda: {1: [_red_rule()], 2: [_red_rule()]}
+        clean.ROLE_TABS = {"Organizers": 1, "Hosts": 2}
+        try:
+            with self.assertRaises(SystemExit):
+                clean.install_colors()
+        finally:
+            (clean.gws, clean.read_tab, clean._all_conditional_formats,
+             clean.ROLE_TABS) = orig
+        self.assertEqual(calls, [], "Organizers must not be written when Hosts fails preflight")
 
 
 if __name__ == "__main__":
