@@ -45,9 +45,16 @@ def gws(args):
     return json.loads(txt[i:]) if i >= 0 else {}
 
 
-def read_tab(tab, rng="A1:CJ"):
+def read_tab(tab, rng=None):
+    """Read a whole tab. The range is the bare tab name by default so the read
+    window can never fall behind the sheet: a hardcoded bound (this used to be
+    "A1:CJ") silently truncates the moment a column is appended, and the column
+    it drops first is the newest one — which is how `Autofixes` (at CK) fell
+    outside the window and made apply() overwrite prior notes instead of
+    appending them. Sheets trims trailing empty rows/columns for us."""
+    rangespec = f"{tab}!{rng}" if rng else tab
     d = gws(["sheets", "spreadsheets", "values", "get", "--params",
-             json.dumps({"spreadsheetId": SHEET_ID, "range": f"{tab}!{rng}",
+             json.dumps({"spreadsheetId": SHEET_ID, "range": rangespec,
                          "majorDimension": "ROWS"}), "--format", "json"])
     vals = d.get("values", [])
     if not vals:
@@ -66,38 +73,85 @@ def colletter(n):  # 1-based -> A1 letter
 
 
 # ---------- role-tab provenance colors ----------
-# City (Existing) = col G (submitted dropdown); City (New) = col H (resolved
-# "Other" city). These two are addressed by fixed LETTER position — an explicit
-# exception to this module's usual header-name rule — because they are the
-# adjacent City,Resolved City pair the role-tab array formula always emits at
-# G then H. install_colors() guards that G/H really hold that pair before writing.
-CITY_EXISTING_COL, CITY_NEW_COL = 7, 8            # 1-based (G, H)
+# City (Existing) = the submitted dropdown; City (New) = the resolved "Other"
+# city. They are the adjacent City,Resolved City pair the role-tab array formula
+# emits, but their POSITION moves whenever a column is inserted upstream — they
+# started at G/H and are at H/I today. So they are located by header name at run
+# time (find_city_cols) and never hardcoded; a fixed letter here is exactly the
+# bug that made install_colors abort after the pair shifted by one.
 VIOLET = {"red": 0.60, "green": 0.20, "blue": 0.90}   # Status = Existing (from MLOps)
 AMBER  = {"red": 0.99, "green": 0.76, "blue": 0.30}   # net-new resolved city
 GREEN  = {"red": 0.72, "green": 0.88, "blue": 0.70}   # existing form city
-# Build the three rule formulas ONCE from the column constants, so the set used
-# to detect our own rules (for idempotent refresh) can never drift from the set
-# used to install them.
-VIOLET_FORMULA = '=$A2="Existing (from MLOps)"'
-AMBER_FORMULA = f'=${colletter(CITY_NEW_COL)}2<>""'
-# "Real city" = non-empty and not ANY "Other..." placeholder — the form has both
-# "Other" and "Other (PLEASE TELL US WHERE IN NEXT QUESTION)", so match the prefix.
-GREEN_FORMULA = (f'=AND(${colletter(CITY_EXISTING_COL)}2<>"",'
-                 f'LEFT(${colletter(CITY_EXISTING_COL)}2,5)<>"Other")')
-COLOR_FORMULAS = {VIOLET_FORMULA, AMBER_FORMULA, GREEN_FORMULA}
-# Formulas earlier releases installed: matched as stale so a refresh REPLACES
-# them instead of stacking a duplicate rule next to the old one.
-LEGACY_COLOR_FORMULAS = {(f'=AND(${colletter(CITY_EXISTING_COL)}2<>"",'
-                          f'${colletter(CITY_EXISTING_COL)}2<>"Other")')}
-STALE_COLOR_FORMULAS = COLOR_FORMULAS | LEGACY_COLOR_FORMULAS
-# The two source-column headers we expect at G/H before (or after) labeling.
+# The two source-column headers marking the pair, before (or after) labeling.
 CITY_SRC_HEADERS = ({"City", "City (Existing)"}, {"Resolved City", "City (New)"})
+
+VIOLET_FORMULA = '=$A2="Existing (from MLOps)"'      # column-independent
+
+
+def amber_formula(new_col):
+    """Amber: this row has a net-new resolved city."""
+    return f'=${colletter(new_col)}2<>""'
+
+
+def green_formula(existing_col):
+    """Green: the submitted city is a real one — non-empty and not ANY "Other..."
+    placeholder (the form has both "Other" and "Other (PLEASE TELL US WHERE IN
+    NEXT QUESTION)"), so match the prefix rather than the exact string."""
+    c = colletter(existing_col)
+    return f'=AND(${c}2<>"",LEFT(${c}2,5)<>"Other")'
+
+
+def find_city_cols(hdr, tab):
+    """1-based (City (Existing), City (New)) located by header name.
+
+    Returns the first ADJACENT pair, which is what the role-tab array formula
+    emits. Aborts loudly rather than guessing: recoloring the wrong columns
+    would paint provenance onto unrelated data."""
+    for i in range(len(hdr) - 1):
+        if hdr[i] in CITY_SRC_HEADERS[0] and hdr[i + 1] in CITY_SRC_HEADERS[1]:
+            return i + 1, i + 2
+    sys.exit(f"ABORT: {tab} has no adjacent City / Resolved City pair in its "
+             f"header row — columns moved or renamed? Headers: {hdr}")
+
+
+# Our own rules are recognised by SHAPE (any column) + one of our three colors,
+# not by exact formula text. Text-matching pinned to a column letter stops
+# recognising rules the moment the pair moves, so a refresh stacks a duplicate
+# next to the old rule instead of replacing it. The color test is what keeps the
+# broad amber pattern from also matching the bright-red Issues rule (=$W2<>"").
+STALE_PATTERNS = (
+    re.compile(r'^=\$A2="Existing \(from MLOps\)"$'),                     # violet
+    re.compile(r'^=\$[A-Z]+2<>""$'),                                      # amber
+    re.compile(r'^=AND\(\$[A-Z]+2<>"",LEFT\(\$[A-Z]+2,5\)<>"Other"\)$'),  # green
+    re.compile(r'^=AND\(\$[A-Z]+2<>"",\$[A-Z]+2<>"Other"\)$'),            # legacy green
+)
 
 
 def _rgb8(c):
     """Quantize a color dict to 8-bit ints — Sheets round-trips colors at 8-bit,
     so compare with this, never with exact float equality."""
     return tuple(round(c.get(k, 0) * 255) for k in ("red", "green", "blue"))
+
+
+def _color_eq(a, b, tol=1):
+    """8-bit color compare with a ±1 per-channel tolerance.
+
+    Sheets FLOORS the float->8-bit conversion where round() rounds, so a color
+    written as 0.90 comes back as 229 while round(0.90*255) is 230. Exact
+    equality therefore fails to recognise our own rules on the round trip —
+    which silently breaks idempotency: install_colors stops seeing the rules it
+    installed and stacks a duplicate set next to them on every run."""
+    return all(abs(x - y) <= tol for x, y in zip(_rgb8(a), _rgb8(b)))
+
+
+def error_rule_formula(hdr):
+    """Formula of the bright-red data-error rule install_flags writes.
+
+    Identified by the column it references, not by color: the red has been
+    re-picked in the UI (it is (214,28,30) today, not the BRIGHT_RED this module
+    writes), and a color match then fails to find it — which would drop our
+    rules ABOVE the error rule instead of below, losing error priority."""
+    return f'=${colletter(hdr.index("Issues") + 1)}2<>""' if "Issues" in hdr else None
 
 
 def formula_of(cf):
@@ -113,15 +167,38 @@ def _is_red(cf):
     return bool(bg) and _rgb8(bg) == _rgb8(BRIGHT_RED)
 
 
-def color_rule_plan(cfs):
+def is_ours(cf, err_formula=None):
+    """True if this rule is one of the three provenance rules we install, at ANY
+    column position. Requires BOTH a matching formula shape and one of our three
+    background colors — the amber shape (=$X2<>"") alone also matches the
+    bright-red Issues rule, and deleting that would drop error highlighting.
+    `err_formula` names that rule explicitly so it is never claimed even if its
+    color has drifted to something near ours."""
+    f = formula_of(cf)
+    if not f or (err_formula and f == err_formula):
+        return False
+    if not any(p.match(f) for p in STALE_PATTERNS):
+        return False
+    bg = cf.get("booleanRule", {}).get("format", {}).get("backgroundColor")
+    return bool(bg) and any(_color_eq(bg, c) for c in (VIOLET, AMBER, GREEN))
+
+
+def color_rule_plan(cfs, err_formula=None):
     """Pure planner for install_colors: given a tab's conditionalFormats, return
     (stale_indices_desc, base_index). stale = our own color rules to delete
-    (matched by formula); base = insert index just BELOW the bright-red error
-    rule so it keeps top priority — computed from the red rule's ACTUAL position
+    (matched by `is_ours`: formula SHAPE plus one of our colors, so they are
+    still recognised after the city pair moves); base = insert index just BELOW
+    the bright-red error rule so it keeps top priority — identified by
+    `err_formula` when given, else by color — computed from its ACTUAL position
     (not assumed to be index 0), adjusted for the stale rules deleted above it,
     since deletes and adds run in one batch. Testable without touching Sheets."""
-    stale = [i for i, cf in enumerate(cfs) if formula_of(cf) in STALE_COLOR_FORMULAS]
-    red = next((i for i, cf in enumerate(cfs) if _is_red(cf)), None)
+    stale = [i for i, cf in enumerate(cfs) if is_ours(cf, err_formula)]
+    # Prefer identifying the error rule by formula; fall back to its color for
+    # sheets where install_flags has not run and no Issues column exists yet.
+    red = next((i for i, cf in enumerate(cfs)
+                if err_formula and formula_of(cf) == err_formula), None)
+    if red is None:
+        red = next((i for i, cf in enumerate(cfs) if _is_red(cf)), None)
     if red is None:
         base = 0
     else:
@@ -286,10 +363,17 @@ def apply(path):
     fix = []
     for rn, phrases in notes.items():
         prior = rows[rn - 2][ai] if (rn - 2 < len(rows) and ai < len(rows[rn - 2])) else ""
+        # Dedupe against what the cell ALREADY says, not just within this run —
+        # re-resolving a row that was resolved before would otherwise accumulate
+        # "city resolved | city resolved | ...". Split on both separators this
+        # column has ever used.
+        seen = {p.strip() for p in re.split(r"[|;]", prior) if p.strip()}
         uniq = []
         for p in phrases:
-            if p not in uniq:
+            if p not in uniq and p not in seen:
                 uniq.append(p)
+        if not uniq:
+            continue                      # nothing new to say; leave the cell alone
         note = "; ".join(uniq)
         combined = f"{prior} | {note}" if prior.strip() else note
         fix.append({"range": f"{SOURCE}!{colletter(ai + 1)}{rn}", "values": [[combined]]})
@@ -302,7 +386,7 @@ def apply(path):
 # ---------- install live Issues flag + bright-red rule ----------
 def install_flags():
     for tab, sid in ROLE_TABS.items():
-        hdr, _ = read_tab(tab, "A1:BB")
+        hdr, _ = read_tab(tab)
         def L(name):
             return colletter(hdr.index(name) + 1) if name in hdr else None
         ts = L("Timestamp")
@@ -378,7 +462,7 @@ def _color_rule(sid, index, c0, c1, formula, bg, white=False):
 def install_colors():
     """Label the two city columns and (re)install violet/amber/green rules.
 
-    Idempotent: deletes the rules it owns (matched by formula, via
+    Idempotent: deletes the rules it owns (matched by formula shape + color, via
     `color_rule_plan`) and re-adds them just below the bright-red error rule so
     the error keeps top priority. The violet whole-row rule sits above amber/
     green, so on an "Existing (from MLOps)" row the whole row (city cells
@@ -387,34 +471,30 @@ def install_colors():
     """
     all_cfs = _all_conditional_formats()
     for tab, sid in ROLE_TABS.items():
-        hdr, _ = read_tab(tab, "A1:BB")
+        hdr, _ = read_tab(tab)
         lastcol = len(hdr)
-        # Guard the fixed G/H positions before overwriting those header cells:
-        # bail loudly if a column move has shifted the City / Resolved City pair
-        # (accepts both the pre-label and already-labeled header text).
-        gcur = hdr[CITY_EXISTING_COL - 1] if len(hdr) >= CITY_EXISTING_COL else ""
-        hcur = hdr[CITY_NEW_COL - 1] if len(hdr) >= CITY_NEW_COL else ""
-        if gcur not in CITY_SRC_HEADERS[0] or hcur not in CITY_SRC_HEADERS[1]:
-            sys.exit(f"ABORT: {tab} G/H are {gcur!r}/{hcur!r}, not the expected "
-                     f"City / Resolved City pair — columns moved? Fix before recoloring.")
+        # Locate the pair by header name rather than assuming a letter, so a
+        # column inserted upstream shifts the rules instead of aborting the run.
+        city_existing_col, city_new_col = find_city_cols(hdr, tab)
         cfs = all_cfs.get(sid)
         if cfs is None:
             sys.exit(f"ABORT: sheetId {sid} ({tab}) not found in the spreadsheet.")
         gws(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
              json.dumps({"spreadsheetId": SHEET_ID}), "--json",
              json.dumps({"valueInputOption": "USER_ENTERED", "data": [
-                 {"range": f"{tab}!{colletter(CITY_EXISTING_COL)}1",
+                 {"range": f"{tab}!{colletter(city_existing_col)}1",
                   "values": [["City (Existing)"]]},
-                 {"range": f"{tab}!{colletter(CITY_NEW_COL)}1",
+                 {"range": f"{tab}!{colletter(city_new_col)}1",
                   "values": [["City (New)"]]}]}), "--format", "json"])
-        stale, base = color_rule_plan(cfs)
+        stale, base = color_rule_plan(cfs, error_rule_formula(hdr))
         dels = [{"deleteConditionalFormatRule": {"sheetId": sid, "index": i}}
                 for i in stale]
         adds = [
             _color_rule(sid, base + 0, 0, lastcol, VIOLET_FORMULA, VIOLET, white=True),
-            _color_rule(sid, base + 1, CITY_NEW_COL - 1, CITY_NEW_COL, AMBER_FORMULA, AMBER),
-            _color_rule(sid, base + 2, CITY_EXISTING_COL - 1, CITY_EXISTING_COL,
-                        GREEN_FORMULA, GREEN),
+            _color_rule(sid, base + 1, city_new_col - 1, city_new_col,
+                        amber_formula(city_new_col), AMBER),
+            _color_rule(sid, base + 2, city_existing_col - 1, city_existing_col,
+                        green_formula(city_existing_col), GREEN),
         ]
         gws(["sheets", "spreadsheets", "batchUpdate", "--params",
              json.dumps({"spreadsheetId": SHEET_ID}), "--json",

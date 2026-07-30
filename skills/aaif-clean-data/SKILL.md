@@ -55,13 +55,25 @@ by **header name**, never column letter.
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py install-colors
    ```
-   Labels col G **`City (Existing)`** / col H **`City (New)`** and installs three
-   rules just **under** the bright-red error rule (so errors keep top priority):
-   **violet** whole-row when `Status = "Existing (from MLOps)"`, **amber** on
-   `City (New)` when it has a value (a net-new resolved city), and **green** on
-   `City (Existing)` when it holds a real city (non-empty, not "Other"). Idempotent —
-   it matches and refreshes its own rules by formula, safe to re-run after a column
-   move. `install-flags` now also runs this, so one command does the full setup.
+   Labels the adjacent `City` / `Resolved City` pair the role-tab array formula
+   emits — **`City (Existing)`** / **`City (New)`**, at H/I today — and installs
+   three rules just **under** the bright-red error rule (so errors keep top
+   priority): **violet** whole-row when `Status = "Existing (from MLOps)"`,
+   **amber** on `City (New)` when it has a value (a net-new resolved city), and
+   **green** on `City (Existing)` when it holds a real city (non-empty, not
+   "Other").
+
+   The pair is located **by header name at run time**, never by a fixed letter —
+   it started at G/H and moved to H/I when a column was inserted upstream, which
+   made the hardcoded version abort every run. Idempotent across that move too:
+   the rules it owns are matched by formula *shape* (any column) plus one of its
+   three colors, so a refresh replaces them instead of stacking a second set at
+   the new position. Two traps that made the "safe to re-run" claim false before:
+   colors must be compared with a ±1 tolerance (Sheets floors the float→8-bit
+   conversion, so its own colors read back one unit low), and the bright-red
+   error rule is found by the `Issues` column it references, not by its color —
+   that red has been re-picked in the UI and no longer matches the constant.
+   `install-flags` now also runs this, so one command does the full setup.
 
 ## Procedure
 
