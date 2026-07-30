@@ -29,10 +29,17 @@ H_NAME, H_EMAIL, H_LINKEDIN, H_CITY = "Full name", "Email", "LinkedIn URL", "Cit
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # Per-row provenance for applied edits is recorded in this Form Responses column
-# (not a separate log tab). Phrases keep cells short; falls back to "<field> updated".
+# (not a separate log tab). Each note is written as "<phrase> -> <new value>": the
+# value is carried so a second edit to the SAME field is not deduped away as a
+# repeat of the first (see apply()). Falls back to "<field> updated -> <value>".
 AUTOFIX_COL = "Autofixes"
 AUTOFIX_PHRASE = {"LinkedIn URL": "LinkedIn normalized", "Email": "email normalized",
                   "Full name": "name normalized", "Resolved City": "city resolved"}
+# The Autofixes cell is a delimited list: ";" joins phrases within one run, "|"
+# joins runs. A phrase therefore may NOT contain either character — autofix_note
+# strips them out of the embedded value, because a phrase that cannot be split
+# back out never matches `seen` and re-appends on every single run.
+NOTE_SEPARATORS = re.compile(r"[|;]")
 
 
 # ---------- gws helpers ----------
@@ -51,10 +58,11 @@ def read_tab(tab):
     window (this used to be "A1:CJ") silently truncates the moment a column is
     appended, and the column it drops first is the newest one — which is how
     `Autofixes` (at CK) fell outside the window and made apply() overwrite prior
-    notes instead of appending them. Measured against the live sheet: the bare
-    name returns 89 columns where "A1:CJ" returned 88. Sheets trims trailing
-    empty rows/columns for us, and quotes the name itself when echoing the
-    resolved range, so a tab name containing spaces needs no quoting here."""
+    notes instead of appending them. Sheets trims trailing empty rows/columns.
+
+    The range string is ONLY a sheet title, so there is no "!" to disambiguate
+    and `Form Responses` needs no quoting — unlike an "A1"-style range, where a
+    name containing spaces must be quoted before the "!"."""
     d = gws(["sheets", "spreadsheets", "values", "get", "--params",
              json.dumps({"spreadsheetId": SHEET_ID, "range": tab,
                          "majorDimension": "ROWS"}), "--format", "json"])
@@ -84,17 +92,36 @@ def colletter(n):  # 1-based -> A1 letter
 VIOLET = {"red": 0.60, "green": 0.20, "blue": 0.90}   # Status = Existing (from MLOps)
 AMBER  = {"red": 0.99, "green": 0.76, "blue": 0.30}   # net-new resolved city
 GREEN  = {"red": 0.72, "green": 0.88, "blue": 0.70}   # existing form city
+# The labels install_colors WRITES, named once so a rename cannot update the
+# write sites while leaving the read side (CITY_SRC_HEADERS) unable to recognise
+# what was just written.
+CITY_LABELS = ("City (Existing)", "City (New)")
 # Accepted role-tab header names for each half of the pair: pre-label
-# ("City"/"Resolved City") and post-label ("City (Existing)"/"City (New)"), so
-# discovery works both before and after install_colors renames them.
-CITY_SRC_HEADERS = ({"City", "City (Existing)"}, {"Resolved City", "City (New)"})
+# ("City"/"Resolved City") and post-label, so discovery works both before and
+# after install_colors renames them.
+CITY_SRC_HEADERS = ({"City", CITY_LABELS[0]}, {"Resolved City", CITY_LABELS[1]})
 
-# Pinned to column A because Status is written there by the role-tab array
-# formula, not discovered by header like the city pair. Sheets REWRITES stored
-# conditional-format formulas when a column is inserted, so an insert left of
-# Status turns this into "=$B2=..."; STALE_PATTERNS therefore matches any column
-# (see below) even though we only ever install at A.
-VIOLET_FORMULA = '=$A2="Existing (from MLOps)"'
+STATUS_HEADER = "Status"
+
+
+def violet_formula(status_col):
+    """Violet: this row came across from the MLOps community rather than the form.
+
+    Built from the DISCOVERED Status column, not a hardcoded "$A2". Widening
+    STALE_PATTERNS to any column only fixed *recognition* — after a column is
+    inserted left of Status, Sheets rewrites the stored rule to "=$B2=..." and we
+    correctly delete it, but a pinned builder would then reinstall a rule testing
+    column A, which is no longer Status. Recognition and correctness are separate
+    problems and this is the one that mattered."""
+    return f'=${colletter(status_col)}2="Existing (from MLOps)"'
+
+
+def find_status_col(hdr, tab):
+    """1-based Status column, by header name. Aborts rather than assuming A."""
+    if STATUS_HEADER not in hdr:
+        sys.exit(f"ABORT: {tab} has no {STATUS_HEADER!r} column; the violet "
+                 f"provenance rule has nothing to test. Headers: {hdr}")
+    return hdr.index(STATUS_HEADER) + 1
 
 
 def amber_formula(new_col):
@@ -122,34 +149,38 @@ def find_city_cols(hdr, tab):
     - zero pairs   -> the columns moved or were renamed;
     - two+ pairs   -> a migration left a stale block next to the live one, and
                       taking the leftmost would style the stale one;
-    - half-labeled -> "City (Existing)" beside "Resolved City" can only arise
-                      from an earlier run that died between the two header
-                      writes, so it is evidence of a problem, not a state to
-                      silently absorb."""
+    - half-labeled -> usually a header renamed by hand, or an upstream change;
+                      an interrupted run is unlikely to produce it, since both
+                      labels go out in a single values.batchUpdate. Either way
+                      it means the two halves disagree about which generation of
+                      naming is in force, so say what is expected rather than
+                      guessing which one to keep."""
     hits = [(i + 1, i + 2) for i in range(len(hdr) - 1)
             if hdr[i] in CITY_SRC_HEADERS[0] and hdr[i + 1] in CITY_SRC_HEADERS[1]]
     if len(hits) != 1:
         sys.exit(f"ABORT: {tab} has {len(hits)} adjacent City / Resolved City pair(s) "
                  f"at {hits}; expected exactly 1. Headers: {hdr}")
     existing, new = hits[0]
-    if (hdr[existing - 1] == "City (Existing)") != (hdr[new - 1] == "City (New)"):
+    if (hdr[existing - 1] == CITY_LABELS[0]) != (hdr[new - 1] == CITY_LABELS[1]):
         sys.exit(f"ABORT: {tab} city pair is half-labeled "
-                 f"({hdr[existing - 1]!r} / {hdr[new - 1]!r}) — a previous "
-                 f"install-colors run did not finish. Fix before recoloring.")
+                 f"({hdr[existing - 1]!r} / {hdr[new - 1]!r}). Set the two headers to "
+                 f"either {CITY_LABELS[0]!r}/{CITY_LABELS[1]!r} or "
+                 f"'City'/'Resolved City', then re-run.")
     return existing, new
 
 
 # Our own rules are recognised by SHAPE (any column) + one of our three colors,
-# not by exact formula text. Text-matching pinned to a column letter stops
-# recognising rules the moment Sheets rewrites them for a column insert, so a
-# refresh stacks a duplicate next to the old rule instead of replacing it — the
-# violet pattern must therefore accept any column even though we only ever
-# install at A. The color test plus the err_formula exclusion in is_ours are what
-# keep the broad amber shape from also matching the bright-red Issues rule, whose
-# formula has the identical shape. Enforcement that these stay in sync with the
-# builders above is test_recognises_installed_rules_at_any_column — there is no
-# longer a construction-time guarantee, so do not edit a builder without it.
-# The green patterns backreference their column: one rule never tests two.
+# not by exact formula text: text pinned to a column letter stops matching the
+# moment Sheets rewrites a rule for a column insert, so a refresh stacks a
+# duplicate instead of replacing it. The color test plus the err_formula
+# exclusion in is_ours are what keep the broad amber shape from also matching the
+# bright-red Issues rule, whose formula has the identical shape. The green
+# patterns backreference their column, so a rule painting H while testing Z is
+# NOT ours. These regexes are hand-written and nothing checks them against the
+# builders above — an earlier release derived both from one set of constants;
+# that construction-time guarantee is gone, and
+# test_recognises_installed_rules_at_any_column is now the only thing that
+# catches drift. Do not edit a builder without running it.
 STALE_PATTERNS = (
     re.compile(r'^=\$[A-Z]+2="Existing \(from MLOps\)"$'),                     # violet
     re.compile(r'^=\$[A-Z]+2<>""$'),                                           # amber
@@ -193,16 +224,23 @@ def autofix_note(prior, phrases):
 
     Appends rather than overwrites, and dedupes against what the cell ALREADY
     holds — not just within one run — so re-applying a change list cannot
-    accumulate "city resolved | city resolved | ...". `prior` is split on both
-    separators this column has used historically (";" from within one run, "|"
-    between runs); a hand-typed separator won't be recognised, which costs at
-    most one duplicate phrase.
+    accumulate "city resolved | city resolved | ...".
 
-    Pure so it is testable without touching Sheets, matching color_rule_plan."""
-    seen = {p.strip() for p in re.split(r"[|;]", prior) if p.strip()}
+    Separators are stripped OUT of each incoming phrase first. `prior` is parsed
+    by splitting on them, so a phrase containing one cannot be split back out,
+    never matches `seen`, and re-appends on EVERY run — unbounded growth, the
+    exact bug this function exists to prevent. That became reachable when apply()
+    started embedding a free-text value in the phrase: `Frankfurt; Germany` and
+    `Washington, DC | DC` are ordinary values for a hand-filled Resolved City.
+    Both ends are stripped too, since `seen` is stripped and a trailing space
+    would otherwise read as a different phrase.
+
+    Pure — no I/O — so it is testable without touching Sheets."""
+    phrases = [NOTE_SEPARATORS.sub(",", p).strip() for p in phrases]
+    seen = {p.strip() for p in NOTE_SEPARATORS.split(prior) if p.strip()}
     uniq = []
     for p in phrases:
-        if p not in uniq and p not in seen:
+        if p and p not in uniq and p not in seen:
             uniq.append(p)
     if not uniq:
         return None
@@ -249,32 +287,57 @@ def is_ours(cf, err_formula):
 
 
 def color_rule_plan(cfs, err_formula):
-    """Pure planner for install_colors: given a tab's conditionalFormats, return
+    """Planner for install_colors: given a tab's conditionalFormats, return
     (stale_indices_desc, base_index). stale = our own color rules to delete
     (matched by `is_ours`: formula SHAPE plus one of our colors, so they are
     still recognised after the city pair moves); base = insert index just BELOW
-    the bright-red error rule so it keeps top priority — identified by
-    `err_formula` when given, else by color — computed from its ACTUAL position
-    (not assumed to be index 0), adjusted for the stale rules deleted above it,
-    since deletes and adds run in one batch. Testable without touching Sheets."""
+    the bright-red error rule so it keeps top priority — located by `err_formula`
+    when that is not None and the matched rule is actually red, else by color —
+    computed from its ACTUAL position (not assumed to be index 0), adjusted for
+    the stale rules deleted above it, since deletes and adds run in one batch.
+
+    Returns base=0 when no error rule can be found at all, which installs ABOVE
+    everything; that case warns on stderr. Does no I/O beyond those warnings, so
+    it stays testable without touching Sheets."""
+    def warn(msg):
+        print("WARNING: " + msg, file=sys.stderr)
+
     stale = [i for i, cf in enumerate(cfs) if is_ours(cf, err_formula)]
-    # Prefer identifying the error rule by formula; fall back to its color for
-    # sheets where install_flags has not run and no Issues column exists yet.
-    red = next((i for i, cf in enumerate(cfs)
-                if err_formula and formula_of(cf) == err_formula), None)
-    if red is None:
+    # Identify the error rule by formula, but VERIFY the colour: matching on
+    # formula text alone and taking the first hit put our rules above the real
+    # red rule whenever an operator had their own rule on the Issues column
+    # sitting higher — silently, because the only warnings were on the fallback
+    # branch, which never ran in that case.
+    hits = [i for i, cf in enumerate(cfs) if err_formula and formula_of(cf) == err_formula]
+    reds = [i for i in hits if _is_red(cfs[i])]
+    if len(hits) > 1:
+        warn(f"{len(hits)} rules reference the Issues column ({err_formula}) at {hits}; "
+             f"using {reds[0] if reds else hits[0]}. Delete the duplicates.")
+    if reds:
+        red = reds[0]
+    elif hits:
+        red = hits[0]
+        warn(f"the rule referencing {err_formula} at index {red} is not bright red; "
+             f"treating it as the error rule anyway.")
+    else:
         red = next((i for i, cf in enumerate(cfs) if _is_red(cf)), None)
-        if red is not None and err_formula:
-            print(f"WARNING: no rule references the Issues column ({err_formula}); "
-                  f"located the error rule by color instead.", file=sys.stderr)
+        if red is not None:
+            # Unconditional: err_formula being None means the Issues header was
+            # deleted or renamed, which is the state MOST worth reporting, and it
+            # also silently disables the err_formula exclusion inside is_ours.
+            warn(f"no rule references the Issues column "
+                 f"({err_formula or 'no Issues header found'}); located the error "
+                 f"rule by color instead.")
     if red is None:
         # Not the same fact as "the error rule is at index 0" — say so, because
-        # base=0 installs our rules at the TOP and there is no way to tell from
-        # the success message whether error priority was preserved.
-        if cfs:
-            print(f"WARNING: no bright-red error rule found among {len(cfs)} existing "
-                  f"rule(s); installing at index 0. Run install-flags first if error "
-                  f"highlighting should outrank provenance colors.", file=sys.stderr)
+        # base=0 installs our rules at the TOP and nothing in the success message
+        # reveals whether error priority was preserved. Warn even when cfs is
+        # empty but an Issues column exists: that means the red rule was deleted
+        # wholesale, not that this is a fresh tab.
+        if cfs or err_formula:
+            warn(f"no bright-red error rule found among {len(cfs)} existing rule(s); "
+                 f"installing at index 0, ABOVE any error highlighting. Run "
+                 f"install-flags first if that is not what you want.")
         base = 0
     else:
         base = red - sum(1 for s in stale if s < red) + 1
@@ -419,12 +482,19 @@ def apply(path):
              json.dumps({"spreadsheetId": SHEET_ID,
                          "range": f"{SOURCE}!{colletter(ai + 1)}1", "valueInputOption": "RAW"}),
              "--json", json.dumps({"values": [[AUTOFIX_COL]]}), "--format", "json"])
-    data, notes = [], {}
+    data, notes, dropped = [], {}, 0
     for ch in wanted:
         rn, header, new = ch["row"], ch["header"], ch["value"]
+        # Row 1 is the header. Without a LOWER bound, rn=1 gives rows[-1] below —
+        # seeding the note from the last data row — and writes over the header
+        # cell that this module's entire header-driven design is anchored to.
+        if not isinstance(rn, int) or not 2 <= rn <= len(rows) + 1:
+            sys.exit(f"ABORT: row {rn!r} is outside the data rows (2..{len(rows) + 1}). "
+                     f"Row 1 is the header; nothing written.")
         ci = idx(hdr, header)
         if ci is None:
             print(f"  skip: no column named {header!r}", file=sys.stderr)
+            dropped += 1
             continue
         data.append({"range": f"{SOURCE}!{colletter(ci + 1)}{rn}", "values": [[new]]})
         # Carry the new value in the phrase. The phrase alone is per-HEADER, so
@@ -434,19 +504,28 @@ def apply(path):
         notes.setdefault(rn, []).append(
             f"{AUTOFIX_PHRASE.get(header, f'{header} updated')} -> {new}")
     if not data:
+        # "already clean" and "every header in the change list was renamed away"
+        # are different facts; the second is a failure and must not exit 0.
+        if dropped:
+            sys.exit(f"ABORT: none of the {dropped} requested change(s) matched a column "
+                     f"in {SOURCE!r} — the change list is stale. Nothing written.")
         print("No changes to apply.")
         return
     gws(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
          json.dumps({"spreadsheetId": SHEET_ID}), "--json",
-         json.dumps({"valueInputOption": "USER_ENTERED", "data": data}), "--format", "json"])
-    # annotate every touched row whose note is genuinely new (see autofix_note)
-    fix = [{"range": f"{SOURCE}!{colletter(ai + 1)}{rn}", "values": [[combined]]}
-           for rn, phrases in notes.items()
-           for combined in [autofix_note(
-               rows[rn - 2][ai] if (rn - 2 < len(rows) and ai < len(rows[rn - 2])) else "",
-               phrases)]
-           if combined is not None]
-    # `fix` can now legitimately be empty (every phrase already recorded), and an
+         # RAW, never USER_ENTERED: these values come from a PUBLIC form, and the
+         # normalizers happily re-case "=IMPORTXML(...)" into a still-valid
+         # formula, so a submission can look like a routine capitalisation fix in
+         # scan and become a live formula here — able to exfiltrate the row. RAW
+         # keeps it inert text. Leading "=", "+", "-" and "@" are all covered.
+         json.dumps({"valueInputOption": "RAW", "data": data}), "--format", "json"])
+    # one entry per touched row, or None when the cell already says it all
+    merged = {rn: autofix_note(
+                  rows[rn - 2][ai] if ai < len(rows[rn - 2]) else "", phrases)
+              for rn, phrases in notes.items()}
+    fix = [{"range": f"{SOURCE}!{colletter(ai + 1)}{rn}", "values": [[c]]}
+           for rn, c in merged.items() if c]
+    # `fix` can legitimately be empty (every phrase already recorded), and an
     # empty `data` list is exactly the shape gws drops — guard it rather than
     # firing a write whose no-op is indistinguishable from a success.
     if fix:
@@ -489,28 +568,54 @@ def install_flags():
              json.dumps({"valueInputOption": "USER_ENTERED", "data": [
                  {"range": f"{tab}!{ilet}1", "values": [["Issues"]]},
                  {"range": f"{tab}!{ilet}2", "values": [[formula]]}]}), "--format", "json"])
-        # add the bright-red rule only if not already installed (Issues was absent)
-        if "Issues" not in hdr:
-            # endRowIndex omitted: a fixed bound stops highlighting on the newest
-            # rows once the tab grows past it (see _color_rule).
-            rng = {"sheetId": sid, "startRowIndex": 1,
-                   "startColumnIndex": 0, "endColumnIndex": icol}
+        # endRowIndex omitted: a fixed bound stops highlighting on the newest
+        # rows once the tab grows past it (see _color_rule).
+        rng = {"sheetId": sid, "startRowIndex": 1,
+               "startColumnIndex": 0, "endColumnIndex": icol}
+        if "Issues" in hdr:
+            # The rule already exists, so ADDING one would duplicate it — but
+            # leaving it alone was how the endRowIndex fix failed to reach the
+            # live sheet: every role tab's red rule was installed with the old
+            # hardcoded 1000 and nothing ever rewrote it, so the one rule that
+            # flags broken emails stayed bounded while the provenance colors
+            # became unbounded. Re-point its RANGE in place, preserving whatever
+            # color the rule currently has (the red has been re-picked in the UI
+            # and that choice is the operator's, not ours).
+            existing = _all_conditional_formats().get(sid, [])
+            err = f'=${ilet}2<>""'
+            at = next((i for i, cf in enumerate(existing) if formula_of(cf) == err), None)
+            if at is None:
+                print(f"  {tab}: no rule references {err}; leaving conditional "
+                      f"formats alone.", file=sys.stderr)
+                req = None
+            else:
+                rule = dict(existing[at])
+                rule["ranges"] = [rng]
+                req = {"updateConditionalFormatRule": {"sheetId": sid, "index": at,
+                                                       "rule": rule}}
+        else:
             req = {"addConditionalFormatRule": {"index": 0, "rule": {"ranges": [rng], "booleanRule": {
                 "condition": {"type": "CUSTOM_FORMULA",
                               "values": [{"userEnteredValue": f'=${ilet}2<>""'}]},
                 "format": {"backgroundColor": BRIGHT_RED,
                            "textFormat": {"foregroundColor": {"red": 1, "green": 1, "blue": 1}, "bold": True}}}}}}
+        reqs = [req] if req else []
+        if "Issues" not in hdr:
             # bold header for the new column too
-            hdrfmt = {"repeatCell": {"range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
-                      "startColumnIndex": icol - 1, "endColumnIndex": icol},
-                      "cell": {"userEnteredFormat": {"textFormat": {"bold": True},
-                               "backgroundColor": {"red": 0.85, "green": 0.85, "blue": 0.85}}},
-                      "fields": "userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor"}}
+            reqs.append({"repeatCell": {"range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
+                        "startColumnIndex": icol - 1, "endColumnIndex": icol},
+                        "cell": {"userEnteredFormat": {"textFormat": {"bold": True},
+                                 "backgroundColor": {"red": 0.85, "green": 0.85, "blue": 0.85}}},
+                        "fields": "userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor"}})
+        if reqs:
             gws(["sheets", "spreadsheets", "batchUpdate", "--params",
                  json.dumps({"spreadsheetId": SHEET_ID}), "--json",
-                 json.dumps({"requests": [req, hdrfmt]}), "--format", "json"])
-        print(f"{tab}: Issues column at {ilet}, bright-red rule "
-              f"{'kept' if 'Issues' in hdr else 'added'}.")
+                 json.dumps({"requests": reqs}), "--format", "json"])
+        if "Issues" in hdr:
+            action = "range re-pointed" if req else "left alone (not found)"
+        else:
+            action = "added"
+        print(f"{tab}: Issues column at {ilet}, bright-red rule {action}.")
     install_colors()
 
 
@@ -541,13 +646,19 @@ def _color_rule(sid, index, c0, c1, formula, bg, white=False):
                         "values": [{"userEnteredValue": formula}]}, "format": fmt}}}}
 
 
-def _city_rule(sid, index, col, formula_fn, bg):
+# (builder, color) travel together. A loose `bg` argument was silently
+# unconstrained: installing a rule in a color is_ours does not know makes it
+# invisible to every later run, so each run stacks a fresh duplicate — the exact
+# bug this module exists to prevent. Pass one of these, never a bare color.
+AMBER_RULE = (amber_formula, AMBER)
+GREEN_RULE = (green_formula, GREEN)
+
+
+def _city_rule(sid, index, col, rule):
     """A one-column provenance rule. The painted range and the tested formula
-    both derive from `col` here, so they cannot drift apart — previously each
-    call site named its column three times (0-based start, 1-based end, and
-    again inside the builder), and updating two of the three yields a rule that
-    paints one column while testing another: valid to Sheets, silent, and still
-    recognised by is_ours on the next run."""
+    both derive from `col`, so a rule can never paint one column while testing
+    another — which Sheets accepts silently and `is_ours` still recognises."""
+    formula_fn, bg = rule
     return _color_rule(sid, index, col - 1, col, formula_fn(col), bg)
 
 
@@ -572,25 +683,27 @@ def install_colors():
         if all_cfs.get(sid) is None:
             sys.exit(f"ABORT: sheetId {sid} ({tab}) not found in the spreadsheet. "
                      f"No tab modified.")
-        plans[tab] = (hdr, find_city_cols(hdr, tab))
+        # sid lives in the plan so the write loop iterates ONE source, not two
+        # that must stay in lockstep.
+        plans[tab] = (sid, hdr, find_status_col(hdr, tab), find_city_cols(hdr, tab))
 
-    for tab, sid in ROLE_TABS.items():
-        hdr, (city_existing_col, city_new_col) = plans[tab]
+    for tab, (sid, hdr, status_col, (city_existing_col, city_new_col)) in plans.items():
         lastcol = len(hdr)
         gws(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
              json.dumps({"spreadsheetId": SHEET_ID}), "--json",
              json.dumps({"valueInputOption": "USER_ENTERED", "data": [
                  {"range": f"{tab}!{colletter(city_existing_col)}1",
-                  "values": [["City (Existing)"]]},
+                  "values": [[CITY_LABELS[0]]]},
                  {"range": f"{tab}!{colletter(city_new_col)}1",
-                  "values": [["City (New)"]]}]}), "--format", "json"])
+                  "values": [[CITY_LABELS[1]]]}]}), "--format", "json"])
         stale, base = color_rule_plan(all_cfs[sid], error_rule_formula(hdr))
         dels = [{"deleteConditionalFormatRule": {"sheetId": sid, "index": i}}
                 for i in stale]
         adds = [
-            _color_rule(sid, base + 0, 0, lastcol, VIOLET_FORMULA, VIOLET, white=True),
-            _city_rule(sid, base + 1, city_new_col, amber_formula, AMBER),
-            _city_rule(sid, base + 2, city_existing_col, green_formula, GREEN),
+            _color_rule(sid, base + 0, 0, lastcol,
+                        violet_formula(status_col), VIOLET, white=True),
+            _city_rule(sid, base + 1, city_new_col, AMBER_RULE),
+            _city_rule(sid, base + 2, city_existing_col, GREEN_RULE),
         ]
         gws(["sheets", "spreadsheets", "batchUpdate", "--params",
              json.dumps({"spreadsheetId": SHEET_ID}), "--json",
