@@ -156,7 +156,7 @@ are being onboarded (see the sharing note at the end of this section).
    Opens every chapter workbook and prints, per chapter, the people it would add
    (`+`) or fill in (`~`) with the exact cell values, then the near-miss cities,
    the cities with no chapter folder, and a count of un-synced intake rows
-   (`--verbose` lists them individually). A full run reads ~82 workbooks and
+   (`--verbose` lists them individually). A full run reads every chapter workbook and
    takes a few minutes.
 
 2. **Show the user the proposal** and get explicit approval. Never skip to write.
@@ -168,7 +168,7 @@ are being onboarded (see the sharing note at the end of this section).
    Saves each workbook's pre-edit bytes to a temp `before/` directory, uploads,
    then re-downloads every written workbook and confirms a fresh plan is empty.
    A workbook that fails is reported and the rest still finish — one bad file
-   must not abandon the other eighty-one.
+   must not abandon the rest.
 
 ## Column mapping (intake → CRM `Attendees`)
 
@@ -223,7 +223,7 @@ used instead of inventing one.
   Anything with a real-looking address is left exactly where it is and listed
   under "Already in a CRM and NOT touched" — a row a human typed is
   indistinguishable from one we don't recognise, so it is never guessed at.
-  Clearing is planned for **every** chapter, including the ~30 that gain nobody.
+  Clearing is planned for **every** chapter, including those that gain nobody.
 - **Rows land in the workbook's pre-created empty rows** (the template ships 1000
   of them, already carrying the dropdowns and conditional formatting), lowest
   first, copying row 2's per-column cell styles so a synced person looks like a
@@ -260,19 +260,21 @@ it is silently discarded — and the run still reports the patch as applied. Tha
 is why row writes, serialization and the dropdown patch all live inside
 `finalize()`, in that order; call it, don't re-implement it.
 
-## Sharing: these CRMs are currently link-readable
+## Sharing: minimal by design
 
-As of 2026-08 the **Chapters** folder carries `anyone → reader` (plus
-`linuxfoundation.org → commenter`), and it **inherits all the way down** —
-verified on a chapter folder and on a `CRM.xlsx` itself. No chapter organizer has
-an individual grant; that public link is how they currently get in.
+`CRM_WRITTEN` (six columns) and `SYNC_STATUSES` (accepted only) are what keep
+un-vetted applicants and their survey detail out of a folder shared more widely
+than intended. **Re-check the folder's sharing before widening either** — they
+are the whole mitigation, and the CRM is written *before* access is narrowed
+(feed → CRM → access), so the write lands under whatever sharing exists at the
+time.
 
-So anything this script writes is readable by anyone with the link. That is why
-the column set is minimal and gated on acceptance. The plan is to onboard the
-right people to the right chapter first, then remove whole-folder access and
-grant each organizer their own chapter folder only. **Re-check the sharing before
-widening `CRM_WRITTEN` or `SYNC_STATUSES`** — those two constants are what keep
-un-vetted applicants and their survey detail out of a public folder.
+> **State as of 2026-08-07:** the Chapters folder previously carried
+> `anyone → reader`, inherited all the way down to every `CRM.xlsx`. That share
+> has been removed (§3), the `linuxfoundation.org → commenter` grant was kept
+> deliberately, and each accepted organizer now holds `writer` on their own
+> chapter folder only. Confirm with `sync_access.py` (report mode) rather than
+> trusting this paragraph.
 
 ---
 
@@ -281,12 +283,20 @@ un-vetted applicants and their survey detail out of a public folder.
 Moves the Chapters folder off its public link-share and onto per-chapter grants.
 Report-only by default. Three phases, and **the order is not negotiable**:
 
-1. **grant** — give each accepted organizer their chapter folder. Must precede
-   the lock: the public link is currently their only access.
-2. **lock** — remove `anyone:reader` from Chapters/.
+Numbered as the console prints them:
 
-A **pin** phase also exists, for the case where something public genuinely lives
-in the tree. `--write` runs pin → grant → lock; `--phase pin|grant|lock` runs one.
+1. **pin** — give each banner its own `anyone:reader`. Usually a **no-op** (see
+   below), and not needed for the website; it exists for the case where
+   something public genuinely does live in the tree.
+2. **grant** — give each accepted organizer **`writer`** (the `--role` default)
+   on their chapter folder. Must precede the lock: the public link is currently
+   their only access.
+3. **lock** — remove `anyone:reader` from Chapters/.
+
+`--write` runs all three in that order; `--phase pin|grant|lock` runs one, and
+verifies whatever it ran. **`lock` refuses to run when any grant failed** —
+locking then would leave those organizers with no access at all; `--lock-anyway`
+overrides.
 
 > **The website does not depend on this share — verified, not assumed.** The
 > chapters feed's `Image` column is full of `lh3.googleusercontent.com/d/<id>`
@@ -314,12 +324,14 @@ in the tree. `--write` runs pin → grant → lock; `--phase pin|grant|lock` run
   the person. There is no silent path, so they are skipped and reported unless
   `--mail-if-required` (or `--notify`) is passed — sending mail to real people is
   never a side effect of a sync.
-- Notifications are **off** by default: 98 share-mails arriving unannounced read
-  as a phishing wave.
+- Notifications are **off** by default: a share-mail per organizer, arriving
+  unannounced and all at once, reads as a phishing wave.
 - `linuxfoundation.org` domain access is **kept** — that is LF staff reach, a
   separate decision from de-publicising the folder.
-- Pre-existing direct grants on chapter folders are left alone and reported.
-  They survive the lock, so they are exactly what an audit needs to see.
+- Pre-existing direct grants on chapter folders are left alone, and every one
+  held by someone the intake does not know about is **listed** in the report.
+  They survive the lock — a denied ex-organizer keeps `writer` until a human
+  removes it — so they are exactly what an audit needs to see.
 
 ---
 
@@ -329,18 +341,21 @@ After any run (and after editing the engine):
 
 - The report's intake counts should match a manual count of the sheet's Status
   column; a delta means status strings drifted.
-- After `--write`, the built-in re-verify must print
-  "Verified: a fresh run proposes zero changes."
+- After `--write`, each engine prints its OWN verify line — they differ:
+  `sync_chapters` "a fresh run proposes zero changes"; `sync_crm` "a fresh read
+  of every written workbook proposes zero changes"; `sync_access` "banners are
+  directly public and Chapters/ is no longer link-shared".
 - Spot-check one touched row in the sheet: `Organizers` merged correctly, the
   MLOps and Luma columns untouched, and the version history shows a single edit
   for the whole sync.
 - After a CRM `--write`, open one touched workbook and check the person's row
   reads correctly, the sample row and any hand-written notes are untouched, and
   the `Status` cell offers `Host` in its dropdown.
-- Unit tests for the pure logic in both engines (no network, no `gws`):
+- Unit tests for the pure logic in all three engines (no network, no `gws`):
   ```bash
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_chapters.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_crm.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_access.py
   ```
 
 ## Notes
