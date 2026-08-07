@@ -1,10 +1,42 @@
 ---
 name: aaif-sync-chapters
-description: Sync accepted/existing organizers from the Intake Ops sheet into the Chapters List — merge names into each city's Organizers column and add rows for net-new cities. Reports & proposes by default; only writes on explicit approval. Use when asked to sync organizers/chapters or push intake decisions to the chapters list.
-argument-hint: "[--write]"
+description: Push intake decisions out of the Intake Ops sheet — accepted organizers onto the Chapters List, accepted people plus their survey interest into their chapter's Attendee CRM, and per-chapter Drive access to replace the folder's public link-share. Reports & proposes by default; only writes on explicit approval. Use when asked to sync organizers/chapters/CRMs, push intake decisions to the chapters list, add intake people to a chapter's CRM, or give organizers access to their own chapter.
+argument-hint: "[chapters|crm|access] [--write]"
 ---
 
-# Sync Intake Organizers → Chapters List
+# Sync the Intake → Chapters List, chapter CRMs, chapter access
+
+Three engines, one intake sheet, same house rules — **the intake sheet is only
+ever read**, the report is the default, and `--write` re-verifies itself:
+
+| Engine | Script | Pushes | Into |
+|---|---|---|---|
+| Chapters feed | `sync_chapters.py` | **accepted organizer names** | the public Chapters List sheet |
+| Chapter CRMs | `sync_crm.py` | **accepted people + their survey interest** | each chapter's private `<City> CRM.xlsx` |
+| Chapter access | `sync_access.py` | **per-chapter Drive grants** | the Chapters folder's sharing |
+
+Run whichever the user asked for. "Sync everything" means feed → CRM → access, in
+that order: a net-new city needs its folder before its CRM can be written, and its
+CRM should hold the right people before anyone is granted access to it.
+
+> **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
+> file goes through the `gws` CLI, driven from Python. **Prefer native Google
+> formats**: edit `application/vnd.google-apps.*` files with the Docs/Sheets/
+> Slides API. Drop to byte-level OOXML surgery on the `.docx`/`.pptx`/`.xlsx`
+> zip parts (embedded fonts and untouched parts survive) only when the file
+> genuinely is a stored Office file. **Never use LibreOffice / `soffice`** — not to edit, not to convert,
+> and not to render a "just checking it locally" preview: it substitutes local
+> system fonts for the brand fonts and drops OOXML it doesn't understand, so its
+> output and its renders both misrepresent the real file. Same for `unoconv` and
+> any desktop office suite. To *see* a file, render it through the API instead —
+> a slide via `aaif_events.slides_export.render_slide_png`, a doc via
+> `gws drive files copy` to a Google Doc → `gws drive files export` to PDF →
+> trash the copy. Never round-trip a native Doc through `.docx` — it strips
+> native features like Tabs.
+
+---
+
+# 1. Sync Intake Organizers → Chapters List
 
 Push organizer decisions from the **AAIF Community Intake Ops** sheet
 (id `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o`, tab `Organizers`) into the
@@ -90,7 +122,208 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   between building the proposal and writing it (row numbers are snapshot indices,
   and the per-city Luma checks sit in that window).
 
-## Verify
+---
+
+# 2. Sync Intake People + Interests → chapter CRMs
+
+Every chapter folder under the **Chapters** Drive folder
+(`1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx`) holds one **`<City> CRM.xlsx`** whose
+`Attendees` tab is the chapter's private people database. `sync_crm.py` fills it
+from the intake and carries each person's survey interest across.
+
+**This CRM is the onboarding list.** It decides who gets access to a chapter's
+Drive folder, so a person reaches it after a **decision**, not on submitting the
+form. Only `Accepted` and `Existing (from MLOps)` sync; `New`, `Tentative` and
+`Denied` are all held back and reported.
+
+> As of 2026-08 that means **organizers only** — the Hosts and Speakers tabs have
+> never been triaged off `New` (0 of 26 and 0 of 55). Both start flowing the
+> moment someone accepts them; nothing in the engine needs to change for that.
+
+**Keep it minimal.** Only six of the eleven columns are ever written. `Signal`,
+`LinkedIn URL`, `Company`, `Role / title` and `Technical expertise` still exist
+for an organizer to fill in by hand — the automation just doesn't push a survey's
+worth of personal detail into a folder that is still link-readable while chapters
+are being onboarded (see the sharing note at the end of this section).
+
+## The flow: report → approve → write
+
+1. **Report (default, read-only):**
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/sync_crm.py            # all chapters
+   python3 ${CLAUDE_SKILL_DIR}/scripts/sync_crm.py --city Boston
+   ```
+   Opens every chapter workbook and prints, per chapter, the people it would add
+   (`+`) or fill in (`~`) with the exact cell values, then the near-miss cities,
+   the cities with no chapter folder, and a count of un-synced intake rows
+   (`--verbose` lists them individually). A full run reads ~82 workbooks and
+   takes a few minutes.
+
+2. **Show the user the proposal** and get explicit approval. Never skip to write.
+
+3. **Write (on approval only):**
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/sync_crm.py --write
+   ```
+   Saves each workbook's pre-edit bytes to a temp `before/` directory, uploads,
+   then re-downloads every written workbook and confirms a fresh plan is empty.
+   A workbook that fails is reported and the rest still finish — one bad file
+   must not abandon the other eighty-one.
+
+## Column mapping (intake → CRM `Attendees`)
+
+| CRM column | Filled from |
+|---|---|
+| `Full name` | role tab `Name` / `Full name` |
+| `Trusted/Regular` | `Yes` for an organizer — they're on the team, not a guest to triage |
+| `Status` | `Organizer` / `Speaker` / `Host` (everyone syncing is already accepted) |
+| `Notes (CRM)` | provenance — `Intake: Organizer · Accepted · 2026-08-07` |
+| `Email` | role tab `Email` — **also the dedupe key** |
+| `What brings you here?` | the survey answer **verbatim**, plus the role's detail (`Talk title` / `Venue name` / `Chapter / city wanted`) |
+
+**Never written:** `Signal`, `LinkedIn URL`, `Company`, `Role / title`,
+`Technical expertise`. They are absent from the mapping rather than written
+blank, so the automation cannot touch them even on a row it creates. The
+canonical list is `CRM_WRITTEN` in `sync_crm.py`, asserted by the tests.
+
+`What brings you here?` is the form's routing question, and the role tabs are
+filtered views that drop it — so it is read from `Form Responses` and joined back
+on email. When a row can't be joined, the form's own wording for that branch is
+used instead of inventing one.
+
+## Sync rules (what the engine does)
+
+- **Chapter resolution per intake row**: the role tab's `Chapter` assignment wins
+  (a human made it), then `City (New)`, then `City (Existing)` unless it's an
+  `Other…` placeholder. The result is matched to a chapter **folder** with the
+  same accent-, case- and punctuation-folded name as the chapters feed uses
+  (`Washington, DC` → the `Washington DC` folder; `Montreal` → `Montréal`).
+- **Near-miss folders are reported, never written** — same discriminating-token
+  rule and generic-word stoplist as the chapters engine, so `San Diego` never
+  lands in `San Francisco`. Cities with no folder at all are listed as the
+  follow-up queue for **`aaif-create-chapter`**.
+- **One row per person per chapter, deduped on email** — the workbook's own Guide
+  tab says to merge by email, so that is the key. Someone who applied as both an
+  organizer and a speaker gets **one** row: the higher-priority role sets
+  `Status`, and both interests are recorded in `What brings you here?`.
+- **Never clobber a human.** A CRM cell that already has content is left alone —
+  corrected spellings, hand-written notes and manually added companies all
+  survive every re-run. Only genuinely blank cells are filled.
+- **`Status` is the one exception**: it is upgraded when it still holds a value
+  the automation itself wrote (`New`, `Prospect`, `Organizer`, `Speaker`,
+  `Host`). That is how a person's role is corrected after re-triage — while a
+  human's `Attended`, `Regular`, `Volunteer` or `Declined` is never undone.
+- **Fixture rows are cleared, and only fixture rows.** A row is wiped **only** if
+  its `Email` is at a reserved example domain (`@example.com`, `.org`, `.net`,
+  `.edu`) — that is the sole gate, deliberately narrow and anchored on the `@` so
+  look-alikes (`a@examples.com`, `x@example.company`) are never caught. This
+  removes the `Sam Taylor` sample the template puts in **every** chapter CRM, and
+  the Tatooine test chapter's cast. The freed row is **reused**, so a chapter's
+  first real organizer lands at the top of the list instead of below a blank.
+  Anything with a real-looking address is left exactly where it is and listed
+  under "Already in a CRM and NOT touched" — a row a human typed is
+  indistinguishable from one we don't recognise, so it is never guessed at.
+  Clearing is planned for **every** chapter, including the ~30 that gain nobody.
+- **Rows land in the workbook's pre-created empty rows** (the template ships 1000
+  of them, already carrying the dropdowns and conditional formatting), lowest
+  first, copying row 2's per-column cell styles so a synced person looks like a
+  hand-entered one. Past row 1000 new `<row>` elements are inserted in ascending
+  order.
+- **The `Status` dropdown gains a `Host` value.** It shipped as
+  `New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined` with no
+  value for a venue host, so hosts had nowhere honest to land. Every workbook the
+  script opens is patched — including **TemplateCity**, or every chapter cloned
+  from it would re-inherit the gap. Both quote encodings are handled (the
+  template writes `"…"`, older workbooks write `&quot;…&quot;`). A workbook with
+  no Status list at all is reported, not guessed at.
+- **TemplateCity never receives people** — only the dropdown patch.
+- **Rows are skipped, and reported, when**: `Status` is anything other than
+  `Accepted` / `Existing (from MLOps)`; the email is missing or unparsable
+  (there'd be no dedupe key, so every run would re-add them); or the row has no
+  chapter or city at all.
+- **The run aborts** when `Form Responses` or a role tab comes back empty, or a
+  role tab has no `Status`/`Email` header. A workbook whose `Attendees` tab is
+  missing a column is **skipped with a reason**, never written by column letter.
+
+## Editing the workbooks
+
+The CRMs are **stored `.xlsx`**, not native Sheets, so they are edited as OOXML
+zip parts: download → rewrite `Attendees`' sheet XML → upload. Every part the
+script doesn't touch is repacked byte-for-byte, and values are written as
+**inline strings**, which Excel and Sheets both treat as literal text — a name
+starting with `=` can never become a formula, so there is no RAW-vs-`USER_ENTERED`
+hazard here.
+
+**Write order is load-bearing.** `Attendees.serialize()` rewrites the sheet part
+wholesale from the element tree, so a bytes-level dropdown patch applied *before*
+it is silently discarded — and the run still reports the patch as applied. That
+is why row writes, serialization and the dropdown patch all live inside
+`finalize()`, in that order; call it, don't re-implement it.
+
+## Sharing: these CRMs are currently link-readable
+
+As of 2026-08 the **Chapters** folder carries `anyone → reader` (plus
+`linuxfoundation.org → commenter`), and it **inherits all the way down** —
+verified on a chapter folder and on a `CRM.xlsx` itself. No chapter organizer has
+an individual grant; that public link is how they currently get in.
+
+So anything this script writes is readable by anyone with the link. That is why
+the column set is minimal and gated on acceptance. The plan is to onboard the
+right people to the right chapter first, then remove whole-folder access and
+grant each organizer their own chapter folder only. **Re-check the sharing before
+widening `CRM_WRITTEN` or `SYNC_STATUSES`** — those two constants are what keep
+un-vetted applicants and their survey detail out of a public folder.
+
+---
+
+# 3. Per-chapter access (`sync_access.py`)
+
+Moves the Chapters folder off its public link-share and onto per-chapter grants.
+Report-only by default. Three phases, and **the order is not negotiable**:
+
+1. **grant** — give each accepted organizer their chapter folder. Must precede
+   the lock: the public link is currently their only access.
+2. **lock** — remove `anyone:reader` from Chapters/.
+
+A **pin** phase also exists, for the case where something public genuinely lives
+in the tree. `--write` runs pin → grant → lock; `--phase pin|grant|lock` runs one.
+
+> **The website does not depend on this share — verified, not assumed.** The
+> chapters feed's `Image` column is full of `lh3.googleusercontent.com/d/<id>`
+> URLs pointing at `Web Banner.png` files inside chapter folders, which reads as
+> "80 public Drive images the site serves". It isn't. `aaif.io/community-chapters`
+> was loaded and inspected on 2026-08-07: 26 images, **all** from `cdn.sanity.io`,
+> none from Drive. Chapter content and imagery live in Sanity; the Drive banners
+> are source assets. A column full of image URLs is not evidence that anything
+> fetches them — load the page and look.
+
+> **`pin` is a no-op while the parent is still shared.** Drive merges a child's
+> `anyone:reader` into the inherited one, returns `200` with a permission id, and
+> stores nothing new — the file still reads `inherited: true`. A child can only
+> hold its own public share *after* the parent's is removed. Never trust the
+> phase's "N changes" line; re-read the permission and check
+> `permissionDetails[].inherited`.
+
+- **`assert_all_accepted()` is the last gate before write** and re-reads the
+  intake through a different code path than the filter that built the plan.
+  "The filter that made the list says the list is fine" is not a check.
+- **A bad address never abandons the run.** The intake is fed by a public form,
+  so a typo'd address is normal input and Drive rejects it with a hard 400.
+  Failures are collected and reported; every other grant still lands.
+- **Addresses with no Google account** are refused by Drive unless it may email
+  the person. There is no silent path, so they are skipped and reported unless
+  `--mail-if-required` (or `--notify`) is passed — sending mail to real people is
+  never a side effect of a sync.
+- Notifications are **off** by default: 98 share-mails arriving unannounced read
+  as a phishing wave.
+- `linuxfoundation.org` domain access is **kept** — that is LF staff reach, a
+  separate decision from de-publicising the folder.
+- Pre-existing direct grants on chapter folders are left alone and reported.
+  They survive the lock, so they are exactly what an audit needs to see.
+
+---
+
+# Verify
 
 After any run (and after editing the engine):
 
@@ -101,9 +334,13 @@ After any run (and after editing the engine):
 - Spot-check one touched row in the sheet: `Organizers` merged correctly, the
   MLOps and Luma columns untouched, and the version history shows a single edit
   for the whole sync.
-- Unit tests for the pure merge/slug/near-miss logic:
+- After a CRM `--write`, open one touched workbook and check the person's row
+  reads correctly, the sample row and any hand-written notes are untouched, and
+  the `Status` cell offers `Host` in its dropdown.
+- Unit tests for the pure logic in both engines (no network, no `gws`):
   ```bash
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_chapters.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_crm.py
   ```
 
 ## Notes
@@ -125,3 +362,16 @@ After any run (and after editing the engine):
   contains `&` and spaces.
 - Unresolved rows already hand-placed on the chapters list are flagged
   "no action needed" so they don't nag every run.
+- `sync_crm.py` imports the `gws` wrapper, city folding and near-miss stoplist
+  **from `sync_chapters.py`** rather than copying them. Two copies would drift,
+  and a city that folds one way in one engine and another way in the other would
+  put a person in a CRM whose feed row says something else.
+- The CRM's `Attendees` sheet is resolved through `xl/workbook.xml` and its rels,
+  never by guessing `xl/worksheets/sheet1.xml` — sheet order and file numbering
+  are independent, and the older workbooks are packed in a different order and
+  store their strings in a shared table rather than inline. Both are read; only
+  inline strings are ever written.
+- Bad LinkedIn values (`https://google.com/url`) and odd city spellings come
+  straight from the public form and are copied as-is. Fix them at the source with
+  **`aaif-clean-data`**, then re-run — the CRM only fills blanks, so a corrected
+  intake value will **not** overwrite the bad one already written. Clean first.
