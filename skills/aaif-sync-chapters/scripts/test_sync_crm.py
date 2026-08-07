@@ -48,7 +48,8 @@ def make_xlsx(sample_row=None, blank_rows=8, headers=CRM_HEADERS,
         cells = "".join(_c(cell_ref(i, 2), v, "4" if i == 4 else "3")
                         for i, v in enumerate(sample_row) if v)
         rows.append('<row r="2">%s</row>' % cells)
-    # Rows 3.. ship with only the three dropdown columns materialised.
+    # Rows 3.. ship with only the columns the template pre-materialises.
+    # (One dataValidation is declared below, on Status/column D.)
     for r in range(3, 3 + blank_rows):
         rows.append('<row r="%d">%s</row>'
                     % (r, "".join(_c(cell_ref(i, r), None, "5") for i in (1, 2, 3))))
@@ -200,7 +201,7 @@ ops = plan_workbook(att, people, TODAY)
 check("a new person is one op", len(ops), 1)
 check("new person lands on the first free row", ops[0]["rownum"], 3)
 check("new person is flagged as an add", ops[0]["kind"], "add")
-check("interest comes from the survey",
+check("the interest field reaches the CRM cell",
       ops[0]["sets"]["What brings you here?"], "I want to be an organizer/volunteer")
 check("the survey's detail columns are not written",
       [c for c in ("Technical expertise", "LinkedIn URL", "Company") if c in ops[0]["sets"]], [])
@@ -273,6 +274,34 @@ check("a real-looking row is reported as pre-existing",
                                         "email": "ravi@vendor.co"}])
 check("a row this run touches is not reported as pre-existing",
       sync_crm.preexisting(attk, [{"rownum": 2}]), [])
+
+# An intake person really can have an example-domain address — valid_email
+# accepts it. Clearing their row as fixture data while also re-adding them made
+# the plan non-empty forever, so --write's re-verify could never converge and
+# the chapter reported "ops still pending" permanently.
+_, _, attc = book(sample_row=None)
+churn = merge_people([person("Sam Taylor", "sam@example.com", "Boston")])
+attc.write(2, "Email", "sam@example.com")
+attc.write(2, "Full name", "Sam Taylor")
+first = plan_workbook(attc, churn, TODAY)
+check("an intake person is not cleared as fixture data",
+      [o["kind"] for o in first], ["fill"])
+apply_ops(attc, first)
+check("...and the plan converges on the second run",
+      plan_workbook(attc, churn, TODAY), [])
+
+# A fixture row NOT owned by anyone in the plan is still cleared.
+_, _, attu = book(sample_row=DUMMY)
+check("an unowned fixture row is still cleared",
+      [o["kind"] for o in plan_workbook(attu, [], TODAY)], ["clear"])
+
+# A settled CRM must stay settled when the date rolls over — Notes (CRM) embeds
+# `today`, so a loosened leave-populated-alone rule would rewrite every note in
+# every workbook, every day, and never converge.
+_, _, attd2 = book(sample_row=SAMPLE)
+apply_ops(attd2, plan_workbook(attd2, people, TODAY))
+check("a later date does not re-plan a settled CRM",
+      plan_workbook(attd2, people, "2027-01-01"), [])
 # On a settled CRM there are no ops, so without the `people` filter every row the
 # sync itself wrote would be reported back as an unrecognised address to review.
 _, _, atts = book(sample_row=SAMPLE)
@@ -285,15 +314,23 @@ check("the expected-person filter is email-based, not row-based",
       [r["row"] for r in sync_crm.preexisting(atts, [], [])], [2, 3])
 
 # Status: upgrade what the automation wrote, never what a human wrote.
+# Speaker/Host -> Organizer is the case the AUTO_STATUS rule exists for ("a
+# person's role is corrected after re-triage") and was the one it never covered.
 for before, want in (("", "Organizer"), ("New", "Organizer"), ("Prospect", "Organizer"),
+                     ("Speaker", "Organizer"), ("Host", "Organizer"),
+                     ("Organizer", None),
                      ("Attended", None), ("Declined", None), ("Regular", None),
                      ("Volunteer", None)):
     _, _, a = book(sample_row=SAMPLE)
     a.write(3, "Email", "ada@x.io")
     if before:
         a.write(3, "Status", before)
-    got = plan_workbook(a, people, TODAY)
-    got = got[0]["sets"].get("Status") if got else None
+    ops_s = plan_workbook(a, people, TODAY)
+    # Assert an op exists at all: for the protected values the expected result
+    # is None, which an EMPTY ops list also yields — so four of these checks
+    # would pass vacuously if planning stopped emitting ops entirely.
+    check("Status %-10r -> op kinds" % before, [o["kind"] for o in ops_s], ["fill"])
+    got = ops_s[0]["sets"].get("Status") if ops_s else None
     check("Status %-10r -> %r" % (before, want), got, want)
 
 
@@ -405,6 +442,69 @@ check("near-miss on a shared discriminating token",
 check("generic tokens do not create a near-miss (San Diego / San Francisco)",
       sorted(o["city"] for o in orphans), ["Reykjavik", "San Diego", "TemplateCity"])
 
+
+# ---------------------------------------------------------------------------
+# Write guards: the promises that are now structural rather than documented
+# ---------------------------------------------------------------------------
+_, _, attw = book(sample_row=SAMPLE)
+for col in ("Signal", "LinkedIn URL", "Company", "Role / title", "Technical expertise"):
+    try:
+        attw.write(3, col, "x")
+        check("write(%r) is refused" % col, "no error", "ValueError")
+    except ValueError:
+        check("write(%r) is refused" % col, True, True)
+check("write() still accepts a CRM_WRITTEN column",
+      attw.write(3, "Full name", "Ada") or attw.value(3, "Full name"), "Ada")
+# clear() legitimately touches all eleven, including the guarded five.
+attw.clear(3)
+check("clear() may blank the guarded columns",
+      [attw.value(3, h) for h in CRM_HEADERS], [""] * len(CRM_HEADERS))
+
+# A cleared cell must be truly blank, not a zero-length inline string: the
+# latter makes ISBLANK false and COUNTA count it, on row 2 of every workbook.
+_, _, attb = book(sample_row=DUMMY)
+apply_ops(attb, plan_workbook(attb, [], TODAY))
+row2 = [c for c in attb.rows[2].findall(X + "c")]
+check("a cleared cell carries no type attribute",
+      [c.get("t") for c in row2], [None] * len(row2))
+check("a cleared cell has no value child", [len(list(c)) for c in row2], [0] * len(row2))
+check("a cleared cell keeps its style", [c.get("s") for c in row2][0], "3")
+
+# apply_ops must not treat an unrecognised kind as a write.
+_, _, atty = book(sample_row=SAMPLE)
+try:
+    apply_ops(atty, [{"kind": "delete", "rownum": 3, "sets": {"Full name": "X"}}])
+    check("an unknown op kind is refused", "no error", "ValueError")
+except ValueError:
+    check("an unknown op kind is refused", True, True)
+check("...and nothing was written", atty.value(3, "Full name"), "")
+
+# occupied() must consider the columns the automation never writes, or a
+# half-cleaned row hands the next person a stranger's LinkedIn and employer.
+_, _, atto = book(sample_row=SAMPLE)
+atto._write(4, "Company", "Ex-Employer Inc.")
+check("a row with only an unwritten column set is still occupied",
+      atto.occupied(4), True)
+check("...so it is not offered as a free row", next(atto.free_rows()), 3)
+
+# serialize() must refuse a root it cannot find, rather than slicing to the
+# last byte and uploading a 57-byte 'worksheet'.
+_, _, atts2 = book(sample_row=SAMPLE)
+atts2.root.tag = "{http://example.invalid/other}worksheet"
+try:
+    atts2.serialize()
+    check("serialize refuses a non-<worksheet> root", "no error", "ValueError")
+except ValueError as e:
+    check("serialize refuses a non-<worksheet> root", "refusing to write" in str(e), True)
+
+# An alias bound to the spreadsheetml namespace must not displace the default
+# binding — that is what made the root serialize as <x:worksheet>.
+sync_crm.register_namespaces(
+    ('<worksheet xmlns="%s" xmlns:x="%s" />' % (sync_crm._XLNS, sync_crm._XLNS)).encode())
+_, _, atta = book(sample_row=SAMPLE)
+atta.serialize()
+check("an aliased spreadsheetml prefix does not break serialization",
+      atta.parts[atta.part_name].count(b"<worksheet"), 1)
 
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")

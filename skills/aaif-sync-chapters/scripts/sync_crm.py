@@ -34,6 +34,7 @@ not touch is repacked byte-for-byte.
 Usage:
   python3 sync_crm.py                    # report + proposed changes, writes nothing
   python3 sync_crm.py --city Boston      # scope the report to one chapter
+  python3 sync_crm.py --verbose          # also list every intake row NOT synced
   python3 sync_crm.py --write            # apply, then re-read and verify
 """
 import argparse, datetime, io, json, os, re, sys, tempfile, zipfile
@@ -53,9 +54,11 @@ TEMPLATE_FOLDER = "TemplateCity"                        # cloned per city; never
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 CRM_SHEET = "Attendees"
-# The exact eleven, in order. A workbook whose header row disagrees is skipped
-# with a report line rather than written by column letter — the columns have been
-# renumbered once already (the Guide tab's live-list formula still references L).
+# The eleven the sheet must have. PRESENCE is checked, not order or position —
+# every access is by header name, and extra columns are tolerated. A workbook
+# missing any of them is skipped with a report line rather than written by column
+# letter: the columns were renumbered once already, and the Guide tab's live-list
+# formula still references L, so letter addressing must never come back.
 CRM_HEADERS = ("Full name", "Signal", "Trusted/Regular", "Status", "Notes (CRM)",
                "Email", "LinkedIn URL", "Company", "Role / title",
                "Technical expertise", "What brings you here?")
@@ -64,9 +67,11 @@ CRM_HEADERS = ("Full name", "Signal", "Trusted/Regular", "Status", "Notes (CRM)"
 # gets access to a chapter folder, so a person reaches it after a decision, not
 # on submitting the form: "New", "Tentative" and "Denied" are all held back.
 # Exact dropdown strings — "Existing" alone would miss every MLOps row.
-# Consequence, and it is intended: the Hosts and Speakers tabs have never been
-# triaged off "New", so today this syncs organizers only. Both start flowing the
-# moment someone accepts them; nothing here needs to change for that.
+# Consequence, and it is intended: as of 2026-08 the Hosts and Speakers tabs
+# had no accepted row, so in practice this synced organizers only. Both start
+# flowing the moment someone accepts them and nothing here needs to change —
+# do NOT read the organizers-only shape as permanent. The report's per-tab
+# counts are the live source of truth.
 SYNC_STATUSES = ("Accepted", "Existing (from MLOps)")
 
 ROLE_TABS = ("Organizers", "Speakers", "Hosts")   # also the merge priority order
@@ -79,11 +84,11 @@ CRM_STATUS = {"Organizers": "Organizer", "Speakers": "Speaker", "Hosts": "Host"}
 # does not know; a later triage decision must not silently undo it.
 AUTO_STATUS = frozenset(("", "New", "Prospect", "Organizer", "Speaker", "Host"))
 
-# Keep the CRM minimal. Identity, decision and interest — nothing else. The
-# columns left out (LinkedIn URL, Company, Role / title, Technical expertise)
-# still exist on the sheet for an organizer to fill in by hand; the automation
-# just doesn't push a survey's worth of personal detail into a folder that is
-# still link-readable while chapters are being onboarded.
+# Keep the CRM minimal. Identity, decision and interest — nothing else. The five
+# columns left out (Signal, LinkedIn URL, Company, Role / title, Technical
+# expertise) still exist on the sheet for an organizer to fill in by hand; the
+# automation does not push a survey's worth of personal detail into a shared
+# folder. Enforced by Attendees.write(), not just by crm_fields()'s dict body.
 CRM_WRITTEN = ("Full name", "Trusted/Regular", "Status", "Notes (CRM)", "Email",
                "What brings you here?")
 
@@ -187,10 +192,26 @@ def join_distinct(values, sep=" · "):
 def register_namespaces(xml_bytes):
     """Keep the document's own xmlns prefixes on re-serialization. Without this
     ElementTree renames every namespaced attribute to ns0:/ns1: and Excel
-    rejects the file."""
+    rejects the file.
+
+    Two traps, both of which produced a corrupt-but-uploaded worksheet:
+
+    1. A document may bind a PREFIX to the spreadsheetml namespace as well as
+       the default. Registering that prefix displaces the default binding, and
+       the root then serializes as `<x:worksheet>` — which `serialize()`'s
+       `find(b"<worksheet")` misses entirely. The spreadsheetml URI therefore
+       keeps the empty prefix here, always.
+    2. `ET.register_namespace` is GLOBAL process state, so what is registered
+       last wins for the whole run. `run()` opens every workbook before it
+       serializes the first one, which means the map would reflect the LAST
+       workbook opened. Callers must re-register immediately before writing —
+       `Attendees.serialize()` does, from its own stored bytes.
+    """
     ET.register_namespace("", _XLNS)
     for m in _XMLNS_RE.finditer(xml_bytes):
         prefix, uri = m.group(1).decode(), m.group(2).decode()
+        if uri == _XLNS:
+            continue   # never let an alias displace the default binding
         try:
             ET.register_namespace(prefix, uri)
         except ValueError:
@@ -297,6 +318,14 @@ def set_cell(row_el, col, text, style=None):
     for child in list(target):
         target.remove(child)
     target.set("r", ref)
+    if not text:
+        # A truly blank cell, not an empty inline string. `<is><t/></is>` is a
+        # zero-length TEXT VALUE: ISBLANK reads FALSE and COUNTA counts it, so
+        # a cleared fixture row would still register as populated in the Guide
+        # tab's live-list formula. Keep the cell (and its style) but drop the
+        # type and the value.
+        target.attrib.pop("t", None)
+        return
     target.set("t", "inlineStr")
     is_el = ET.SubElement(target, X + "is")
     t_el = ET.SubElement(is_el, X + "t")
@@ -311,6 +340,10 @@ class Attendees:
         raw = parts[part_name]
         register_namespaces(raw)
         self.parts, self.part_name = parts, part_name
+        # Kept so serialize() can re-register this workbook's prefixes right
+        # before writing — the registry is global and every other workbook in
+        # the run has been opened in between.
+        self.raw = raw
         self.root = ET.fromstring(raw)
         self.sst = shared_strings(parts)
         self.data = self.root.find(X + "sheetData")
@@ -361,7 +394,17 @@ class Attendees:
         return out
 
     def occupied(self, rownum):
-        return bool(self.value(rownum, "Full name") or self.value(rownum, "Email"))
+        """True if ANY CRM column on the row holds something.
+
+        Not just name+email: the five columns this script never writes are also
+        never cleared, so a row whose name and email an operator deleted still
+        carries the departed person's LinkedIn, Company and expertise. Treating
+        it as free hands those fields to the next person written there — a real
+        current organizer showing a stranger's employer, in the workbook that
+        decides folder access. Nothing downstream can detect it, because the
+        verify only ever compares CRM_WRITTEN.
+        """
+        return any(self.value(rownum, h) for h in CRM_HEADERS)
 
     def free_rows(self, also_free=()):
         """Row numbers available for new people, lowest first, then rows past the
@@ -382,9 +425,13 @@ class Attendees:
             nxt += 1
 
     def clear(self, rownum):
-        """Blank every CRM column on a row, keeping the cells and their styles."""
+        """Blank every CRM column on a row, keeping the cells and their styles.
+
+        Goes through _write, not write: clearing legitimately touches all
+        eleven columns, including the five the automation may never author.
+        """
         for header in CRM_HEADERS:
-            self.write(rownum, header, "")
+            self._write(rownum, header, "")
 
     def row_for(self, rownum):
         row = self.rows.get(rownum)
@@ -403,6 +450,21 @@ class Attendees:
         return row
 
     def write(self, rownum, header, text):
+        """Write one CRM cell. Only CRM_WRITTEN columns may be written.
+
+        The "we never push survey detail into this folder" promise was upheld
+        only by the literal body of crm_fields() and guarded only by a test.
+        Enforcing it here means the privacy boundary cannot be crossed by a
+        future caller at all — use clear() for the blanking path, which is
+        allowed to touch every column.
+        """
+        if header not in CRM_WRITTEN:
+            raise ValueError(
+                "%r is not in CRM_WRITTEN — the automation must not write it. "
+                "Use clear() to blank a fixture row." % header)
+        self._write(rownum, header, text)
+
+    def _write(self, rownum, header, text):
         col = self.headers[header]
         set_cell(self.row_for(rownum), col, text, self.sample.get(col))
 
@@ -411,13 +473,31 @@ class Attendees:
         cover the rows we added. ET emits its own XML declaration with a
         different encoding spelling, so it is sliced off and replaced with the
         one Excel writes."""
+        # The namespace registry is global and every other workbook in the run
+        # has been opened since __init__ ran, so re-register from this
+        # workbook's own bytes before serializing.
+        register_namespaces(self.raw)
         dim = self.root.find(X + "dimension")
         if dim is not None and self.rows:
-            start = (dim.get("ref") or "A1").split(":")[0] or "A1"
-            dim.set("ref", "%s:%s" % (start, cell_ref(max(self.headers.values()),
-                                                      max(self.rows))))
+            ref = dim.get("ref") or "A1"
+            start = ref.split(":")[0] or "A1"
+            # Never NARROW the sheet: a workbook with columns past the last
+            # CRM header would have them fall outside the declared range.
+            end = ref.split(":")[-1] if ":" in ref else ""
+            width = max([max(self.headers.values())] + ([col_of(end)] if end else []))
+            dim.set("ref", "%s:%s" % (start, cell_ref(width, max(self.rows))))
         body = ET.tostring(self.root, encoding="UTF-8")
-        self.parts[self.part_name] = _XML_DECL + body[body.find(b"<worksheet"):]
+        at = body.find(b"<worksheet")
+        if at < 0:
+            # `find` returns -1 on a miss and body[-1:] is the LAST BYTE, which
+            # packs and uploads as a 57-byte "worksheet" without a murmur. Only
+            # reachable if the root serialized under a prefix, which
+            # register_namespaces now prevents — so this is the assertion that
+            # keeps it prevented.
+            raise ValueError(
+                "%s: serialized root is not <worksheet> (got %r) — refusing to write"
+                % (self.part_name, body[:80]))
+        self.parts[self.part_name] = _XML_DECL + body[at:]
 
 
 def patch_status_dropdown(parts, part_name):
@@ -453,7 +533,9 @@ def read_survey_interests():
 
     The role tabs are filtered views that drop the routing question, so the one
     column that is literally the person's stated interest has to come from
-    `Form Responses`. Joined on email; a repeat applicant's latest answer wins.
+    `Form Responses`. Joined on email; the LAST row for an address wins, which
+    is the latest answer only because the form appends chronologically — a
+    sorted or hand-reordered tab would silently change which answer is used.
     """
     rows = get_values(INTAKE_ID, "'Form Responses'!A:CO")
     if not rows:
@@ -472,23 +554,41 @@ def read_role_tab(tab, interests):
     """Return (people, rejected) for one role tab.
 
     people   = [{row, tab, name, email, city, status, ...}]
-    rejected = [{row, tab, name, why}]   no email / no city / denied — never written
+    rejected = [{row, tab, name, why}]   not accepted / no email / no city
     """
     rows = get_values(INTAKE_ID, "%s!A:BB" % tab)
     if not rows:
         sys.exit("ABORT: intake tab %r came back empty." % tab)
     headers = [h.strip() for h in rows[0]]
-    # Status and Email are load-bearing: without Status we cannot drop denied
-    # applicants, and without Email there is no dedupe key at all. Both are
-    # resolved up front so a header rename aborts instead of syncing everyone as
-    # a brand-new row on every run.
-    i_status, i_email = header_index(headers, tab, "Status", "Email")
-    i_chapter = headers.index("Chapter") if "Chapter" in headers else None
+    # Every column that decides WHO syncs and WHERE they land is load-bearing —
+    # resolved through header_index so a rename aborts loudly:
+    #   Status  — without it nothing can be filtered
+    #   Email   — the only dedupe key; without it everyone re-adds every run
+    #   Chapter — the human's assignment, which outranks the self-reported city
+    # A soft `.index(...) if in headers else None` on Chapter silently demoted
+    # every hand-corrected assignment to the submitted dropdown, writing people
+    # into the wrong chapter's CRM with no way to tell from the report.
+    i_status, i_email, i_chapter = header_index(headers, tab, "Status", "Email", "Chapter")
+    # These two are genuinely optional — the tabs carried the legacy
+    # City/Resolved City names before the rename, and either alone still
+    # resolves a city.
     i_g = headers.index("City (Existing)") if "City (Existing)" in headers else None
     i_h = headers.index("City (New)") if "City (New)" in headers else None
+    if i_g is None and i_h is None:
+        sys.exit("ABORT: tab %r has neither 'City (Existing)' nor 'City (New)' — "
+                 "every row would be rejected as having no city. Headers: %s"
+                 % (tab, headers))
     f = ROLE_FIELDS[tab]
+    # The name column is load-bearing too, but per-role: its absence would send
+    # every person through the `or email` fallback below, writing email
+    # addresses into `Full name` across dozens of workbooks — and since
+    # populated cells are never overwritten, the script could not repair it.
+    if not any(n in headers for n in f["name"]):
+        sys.exit("ABORT: tab %r has none of the name column(s) %s — every row "
+                 "would be named after its email address. Headers: %s"
+                 % (tab, list(f["name"]), headers))
 
-    people, rejected = [], []
+    people, rejected, fallbacks = [], [], []
     for rownum, row in enumerate(rows[1:], start=2):
         email = cell(row, i_email)
         name = first_of(row, headers, f["name"])
@@ -505,7 +605,7 @@ def read_role_tab(tab, interests):
             continue
         # Chapter assignment wins (a human made it); then the resolved city, then
         # the submitted dropdown unless it is an "Other…" placeholder.
-        chapter = cell(row, i_chapter) if i_chapter is not None else ""
+        chapter = cell(row, i_chapter)
         g = cell(row, i_g) if i_g is not None else ""
         h = cell(row, i_h) if i_h is not None else ""
         city = chapter or h or (g if g and not fold(g).startswith("other") else "")
@@ -514,7 +614,13 @@ def read_role_tab(tab, interests):
                              "why": "no chapter/city on the intake row"})
             continue
         detail = first_of(row, headers, f["detail"])
-        interest = interests.get(fold_email(email)) or DEFAULT_INTEREST[tab]
+        # A failed join is invisible once written: the generic branch text is
+        # indistinguishable from a real answer, and the cell is then non-empty
+        # so no later run corrects it. Count the fallbacks so run() can say so.
+        joined = interests.get(fold_email(email))
+        if not joined:
+            fallbacks.append(rownum)
+        interest = joined or DEFAULT_INTEREST[tab]
         people.append({
             "row": rownum, "tab": tab, "status": status,
             "name": clean_text(name) or clean_text(email),
@@ -525,7 +631,18 @@ def read_role_tab(tab, interests):
             "expertise": clean_text(first_of(row, headers, f["expertise"])),
             "interest": join_distinct([interest, detail]),
         })
-    return people, rejected
+    # Only when a join was actually attempted: sync_access calls this with an
+    # empty interests dict on purpose (it needs the roster, not the answers), and
+    # every row missing a match is the expected result there, not a broken join.
+    if interests and fallbacks and len(fallbacks) == len(people) and people:
+        # Every single person missing a Form Responses match is a broken join
+        # (a renamed email column, a diverged address set), not a data
+        # condition — and it would write boilerplate into every interest cell.
+        sys.exit("ABORT: none of the %d person/people on tab %r matched a "
+                 "'Form Responses' row by email, so every 'What brings you here?' "
+                 "would be generic branch text. Check the Email columns on both "
+                 "tabs." % (len(people), tab))
+    return people, rejected, fallbacks
 
 
 def merge_people(people):
@@ -542,7 +659,14 @@ def merge_people(people):
             key = (fold_city(p["city"]), fold_email(p["email"]))
             cur = merged.get(key)
             if cur is None:
-                merged[key] = dict(p, tabs=[tab], rows=[p["row"]])
+                m = dict(p, tabs=[tab], rows=[p["row"]])
+                # Drop the singular forms: on a merged person `tab`/`row` are
+                # an arbitrary member of `tabs`/`rows`, equal to the winning
+                # one only by the accident that the highest-priority tab seeds
+                # the entry. Removing them makes a stale read a KeyError
+                # instead of a plausible wrong answer.
+                m.pop("tab", None), m.pop("row", None)
+                merged[key] = m
                 continue
             cur["tabs"].append(tab)
             cur["rows"].append(p["row"])
@@ -618,8 +742,17 @@ def plan_workbook(att, people, today):
     """
     # Fixture rows go first so their row numbers are reusable below, and so a
     # dummy address can never be mistaken for an existing person to merge into.
+    #
+    # A row is only fixture data if NOBODY IN THE PLAN owns that address.
+    # `valid_email("sam@example.com")` is true, so an intake person really can
+    # have an example-domain address — and clearing their row while also
+    # re-adding them makes the plan non-empty forever. Under --write the
+    # re-verify then never converges and the chapter reports "ops still
+    # pending" permanently, indistinguishable from a real write failure.
+    owned = {fold_email(p["email"]) for p in people}
     clears = [r for r in sorted(att.rows)
-              if r > 1 and att.occupied(r) and is_dummy(att.value(r, "Email"))]
+              if r > 1 and att.occupied(r) and is_dummy(att.value(r, "Email"))
+              and fold_email(att.value(r, "Email")) not in owned]
     ops = [{"kind": "clear", "rownum": r, "email": att.value(r, "Email"),
             "name": att.value(r, "Full name"), "sets": {}} for r in clears]
 
@@ -659,12 +792,19 @@ def apply_ops(att, ops):
     # later in the same plan, so blanking after writing would wipe them out.
     for op in (o for o in ops if o["kind"] == "clear"):
         att.clear(op["rownum"])
-    for op in (o for o in ops if o["kind"] != "clear"):
+    # Match the write kinds explicitly rather than `!= "clear"`. The negative
+    # form treats any future kind as a write — the fail-open direction, on the
+    # one path that touches the workbook, while the report (which indexes a
+    # dict of the three known marks) would crash or undercount.
+    unknown = [o["kind"] for o in ops if o["kind"] not in ("clear", "add", "fill")]
+    if unknown:
+        raise ValueError("unknown op kind(s) %s — refusing to write" % sorted(set(unknown)))
+    for op in (o for o in ops if o["kind"] in ("add", "fill")):
         for header, value in op["sets"].items():
             att.write(op["rownum"], header, value)
 
 
-def finalize(book, ops):
+def finalize(book, ops, expected_dv=None):
     """Produce the workbook's new bytes: rows first, then serialize, then the
     dropdown patch — in that order, and only in that order.
 
@@ -675,9 +815,22 @@ def finalize(book, ops):
     caught. Keeping both steps in one function is what stops the order drifting
     apart again.
     """
+    # finalize serializes through `att` but saves `book.parts` — they must be
+    # the same dict, or the returned zip silently loses either the row writes or
+    # the dropdown patch. open_crm builds them that way; assert it rather than
+    # trusting every future caller to.
+    if book.parts is not book.att.parts or book.part != book.att.part_name:
+        raise ValueError("Book.parts/part must be the same objects Attendees holds")
     apply_ops(book.att, ops)
     book.att.serialize()
-    patch_status_dropdown(book.parts, book.part)
+    got = patch_status_dropdown(book.parts, book.part)
+    if expected_dv is not None and got != expected_dv:
+        # The prediction was made against the downloaded bytes; the real patch
+        # runs against ElementTree's re-encoding of them. They agree today
+        # because both quote spellings are handled — this is what catches the
+        # day they stop agreeing, rather than reporting a patch never applied.
+        raise ValueError("dropdown patch predicted %r but returned %r for %s"
+                         % (expected_dv, got, book.crm["name"]))
     return save_parts(book.names, book.parts)
 
 
@@ -779,14 +932,20 @@ def open_crm(folder, workdir):
     if crm is None:
         return None, why
     path = os.path.join(workdir, "%s.xlsx" % re.sub(r"[^\w.-]", "_", folder["name"]))
-    names, parts = load_parts(download(crm["id"], path))
-    part = sheet_part(parts, CRM_SHEET)
-    if part is None:
-        return None, "%s has no %r sheet" % (crm["name"], CRM_SHEET)
+    # Everything from the download onward is guarded, not just Attendees(): a
+    # truncated download raises zipfile.BadZipFile, a missing rels part raises
+    # KeyError, and ET.ParseError is a SyntaxError — NOT a ValueError. Catching
+    # only ValueError let any of those abort the whole run, and in the verify
+    # loop that happens AFTER uploads have landed, replacing the summary with a
+    # bare traceback that names neither the chapter nor what was written.
     try:
+        names, parts = load_parts(download(crm["id"], path))
+        part = sheet_part(parts, CRM_SHEET)
+        if part is None:
+            return None, "%s has no %r sheet" % (crm["name"], CRM_SHEET)
         att = Attendees(parts, part)
-    except ValueError as e:
-        return None, "%s: %s" % (crm["name"], e)
+    except Exception as e:
+        return None, "%s: %s: %s" % (crm["name"], type(e).__name__, e)
     return Book(folder, crm, names, parts, part, att, path), None
 
 
@@ -794,13 +953,14 @@ def run(args):
     today = datetime.date.today().isoformat()
     interests = read_survey_interests()
 
-    people, rejected = [], []
+    people, rejected, fallbacks = [], [], []
     counts = {}
     for tab in ROLE_TABS:
-        pp, rr = read_role_tab(tab, interests)
+        pp, rr, fb = read_role_tab(tab, interests)
         counts[tab] = len(pp)
         people += pp
         rejected += rr
+        fallbacks += fb
     merged = merge_people(people)
 
     # People are matched against EVERY chapter folder, then --city narrows only
@@ -840,7 +1000,7 @@ def run(args):
         grp = by_folder.get(folder["id"], [])
         # Always planned, even for a chapter that gains nobody: every workbook
         # carries the template's fixture row, and only 57 of the 82 chapters have
-        # people. `if grp else []` left Sam Taylor sitting in the other 25.
+        # people. `if grp else []` left the sample row sitting in all the rest.
         ops = plan_workbook(book.att, grp, today)
         kept = preexisting(book.att, ops, grp)
         if kept:
@@ -888,7 +1048,7 @@ def run(args):
             for r in rows:
                 print("  %-18s row %-4d %s <%s>" % (name, r["row"], r["name"], r["email"]))
     if skipped:
-        # Recapped at the end, not just inline: in an 82-chapter run the inline
+        # Recapped at the end, not just inline: across every chapter the inline
         # line scrolls away, and a skipped chapter means people silently did not
         # reach a CRM that the operator believes is now in sync.
         print("\nChapters SKIPPED — nobody was synced to these, fix the workbook and re-run:")
@@ -896,6 +1056,12 @@ def run(args):
             print("  %-28s %s (%d person/people waiting)"
                   % (name, why, len(by_folder.get(
                       next((f["id"] for f in folders if f["name"] == name), ""), []))))
+    if fallbacks:
+        # Silent once written: the branch text is indistinguishable from a real
+        # answer and the cell is never corrected on a later run.
+        print("\n%d person/people had no 'Form Responses' match, so their "
+              "'What brings you here?' is the generic branch text for their role."
+              % len(fallbacks))
     if no_dropdown:
         print("\nNo Status dropdown to extend (people still sync; the column just "
               "won't constrain typing):\n  %s" % ", ".join(no_dropdown))
@@ -904,10 +1070,17 @@ def run(args):
         for r in rejected:
             print("  %s row %d: %s — %s" % (r["tab"], r["row"], r["name"] or "(no name)", r["why"]))
     elif rejected:
-        print("\n%d intake row(s) not synced (denied, or no email/city) — --verbose lists them."
-              % len(rejected))
+        print("\n%d intake row(s) not synced (not yet accepted, or no email/city) "
+              "— --verbose lists them." % len(rejected))
 
     if not touched:
+        # Never claim a clean sweep over chapters that were never opened: a
+        # skipped workbook means people silently did not reach a CRM the
+        # operator now believes is in sync.
+        if skipped:
+            print("\nNo changes needed for the chapters that could be opened — but "
+                  "%d was/were SKIPPED above and are NOT in sync." % len(skipped))
+            return 1
         print("\nNo changes needed — every chapter CRM is in sync with the intake.")
         return 0
     if not args.write:
@@ -927,7 +1100,7 @@ def run(args):
             # hand, through Drive's revision history.
             with open(os.path.join(backup_dir, os.path.basename(book.path)), "wb") as fh:
                 fh.write(download(book.crm["id"], os.path.join(workdir, "reread.xlsx")))
-            upload(book.crm["id"], book.path, finalize(book, t["ops"]))
+            upload(book.crm["id"], book.path, finalize(book, t["ops"], t["dv"]))
             written.append(name)
             print("  wrote %s (%s)" % (name, book.crm["name"]))
         except Exception as e:                     # one bad workbook must not
