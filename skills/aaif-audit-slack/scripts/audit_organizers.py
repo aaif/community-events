@@ -24,8 +24,33 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
+from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import Slack, channels, lookup_emails, members  # noqa: E402
+
+read_cache, write_cache, cache_age = jsoncache.read, jsoncache.write, jsoncache.age
+
+#: Keys the engine indexes directly. Validated at load so a typo costs a second
+#: rather than surfacing after the sheet reads, the channel pull and ~100 email
+#: lookups — `staff_email_domain` is not touched until the very last step.
+REQUIRED_CFG = ("public", "regional", "organizers", "public_prefixes",
+                "organizer_suffixes", "staff_email_domain")
+
+
+def load_config(path):
+    """Read channel_map.json and check its shape before anything slow happens."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except FileNotFoundError:
+        raise SystemExit("ABORT: no channel map at %s." % path)
+    except json.JSONDecodeError as exc:
+        raise SystemExit("ABORT: %s is not valid JSON (%s)." % (path, exc))
+    missing = [k for k in REQUIRED_CFG if k not in cfg]
+    if missing:
+        raise SystemExit("ABORT: %s is missing required key(s): %s."
+                         % (path, ", ".join(missing)))
+    return cfg
 
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
 CHAPTERS_TAB = "Chapters & Teams"
@@ -106,12 +131,13 @@ def read_chapters():
     if not rows:
         raise SystemExit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
     headers = [h.strip() for h in rows[0]]
-    idx = header_index(headers, CHAPTERS_TAB, "City", "Organizers")
-    out = []
-    for row in rows[1:]:
-        city = cell(row, idx["City"])
-        if city:
-            out.append({"city": city, "organizers_cell": cell(row, idx["Organizers"])})
+    idx = header_index(headers, CHAPTERS_TAB, "City")
+    out = [{"city": cell(row, idx["City"])} for row in rows[1:]
+           if cell(row, idx["City"])]
+    if not out:
+        raise SystemExit(
+            "ABORT: %d rows in %s but none has a City value. The column was "
+            "probably renamed or reordered." % (len(rows) - 1, CHAPTERS_TAB))
     return out
 
 
@@ -122,9 +148,12 @@ def read_intake():
     headers = [h.strip() for h in rows[0]]
     idx = header_index(headers, INTAKE_TAB, "Status", "Full name", "Email",
                        "City (Existing)", "City (New)", "Chapter")
-    people, seen, dupes = [], set(), 0
+    people, seen, dupes, saw = [], set(), 0, set()
     for row in rows[1:]:
-        if cell(row, idx["Status"]) not in ACCEPTED:
+        status = cell(row, idx["Status"])
+        if status:
+            saw.add(status)
+        if status not in ACCEPTED:
             continue
         # Same precedence as sync_crm: the human's Chapter assignment wins.
         city = cell(row, idx["Chapter"]) or cell(row, idx["City (New)"])
@@ -132,13 +161,28 @@ def read_intake():
             existing = cell(row, idx["City (Existing)"])
             city = "" if existing.startswith("Other") else existing
         email = cell(row, idx["Email"]).lower()
+        # Dedupe on email only when there IS one. Two accepted organizers in one
+        # city who both have a blank Email cell are two people, not a duplicate
+        # row — collapsing them would delete someone from the audit and then
+        # mislabel the loss as a data-entry duplicate.
         key = (email, city.lower())
-        if key in seen:
+        if email and key in seen:
             dupes += 1
             continue
         seen.add(key)
         people.append({"name": cell(row, idx["Full name"]), "email": email,
-                       "status": cell(row, idx["Status"]), "city": city})
+                       "status": status, "city": city})
+    if not people:
+        # The exact-string filter is the known fragility here (see ACCEPTED), and
+        # a zero match renders as "Every one of these 0 people was reviewed and
+        # accepted" rather than as an error. Refuse to publish that.
+        raise SystemExit(
+            "ABORT: %d rows in %s but none matches a status in %r.\n"
+            "Statuses actually present: %s\n"
+            "The dropdown values were probably renamed — this filter is exact by "
+            "design, so a trailing space or a new label breaks it."
+            % (len(rows) - 1, INTAKE_TAB, list(ACCEPTED),
+               ", ".join(sorted(saw)) or "(none)"))
     return people, dupes
 
 
@@ -163,11 +207,35 @@ def variants(city):
     return {v for v in out if v}
 
 
+def _resolve_alias(city, table, by_name):
+    """Apply a curated alias. Returns (channel, how, decided).
+
+    `decided` is the important half: it says the map spoke for this city, so the
+    caller must NOT fall through to guessing. Both a real alias and an explicit
+    `null` decide the question — `null` means "a human checked and there is no
+    channel", which is an answer, not a gap to fill with a slug guess.
+    """
+    if city not in table:
+        return None, "", False
+    alias = table[city]
+    if alias is None:
+        return None, "known-none", True
+    channel = by_name.get(alias)
+    if channel and not channel["is_archived"]:
+        return channel, "alias", True
+    return None, "alias-missing:%s" % alias, True
+
+
 def match_channels(chapters, chans, cfg):
     """Resolve each chapter to its public and organizers channel.
 
-    Conservative by design: an exact or configured hit is a match, anything
-    weaker is reported as a candidate for a human, never as coverage.
+    Conservative by design: a configured or exact hit is a match, anything weaker
+    is reported as a candidate for a human, never as coverage.
+
+    Each returned record always carries every key below; `None` means absent.
+    `regional` is non-None only when `public` is None. `public_members` /
+    `organizers_channel_members` are None when the channel is unknown OR when
+    Slack did not report a size — callers must not read them as zero.
     """
     by_name = {c["name"]: c for c in chans}
     live = [c for c in chans if not c["is_archived"]]
@@ -178,36 +246,43 @@ def match_channels(chapters, chans, cfg):
         city = ch["city"]
         vs = variants(city)
 
-        pub, how, candidates = None, "", []
-        if city in cfg["public"]:
-            alias = cfg["public"][city]
-            if alias and alias in by_name and not by_name[alias]["is_archived"]:
-                pub, how = by_name[alias], "alias"
-            else:
-                how = "known-none" if alias is None else "alias-missing:%s" % alias
-        if not pub:
-            for c in live:
-                if c["is_private"]:
-                    continue
-                if any(c["name"] == p + v for v in vs for p in cfg["public_prefixes"]):
-                    pub, how = c, how or "exact"
+        pub, how, decided = _resolve_alias(city, cfg["public"], by_name)
+        candidates = []
+        if not pub and not decided:
+            # Prefixes are tried in the order the config lists them, so an exact
+            # slug beats "meetup-<slug>" deterministically. Iterating channels on
+            # the outside instead would hand the decision to whatever order the
+            # Slack API happened to return, making coverage non-reproducible.
+            for prefix in cfg["public_prefixes"]:
+                for v in sorted(vs):
+                    c = by_name.get(prefix + v)
+                    if c and not c["is_private"] and not c["is_archived"]:
+                        pub, how = c, "exact"
+                        break
+                if pub:
                     break
         if not pub:
+            # Candidates are the human's safety net, so err towards showing too
+            # many. Comparing whole variants against single tokens missed the
+            # likeliest real name: for "Cape Town" it flagged #capetown-x but not
+            # #cape-town-ai. Match on the city's *tokens* being a subset instead.
+            tokens = {t for t in fold(city).split("-") if t}
             for c in live:
                 if c["is_private"] or c["name"].endswith(suffixes):
                     continue
-                if vs & set(c["name"].split("-")):
+                chan_tokens = set(c["name"].split("-"))
+                if (tokens and tokens <= chan_tokens) or (vs & chan_tokens):
                     candidates.append(c["name"])
 
-        org, org_how = None, ""
-        if city in cfg["organizers"]:
-            alias = cfg["organizers"][city]
-            if alias in by_name and not by_name[alias]["is_archived"]:
-                org, org_how = by_name[alias], "alias"
-        if not org:
-            for c in live:
-                if any(c["name"] == v + s for v in vs for s in suffixes):
-                    org, org_how = c, org_how or "exact"
+        org, org_how, org_decided = _resolve_alias(city, cfg["organizers"], by_name)
+        if not org and not org_decided:
+            for v in sorted(vs):
+                for s in suffixes:
+                    c = by_name.get(v + s)
+                    if c and not c["is_archived"]:
+                        org, org_how = c, "exact"
+                        break
+                if org:
                     break
 
         regional = None
@@ -217,7 +292,8 @@ def match_channels(chapters, chans, cfg):
                 regional = name
 
         out.append({
-            "city": city, "regional": regional, "public_how": how,
+            "city": city, "regional": regional,
+            "public_how": how, "organizers_how": org_how,
             "public": pub["name"] if pub else None,
             "public_id": pub["id"] if pub else None,
             "public_members": pub["num_members"] if pub else None,
@@ -230,9 +306,49 @@ def match_channels(chapters, chans, cfg):
     return out
 
 
+def assert_aliases_resolve(rows, map_path):
+    """Abort when a curated alias no longer points at a live channel.
+
+    A human confirmed this mapping; if it stops resolving the channel was
+    renamed or archived, which is a configuration bug. Left alone it silently
+    downgrades the chapter to "no channel at all" and generates a "give them a
+    room" action for a city that already has one.
+    """
+    broken = [(r["city"], r[k].split(":", 1)[1])
+              for r in rows for k in ("public_how", "organizers_how")
+              if r[k].startswith("alias-missing:")]
+    if broken:
+        raise SystemExit(
+            "ABORT: %d curated alias(es) in %s no longer resolve to a live "
+            "channel:\n  %s\nThe channel was probably renamed or archived. Fix "
+            "the map — these chapters would otherwise be reported as having no "
+            "channel at all."
+            % (len(broken), map_path,
+               "\n  ".join("%s -> #%s" % (c, n) for c, n in broken)))
+
+
 def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
-    """Join the sheet data to the Slack data, per chapter."""
-    lookup = {fold_tight(r["city"]): r["city"] for r in rows}
+    """Join the sheet data to the Slack data, per chapter.
+
+    Each chapter record gains `accepted` (people, each with `slack_id`,
+    `slack_account`, `in_public`, `in_organizers`) and `unaccounted` (everyone in
+    the organizers channel we never accepted, each with `is_staff` and
+    `unresolved`). Every key from match_channels() survives unchanged.
+    """
+    lookup = {}
+    for r in rows:
+        key = fold_tight(r["city"])
+        if key in lookup:
+            # header_index aborts on a duplicate column for the same reason: a
+            # silent collision here would attribute every organizer of one
+            # chapter to the other, and leave the loser showing zero — which
+            # then feeds "chapters we cannot reach" and "give them a room".
+            raise SystemExit(
+                "ABORT: chapter rows %r and %r reduce to the same key %r, so "
+                "organizer attribution would be silently wrong. Merge or rename "
+                "the rows on the Chapters List." % (lookup[key], r["city"], key))
+        lookup[key] = r["city"]
+
     by_city, orphans = defaultdict(list), defaultdict(list)
     for person in people:
         key = fold_tight(person["city"])
@@ -240,8 +356,11 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
 
     out = []
     for r in rows:
-        pub_ids = set(membership.get(r["public"], [])) if r["public"] else set()
-        org_ids = set(membership.get(r["organizers_channel"], [])) if r["organizers_channel"] else set()
+        # Index, don't .get: a channel we matched but never pulled membership for
+        # would otherwise score every organizer as absent and surface the chapter
+        # under "has a room and nobody in it".
+        pub_ids = set(membership[r["public"]]) if r["public"] else set()
+        org_ids = set(membership[r["organizers_channel"]]) if r["organizers_channel"] else set()
 
         accepted = []
         for person in by_city.get(r["city"], []):
@@ -253,10 +372,19 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
         known = {p["slack_id"] for p in accepted if p["slack_id"]}
         extras = []
         for uid in sorted(org_ids - known):
-            u = directory.get(uid, {})
-            extras.append({"id": uid, "name": u.get("real_name") or u.get("name") or uid,
+            u = directory.get(uid)
+            if u is None:
+                # Naming failed for this member. Render them as unidentified
+                # rather than filing them under a group whose label asserts a
+                # judgement we never made about them.
+                extras.append({"id": uid, "name": uid, "email": "",
+                               "is_staff": False, "unresolved": True})
+                continue
+            extras.append({"id": uid,
+                           "name": u.get("real_name") or u.get("name") or uid,
                            "email": u.get("email", ""),
-                           "is_staff": (u.get("email") or "").endswith("@" + staff_domain)})
+                           "is_staff": (u.get("email") or "").endswith("@" + staff_domain),
+                           "unresolved": False})
         out.append({**r, "accepted": accepted, "unaccounted": extras})
     return out, dict(orphans)
 
@@ -293,7 +421,7 @@ def render(audit, orphans, dupes, today):
         funnel.append('<div class="frow"><span class="flab">%s</span><span class="ftrack">'
                       '<span class="ffill t-%s" style="width:%s%%"></span></span>'
                       '<span class="fval">%d<span class="fpct">%.0f%%</span></span>%s</div>'
-                      % (lbl, tone, pct, v, pct, drop))
+                      % (e(lbl), tone, pct, v, pct, drop))
 
     matrix = []
     for c in audit:
@@ -310,7 +438,9 @@ def render(audit, orphans, dupes, today):
             % (state, "yes" if c["organizers_channel"] else "no", e(c["city"]),
                ('<code class="chan">#%s</code>' % e(shown)) if shown else '<span class="nil">none</span>',
                '<span class="tag tag-reg">regional</span>' if state == "regional" else "",
-               ('<span class="num">%s</span>' % c["public_members"]) if c["public"] else "",
+               ('<span class="num">%s</span>'
+                % ("?" if c["public_members"] is None else c["public_members"]))
+               if c["public"] else "",
                ('<code class="chan">#%s</code>' % e(c["organizers_channel"]))
                if c["organizers_channel"] else '<span class="nil">none</span>',
                '<span class="tag tag-pub">public!</span>'
@@ -330,14 +460,20 @@ def render(audit, orphans, dupes, today):
                     key=lambda x: -(x["organizers_channel_members"] or 0)):
         present = [p for p in c["accepted"] if p["in_organizers"]]
         absent = [p for p in c["accepted"] if not p["in_organizers"]]
-        staff = [x for x in c["unaccounted"] if x["is_staff"]]
-        others = [x for x in c["unaccounted"] if not x["is_staff"]]
+        unresolved = [x for x in c["unaccounted"] if x["unresolved"]]
+        staff = [x for x in c["unaccounted"] if not x["unresolved"] and x["is_staff"]]
+        others = [x for x in c["unaccounted"]
+                  if not x["unresolved"] and not x["is_staff"]]
         groups = []
         for items, pill, label, cls in (
                 (present, "ok", "accepted organizer", ""),
                 (staff, "mute", "staff", "plist-x"),
                 (others, "warn", "not an accepted organizer", "plist-x"),
-                (absent, "bad", "accepted but absent", "plist-x")):
+                (absent, "bad", "accepted but absent", "plist-x"),
+                # Distinct from "not an accepted organizer": we could not look
+                # these accounts up, so we know nothing about them. Saying so is
+                # not the same as accusing them.
+                (unresolved, "mute", "could not identify", "plist-x")):
             if items:
                 groups.append('<div class="rgrp"><h4><span class="pill pill-%s">%s</span>'
                               '<span class="cnt">%d</span></h4>%s</div>'
@@ -348,7 +484,9 @@ def render(audit, orphans, dupes, today):
             '<div class="rgrps">%s</div></section>'
             % (e(c["organizers_channel"]),
                "" if c["organizers_private"] else '<span class="tag tag-pub">public!</span>',
-               e(c["city"]), c["organizers_channel_members"], "".join(groups)))
+               e(c["city"]),
+               "?" if c["organizers_channel_members"] is None
+               else c["organizers_channel_members"], "".join(groups)))
 
     detail = []
     for c in audit:
@@ -401,12 +539,17 @@ def render(audit, orphans, dupes, today):
          % (S["no_slack"], S["people"], S["in_public"]),
          "Half a day", "Ops", "now")]
     if public_org:
+        # rs.actions() escapes every field, so these strings carry plain text and
+        # real punctuation — an HTML entity here would render as its own source.
         todo.append((
-            "Close the %d public &ldquo;organizers&rdquo; channel%s"
+            "Close the %d public “organizers” channel%s"
             % (len(public_org), "" if len(public_org) == 1 else "s"),
-            " and ".join("#%s (%s members)" % (c["organizers_channel"],
-                                               c["organizers_channel_members"])
-                         for c in public_org)
+            " and ".join(
+                "#%s (%s members)"
+                % (c["organizers_channel"],
+                   "?" if c["organizers_channel_members"] is None
+                   else c["organizers_channel_members"])
+                for c in public_org)
             + " are public. Venue costs, budgets and speaker problems are readable by the whole "
               "workspace.", "10 min", "Workspace admin", "now"))
     todo.append((
@@ -437,6 +580,18 @@ def render(audit, orphans, dupes, today):
     if dupes:
         notes.append("<li><strong>%d duplicate intake rows</strong> for the same person and city "
                      "were dropped (first wins).</li>" % dupes)
+    known_none = [c["city"] for c in audit if c["public_how"] == "known-none"]
+    if known_none:
+        notes.append("<li><strong>%d chapters are recorded as having no channel on purpose</strong>"
+                     " (mapped to null in channel_map.json): %s. The matcher did not guess for "
+                     "these — remove the null entry if one is created.</li>"
+                     % (len(known_none), ", ".join(e(c) for c in known_none)))
+    aliased = [c for c in audit if c["public_how"] == "alias"
+               or c["organizers_how"] == "alias"]
+    if aliased:
+        notes.append("<li><strong>%d chapters were matched by a curated alias</strong> rather than "
+                     "by name, so their coverage is only as good as channel_map.json: %s.</li>"
+                     % (len(aliased), ", ".join(e(c["city"]) for c in aliased)))
     cand = [c for c in audit if not c["public"] and c["public_candidates"]]
     if cand:
         notes.append("<li><strong>%d chapters have near-miss channels</strong> that were NOT "
@@ -562,10 +717,17 @@ def main():
     ap.add_argument("--map", default=os.path.join(os.path.dirname(__file__), "channel_map.json"))
     args = ap.parse_args()
 
-    with open(args.map) as fh:
-        cfg = json.load(fh)
+    cfg = load_config(args.map)
+    # Before any collection: these paths will hold organizer names, email
+    # addresses and private-channel rosters, and this repo is public.
+    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
     os.makedirs(args.cache, exist_ok=True)
+    os.chmod(args.cache, 0o700)
+
     api = Slack()
+    # users:read.email is what the organizer→Slack join runs on. Without it every
+    # lookup fails and the report's headline becomes "nobody has a Slack account".
+    api.require_scopes("channels:read", "groups:read", "users:read", "users:read.email")
     who = api.ok("auth.test")
     print("workspace: %s (%s)" % (who.get("team"), who.get("team_id")))
 
@@ -576,33 +738,38 @@ def main():
           % (len(chapters), len(people), dupes))
 
     chan_path = os.path.join(args.cache, "channels.json")
-    if os.path.exists(chan_path) and not args.refresh:
-        with open(chan_path) as fh:
-            chans = json.load(fh)
-        print("  reusing cached channel list (%d)" % len(chans))
-    else:
+    chans = read_cache(chan_path, args.refresh)
+    if chans is None:
         print("  fetching channels ...")
         chans = channels(api)
-        with open(chan_path, "w") as fh:
-            json.dump(chans, fh)
+        write_cache(chan_path, chans)
+    else:
+        print("  reusing cached channel list (%d, %s)"
+              % (len(chans), cache_age(chan_path)))
 
     rows = match_channels(chapters, chans, cfg)
+    assert_aliases_resolve(rows, args.map)
     print("  matched: %d own channel, %d organizers channel"
           % (sum(1 for r in rows if r["public"]),
              sum(1 for r in rows if r["organizers_channel"])))
 
+    # Reconcile rather than reuse wholesale: an organizer accepted since the last
+    # run is absent from the cache, and a bare .get would report them as having
+    # no Slack account — silently, and about the newest people in the pipeline.
+    wanted = {p["email"] for p in people if p["email"]}
     ids_path = os.path.join(args.cache, "organizer_ids.json")
-    if os.path.exists(ids_path) and not args.refresh:
-        with open(ids_path) as fh:
-            slack_ids = json.load(fh)
-    else:
-        print("  resolving %d organizer emails (about 1.5s each) ..."
-              % len({p["email"] for p in people if p["email"]}))
-        slack_ids = lookup_emails(api, [p["email"] for p in people])
-        with open(ids_path, "w") as fh:
-            json.dump(slack_ids, fh)
-    print("  %d/%d organizers resolved to a Slack account"
-          % (sum(1 for v in slack_ids.values() if v.get("id")), len(slack_ids)))
+    slack_ids = read_cache(ids_path, args.refresh) or {}
+    outstanding = wanted - set(slack_ids)
+    if outstanding:
+        print("  resolving %d organizer emails, %d already cached (about 1.5s each) ..."
+              % (len(outstanding), len(slack_ids)))
+        slack_ids.update(lookup_emails(api, sorted(outstanding)))
+        write_cache(ids_path, slack_ids)
+    resolved = sum(1 for email in wanted if (slack_ids.get(email) or {}).get("id"))
+    blank = sum(1 for p in people if not p["email"])
+    print("  %d/%d organizers resolved to a Slack account%s"
+          % (resolved, len(wanted),
+             " (%d more have no email on file)" % blank if blank else ""))
 
     targets = {}
     for r in rows:
@@ -611,22 +778,18 @@ def main():
             if name:
                 targets[name] = cid
     print("  pulling membership for %d channels ..." % len(targets))
-    membership = {}
-    for name, cid in sorted(targets.items()):
-        membership[name] = members(api, cid)
+    membership = {name: members(api, cid) for name, cid in sorted(targets.items())}
 
     # Only the organizer-channel members need naming, so resolve those ids
     # individually rather than pulling a 30k-row directory.
     needed = {uid for r in rows if r["organizers_channel"]
-              for uid in membership.get(r["organizers_channel"], [])}
+              for uid in membership[r["organizers_channel"]]}
     dir_path = os.path.join(args.cache, "org_members.json")
-    directory = {}
-    if os.path.exists(dir_path) and not args.refresh:
-        with open(dir_path) as fh:
-            directory = json.load(fh)
+    directory = read_cache(dir_path, args.refresh) or {}
     missing = needed - set(directory)
     if missing:
         print("  naming %d organizer-channel members ..." % len(missing))
+        failed = []
         for uid in sorted(missing):
             payload = api.call("users.info", user=uid)
             if payload.get("ok"):
@@ -634,17 +797,29 @@ def main():
                 directory[uid] = {"real_name": u.get("real_name") or prof.get("real_name", ""),
                                   "name": u.get("name", ""),
                                   "email": (prof.get("email") or "").lower()}
-        with open(dir_path, "w") as fh:
-            json.dump(directory, fh)
+            else:
+                failed.append((uid, payload.get("error", "unknown")))
+        write_cache(dir_path, directory)
+        if failed:
+            # Not fatal — a genuinely deleted account is a real answer — but it
+            # must be visible, because an unnamed member renders as a raw Slack
+            # ID and would otherwise be filed under a group whose label asserts
+            # a judgement nobody made about them.
+            print("  WARNING: could not name %d of %d members (%s). They are "
+                  "reported as 'could not identify', not as unaccounted people."
+                  % (len(failed), len(missing),
+                     ", ".join(sorted({err for _, err in failed}))), file=sys.stderr)
 
     audit, orphans = build_audit(rows, people, slack_ids, membership, directory,
                                  cfg["staff_email_domain"])
-    with open(os.path.join(args.cache, "audit.json"), "w") as fh:
-        json.dump({"chapters": audit, "orphan_cities": orphans, "duplicates": dupes}, fh, indent=1)
+    write_cache(os.path.join(args.cache, "audit.json"),
+                {"chapters": audit, "orphan_cities": orphans, "duplicates": dupes})
 
     html_doc = render(audit, orphans, dupes, dt.datetime.now(dt.timezone.utc))
     html_path = args.out + ".html"
-    with open(html_path, "w") as fh:
+    # Explicit UTF-8: the page carries españa, Montréal and em dashes, and the
+    # locale default would mangle or refuse them.
+    with open(html_path, "w", encoding="utf-8") as fh:
         fh.write(html_doc)
     print("wrote %s" % html_path)
     if not args.no_pdf:

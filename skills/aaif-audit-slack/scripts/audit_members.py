@@ -11,15 +11,18 @@ rather than dressing up a proxy as engagement.
 
 import argparse
 import datetime as dt
-import json
+import html
 import os
 import sys
 from collections import Counter
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
+from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
-from aaif_events.slack import Slack, channels, scopes, users  # noqa: E402
+from aaif_events.slack import Slack, channels, users  # noqa: E402
+
+e = html.escape
 
 # Channels every new member is auto-joined to. Membership in these measures
 # signup, not participation, so they are reported separately from elective joins.
@@ -32,15 +35,14 @@ WEBMAIL = {"gmail.com", "googlemail.com", "hotmail.com", "outlook.com", "yahoo.c
 
 def cached(path, build, refresh=False, label=""):
     """Load a JSON cache, or build and store it. The user pull is slow — reuse it."""
-    if os.path.exists(path) and not refresh:
-        with open(path) as fh:
-            data = json.load(fh)
-        print("  reusing %s (%d records)" % (os.path.basename(path), len(data)))
+    data = jsoncache.read(path, refresh)
+    if data is not None:
+        print("  reusing %s (%d records, %s)"
+              % (os.path.basename(path), len(data), jsoncache.age(path)))
         return data
     print("  fetching %s ..." % (label or os.path.basename(path)))
     data = build()
-    with open(path, "w") as fh:
-        json.dump(data, fh)
+    jsoncache.write(path, data)
     print("  fetched %d records" % len(data))
     return data
 
@@ -62,42 +64,66 @@ def build_report(chans, directory, today):
     deact = [u for u in humans if u["deleted"]]
     bots = [u for u in directory if u["is_bot"] or u.get("is_app_user")]
 
-    size_rows = [(lbl, sum(1 for c in live if lo <= c["num_members"] <= hi))
-                 for lbl, lo, hi in [("1-2", 1, 2), ("3-5", 3, 5), ("6-20", 6, 20),
-                                     ("21-100", 21, 100), ("101-1,000", 101, 1000),
-                                     ("1,000+", 1001, 10 ** 9)]]
+    # Slack omits num_members on some conversations. "Not reported" is not
+    # "empty": bucketing an unknown as 0 publishes it as an abandoned channel and
+    # drops it out of every total. Partition first, and show the unknowns.
+    sized = [c for c in live if c["num_members"] is not None]
+    unsized = [c for c in live if c["num_members"] is None]
+
+    size_rows = [(lbl, sum(1 for c in sized if lo <= c["num_members"] <= hi))
+                 for lbl, lo, hi in [("0", 0, 0), ("1-2", 1, 2), ("3-5", 3, 5),
+                                     ("6-20", 6, 20), ("21-100", 21, 100),
+                                     ("101-1,000", 101, 1000), ("1,000+", 1001, 10 ** 9)]]
+    if unsized:
+        size_rows.append(("size not reported", len(unsized)))
+    # Every live channel must land in exactly one bucket, or the chart quietly
+    # describes a different population than the heading claims.
+    assert sum(n for _, n in size_rows) == len(live), "size buckets lost a channel"
 
     # Human topic/purpose edits only. The channel `updated` field is a bulk
     # migration stamp and must never be used as a staleness signal.
-    edit_rows = [(lbl, sum(1 for c in live
-                           if max(c["topic_last_set"], c["purpose_last_set"])
-                           and lo <= age(max(c["topic_last_set"], c["purpose_last_set"])) <= hi))
+    described = [c for c in live if max(c["topic_last_set"], c["purpose_last_set"])]
+    edit_rows = [(lbl, sum(1 for c in described
+                           if lo <= age(max(c["topic_last_set"], c["purpose_last_set"])) <= hi))
                  for lbl, lo, hi in [("under 1 year", 0, 365), ("1-2 years", 366, 730),
                                      ("2-3 years", 731, 1095), ("3-5 years", 1096, 1825),
                                      ("over 5 years", 1826, 10 ** 9)]]
     nodesc = [c for c in live if not c["topic"] and not c["purpose"]]
     edit_rows.append(("never set", len(nodesc)))
+    # A channel can carry topic text with no last_set stamp; it belongs to
+    # neither group above, so name it rather than letting the bars under-sum.
+    undated = len(live) - len(described) - len(nodesc)
+    if undated:
+        edit_rows.append(("edit date unknown", undated))
 
-    prof_rows = [(lbl, sum(1 for u in active
-                           if age(u.get("updated")) is not None
-                           and lo <= age(u.get("updated")) <= hi))
+    dated_profiles = [u for u in active if age(u.get("updated")) is not None]
+    prof_rows = [(lbl, sum(1 for u in dated_profiles
+                           if lo <= age(u["updated"]) <= hi))
                  for lbl, lo, hi in [("under 3 months", 0, 90), ("3-12 months", 91, 365),
                                      ("1-2 years", 366, 730), ("2-3 years", 731, 1095),
                                      ("3-5 years", 1096, 1825), ("over 5 years", 1826, 10 ** 9)]]
+    if len(dated_profiles) != len(active):
+        prof_rows.append(("never updated", len(active) - len(dated_profiles)))
 
     years = sorted(Counter(dt.datetime.fromtimestamp(c["created"], dt.timezone.utc).year
                            for c in chans if c["created"]).items())
-    by_name = {c["name"]: c for c in pub}
-    total_mem = sum(c["num_members"] for c in pub)
-    default_mem = sum(by_name[n]["num_members"] for n in DEFAULT_JOIN if n in by_name)
+    by_name = {c["name"]: c["num_members"] for c in pub if c["num_members"] is not None}
+    total_mem = sum(c["num_members"] for c in pub if c["num_members"] is not None)
+    # Only the auto-join channels that actually exist under those names. Renaming
+    # one must not silently shrink the numerator while the heading still claims
+    # the full count, so the heading uses len(present), not len(DEFAULT_JOIN).
+    present_defaults = [n for n in DEFAULT_JOIN if n in by_name]
+    default_mem = sum(by_name[n] for n in present_defaults)
     elective = total_mem - default_mem
-    top10 = sorted(pub, key=lambda c: -c["num_members"])[:10]
-    small = sorted([c for c in live if c["num_members"] <= 8], key=lambda c: c["num_members"])
+    top10 = sorted((c for c in pub if c["num_members"] is not None),
+                   key=lambda c: -c["num_members"])[:10]
+    small = sorted([c for c in sized if c["num_members"] <= 8],
+                   key=lambda c: c["num_members"])
 
     domains = Counter(u["email"].split("@")[-1] for u in active if u["email"])
     webmail_share = 100 * sum(domains[d] for d in WEBMAIL) // max(len(active), 1)
     top_corp = next(((d, n) for d, n in domains.most_common(60)
-                     if d not in WEBMAIL and not d.endswith((".edu", ".ac.uk"))), ("—", 0))
+                     if d not in WEBMAIL and not d.endswith((".edu", ".ac.uk"))), None)
 
     no_photo = sum(1 for u in active if not u["has_avatar"])
     unconf = sum(1 for u in active if u.get("is_email_confirmed") is False)
@@ -143,7 +169,7 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
 
 <section>
   <div class="eyebrow">Concentration</div>
-  <h2>{len(DEFAULT_JOIN)} channels hold {100 * default_mem // max(total_mem, 1)}% of all memberships</h2>
+  <h2>{len(present_defaults)} channels hold {100 * default_mem // max(total_mem, 1)}% of all memberships</h2>
   <p class="lede">Public-channel memberships total {total_mem:,} across {len(pub)} channels. The
   ones every new member is joined to on signup account for {default_mem:,} of them, so membership
   measures <em>signup</em>, not participation.</p>
@@ -161,7 +187,7 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
       {rs.bars([("#" + c["name"], c["num_members"]) for c in top10])}</div>
     <div class="card"><h3>Small live channels</h3>
       <p class="sub">{len(small)} channels with 8 or fewer members</p>
-      <div class="chips">{''.join('<span class="chip">#%s · %d</span>' % (c["name"], c["num_members"]) for c in small)}</div></div>
+      <div class="chips">{''.join('<span class="chip">#%s · %d</span>' % (e(c["name"]), c["num_members"]) for c in small)}</div></div>
   </div>
 </section>
 
@@ -185,9 +211,11 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
     <div class="card"><h3>How real the roster is</h3>
       <p class="sub">Among the {len(active):,} active humans</p>
       {rs.bars([("no profile photo", no_photo), ("email unverified", unconf),
-                ("deactivated", len(deact)), ("guest accounts", guests)], "bad")}
-      <p class="note">{len(deact):,} accounts ({100 * len(deact) / max(len(humans), 1):.1f}%) have
-      ever been deactivated. {unconf:,} people signed up and never confirmed their email.</p></div>
+                ("guest accounts", guests)], "bad")}
+      <p class="note">Every bar counts a subset of the active humans named above — the
+      {len(deact):,} deactivated accounts ({100 * len(deact) / max(len(humans), 1):.1f}% of all
+      humans) are a separate population and have their own tile. {unconf:,} people signed up and
+      never confirmed their email.</p></div>
     <div class="card"><h3>How long since a profile was touched</h3>
       <p class="sub">Active humans, by age of last profile change</p>{rs.bars(prof_rows, "warn")}
       <p class="note">The only per-person recency field this token can read. It moves on any
@@ -201,10 +229,13 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
   <h2>Personal addresses, overwhelmingly</h2>
   <div class="card" style="margin-top:16px">
     {rs.bars(list(domains.most_common(12)))}
-    <p class="note">{webmail_share}% of active members signed up with consumer webmail. The largest
-    employer domain, {top_corp[0]}, accounts for {top_corp[1]} people — an individual-practitioner
-    community, not a set of corporate delegations. There is no employer to route through, and no
-    company address to reach someone at once they move on.</p>
+    <p class="note">{webmail_share}% of active members signed up with consumer webmail.
+    {("The largest employer domain, %s, accounts for %d people — an individual-practitioner "
+      "community, not a set of corporate delegations." % (e(top_corp[0]), top_corp[1]))
+     if top_corp else
+     "No employer domain appears at all among the addresses on file."}
+    There is no employer to route through, and no company address to reach someone at once they
+    move on.</p>
   </div>
 </section>
 
@@ -222,10 +253,11 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
   </ul>
 </section>
 
-<footer>Collected from the Slack Web API: <code class="chan">conversations.list</code>
-({len(chans)} conversations, public and private, archived included),
-<code class="chan">users.list</code> ({len(directory):,} accounts) and
-<code class="chan">team.info</code>. No message content was read, and none could be.</footer>
+<footer>Collected from the Slack Web API: <code class="chan">auth.test</code>,
+<code class="chan">conversations.list</code>
+({len(chans)} conversations, public and private, archived included) and
+<code class="chan">users.list</code> ({len(directory):,} accounts).
+No message content was read, and none could be.</footer>
 """
     return rs.page("Slack Members Audit", body)
 
@@ -240,14 +272,16 @@ def main():
     ap.add_argument("--no-pdf", action="store_true", help="write HTML only")
     args = ap.parse_args()
 
+    # Before any collection: the cache holds the entire member directory,
+    # including email addresses and 2FA/admin flags, and this repo is public.
+    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
     os.makedirs(args.cache, exist_ok=True)
+    os.chmod(args.cache, 0o700)
+
     api = Slack()
+    have = api.require_scopes("channels:read", "users:read")
     who = api.ok("auth.test")
     print("workspace: %s (%s)" % (who.get("team"), who.get("team_id")))
-    have = {s.strip() for s in scopes()}
-    for needed in ("channels:read", "users:read"):
-        if needed not in have:
-            raise SystemExit("token is missing the %s scope — re-run `slack auth login`." % needed)
     if "channels:history" in have:
         print("  note: this token HAS channels:history — the report's 'no message data'")
         print("        caveat is now false and the script should be extended.")
@@ -259,10 +293,24 @@ def main():
         lambda: users(api, progress=lambda n: print("    %d users..." % n, flush=True)),
         args.refresh, "user directory (slow on a large workspace)")
 
-    html = build_report(chans, directory, dt.datetime.now(dt.timezone.utc))
+    # Independent floor on the directory: every member is auto-joined to
+    # #general, so a directory materially smaller than that channel means the
+    # paged pull came up short and must not be reported as the workspace size.
+    general = next((c["num_members"] for c in chans
+                    if c["name"] == DEFAULT_JOIN[0] and c["num_members"]), None)
+    humans = sum(1 for u in directory if not u["is_bot"] and not u["is_app_user"])
+    if general and humans < general * 0.9:
+        raise SystemExit(
+            "ABORT: the directory holds %d humans but #%s reports %d members. The "
+            "user pull is short — reporting it would understate every count on the "
+            "page. Re-run with --refresh." % (humans, DEFAULT_JOIN[0], general))
+
+    html_doc = build_report(chans, directory, dt.datetime.now(dt.timezone.utc))
     html_path = args.out + ".html"
-    with open(html_path, "w") as fh:
-        fh.write(html)
+    # Explicit UTF-8: channel and person names carry accents and the page uses
+    # em dashes; the locale default would mangle or refuse them.
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
     print("wrote %s" % html_path)
     if not args.no_pdf:
         print("wrote %s" % rs.to_pdf(os.path.abspath(html_path), os.path.abspath(args.out + ".pdf")))

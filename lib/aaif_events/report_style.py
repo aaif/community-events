@@ -9,9 +9,14 @@ Colours are defined three times on purpose: bare `:root` carries the full light
 palette, and the dark values are repeated under both
 `@media (prefers-color-scheme: dark)` and `:root[data-theme="dark"]`. A viewer
 on the default "system" setting gets no `data-theme` stamp at all, so a colour
-defined only inside a `[data-theme]` block would never apply to them.
+defined only inside a `[data-theme]` block would never apply to them. The media
+block is additionally scoped to `:root:not([data-theme="light"])` so an explicit
+light choice still wins on a dark OS — do not simplify that selector to a bare
+`:root`, which silently breaks light-on-dark-OS with nothing to signal it.
 """
 
+import html
+import os
 import shutil
 import subprocess
 
@@ -239,9 +244,16 @@ footer{color:var(--ink-faint); font-size:.8rem; border-top:1px solid var(--line)
 
 
 def page(title, body, extra_css="", script=""):
-    """Wrap a body fragment in a complete, self-contained HTML document."""
-    return ("<title>%s</title>\n<style>%s%s</style>\n<div class=\"wrap\">%s</div>%s\n"
-            % (title, BASE_CSS, extra_css, body,
+    """Wrap a body fragment in a complete, self-contained HTML document.
+
+    The doctype and charset are not decoration: without a doctype Chrome renders
+    the PDF in quirks mode, and without a declared charset it guesses the
+    encoding of pages that legitimately contain `españa`, `Montréal` and `—`.
+    Write the result with `encoding="utf-8"`, never the locale default.
+    """
+    return ('<!doctype html>\n<meta charset="utf-8">\n'
+            '<title>%s</title>\n<style>%s%s</style>\n<div class="wrap">%s</div>%s\n'
+            % (html.escape(str(title)), BASE_CSS, extra_css, body,
                ("\n<script>%s</script>" % script) if script else ""))
 
 
@@ -250,6 +262,11 @@ def bars(rows, tone="accent", fmt=lambda v: format(v, ",")):
 
     One measure, one hue — no categorical palette is involved, so there is no
     legend and nothing to validate for colourblind separation.
+
+    Labels are escaped **here**, not at the call sites. These reports render
+    Slack- and spreadsheet-sourced text (channel names, city names, email
+    domains) that outsiders can influence, so the helper is safe by
+    construction. Do NOT pre-escape arguments — they would double-escape.
     """
     top = max((v for _, v in rows), default=0) or 1
     cells = []
@@ -258,12 +275,18 @@ def bars(rows, tone="accent", fmt=lambda v: format(v, ",")):
         cells.append('<div class="brow"><span class="blab">%s</span>'
                      '<span class="btrack"><span class="bfill t-%s" style="width:%s%%">'
                      '</span></span><span class="bval">%s</span></div>'
-                     % (label, tone, width, fmt(value)))
+                     % (html.escape(str(label)), tone, width,
+                        html.escape(str(fmt(value)))))
     return '<div class="bars">%s</div>' % "".join(cells)
 
 
 def actions(items):
-    """Ranked action list. Each item is (title, why, effort, owner, when)."""
+    """Ranked action list. Each item is (title, why, effort, owner, when).
+
+    Every field is escaped here — see `bars()`. Action text routinely embeds
+    chapter and channel names straight from the sheet, which is the highest-risk
+    interpolation in either report, so pass plain text and never markup.
+    """
     tone = {"now": "bad", "next": "warn", "later": "mute"}
     rows = []
     for i, (title, why, effort, owner, when) in enumerate(items, 1):
@@ -273,7 +296,9 @@ def actions(items):
             '<span class="awhy">%s</span></span>'
             '<span class="ameta"><span class="pill pill-%s">%s</span>'
             '<span class="eff">%s</span><span class="eff">%s</span></span></li>'
-            % (i, title, why, tone.get(when, "mute"), when, effort, owner))
+            % (i, html.escape(str(title)), html.escape(str(why)),
+               tone.get(when, "mute"), html.escape(str(when)),
+               html.escape(str(effort)), html.escape(str(owner))))
     return '<ol class="actions">%s</ol>' % "".join(rows)
 
 
@@ -281,7 +306,7 @@ def find_chrome():
     """Path to a headless-capable Chrome/Chromium, or None."""
     for candidate in CHROME_PATHS:
         if candidate.startswith("/"):
-            if shutil.os.path.exists(candidate):
+            if os.path.exists(candidate):
                 return candidate
         else:
             found = shutil.which(candidate)
@@ -290,19 +315,82 @@ def find_chrome():
     return None
 
 
-def to_pdf(html_path, pdf_path):
-    """Print a local HTML file to PDF with headless Chrome.
+def to_pdf(html_path, pdf_path, timeout_s=180):
+    """Print a local HTML file to PDF with headless Chrome, and verify it worked.
 
     Chrome, never LibreOffice: `soffice` substitutes local system fonts and drops
     markup it does not understand, so its render misrepresents the document.
+
+    Verification is the point of the length here. Headless Chrome exits **0** in
+    several real failure modes — a contested profile lock from a running Chrome,
+    an unwritable target, a missing sandbox in a container — so a bare
+    `check=True` lets the caller print "wrote report.pdf" for a file that does
+    not exist, or worse, for last week's PDF that someone then circulates.
     """
     chrome = find_chrome()
     if not chrome:
         raise SystemExit(
             "No Chrome/Chromium found for PDF rendering. Install Google Chrome, or "
             "open the HTML and print to PDF by hand. Do not use LibreOffice.")
-    subprocess.run(
-        [chrome, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-         "--print-to-pdf=" + str(pdf_path), "file://" + str(html_path)],
-        check=True, capture_output=True)
+
+    # Remove any earlier render first: if Chrome fails without writing, a stale
+    # file left in place is indistinguishable from a fresh one.
+    if os.path.exists(pdf_path):
+        os.remove(pdf_path)
+
+    try:
+        proc = subprocess.run(
+            [chrome, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+             "--print-to-pdf=" + str(pdf_path), "file://" + str(html_path)],
+            capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            "Chrome hung for %ds rendering %s — usually another Chrome instance "
+            "holding the profile lock. Quit Chrome and retry, or pass --no-pdf "
+            "and print %s by hand." % (timeout_s, pdf_path, html_path))
+
+    stderr = (proc.stderr or "").strip()[:800]
+    if proc.returncode != 0:
+        raise SystemExit(
+            "Chrome failed to render %s (exit %d).\n%s\nThe HTML is intact at %s "
+            "— open it and print to PDF by hand. Do not use LibreOffice."
+            % (pdf_path, proc.returncode, stderr, html_path))
+
+    size = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
+    if size < 1024:
+        raise SystemExit(
+            "Chrome exited 0 but produced no usable PDF at %s (%d bytes). This is "
+            "usually another Chrome instance holding the profile lock — quit "
+            "Chrome and retry, or pass --no-pdf and print %s by hand.\n%s"
+            % (pdf_path, size, html_path, stderr))
     return pdf_path
+
+
+def assert_git_ignored(*paths):
+    """Refuse to write audit output that git would happily commit.
+
+    These reports and caches carry the workspace's entire user directory and the
+    organizers' names and email addresses. The repo they are generated in is
+    public, so `.gitignore` coverage is a safety control, not tidiness — and a
+    control nobody checks is not a control. This runs before collection, so a
+    missing rule costs a second rather than a 20-minute pull.
+    """
+    root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True)
+    if root.returncode != 0:
+        return  # not a git repo; nothing to leak into
+    unignored = []
+    for path in paths:
+        probe = os.path.join(path, "probe") if path.endswith(os.sep) else path
+        check = subprocess.run(["git", "check-ignore", "-q", probe],
+                               capture_output=True)
+        if check.returncode != 0:
+            unignored.append(path)
+    if unignored:
+        raise SystemExit(
+            "REFUSING TO RUN: these output paths are not git-ignored inside %s:\n"
+            "  %s\n"
+            "They will hold Slack member names, email addresses and 2FA/admin "
+            "flags. Add them to .gitignore, or pass --cache/--out somewhere "
+            "outside the repository."
+            % (root.stdout.strip(), "\n  ".join(unignored)))

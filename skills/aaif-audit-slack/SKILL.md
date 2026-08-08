@@ -47,11 +47,21 @@ printed.
 
 # The ceiling — state this in any summary you write
 
-**Neither engine can measure activity.** The Slack CLI token carries
-`channels:read, groups:read, users:read, users:read.email, team:read`. There is
-no `channels:history` and no `search:read`, and `conversations.history` returns
+**Neither engine can measure activity.** The Slack CLI token carries no
+`channels:history` and no `search:read`, and `conversations.history` returns
 `missing_scope` even for public channels. *Last message posted*, *messages per
 week* and *is this channel alive* are **unreadable**, not merely unmeasured.
+(`lib/aaif_events/slack.py` holds the authoritative scope list, and
+`Slack.scopes()` reports the live one — trust those over any list written down
+here or there.)
+
+Both engines check their required scopes **before** collecting anything, so a
+revoked scope aborts in the first second. That matters more than it sounds:
+without the check, a missing `users:read.email` made every organizer lookup fail,
+and each failure was recorded as "this person has no Slack account" — rendering
+the report's headline, its funnel and its top recommendation as confident
+fiction. Failures that mean *the audit is broken* must never be reported as
+findings about people.
 
 Never substitute a proxy:
 
@@ -131,6 +141,18 @@ will notice. A wrong alias is neither — it reports a chapter as covered when i
 has no room, and nothing downstream ever re-checks it. Prefer the flagged unknown
 every time.
 
+The engine enforces this rather than trusting it:
+
+- **`null` genuinely stops the matcher** in both the `public` and `organizers`
+  maps. It records "a human checked and there is no channel", which is an
+  answer, so no slug guess follows.
+- **An alias that no longer resolves aborts the run.** A renamed or archived
+  channel is a configuration bug; left alone it downgrades the chapter to "no
+  channel at all" and generates advice to create a room it already has.
+- **The report says how each chapter matched.** Aliased chapters and deliberate
+  `null`s are listed in *Data quality*, so coverage that rests on the map is
+  visible rather than indistinguishable from a name match.
+
 `_provenance` at the top of the map records that the current entries were
 inferred by an agent on the first run and never confirmed by anyone who runs
 these chapters. Until a human signs them off, say so when you report coverage
@@ -197,17 +219,39 @@ email-domain breakdown · the limits, restated on the page.
 **Both engines cache their raw pulls**, and the first run of each is slow:
 `users.list` pages 200 at a time (~20 min on a 30k-member workspace) and
 `users.lookupByEmail` is ~1.5s per organizer. Run the first one in the background
-and do something else. Don't pass `--refresh` unless the data is genuinely stale.
+and do something else.
+
+Caches are written atomically and stamped, and every reuse prints the age
+(`reusing users.json (32543 records, fetched 3 days ago)`), so you can judge
+staleness instead of guessing. `--refresh` is rarely needed: the organizer engine
+**reconciles** rather than reusing wholesale, so organizers accepted since the
+last run are looked up automatically. Reach for `--refresh` when the *channel*
+list is stale — someone created, renamed or archived a channel.
+
+Cache files hold member names, email addresses and 2FA/admin flags, so they are
+written 0600 inside a 0700 directory, and **both engines refuse to start unless
+their cache and output paths are git-ignored.** That check is not tidiness: this
+repo is public, and one `git add -A` would publish the workspace directory
+irreversibly.
 
 # House rules
 
 - **Never write a channel alias without a human confirming it.** Propose, wait,
   then edit `channel_map.json`. "No channel found" is an acceptable answer; a
   wrong alias silently reports a chapter as covered.
-- **Read-only by construction.** `lib/aaif_events/slack.py` refuses any method
-  outside its `ALLOWED_METHODS` allowlist, so a typo cannot post, invite or
-  archive. Keep it that way — if a future need is genuinely read-only, add the
-  method to the allowlist rather than bypassing the client.
+- **Read-only.** `lib/aaif_events/slack.py` refuses any method outside its
+  `ALLOWED_METHODS` allowlist, so a typo cannot post, invite or archive. The
+  allowlist is the exact set of methods this repo calls, not "everything
+  read-only" — adding an entry is a real decision, since `conversations.history`
+  is read-only and would falsify the "no message data" caveat both reports print.
+  `Slack.scopes()` is the one request that does not go through `call()` (it needs
+  the response headers) and is hardcoded to `auth.test`; that is the sanctioned
+  exception, not a precedent.
+- **Never report a failure as a finding.** Where a number could mean "we measured
+  zero" or "we failed to measure", the engines abort or label it — a zero-organizer
+  intake, a short user pull, a member whose name would not resolve. The reports
+  are persuasive documents aimed at leadership, so a silent failure here becomes
+  a confident wrong recommendation rather than a visible error.
 - **Never print the token**, and never copy it into a file under the repo.
 - **Don't hand-edit the generated HTML.** Change the script or
   `lib/aaif_events/report_style.py` and re-run, so the next run keeps the fix.

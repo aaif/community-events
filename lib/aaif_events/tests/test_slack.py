@@ -113,12 +113,50 @@ def test_channels_flattens_topic_and_purpose(monkeypatch):
     assert row["updated_ms"] == 1749642761491
 
 
-def test_channels_defaults_missing_fields(monkeypatch):
+def test_channels_keeps_unreported_size_as_none(monkeypatch):
+    """'Not reported' must not become 0 — that publishes an unknown as empty."""
     api, _ = client(monkeypatch, [{"ok": True, "channels": [
         {"id": "C1", "name": "bare", "is_private": True}]}])
     (row,) = slack.channels(api)
-    assert row["num_members"] == 0 and row["is_archived"] is False
-    assert row["topic_last_set"] == 0
+    assert row["num_members"] is None
+    assert row["is_archived"] is False and row["topic_last_set"] == 0
+
+
+def test_paged_refuses_a_page_missing_its_collection_key(monkeypatch):
+    """Otherwise a malformed page ends the stream and a short pull looks complete."""
+    api, _ = client(monkeypatch, [{"ok": True}])
+    with pytest.raises(slack.SlackError) as exc:
+        list(api.paged("users.list", "members"))
+    assert exc.value.error == "malformed_page"
+
+
+def test_lookup_emails_raises_when_the_api_fails_rather_than_the_person_missing(monkeypatch):
+    """missing_scope must not be recorded as 'this person has no Slack account'."""
+    api, _ = client(monkeypatch, [{"ok": False, "error": "missing_scope"}])
+    with pytest.raises(slack.SlackError) as exc:
+        slack.lookup_emails(api, ["a@x.com"])
+    assert exc.value.error == "lookup_failed"
+    assert "missing_scope" in str(exc.value)
+
+
+def test_require_scopes_aborts_on_a_missing_scope(monkeypatch):
+    api, _ = client(monkeypatch, [])
+    monkeypatch.setattr(slack.Slack, "scopes", lambda self: {"channels:read"})
+    api.require_scopes("channels:read")            # present — no raise
+    with pytest.raises(SystemExit) as exc:
+        api.require_scopes("channels:read", "users:read.email")
+    assert "users:read.email" in str(exc.value)
+
+
+def test_user_record_defaults_flags_to_booleans(monkeypatch):
+    """Consumers treat these as bools; a None would read as False by accident."""
+    api, _ = client(monkeypatch, [{"ok": True, "members": [
+        {"id": "U1", "profile": {}}]}])
+    (row,) = slack.users(api)
+    assert row["deleted"] is False and row["is_bot"] is False
+    assert row["is_restricted"] is False
+    # Tri-state fields stay None: unknown is not the same as False.
+    assert row["is_email_confirmed"] is None
 
 
 def test_users_extracts_profile_fields(monkeypatch):

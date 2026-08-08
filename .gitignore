@@ -6,3 +6,11 @@ __pycache__/
 # Local versioned backups from the aaif-backup skill (binary snapshots stay out of git)
 backups/*
 !backups/README.md
+
+# Slack audit output (aaif-audit-slack). THIS REPO IS PUBLIC. The cache holds the
+# entire workspace user directory — real names, email addresses, has_2fa, is_admin —
+# and the reports carry organizer names, emails and private-channel rosters. None of
+# it may ever be committed; a single `git add -A` would publish it irreversibly.
+.slack-audit-cache/
+slack-members-audit.*
+slack-organizers-audit.*

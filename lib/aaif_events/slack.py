@@ -4,30 +4,36 @@ Auth comes from the Slack CLI's own credentials (`slack auth login`), so no toke
 is ever stored in this repo or passed on a command line. The token is never
 printed — callers get data, not credentials.
 
-**This client is read-only by construction.** `call()` refuses any method outside
+**This client is read-only.** `call()` refuses any method outside
 `ALLOWED_METHODS`; the audits inspect a community workspace, and a typo must not
-be able to post, invite, or archive.
+be able to post, invite, or archive. `Slack.scopes()` is the one request that
+does not go through `call()` — it needs the response *headers* — and it is
+hardcoded to `auth.test`. Keep it that way: it is the only sanctioned exception,
+and it is not a precedent for adding more.
 
 ## What the audit token can and cannot do
 
 The Slack CLI's user token carries `channels:read, groups:read, users:read,
-users:read.email, team:read`. That is enough to enumerate channels, their
-membership, and the user directory. It is **not** enough to read messages:
-`conversations.history` and `search.messages` both return `missing_scope`, so
-nothing built on this module can measure whether a channel is *active* — only
-whether it exists, who is in it, and how it is described.
+users:read.email, team:read` (as observed 2026-08-08; call `Slack.scopes()` for
+the live list rather than trusting this line). That is enough to enumerate
+channels, their membership, and the user directory. It is **not** enough to read
+messages: `conversations.history` and `search.messages` both return
+`missing_scope`, so nothing built on this module can measure whether a channel is
+*active* — only whether it exists, who is in it, and how it is described.
 
-Two traps worth knowing, both verified against the live workspace:
+Two traps worth knowing, both verified against the live workspace on 2026-08-08.
+The dates matter: the counts are one-shot observations and will drift, but the
+mechanisms they demonstrate are stable.
 
 * **`conversations.list` only returns private channels the token owner belongs
   to.** `users.conversations(user=...)` looks like a way around that, but its
   results are filtered to the caller's own visibility — probing 101 people
   returned exactly the caller's own 23 private channels and nothing more. There
   is no workspace-wide private channel listing without Enterprise Grid.
-* **A channel's `updated` field is not activity.** It is a metadata stamp that
-  a bulk migration reset in blocks (54 channels share one value), so it must
-  never be used as a staleness signal. `topic.last_set` / `purpose.last_set` are
-  genuine human edits and are exposed instead.
+* **A channel's `updated` field is not activity.** It is a metadata stamp that a
+  bulk migration reset in blocks (large groups of channels share one identical
+  value), so it must never be used as a staleness signal. `topic.last_set` /
+  `purpose.last_set` are genuine human edits and are exposed instead.
 """
 
 import http.client
@@ -41,27 +47,53 @@ import urllib.request
 CRED_PATH = os.path.expanduser("~/.slack/credentials.json")
 API = "https://slack.com/api/"
 
-#: Every method the audits are permitted to call. Read-only, no exceptions.
+#: The exact set of methods this repo calls. This is deliberately *not* "every
+#: read-only method" — narrowing it to actual callers is a stronger, self-
+#: maintaining invariant. Adding an entry is a real decision, not a formality:
+#: `conversations.history` is read-only and would still falsify the "no message
+#: data" caveat both reports print on their face.
 ALLOWED_METHODS = frozenset({
-    "auth.test", "team.info",
-    "conversations.list", "conversations.members", "conversations.info",
-    "users.list", "users.info", "users.lookupByEmail", "users.conversations",
+    "auth.test",
+    "conversations.list", "conversations.members",
+    "users.list", "users.info", "users.lookupByEmail",
 })
 
 MAX_ATTEMPTS = 6
+#: Slack's own read timeout is generous; ours bounds a half-open socket so a
+#: 20-minute directory pull cannot hang forever with no output.
+TIMEOUT_S = 30
+
+#: `users.lookupByEmail` errors that genuinely mean "nobody has this address".
+#: Everything else means the audit is broken, not that the person is absent —
+#: see lookup_emails().
+BENIGN_LOOKUP_MISSES = frozenset({"users_not_found"})
 
 
 class SlackError(RuntimeError):
-    """A Slack API call returned ok:false."""
+    """A Slack API call failed.
 
-    def __init__(self, method, error):
-        super().__init__("%s: %s" % (method, error))
+    `error` carries a machine-readable code — Slack's own (`missing_scope`,
+    `users_not_found`) or one of this module's (`retry_exhausted`,
+    `malformed_page`, `lookup_failed`) — so callers can branch on it. Prose
+    belongs in the message, not in `error`.
+    """
+
+    def __init__(self, method, error, detail=""):
+        super().__init__("%s: %s%s" % (method, error, (" — " + detail) if detail else ""))
         self.method = method
         self.error = error
+        self.detail = detail
 
 
 def _find_token(obj):
-    """Return the first Slack token in the credentials blob, without logging it."""
+    """Return the first Slack token in the credentials blob, without logging it.
+
+    The *first*: `~/.slack/credentials.json` holds one entry per authenticated
+    workspace, and being logged into several is the normal state for the Slack
+    CLI. Whichever the walk reaches first wins, which may not be the one you
+    meant — that is why every entry point prints the workspace from `auth.test`
+    before fetching anything. Do not remove those prints; they are the check.
+    """
     found = []
 
     def walk(node):
@@ -83,7 +115,7 @@ def load_token(path=CRED_PATH):
     if not os.path.exists(path):
         raise SystemExit(
             "No Slack credentials at %s — run `slack auth login` first." % path)
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         token = _find_token(json.load(fh))
     if not token:
         raise SystemExit("No Slack token found in %s." % path)
@@ -97,6 +129,12 @@ class Slack:
         self._token = token or load_token()
         self._sleep = sleep
 
+    def _request(self, method, data=b""):
+        return urllib.request.Request(
+            API + method, data=data,
+            headers={"Authorization": "Bearer " + self._token,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+
     def call(self, method, **params):
         """POST to a Slack method, retrying rate limits and truncated reads."""
         if method not in ALLOWED_METHODS:
@@ -104,30 +142,36 @@ class Slack:
                 "%s is not a read-only audit method; refusing to call it." % method)
         body = urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None}).encode()
+        last = "unknown"
         for attempt in range(MAX_ATTEMPTS):
-            request = urllib.request.Request(
-                API + method, data=body,
-                headers={"Authorization": "Bearer " + self._token,
-                         "Content-Type": "application/x-www-form-urlencoded"})
             try:
-                with urllib.request.urlopen(request) as response:
+                with urllib.request.urlopen(self._request(method, body),
+                                            timeout=TIMEOUT_S) as response:
                     payload = json.loads(response.read())
             except urllib.error.HTTPError as exc:
                 if exc.code == 429 and attempt < MAX_ATTEMPTS - 1:
+                    last = "http_429"
                     self._sleep(int(exc.headers.get("Retry-After", "5")))
                     continue
                 raise
-            except (http.client.IncompleteRead, urllib.error.URLError):
-                # Slack truncates very large pages; back off and retry the same cursor.
+            except (http.client.IncompleteRead, urllib.error.URLError,
+                    TimeoutError) as exc:
+                # Slack truncates very large pages; back off and retry the same
+                # cursor. URLError also covers DNS and TLS failures, which will
+                # never recover — they simply exhaust the budget and surface
+                # below with the cause named.
                 if attempt == MAX_ATTEMPTS - 1:
-                    raise
+                    raise SlackError(method, "transport_failed", repr(exc))
+                last = type(exc).__name__
                 self._sleep(2 * (attempt + 1))
                 continue
             if not payload.get("ok") and payload.get("error") == "ratelimited":
+                last = "ratelimited"
                 self._sleep(int(payload.get("retry_after", 5)))
                 continue
             return payload
-        raise SlackError(method, "gave up after %d rate-limited attempts" % MAX_ATTEMPTS)
+        raise SlackError(method, "retry_exhausted",
+                         "%d attempts, last failure: %s" % (MAX_ATTEMPTS, last))
 
     def ok(self, method, **params):
         """Like call(), but raise SlackError instead of returning ok:false."""
@@ -137,15 +181,51 @@ class Slack:
         return payload
 
     def paged(self, method, key, **params):
-        """Yield every item across a cursor-paginated method."""
+        """Yield every item across a cursor-paginated method.
+
+        Refuses to treat a malformed page as an empty one: an `ok:true` response
+        missing the collection key would otherwise end the stream silently, and a
+        short pull is indistinguishable from a complete one once it is cached.
+        """
         cursor = None
         while True:
             payload = self.ok(method, cursor=cursor, **params)
-            for item in payload.get(key, []):
+            if key not in payload:
+                raise SlackError(method, "malformed_page",
+                                 "ok:true but no %r key — cannot distinguish an "
+                                 "empty page from a lost one" % key)
+            for item in payload[key]:
                 yield item
             cursor = (payload.get("response_metadata") or {}).get("next_cursor")
             if not cursor:
                 return
+
+    def scopes(self):
+        """OAuth scopes on this client's token, read from a live response header.
+
+        The one request that bypasses `call()` — it needs the response headers,
+        which `call()` discards. Hardcoded to `auth.test`; see the module
+        docstring.
+        """
+        with urllib.request.urlopen(self._request("auth.test"),
+                                    timeout=TIMEOUT_S) as response:
+            raw = response.headers.get("x-oauth-scopes") or ""
+        return {s.strip() for s in raw.split(",") if s.strip()}
+
+    def require_scopes(self, *needed):
+        """Abort unless the token carries every scope in `needed`.
+
+        Called before any collection, so a missing scope fails in the first
+        second rather than being rendered as a finding twenty minutes later.
+        """
+        have = self.scopes()
+        missing = [s for s in needed if s not in have]
+        if missing:
+            raise SystemExit(
+                "Token is missing the %s scope(s). The audit would report the "
+                "resulting failures as real findings, so it will not run.\n"
+                "Re-authenticate with `slack auth login`." % ", ".join(missing))
+        return have
 
 
 # --------------------------------------------------------------------------
@@ -158,6 +238,12 @@ def channels(api):
     Private channels are limited to those the token owner belongs to; see the
     module docstring. `updated_ms` is returned for completeness but must not be
     read as activity.
+
+    Field policy, deliberately three-tier: `id`/`name`/`is_private` are indexed
+    (a Slack response omitting them is a broken assumption worth a KeyError);
+    flags default to False; and `num_members`/`created` stay **None when the API
+    does not report them** — "not reported" is not "zero", and a consumer that
+    conflates them publishes an unknown-size channel as empty.
     """
     out = []
     for c in api.paged("conversations.list", "channels",
@@ -167,11 +253,12 @@ def channels(api):
         purpose = c.get("purpose") or {}
         out.append({
             "id": c["id"], "name": c["name"],
-            "is_private": c["is_private"], "is_archived": c.get("is_archived", False),
+            "is_private": c["is_private"],
+            "is_archived": c.get("is_archived", False),
             "is_general": c.get("is_general", False),
             "is_member": c.get("is_member", False),
             "is_ext_shared": c.get("is_ext_shared", False),
-            "num_members": c.get("num_members") or 0,
+            "num_members": c.get("num_members"),
             "created": c.get("created"), "creator": c.get("creator", ""),
             "updated_ms": c.get("updated"),
             "topic": topic.get("value", ""), "topic_last_set": topic.get("last_set") or 0,
@@ -181,14 +268,23 @@ def channels(api):
     return out
 
 
-USER_FIELDS = ("id", "name", "deleted", "is_bot", "is_app_user", "is_admin", "is_owner",
-               "is_primary_owner", "is_restricted", "is_ultra_restricted",
-               "is_email_confirmed", "has_2fa", "tz", "updated")
+#: Fields copied verbatim off a user record. Booleans are defaulted in
+#: _user_record so a consumer can treat them as booleans.
+USER_FLAGS = ("deleted", "is_bot", "is_app_user", "is_admin", "is_owner",
+              "is_primary_owner", "is_restricted", "is_ultra_restricted")
 
 
 def _user_record(u):
     profile = u.get("profile") or {}
-    record = {f: u.get(f) for f in USER_FIELDS}
+    record = {f: bool(u.get(f, False)) for f in USER_FLAGS}
+    record["id"] = u["id"]
+    record["name"] = u.get("name", "")
+    # Tri-state on purpose: None means Slack did not report it, which is not the
+    # same as "unconfirmed". The member report counts only explicit False.
+    record["is_email_confirmed"] = u.get("is_email_confirmed")
+    record["has_2fa"] = u.get("has_2fa")
+    record["tz"] = u.get("tz")
+    record["updated"] = u.get("updated")
     record["real_name"] = u.get("real_name") or profile.get("real_name", "")
     record["email"] = (profile.get("email") or "").lower()
     record["title"] = profile.get("title", "")
@@ -213,16 +309,23 @@ def members(api, channel_id):
 
 
 def lookup_emails(api, emails, progress=None):
-    """Map each email to its Slack account, or to a miss.
+    """Map each email to its Slack account, or to a genuine miss.
 
-    Returns ``{email: {"id": ..., "real_name": ...}}`` with ``id: None`` and an
-    ``error`` key where the address matches nobody. A miss is not proof the
-    person is absent — they may hold a Slack account under a different address.
+    Returns ``{email: {"id": ..., "real_name": ...}}`` with ``id: None`` where
+    the address matches nobody. A miss is not proof the person is absent — they
+    may hold a Slack account under a different address.
+
+    **Blank addresses are skipped entirely** and do not appear in the result, so
+    a caller computing a resolution rate must count them separately rather than
+    dividing by ``len(result)``.
+
+    Raises rather than returning data when a lookup fails for any reason other
+    than `users_not_found`. A `missing_scope` or `invalid_auth` would otherwise
+    be recorded as "this person has no Slack account" — turning a broken token
+    into the audit's headline finding, stated with total confidence.
     """
-    resolved = {}
-    for i, email in enumerate(sorted(set(emails)), 1):
-        if not email:
-            continue
+    resolved, failures = {}, []
+    for i, email in enumerate(sorted(set(e for e in emails if e)), 1):
         payload = api.call("users.lookupByEmail", email=email)
         if payload.get("ok"):
             user = payload["user"]
@@ -232,16 +335,26 @@ def lookup_emails(api, emails, progress=None):
                 "real_name": user.get("real_name") or profile.get("real_name", ""),
                 "deleted": user.get("deleted", False)}
         else:
-            resolved[email] = {"id": None, "error": payload.get("error")}
+            error = payload.get("error", "unknown")
+            resolved[email] = {"id": None, "error": error}
+            if error not in BENIGN_LOOKUP_MISSES:
+                failures.append(error)
         if progress:
             progress(i)
+    if failures:
+        raise SlackError(
+            "users.lookupByEmail", "lookup_failed",
+            "%d of %d lookups failed for API reasons rather than absence (%s). "
+            "Refusing to report these people as having no Slack account."
+            % (len(failures), len(resolved), ", ".join(sorted(set(failures)))))
     return resolved
 
 
 def scopes(token=None):
-    """OAuth scopes on the token, read from a live response header."""
-    request = urllib.request.Request(
-        API + "auth.test", data=b"",
-        headers={"Authorization": "Bearer " + (token or load_token())})
-    with urllib.request.urlopen(request) as response:
-        return (response.headers.get("x-oauth-scopes") or "").split(",")
+    """OAuth scopes for a token, loading one from disk if not given.
+
+    Prefer `Slack.scopes()` when you already hold a client — this function reads
+    the credentials a second time and could therefore answer for a different
+    token than the one your client is using.
+    """
+    return Slack(token=token).scopes()
