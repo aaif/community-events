@@ -1,0 +1,79 @@
+{
+  "_comment": [
+    "Workspace-specific channel wiring for the organizer audit. Edit this file, not the script.",
+    "",
+    "'public' maps a chapter city to the channel that is genuinely ITS OWN channel, where the",
+    "name breaks the plain-slug convention. A city not listed here is matched automatically by",
+    "slug (and by the prefixes in 'public_prefixes'). Map a city to null to record that no",
+    "channel exists and stop the matcher guessing.",
+    "",
+    "'regional' maps a city to a channel that SERVES it without being its own — #india for",
+    "Chennai, #africa for Lagos. These are reported as 'regional only', never counted as",
+    "chapter coverage, because a member there has no local room.",
+    "",
+    "'organizers' maps a city to its private organizer channel where the name is not",
+    "'<city>-organizers'. Suffixes in 'organizer_suffixes' are matched automatically."
+  ],
+
+  "public": {
+    "Bengaluru": "bangalore",
+    "Delhi NCR": "delhi",
+    "Denver": "colorado",
+    "Medellin": "medellín",
+    "Munich": "munchen",
+    "Montréal": "montreal",
+    "Washington DC": "washington-dc-the-capital",
+    "San Francisco": "bay-area",
+    "Silicon Valley": "bay-area",
+    "Barcelona": "meetup-barcelona",
+    "Seattle": "meetup-seattle",
+    "Madrid": "españa",
+    "Bilbao": "españa",
+    "Logroño": "españa",
+    "Portland": "portland-oregon",
+    "Austin": "austin-area",
+    "Frankfurt": "frankfurt_main",
+    "New York": "nyc",
+    "Wellington": null
+  },
+
+  "regional": {
+    "Seoul": "korea",
+    "Tel Aviv": "israel",
+    "Lagos": "africa",
+    "Ilorin": "africa",
+    "Jalingo": "africa",
+    "Kampala": "africa",
+    "Addis Ababa": "africa",
+    "Johannesburg": "africa",
+    "Oslo": "norway",
+    "Stockholm": "nordics-public",
+    "Gothenburg": "nordics-public",
+    "Chennai": "india",
+    "Hyderabad": "india",
+    "Jaipur": "india",
+    "Colombo": "india",
+    "Pune": "india",
+    "Ahmedabad": "indiagujarat",
+    "Mexico City": "spanish-speaking",
+    "Bogota": "spanish-speaking",
+    "Lisbon": "portugal",
+    "Dubai": "uae",
+    "Lille": "french-speaking",
+    "Istanbul": "turkey"
+  },
+
+  "organizers": {
+    "San Francisco": "bay-area-sf-organizers",
+    "Silicon Valley": "southbay-chapter-leads",
+    "Berlin": "berlin-organizers",
+    "London": "london-meetup-organizers",
+    "Pune": "pune-organizers",
+    "New York": "nyc-chapter-leads"
+  },
+
+  "public_prefixes": ["", "meetup-", "aaif-", "mlops-", "aaif"],
+  "organizer_suffixes": ["-organizers", "-organisers", "-chapter-leads", "-organizer",
+                         "-leads", "-meetup-organizers"],
+  "staff_email_domain": "mlops.community"
+}
