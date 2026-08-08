@@ -69,9 +69,11 @@ _TRANSIENT_STATUS = re.compile(r"(?<![0-9])(?:429|500|502|503|504)(?![0-9])")
 def _transient(msg):
     return any(k in msg for k in _TRANSIENT) or bool(_TRANSIENT_STATUS.search(msg))
 
-def _gws(cmd, retries=5):
+def _gws(cmd, retries=5, cwd=None):
+    # cwd: gws rejects --output/--upload paths outside its working directory, so
+    # the Drive callers in sync_crm.py run it from the file's own directory.
     for i in range(max(1, retries)):   # retries<=0 must raise below, not return None
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
         if r.returncode == 0:
             return r.stdout
         msg = (r.stderr or "") + (r.stdout or "")
