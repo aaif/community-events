@@ -119,11 +119,22 @@ Channel naming is not consistent, so matching is config-driven. Edit
   counted as chapter coverage, because a member there has no local room.
 - **`organizers`** — organizer channels not named `<city>-organizers`.
 
-**Matching is deliberately conservative.** An exact or configured hit is a match;
-anything weaker lands in the report's *Data quality* section as a near-miss for a
-human to confirm. Resolve one by adding a line to the map and re-running — never
-by widening the fuzzy matching, because a false "that chapter is covered" is far
-worse than a flagged unknown.
+**Never auto-map an alias.** Every entry in the map is a human judgement that a
+named channel really is that chapter's channel. When the report flags a
+near-miss, or you spot a likely match yourself, **propose it and wait** — show
+the user the chapter, the candidate channel, its member count and why you think
+they correspond, and let them confirm before anything is written. Do not add the
+entry on your own authority, and do not widen the matcher to catch it.
+
+The audit is allowed to answer "no channel found"; that is correct and someone
+will notice. A wrong alias is neither — it reports a chapter as covered when it
+has no room, and nothing downstream ever re-checks it. Prefer the flagged unknown
+every time.
+
+`_provenance` at the top of the map records that the current entries were
+inferred by an agent on the first run and never confirmed by anyone who runs
+these chapters. Until a human signs them off, say so when you report coverage
+numbers. Delete that block once they are checked.
 
 ## Reading the results
 
@@ -190,6 +201,9 @@ and do something else. Don't pass `--refresh` unless the data is genuinely stale
 
 # House rules
 
+- **Never write a channel alias without a human confirming it.** Propose, wait,
+  then edit `channel_map.json`. "No channel found" is an acceptable answer; a
+  wrong alias silently reports a chapter as covered.
 - **Read-only by construction.** `lib/aaif_events/slack.py` refuses any method
   outside its `ALLOWED_METHODS` allowlist, so a typo cannot post, invite or
   archive. Keep it that way — if a future need is genuinely read-only, add the

@@ -2,6 +2,13 @@
   "_comment": [
     "Workspace-specific channel wiring for the organizer audit. Edit this file, not the script.",
     "",
+    "RULE — NEVER AUTO-MAP AN ALIAS. Every entry below is a human judgement that a named",
+    "channel really is that chapter's channel, and only a human may add one. An agent that",
+    "spots a likely match must PROPOSE it and wait for confirmation; it must not write the",
+    "entry itself, and it must not widen the matcher to guess. The audit is allowed to say",
+    "'no channel found' — that is a correct, recoverable answer. A wrong alias is not: it",
+    "reports a chapter as covered when it has no room, and nothing downstream re-checks it.",
+    "",
     "'public' maps a chapter city to the channel that is genuinely ITS OWN channel, where the",
     "name breaks the plain-slug convention. A city not listed here is matched automatically by",
     "slug (and by the prefixes in 'public_prefixes'). Map a city to null to record that no",
@@ -13,6 +20,19 @@
     "",
     "'organizers' maps a city to its private organizer channel where the name is not",
     "'<city>-organizers'. Suffixes in 'organizer_suffixes' are matched automatically."
+  ],
+
+  "_provenance": [
+    "UNCONFIRMED as of 2026-08-08. The entries below were inferred by an agent from channel",
+    "names and member counts during the first audit run — they were never checked against",
+    "anyone who runs these chapters. Treat every one as a proposal until a human who knows",
+    "the workspace signs it off, then delete this block.",
+    "",
+    "The ones most worth a second look, because the channel name shares nothing with the",
+    "chapter name: Denver -> #colorado, Munich -> #munchen, Bengaluru -> #bangalore,",
+    "Madrid/Bilbao/Logrono -> #espana (one channel serving three chapters),",
+    "San Francisco + Silicon Valley -> #bay-area (one channel serving two),",
+    "Washington DC -> #washington-dc-the-capital, Silicon Valley -> #southbay-chapter-leads."
   ],
 
   "public": {
