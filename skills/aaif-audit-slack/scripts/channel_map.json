@@ -18,7 +18,7 @@
     "(and by the prefixes in 'public_prefixes', tried in the order listed). Map a city to null",
     "to record that no channel exists; the matcher then stops and does not guess.",
     "",
-    "Several chapters may point at ONE channel — Madrid/Bilbao/Logrono all use #espana, and",
+    "Several chapters may point at ONE channel — Madrid/Bilbao/Logroño all use #españa, and",
     "San Francisco and Silicon Valley share #bay-area. That is coverage, not a regional",
     "fallback: those chapters really do meet in that room, so each is counted as having a home.",
     "The distinction from 'regional' below is whether the chapter's own people are actually",
@@ -34,7 +34,8 @@
     "pins the mapping against a future edit to the suffix list. null works here too, and stops",
     "the suffix scan for that city.",
     "",
-    "An alias that no longer resolves to a live channel ABORTS the run. A human confirmed that",
+    "An alias in ANY of the three tables that no longer resolves to a live channel ABORTS the",
+    "run — public, organizers and regional alike. A human confirmed that",
     "mapping, so a broken one is a bug to fix, not a fallback to a slug guess — silently",
     "downgrading the chapter to 'no channel' would generate advice to create a room it has."
   ],
@@ -47,7 +48,7 @@
     "",
     "The ones most worth a second look, because the channel name shares nothing with the",
     "chapter name: Denver -> #colorado, Munich -> #munchen, Bengaluru -> #bangalore,",
-    "Madrid/Bilbao/Logrono -> #espana (one channel serving three chapters),",
+    "Madrid/Bilbao/Logroño -> #españa (one channel serving three chapters),",
     "San Francisco + Silicon Valley -> #bay-area (one channel serving two),",
     "Washington DC -> #washington-dc-the-capital, Silicon Valley -> #southbay-chapter-leads."
   ],

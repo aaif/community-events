@@ -17,6 +17,7 @@ light choice still wins on a dark OS — do not simplify that selector to a bare
 
 import html
 import os
+import pathlib
 import shutil
 import subprocess
 
@@ -321,11 +322,14 @@ def to_pdf(html_path, pdf_path, timeout_s=180):
     Chrome, never LibreOffice: `soffice` substitutes local system fonts and drops
     markup it does not understand, so its render misrepresents the document.
 
-    Verification is the point of the length here. Headless Chrome exits **0** in
-    several real failure modes — a contested profile lock from a running Chrome,
-    an unwritable target, a missing sandbox in a container — so a bare
-    `check=True` lets the caller print "wrote report.pdf" for a file that does
-    not exist, or worse, for last week's PDF that someone then circulates.
+    Verification is the point of the length here. Headless Chrome has been
+    observed exiting **0** without rendering the document you asked for — a
+    contested profile lock produces no file, and a URL it cannot open produces a
+    perfectly valid PDF of Chrome's own error page (46 KB, observed 2026-08).
+    Rather than enumerate Chrome's failure modes, check the inputs before
+    invoking it and the artifact after.
+
+    Size alone is not a check: an error page is *larger* than a short report.
     """
     chrome = find_chrome()
     if not chrome:
@@ -333,15 +337,23 @@ def to_pdf(html_path, pdf_path, timeout_s=180):
             "No Chrome/Chromium found for PDF rendering. Install Google Chrome, or "
             "open the HTML and print to PDF by hand. Do not use LibreOffice.")
 
+    # Chrome renders its "file not found" page and exits 0, so a missing input
+    # would otherwise be published as the report. Check before invoking.
+    if not os.path.isfile(html_path):
+        raise SystemExit("Cannot render %s to PDF — the HTML does not exist." % html_path)
+
     # Remove any earlier render first: if Chrome fails without writing, a stale
     # file left in place is indistinguishable from a fresh one.
     if os.path.exists(pdf_path):
         os.remove(pdf_path)
 
+    # as_uri(), not "file://" + path: a '#' or '?' in the output name would
+    # otherwise start a URL fragment/query and silently render a different file.
+    url = pathlib.Path(html_path).absolute().as_uri()
     try:
         proc = subprocess.run(
             [chrome, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-             "--print-to-pdf=" + str(pdf_path), "file://" + str(html_path)],
+             "--print-to-pdf=" + str(pdf_path), url],
             capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         raise SystemExit(
@@ -356,14 +368,42 @@ def to_pdf(html_path, pdf_path, timeout_s=180):
             "— open it and print to PDF by hand. Do not use LibreOffice."
             % (pdf_path, proc.returncode, stderr, html_path))
 
-    size = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
-    if size < 1024:
+    if not os.path.exists(pdf_path):
         raise SystemExit(
-            "Chrome exited 0 but produced no usable PDF at %s (%d bytes). This is "
-            "usually another Chrome instance holding the profile lock — quit "
-            "Chrome and retry, or pass --no-pdf and print %s by hand.\n%s"
-            % (pdf_path, size, html_path, stderr))
+            "Chrome exited 0 but wrote no PDF at %s. This is usually another "
+            "Chrome instance holding the profile lock — quit Chrome and retry, "
+            "or pass --no-pdf and print %s by hand.\n%s"
+            % (pdf_path, html_path, stderr))
+    with open(pdf_path, "rb") as fh:
+        head = fh.read(5)
+    if head != b"%PDF-" or os.path.getsize(pdf_path) < 1024:
+        raise SystemExit(
+            "Chrome exited 0 but produced no usable PDF at %s (%d bytes). Quit "
+            "any running Chrome and retry, or pass --no-pdf and print %s by "
+            "hand.\n%s" % (pdf_path, os.path.getsize(pdf_path), html_path, stderr))
+    os.chmod(pdf_path, 0o600)
     return pdf_path
+
+
+def _repo_root(path):
+    """Repo root containing `path`, or None when it lives outside any repo.
+
+    Resolved from the path's own directory, not the process cwd — running the
+    script from elsewhere must not decide whether the *output* is protected.
+    """
+    probe_dir = os.path.dirname(os.path.abspath(path)) or os.sep
+    while not os.path.isdir(probe_dir) and probe_dir != os.sep:
+        probe_dir = os.path.dirname(probe_dir)   # output dir may not exist yet
+    try:
+        proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True)
+    except FileNotFoundError:
+        raise SystemExit(
+            "REFUSING TO RUN: git is not installed, so this cannot verify that "
+            "%s is ignored. These files hold Slack member names, email addresses "
+            "and 2FA/admin flags; install git or point --cache/--out outside any "
+            "repository." % path)
+    return proc.stdout.strip() if proc.returncode == 0 else None
 
 
 def assert_git_ignored(*paths):
@@ -374,23 +414,36 @@ def assert_git_ignored(*paths):
     public, so `.gitignore` coverage is a safety control, not tidiness — and a
     control nobody checks is not a control. This runs before collection, so a
     missing rule costs a second rather than a 20-minute pull.
+
+    A path outside every repository is fine — there is nothing to commit it to.
+    That case is not the same as `git check-ignore` failing, which is why the
+    repo root is resolved first: `check-ignore` exits 128 (not 1) for an
+    outside path, and treating that as "unignored" would reject the very
+    remedy this function's own error message recommends.
     """
-    root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                          capture_output=True, text=True)
-    if root.returncode != 0:
-        return  # not a git repo; nothing to leak into
-    unignored = []
+    offenders = []
     for path in paths:
+        root = _repo_root(path)
+        if root is None:
+            continue                      # outside any repo — nothing to leak into
+        # A directory is probed through a child: `check-ignore` answers
+        # differently for a bare directory name, and this works before the
+        # directory exists.
         probe = os.path.join(path, "probe") if path.endswith(os.sep) else path
-        check = subprocess.run(["git", "check-ignore", "-q", probe],
-                               capture_output=True)
-        if check.returncode != 0:
-            unignored.append(path)
-    if unignored:
+        ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", probe],
+                                 capture_output=True).returncode == 0
+        # .gitignore has no effect on an already-tracked file, so a report
+        # committed before these rules landed would still ride along on `git
+        # add -A` while check-ignore reports it as ignored.
+        tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", path],
+                                 capture_output=True).returncode == 0
+        if tracked:
+            offenders.append("%s (already TRACKED — git rm --cached it)" % path)
+        elif not ignored:
+            offenders.append("%s (not ignored in %s)" % (path, root))
+    if offenders:
         raise SystemExit(
-            "REFUSING TO RUN: these output paths are not git-ignored inside %s:\n"
-            "  %s\n"
+            "REFUSING TO RUN: these output paths would be committable:\n  %s\n"
             "They will hold Slack member names, email addresses and 2FA/admin "
-            "flags. Add them to .gitignore, or pass --cache/--out somewhere "
-            "outside the repository."
-            % (root.stdout.strip(), "\n  ".join(unignored)))
+            "flags. Add them to .gitignore, or pass --cache/--out to a location "
+            "outside any git repository." % "\n  ".join(offenders))

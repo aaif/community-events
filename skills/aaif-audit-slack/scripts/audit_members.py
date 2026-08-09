@@ -33,16 +33,31 @@ WEBMAIL = {"gmail.com", "googlemail.com", "hotmail.com", "outlook.com", "yahoo.c
            "icloud.com", "protonmail.com", "proton.me", "live.com", "me.com", "aol.com"}
 
 
-def cached(path, build, refresh=False, label=""):
+def check_buckets(rows, total, label):
+    """Every record must land in exactly one bucket.
+
+    A chart whose bars do not account for the population silently describes a
+    different one than its heading claims. SystemExit, not assert: `python -O`
+    strips asserts, and every other integrity control in this skill raises.
+    """
+    got = sum(n for _, n in rows)
+    if got != total:
+        raise SystemExit(
+            "ABORT: the %s histogram accounts for %d of %d records — the buckets "
+            "are wrong, and the chart would misdescribe the workspace."
+            % (label, got, total))
+
+
+def cached(path, build, refresh=False, label="", team_id=None):
     """Load a JSON cache, or build and store it. The user pull is slow — reuse it."""
-    data = jsoncache.read(path, refresh)
+    data = jsoncache.read(path, refresh, team_id, note=print)
     if data is not None:
         print("  reusing %s (%d records, %s)"
               % (os.path.basename(path), len(data), jsoncache.age(path)))
         return data
     print("  fetching %s ..." % (label or os.path.basename(path)))
     data = build()
-    jsoncache.write(path, data)
+    jsoncache.write(path, data, team_id)
     print("  fetched %d records" % len(data))
     return data
 
@@ -76,25 +91,32 @@ def build_report(chans, directory, today):
                                      ("101-1,000", 101, 1000), ("1,000+", 1001, 10 ** 9)]]
     if unsized:
         size_rows.append(("size not reported", len(unsized)))
-    # Every live channel must land in exactly one bucket, or the chart quietly
-    # describes a different population than the heading claims.
-    assert sum(n for _, n in size_rows) == len(live), "size buckets lost a channel"
+    check_buckets(size_rows, len(live), "channel size")
 
     # Human topic/purpose edits only. The channel `updated` field is a bulk
     # migration stamp and must never be used as a staleness signal.
-    described = [c for c in live if max(c["topic_last_set"], c["purpose_last_set"])]
+    # Partition, never subtract. Slack keeps `topic.last_set` when a topic is
+    # CLEARED, so "has a timestamp" and "has no text" overlap — deriving the
+    # third bucket by subtraction produced a negative bar in the published
+    # report. Each channel lands in exactly one list by construction.
+    nodesc, described, undated = [], [], []
+    for c in live:
+        stamp = max(c["topic_last_set"], c["purpose_last_set"])
+        if stamp:
+            described.append(c)
+        elif not c["topic"] and not c["purpose"]:
+            nodesc.append(c)
+        else:                      # text present, no usable timestamp
+            undated.append(c)
     edit_rows = [(lbl, sum(1 for c in described
                            if lo <= age(max(c["topic_last_set"], c["purpose_last_set"])) <= hi))
                  for lbl, lo, hi in [("under 1 year", 0, 365), ("1-2 years", 366, 730),
                                      ("2-3 years", 731, 1095), ("3-5 years", 1096, 1825),
                                      ("over 5 years", 1826, 10 ** 9)]]
-    nodesc = [c for c in live if not c["topic"] and not c["purpose"]]
     edit_rows.append(("never set", len(nodesc)))
-    # A channel can carry topic text with no last_set stamp; it belongs to
-    # neither group above, so name it rather than letting the bars under-sum.
-    undated = len(live) - len(described) - len(nodesc)
     if undated:
-        edit_rows.append(("edit date unknown", undated))
+        edit_rows.append(("edit date unknown", len(undated)))
+    check_buckets(edit_rows, len(live), "channel description")
 
     dated_profiles = [u for u in active if age(u.get("updated")) is not None]
     prof_rows = [(lbl, sum(1 for u in dated_profiles
@@ -104,6 +126,7 @@ def build_report(chans, directory, today):
                                      ("3-5 years", 1096, 1825), ("over 5 years", 1826, 10 ** 9)]]
     if len(dated_profiles) != len(active):
         prof_rows.append(("never updated", len(active) - len(dated_profiles)))
+    check_buckets(prof_rows, len(active), "profile age")
 
     years = sorted(Counter(dt.datetime.fromtimestamp(c["created"], dt.timezone.utc).year
                            for c in chans if c["created"]).items())
@@ -126,7 +149,8 @@ def build_report(chans, directory, today):
                      if d not in WEBMAIL and not d.endswith((".edu", ".ac.uk"))), None)
 
     no_photo = sum(1 for u in active if not u["has_avatar"])
-    unconf = sum(1 for u in active if u.get("is_email_confirmed") is False)
+    unconf = sum(1 for u in active if u["is_email_confirmed"] is False)
+    unconf_unknown = sum(1 for u in active if u["is_email_confirmed"] is None)
     guests = sum(1 for u in active if u["is_restricted"] or u["is_ultra_restricted"])
 
     stamp = today.strftime("%-d %B %Y")
@@ -210,8 +234,9 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
   <div class="two" style="margin-top:22px">
     <div class="card"><h3>How real the roster is</h3>
       <p class="sub">Among the {len(active):,} active humans</p>
-      {rs.bars([("no profile photo", no_photo), ("email unverified", unconf),
-                ("guest accounts", guests)], "bad")}
+      {rs.bars([("no profile photo", no_photo), ("email unverified", unconf)]
+               + ([("verification unknown", unconf_unknown)] if unconf_unknown else [])
+               + [("guest accounts", guests)], "bad")}
       <p class="note">Every bar counts a subset of the active humans named above — the
       {len(deact):,} deactivated accounts ({100 * len(deact) / max(len(humans), 1):.1f}% of all
       humans) are a separate population and have their own tile. {unconf:,} people signed up and
@@ -279,31 +304,47 @@ def main():
     os.chmod(args.cache, 0o700)
 
     api = Slack()
-    have = api.require_scopes("channels:read", "users:read")
+    # groups:read too: channels() asks for private_channel, so without it the
+    # preflight would pass and the pull would die with a raw SlackError — the
+    # opposite of "fails in the first second".
+    have = api.require_scopes("channels:read", "groups:read", "users:read")
     who = api.ok("auth.test")
-    print("workspace: %s (%s)" % (who.get("team"), who.get("team_id")))
+    team_id = who.get("team_id")
+    print("workspace: %s (%s)" % (who.get("team"), team_id))
     if "channels:history" in have:
         print("  note: this token HAS channels:history — the report's 'no message data'")
         print("        caveat is now false and the script should be extended.")
 
     chans = cached(os.path.join(args.cache, "channels.json"),
-                   lambda: channels(api), args.refresh, "channel list")
+                   lambda: channels(api), args.refresh, "channel list", team_id)
     directory = cached(
         os.path.join(args.cache, "users.json"),
         lambda: users(api, progress=lambda n: print("    %d users..." % n, flush=True)),
-        args.refresh, "user directory (slow on a large workspace)")
+        args.refresh, "user directory (slow on a large workspace)", team_id)
 
-    # Independent floor on the directory: every member is auto-joined to
-    # #general, so a directory materially smaller than that channel means the
-    # paged pull came up short and must not be reported as the workspace size.
-    general = next((c["num_members"] for c in chans
-                    if c["name"] == DEFAULT_JOIN[0] and c["num_members"]), None)
-    humans = sum(1 for u in directory if not u["is_bot"] and not u["is_app_user"])
-    if general and humans < general * 0.9:
+    # Independent floor on the directory: every member is auto-joined to the
+    # workspace's default channel, so a directory materially smaller than that
+    # channel means the paged pull came up short.
+    #
+    # Three things this must get right, each of which it got wrong before:
+    # find the channel by `is_general`, not by a name someone can rename; treat
+    # an unreported size as "cannot check" and SAY so rather than skipping in
+    # silence; and compare like with like — num_members counts only ACTIVE
+    # members, so measuring it against all humans (deactivated included) would
+    # pass a pull that had lost half the workspace.
+    general = next((c for c in chans if c.get("is_general")), None)
+    active_humans = sum(1 for u in directory
+                        if not u["is_bot"] and not u["is_app_user"]
+                        and not u["deleted"] and u["id"] != "USLACKBOT")
+    if general is None or general["num_members"] is None:
+        print("  note: no default channel size available — the directory "
+              "completeness cross-check could not run.")
+    elif active_humans < general["num_members"] * 0.9:
         raise SystemExit(
-            "ABORT: the directory holds %d humans but #%s reports %d members. The "
-            "user pull is short — reporting it would understate every count on the "
-            "page. Re-run with --refresh." % (humans, DEFAULT_JOIN[0], general))
+            "ABORT: the directory holds %d active humans but #%s reports %d "
+            "members. The user pull is short — reporting it would understate "
+            "every count on the page. Re-run with --refresh."
+            % (active_humans, general["name"], general["num_members"]))
 
     html_doc = build_report(chans, directory, dt.datetime.now(dt.timezone.utc))
     html_path = args.out + ".html"
@@ -311,6 +352,7 @@ def main():
     # em dashes; the locale default would mangle or refuse them.
     with open(html_path, "w", encoding="utf-8") as fh:
         fh.write(html_doc)
+    os.chmod(html_path, 0o600)   # names + emails: same handling as the cache
     print("wrote %s" % html_path)
     if not args.no_pdf:
         print("wrote %s" % rs.to_pdf(os.path.abspath(html_path), os.path.abspath(args.out + ".pdf")))

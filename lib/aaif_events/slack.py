@@ -58,6 +58,15 @@ ALLOWED_METHODS = frozenset({
     "users.list", "users.info", "users.lookupByEmail",
 })
 
+#: Error codes this module raises itself, as opposed to relaying from Slack.
+#: Kept as a set so the vocabulary is greppable from one place.
+MODULE_ERRORS = frozenset({
+    "retry_exhausted",     # burnt the retry budget; detail names the last cause
+    "transport_failed",    # socket/TLS/DNS failure on the final attempt
+    "malformed_page",      # ok:true but the collection key was absent
+    "lookup_failed",       # a lookup failed for API reasons, not absence
+})
+
 MAX_ATTEMPTS = 6
 #: Slack's own read timeout is generous; ours bounds a half-open socket so a
 #: 20-minute directory pull cannot hang forever with no output.
@@ -72,10 +81,9 @@ BENIGN_LOOKUP_MISSES = frozenset({"users_not_found"})
 class SlackError(RuntimeError):
     """A Slack API call failed.
 
-    `error` carries a machine-readable code — Slack's own (`missing_scope`,
-    `users_not_found`) or one of this module's (`retry_exhausted`,
-    `malformed_page`, `lookup_failed`) — so callers can branch on it. Prose
-    belongs in the message, not in `error`.
+    `error` carries a machine-readable code so callers can branch on it: either
+    Slack's own (`missing_scope`, `users_not_found`, …) or one of this module's,
+    listed in MODULE_ERRORS. Prose belongs in the message, not in `error`.
     """
 
     def __init__(self, method, error, detail=""):
@@ -153,13 +161,16 @@ class Slack:
                     last = "http_429"
                     self._sleep(int(exc.headers.get("Retry-After", "5")))
                     continue
-                raise
-            except (http.client.IncompleteRead, urllib.error.URLError,
-                    TimeoutError) as exc:
-                # Slack truncates very large pages; back off and retry the same
-                # cursor. URLError also covers DNS and TLS failures, which will
-                # never recover — they simply exhaust the budget and surface
-                # below with the cause named.
+                # One vocabulary out of call(): a caller writing `except
+                # SlackError` must not miss the final 429 or a 5xx.
+                raise SlackError(method, "http_%d" % exc.code, exc.reason or "")
+            except (http.client.HTTPException, urllib.error.URLError,
+                    ConnectionError, TimeoutError) as exc:
+                # Slack truncates very large pages (IncompleteRead) and long
+                # pulls meet resets and disconnects; back off and retry the same
+                # cursor. URLError also covers DNS and TLS failures, which never
+                # recover — they exhaust the budget and surface with the cause
+                # named rather than as a bare traceback mid-pull.
                 if attempt == MAX_ATTEMPTS - 1:
                     raise SlackError(method, "transport_failed", repr(exc))
                 last = type(exc).__name__
@@ -167,6 +178,8 @@ class Slack:
                 continue
             if not payload.get("ok") and payload.get("error") == "ratelimited":
                 last = "ratelimited"
+                if attempt == MAX_ATTEMPTS - 1:
+                    break          # no point sleeping before giving up
                 self._sleep(int(payload.get("retry_after", 5)))
                 continue
             return payload
@@ -210,6 +223,13 @@ class Slack:
         with urllib.request.urlopen(self._request("auth.test"),
                                     timeout=TIMEOUT_S) as response:
             raw = response.headers.get("x-oauth-scopes") or ""
+            body = json.loads(response.read())
+        if not body.get("ok"):
+            # Without this, a dead token yields no scope header, an empty set,
+            # and a "missing scopes" message that sends the operator hunting
+            # through the app config for a problem that is really the token.
+            raise SlackError("auth.test", body.get("error", "unknown"),
+                             "the token is not usable; run `slack auth login`")
         return {s.strip() for s in raw.split(",") if s.strip()}
 
     def require_scopes(self, *needed):
@@ -276,15 +296,20 @@ USER_FLAGS = ("deleted", "is_bot", "is_app_user", "is_admin", "is_owner",
 
 def _user_record(u):
     profile = u.get("profile") or {}
+    # These are the fields Slack omits *when false*, so defaulting is lossless
+    # and consumers may treat them as plain booleans.
     record = {f: bool(u.get(f, False)) for f in USER_FLAGS}
     record["id"] = u["id"]
     record["name"] = u.get("name", "")
-    # Tri-state on purpose: None means Slack did not report it, which is not the
-    # same as "unconfirmed". The member report counts only explicit False.
+    # Tri-state on purpose: None means Slack did not report it, which is not
+    # the same as "unconfirmed" — the member report counts only explicit False
+    # and shows the unknowns separately. `updated` is an optional scalar, not a
+    # boolean, and is absent for accounts that never changed a setting.
     record["is_email_confirmed"] = u.get("is_email_confirmed")
-    record["has_2fa"] = u.get("has_2fa")
-    record["tz"] = u.get("tz")
     record["updated"] = u.get("updated")
+    # has_2fa and tz are deliberately NOT collected. No report renders them, and
+    # an unread security flag sitting in a cache file is pure carrying cost
+    # against the argument for locking that file down in the first place.
     record["real_name"] = u.get("real_name") or profile.get("real_name", "")
     record["email"] = (profile.get("email") or "").lower()
     record["title"] = profile.get("title", "")

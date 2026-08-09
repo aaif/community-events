@@ -133,8 +133,10 @@ from the intake and carries each person's survey interest across.
 
 **This CRM is the onboarding list.** It decides who gets access to a chapter's
 Drive folder, so a person reaches it after a **decision**, not on submitting the
-form. Only `Accepted` and `Existing (from MLOps)` sync; `New`, `Tentative`,
-`Interviewing`, `Denied`, `Inactive` and `Duplicate` are all held back and reported.
+form. Only `Accepted` and `Existing (from MLOps)` sync. This is an allowlist:
+every other status on the intake dropdown is held back and reported, by
+construction — see `aaif-triage-intake` for the current set rather than trusting
+an enumeration here, which would rot the next time the dropdown changes.
 
 > As of 2026-08 that means **organizers only** — the Hosts and Speakers tabs have
 > never been triaged off `New` (0 of 26 and 0 of 55). Both start flowing the

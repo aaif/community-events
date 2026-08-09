@@ -13,6 +13,7 @@ Not covered: `render()` and the HTML f-strings (asserting on markup would break
 on every copy edit), and the `gws`/Chrome subprocess paths.
 """
 
+import datetime as dt
 import json
 import os
 import sys
@@ -262,16 +263,86 @@ def test_folding_matches_accent_and_punctuation_variants():
           (len(audit[0]["accepted"]), orphans), (1, {}))
 
 
+#: A floor, not a target. Without it, renaming the `test_` prefix or losing the
+#: functions in a bad merge prints "all checks passed" having run nothing.
+MIN_TESTS = 25
+
+
+def test_regional_alias_that_no_longer_resolves_aborts():
+    """The regional map is the largest of the three and had no protection: a
+    renamed target silently flipped a chapter to 'No channel at all' and into
+    the 'give them a room' action."""
+    rows = ao.match_channels([{"city": "Chennai"}], [chan("india-old")],
+                             cfg(regional={"Chennai": "india"}))
+    check("broken regional alias is recorded",
+          rows[0]["regional_how"], "alias-missing:india")
+    check_raises("broken regional alias aborts",
+                 lambda: ao.assert_aliases_resolve(rows, "map.json"), "india")
+
+
+def test_null_regional_alias_is_respected():
+    rows = ao.match_channels([{"city": "Chennai"}], [chan("india")],
+                             cfg(regional={"Chennai": None}))
+    check("null regional suppresses the fallback",
+          (rows[0]["regional"], rows[0]["regional_how"]), (None, "known-none"))
+
+
+def test_organizer_suffix_precedence_is_config_order():
+    """Mirrors the public prefix rule: -organizers must beat -chapter-leads
+    regardless of which city variant sorts first."""
+    chans = [chan("cape-town-chapter-leads", private=True),
+             chan("capetown-organizers", private=True)]
+    forward = ao.match_channels([{"city": "Cape Town"}], chans, cfg())[0]
+    reverse = ao.match_channels([{"city": "Cape Town"}], chans[::-1], cfg())[0]
+    check("organizer suffix precedence follows config",
+          (forward["organizers_channel"], reverse["organizers_channel"]),
+          ("capetown-organizers", "capetown-organizers"))
+
+
+def test_a_public_alias_pointing_at_a_private_channel_aborts():
+    """The auto path refuses private channels; an alias must not bypass it."""
+    check_raises(
+        "private public-alias aborts",
+        lambda: ao.match_channels([{"city": "Boston"}], [chan("secret", private=True)],
+                                  cfg(public={"Boston": "secret"})),
+        "PRIVATE")
+
+
+def test_unidentified_members_are_excluded_from_the_accusing_counts():
+    """build_audit marks them; the aggregates must not re-merge them into
+    'people we never accepted'."""
+    rows = [_row("Boston", org="boston-organizers")]
+    audit, _ = ao.build_audit(rows, [], {}, {"boston-organizers": ["U7", "U8"]},
+                              {"U8": {"real_name": "Known", "email": "k@gmail.com"}},
+                              "mlops.community")
+    flags = sorted(x["unresolved"] for x in audit[0]["unaccounted"])
+    check("one identified, one not", flags, [False, True])
+    html = ao.render(audit, {}, 0, dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc))
+    check("only the identified person is counted as unaccounted",
+          "1 distinct people hold 1 of these seats" in html, True)
+    check("the unidentified are surfaced in Data quality",
+          "could not be identified" in html, True)
+
+
 def main():
+    ran = 0
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
-            fn()
+            try:
+                fn()
+                ran += 1
+            except Exception as exc:      # keep going: one raise must not hide the rest
+                FAILS.append("%s raised %s: %s" % (name, type(exc).__name__, exc))
+    if ran < MIN_TESTS:
+        print("FAIL: only %d tests ran, expected at least %d — did the "
+              "collection break?" % (ran, MIN_TESTS))
+        return 1
     if FAILS:
         print("FAIL (%d)" % len(FAILS))
         for f in FAILS:
             print("  - %s" % f)
         return 1
-    print("audit_organizers: all checks passed")
+    print("audit_organizers: all %d checks passed" % ran)
     return 0
 
 

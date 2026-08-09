@@ -84,11 +84,44 @@ def test_retries_truncated_read(monkeypatch):
     assert len(calls) == 2 and sleeps
 
 
-def test_http_error_other_than_429_propagates(monkeypatch):
+def test_http_error_other_than_429_becomes_a_slackerror(monkeypatch):
+    """One exception vocabulary out of call(): `except SlackError` must catch
+    a 5xx and a final 429, not just this module's own failures."""
     err = urllib.error.HTTPError("u", 500, "boom", {}, None)
     api, _ = client(monkeypatch, [err])
-    with pytest.raises(urllib.error.HTTPError):
+    with pytest.raises(slack.SlackError) as exc:
         api.call("auth.test")
+    assert exc.value.error == "http_500"
+
+
+def test_rate_limit_does_not_sleep_on_the_attempt_it_gives_up_on(monkeypatch):
+    sleeps = []
+    api, _ = client(monkeypatch,
+                    [{"ok": False, "error": "ratelimited", "retry_after": 7}] * slack.MAX_ATTEMPTS,
+                    sleeps)
+    with pytest.raises(slack.SlackError) as exc:
+        api.call("auth.test")
+    assert exc.value.error == "retry_exhausted"
+    # One sleep fewer than attempts: the last failure aborts instead of waiting.
+    assert len(sleeps) == slack.MAX_ATTEMPTS - 1
+
+
+def test_connection_reset_mid_pull_is_retried(monkeypatch):
+    """A reset during the 20-minute users.list pull must not lose every page."""
+    api, calls = client(monkeypatch,
+                        [ConnectionResetError("reset"), {"ok": True, "members": ["U1"]}],
+                        [])
+    assert api.ok("users.list")["members"] == ["U1"]
+    assert len(calls) == 2
+
+
+def test_scopes_reports_a_dead_token_as_a_token_problem(monkeypatch):
+    """Not as 'missing scopes', which sends people hunting the app config."""
+    api, _ = client(monkeypatch, [{"ok": False, "error": "invalid_auth"}])
+    with pytest.raises(slack.SlackError) as exc:
+        api.scopes()
+    assert exc.value.error == "invalid_auth"
+    assert "slack auth login" in str(exc.value)
 
 
 def test_paged_follows_cursor_and_stops(monkeypatch):

@@ -55,8 +55,9 @@ week* and *is this channel alive* are **unreadable**, not merely unmeasured.
 `Slack.scopes()` reports the live one — trust those over any list written down
 here or there.)
 
-Both engines check their required scopes **before** collecting anything, so a
-revoked scope aborts in the first second. That matters more than it sounds:
+Both engines check their required scopes **before** collecting anything —
+including `groups:read`, which the private-channel half of `conversations.list`
+needs — so a revoked scope aborts in the first second. That matters more than it sounds:
 without the check, a missing `users:read.email` made every organizer lookup fail,
 and each failure was recorded as "this person has no Slack account" — rendering
 the report's headline, its funnel and its top recommendation as confident
@@ -102,7 +103,7 @@ Writes `slack-organizers-audit.html` + `.pdf`, and a machine-readable
 
 | Source | Read | Used for |
 |---|---|---|
-| Chapters List `Chapters & Teams` | `City`, `Organizers` | the chapter roster |
+| Chapters List `Chapters & Teams` | `City` | the chapter roster |
 | Intake Ops `Organizers` | `Status`, `Full name`, `Email`, `Chapter`, `City (New)`, `City (Existing)` | who was accepted, for which city |
 | Slack | `conversations.list`, `conversations.members`, `users.lookupByEmail`, `users.info` | channels and membership |
 
@@ -143,12 +144,15 @@ every time.
 
 The engine enforces this rather than trusting it:
 
-- **`null` genuinely stops the matcher** in both the `public` and `organizers`
-  maps. It records "a human checked and there is no channel", which is an
-  answer, so no slug guess follows.
-- **An alias that no longer resolves aborts the run.** A renamed or archived
-  channel is a configuration bug; left alone it downgrades the chapter to "no
-  channel at all" and generates advice to create a room it already has.
+- **`null` genuinely stops the matcher** in all three maps. It records "a human
+  checked and there is no channel", which is an answer, so no slug guess and no
+  suffix scan follows. Near-misses are still listed for a human to look at.
+- **An alias that no longer resolves aborts the run — in all three maps**,
+  `regional` included. A renamed or archived channel is a configuration bug;
+  left alone it downgrades the chapter to "no channel at all" and generates
+  advice to create a room it already has.
+- **A `public` alias pointing at a private channel aborts.** The automatic path
+  refuses private channels, and an alias must not be a way around that.
 - **The report says how each chapter matched.** Aliased chapters and deliberate
   `null`s are listed in *Data quality*, so coverage that rests on the map is
   visible rather than indistinguishable from a name match.
@@ -221,18 +225,25 @@ email-domain breakdown · the limits, restated on the page.
 `users.lookupByEmail` is ~1.5s per organizer. Run the first one in the background
 and do something else.
 
-Caches are written atomically and stamped, and every reuse prints the age
-(`reusing users.json (32543 records, fetched 3 days ago)`), so you can judge
-staleness instead of guessing. `--refresh` is rarely needed: the organizer engine
-**reconciles** rather than reusing wholesale, so organizers accepted since the
-last run are looked up automatically. Reach for `--refresh` when the *channel*
-list is stale — someone created, renamed or archived a channel.
+Caches are written atomically and stamped with the workspace they came from, and
+every reuse prints the age (`reusing users.json (32543 records, fetched 3 days
+ago)`), so you can judge staleness instead of guessing. A cache discarded for
+any reason — wrong format, wrong workspace — says so on the progress line rather
+than silently re-fetching.
 
-Cache files hold member names, email addresses and 2FA/admin flags, so they are
-written 0600 inside a 0700 directory, and **both engines refuse to start unless
-their cache and output paths are git-ignored.** That check is not tidiness: this
-repo is public, and one `git add -A` would publish the workspace directory
-irreversibly.
+`--refresh` is rarely needed. The organizer engine **reconciles** rather than
+reusing wholesale: organizers accepted since the last run are looked up, and so
+are people previously recorded as having no Slack account, since that answer
+changes when someone joins. Reach for `--refresh` when the *channel* list is
+stale — someone created, renamed or archived a channel.
+
+Cache files and the reports hold member names, email addresses and admin flags,
+so all of them are created 0600 inside a 0700 directory, and **both engines
+refuse to start unless their cache and output paths would be safe from `git add
+-A`.** That check is not tidiness: this repo is public, and one commit would
+publish the workspace directory irreversibly. It covers already-tracked files
+too, which `.gitignore` alone does not, and it allows paths outside any
+repository — there is nothing to commit them to.
 
 # House rules
 
