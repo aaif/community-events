@@ -3,6 +3,10 @@ __pycache__/
 .DS_Store
 .ruff_cache/
 
+# Scratch design docs / specs written while working (superpowers etc.) — the skills
+# themselves are the durable artifact, not the notes that produced them.
+docs/
+
 # Local versioned backups from the aaif-backup skill (binary snapshots stay out of git)
 backups/*
 !backups/README.md
