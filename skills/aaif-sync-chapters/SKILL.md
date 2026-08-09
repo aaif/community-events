@@ -133,8 +133,10 @@ from the intake and carries each person's survey interest across.
 
 **This CRM is the onboarding list.** It decides who gets access to a chapter's
 Drive folder, so a person reaches it after a **decision**, not on submitting the
-form. Only `Accepted` and `Existing (from MLOps)` sync; `New`, `Tentative` and
-`Denied` are all held back and reported.
+form. Only `Accepted` and `Existing (from MLOps)` sync. This is an allowlist:
+every other status on the intake dropdown is held back and reported, by
+construction — see `aaif-triage-intake` for the current set rather than trusting
+an enumeration here, which would rot the next time the dropdown changes.
 
 > As of 2026-08 that means **organizers only** — the Hosts and Speakers tabs have
 > never been triaged off `New` (0 of 26 and 0 of 55). Both start flowing the
@@ -206,6 +208,14 @@ used instead of inventing one.
   tab says to merge by email, so that is the key. Someone who applied as both an
   organizer and a speaker gets **one** row: the higher-priority role sets
   `Status`, and both interests are recorded in `What brings you here?`.
+- **A changed email is a two-place edit — always do both.** Email is the CRM's
+  dedupe key *and* the address Drive grants are issued to, and the engine only
+  ever fills blanks. So correcting an address on the intake row alone leaves the
+  CRM holding the old one, and the next run reads the new address as a person it
+  has never seen and **adds a second row**. Whenever an email changes: update the
+  Drive grant (revoke the old address if it holds one, grant the new) **and**
+  overwrite that person's `Email` cell in their chapter CRM. Neither engine does
+  this for you — `sync_access` never revokes, `sync_crm` never overwrites.
 - **Never clobber a human.** A CRM cell that already has content is left alone —
   corrected spellings, hand-written notes and manually added companies all
   survive every re-run. Only genuinely blank cells are filled.

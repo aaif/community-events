@@ -20,10 +20,20 @@ sheet's structure.
 
 The Status values (dropdown on column A, matched exactly by the sheet's
 whole-row colors): `New` (blue) → `In progress` (orange) → `Tentative` (teal) →
-`Accepted` (green) / `Denied` (maroon); `Inactive` (gray); and `Existing (from MLOps)`
+`Interviewing` (indigo) → `Accepted` (green) / `Denied` (maroon); `Inactive` (gray);
+`Duplicate` (brown); and `Existing (from MLOps)`
 (**violet**) for a prior organizer imported from the MLOps community. `Tentative` is a
 real dropdown value: it marks a candidate who has passed LinkedIn vetting but isn't yet
-accepted (pending the interview / chapter-champs intro in the review flow below). A
+accepted (pending the interview / chapter-champs intro in the review flow below).
+`Interviewing` is the stage after it — the interview is scheduled or under way — so
+"vetted, waiting on us to book it" and "already in the process" stop sharing one
+color. MLOps veterans skip both and convert straight through.
+`Duplicate` is the disposition for a **repeat submission from someone already in the
+queue** — the person is triaged on their original row, and the duplicate is parked
+rather than denied (a `Denied` row reads as a decision about the person, which this
+is not). It is not a sync status: nothing carries a `Duplicate` row to the chapters
+feed, a CRM or a Drive grant. Rows are only ever marked by hand — the form can't
+know it has seen someone before, so no automation sets this value. A
 **blank** Status cell is treated as `New`. Two overrides beat the status color: a **data error** (missing/invalid email
 or broken LinkedIn) paints the row bright red, and an **SLA breach** — a `New`/blank
 row older than 1 week (of a 2-week response SLA) — paints it pink. Acting on a row
@@ -50,8 +60,8 @@ Form submission ─→ New
         │ yes
         ▼  Tentative (vetted, not yet accepted)
         ├ Prior organizer, existing chapter (MLOps) → violet → Accepted (existing MLOps)
-        ├ Existing city, net-new → green City (Existing) → intro chapter champs → interview → Accepted (after interview)
-        └ New city / new chapter → amber City (New) → interview → Accepted (after interview)
+        ├ Existing city, net-new → green City (Existing) → intro chapter champs → Interviewing → Accepted (after interview)
+        └ New city / new chapter → amber City (New) → Interviewing → Accepted (after interview)
    On final Accept (either) ─→ grant: local chapter Drive folder + local-champs
         channel + guidelines (confirm they've read & understood them)
 ```

@@ -65,7 +65,10 @@ CRM_HEADERS = ("Full name", "Signal", "Trusted/Regular", "Status", "Notes (CRM)"
 
 # ONLY these two statuses sync. The CRM is the onboarding list that decides who
 # gets access to a chapter folder, so a person reaches it after a decision, not
-# on submitting the form: "New", "Tentative" and "Denied" are all held back.
+# on submitting the form. This is an allowlist: every other value on the intake
+# dropdown is held back by construction, so do not enumerate the complement here
+# — the dropdown is maintained in a Google Sheet and any list written down would
+# rot silently. See aaif-triage-intake/SKILL.md for the current status set.
 # Exact dropdown strings — "Existing" alone would miss every MLOps row.
 # Consequence, and it is intended: as of 2026-08 the Hosts and Speakers tabs
 # had no accepted row, so in practice this synced organizers only. Both start
