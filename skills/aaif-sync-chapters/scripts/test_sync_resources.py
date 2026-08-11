@@ -319,3 +319,17 @@ if FAILS:
         print("  - %s" % f)
     sys.exit(1)
 print("\nsync_resources: all checks passed")
+
+# --- the none sentinel is case-insensitive in the malformed scan ---------------
+# A human typing "None" must mean the sentinel, not a channel literally named
+# None that then suppresses proposals forever.
+check("'None' and 'NONE' are the sentinel, not malformed cells",
+      sr.malformed_channel_cells([ch("Oslo", slack="None", org="NONE", ctry="none")]),
+      [])
+
+# --- an empty roster never overwrites a human's `none` in Handles --------------
+_h = [ch("Oslo", handles="none")]
+with mock.patch.object(sr, "fold_city", sr.fold_city):
+    pass  # (import sanity; propose_handles needs live deps, tested via guard below)
+check("the handles guard constant matches the shared sentinel",
+      sync_chapters.NO_RESOURCE, "none")

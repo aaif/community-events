@@ -54,7 +54,7 @@ Two ordering constraints that are not negotiable and not obvious:
   the check.
 - **9 must follow 8, and a merge makes that sharper.** A *renamed* room keeps its
   members; a *merged* one does not — `#southbay-chapter-leads` is retired as
-  `-deprecated` and its 21 people only reach `#bay-area-organizers` when step 9
+  `-deprecated` and its members only reach `#bay-area-organizers` when step 9
   invites them. Retiring without running step 9 strands them.
 
 A new chapter additionally needs **`aaif-create-chapter`** for its Drive folder
@@ -169,8 +169,8 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
 - **Merge, don't overwrite**: the existing `Organizers` cell is parsed on `;`,
   intake names are appended only if missing (compared case-, whitespace- and
   accent-insensitively); names already there but absent from intake are left alone
-  (manual entries live there). Written values keep original UTF-8 (`Médéric Hurier`
-  stays accented).
+  (manual entries live there). Written values keep original UTF-8 — an accented
+  name stays accented.
 - **Near-miss cities** are reported, not auto-matched — confirm the right row or
   fix the intake city, never create a near-duplicate row. A near-miss fires on a
   substring (intake `Delhi` vs row `Delhi NCR`) **or a shared discriminating word**
@@ -217,8 +217,8 @@ organizers the feed gets, so a chapter's doc names its OWN organizers.
 
 It had never named them. Every About doc was cloned from **TemplateCity**, which
 is itself a copy of the San Francisco doc, so **79 of 80 chapters shipped listing
-the same four people** (Rahul Parundekar, Arthur Coleman, Leo Walker, Shreeganesh
-Ramanan) — correct for San Francisco, wrong everywhere else.
+the same four people** (`TEMPLATE_NAMES` in `sync_about.py` — the publicly listed
+San Francisco organizers) — correct for San Francisco, wrong everywhere else.
 
 ## The flow: report → approve → write
 
@@ -230,7 +230,7 @@ Ramanan) — correct for San Francisco, wrong everywhere else.
    Prints a per-chapter `-` / `+` diff of the Organizers list, the chapters
    already correct, the removals that need a second look (below), near-miss and
    folder-less cities, and a "No changes needed" line when everything matches.
-   A full run downloads all 81 docs and takes about a minute.
+   A full run downloads every chapter doc and takes about a minute.
 
 2. **Show the user the proposal** and get explicit approval. Never skip to write.
 
@@ -276,7 +276,7 @@ are itemised in two classes, and both must be read before approving:
 - **A chapter with no accepted organizer gets the placeholder `[Organizer name]`**,
   not an empty section: a heading with nothing under it reads as a broken doc, and
   the block keeps a bullet to clone from when the chapter's first organizer lands.
-  28 chapters are in this state today. **TemplateCity gets the placeholder too** —
+  As of 2026-08-11, 28 chapters are in this state. **TemplateCity gets the placeholder too** —
   otherwise every chapter created from it re-inherits the four wrong names, the
   same reason `sync_crm` patches the template's Status dropdown.
 - **A name already in the list is reused verbatim**, so a hyperlinked name (the
@@ -546,7 +546,7 @@ overrides.
 
 # 4. The chapter resource map (`sync_resources.py`)
 
-Four columns on the Chapters List, inserted **after `Country`**, answering "where
+Five columns on the Chapters List, inserted **after `Country`**, answering "where
 does this chapter actually live":
 
 | Column | Holds | Filled from |
@@ -557,7 +557,7 @@ does this chapter actually live":
 | `Country Channel` | the country/regional room serving it | live Slack, exact match on the row's `Country` |
 | `Organizer Handles` | **who should be in that organizer channel** | the intake's accepted organizers, resolved to Slack handles by email |
 
-`Chapter Luma Link` is the fifth resource and was already on the sheet — it stays
+`Chapter Luma Link` was already on the sheet and stays
 where it is, because `sync_chapters.py` derives it for new rows (a new chapter's
 CTA depends on it) and this engine must not fight it for the cell.
 
@@ -645,7 +645,7 @@ Naming, and the one rule that is not obvious:
   `munich-organizers` would name a room after a chapter that, in Slack, does not
   go by that name. This inherits legacy names too, deliberately:
   `#washington-dc-the-capital-organizers`, `#frankfurt_main-organizers`.
-- **Every chapter gets one**, including the 26 with no accepted organizer yet, so
+- **Every chapter gets one**, including those with no accepted organizer yet (26 as of 2026-08-11), so
   the room is ready for a chapter's first organizer rather than something someone
   has to remember to create.
 - A **filled cell is never re-planned.** That is what protects the
@@ -655,12 +655,12 @@ Naming, and the one rule that is not obvious:
 
 ## Why the sheet is inconsistent, and why that is correct
 
-14 chapters point at a channel that is not `<city>`. None is an oversight, and
+Some chapters (14 as of 2026-08-11) point at a channel that is not `<city>`. None is an oversight, and
 `KEPT_NON_CONVENTIONAL` in the script records why: local-language names, one room
 deliberately serving several chapters, a channel whose scope is wider than the
 chapter's (`#colorado` for Denver, `#delhi` for Delhi NCR), and legacy platform
-prefixes nobody will re-join under a new name. Renaming them would move ~2,100
-people for cosmetic consistency.
+prefixes nobody will re-join under a new name. Renaming them would move thousands
+of members for cosmetic consistency.
 
 ### A country room is not a chapter room
 
@@ -671,7 +671,7 @@ the audit is supposed to report ("regional only — a member there has no local
 room"). Filed as a chapter channel it reported all three as covered instead: the
 exact failure the never-auto-map rule exists to prevent, arriving through a seed
 rather than a guess. `MISFILED_COLUMNS` corrects it, and `COUNTRY_CHANNELS` stops
-a brand-new `#spain` being planned beside the 112-member room that already exists.
+a brand-new `#spain` being planned beside the well-populated room that already exists.
 
 Watch for this shape whenever one channel serves several chapters — a shared
 *chapter* room and a *country* room look identical on the sheet and mean opposite
@@ -679,7 +679,7 @@ things.
 
 The **one** rename is `RENAMES`: `#bangalore` → `#bengaluru`, because
 Bangalore is the city's superseded name rather than a local variant. It is a
-*rename*, which keeps all 37 members and the history — never a create, which
+*rename*, which keeps the members and the history — never a create, which
 would split the chapter across two rooms.
 
 A dead Slack token skips the three channel columns and still reports the folder
@@ -700,7 +700,9 @@ The columns did not exist until 2026-08-10, and the whole map lived in
 `aaif-audit-slack`'s `channel_map.json`. `migrate_resource_columns.py` runs in two
 independently-guarded phases:
 
-1. Inserts the four columns and seeds the three channel ones from that file's
+1. Inserts the resource columns (`RESOURCE_COLUMNS`; the original 2026-08-10 run
+   inserted four, `Organizer Handles` joined the block after) and seeds the three
+   channel ones from that file's
    `public`, `organizers` and `regional` tables.
 2. Writes the file's remaining matching config — the prefix and suffix
    vocabularies and the staff email domain — onto a new **`Slack Config`** tab,
@@ -787,6 +789,17 @@ mail share notices by default: an invitation is a notification to a real person,
 and a hundred arriving at once reads as a phishing wave. Needs
 `groups:write.invites` / `channels:write.invites`, which the audit token does not
 carry.
+
+## Removing non-organizers (`prune_organizers.py`)
+
+The gated counterpart to "adds, never removes": the ONLY script that removes
+people, and only from organizer channels. Driven by an explicit keep-list (tab
+`Organizer Keeplist`; prefer Slack user IDs over @handles — a handle is
+self-service and the sheet is world-readable), never by a heuristic: someone
+whose display name matches an intake row lands in a REVIEW bucket that is
+reported and never touched. Report-only by default; `--write --i-have-approval`
+acts on the REMOVE bucket alone, and it refuses entirely while no keep-list tab
+exists. The script's own docstring carries the full design.
 
 ---
 

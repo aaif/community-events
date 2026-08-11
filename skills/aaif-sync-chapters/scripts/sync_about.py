@@ -47,9 +47,16 @@ DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 HEADING = "organizers"
 
 # The four names every chapter cloned from TemplateCity. Recognised only as a
-# COMPLETE block: individually they are ordinary names (all three of Rahul,
-# Arthur and Leo really do organize San Francisco), so treating one of them as a
-# fixture on its own would silently drop a real organizer from a real chapter.
+# COMPLETE block: individually they are ordinary names (three of the four really
+# do organize the chapter the template was copied from), so treating one of them
+# as a fixture on its own would silently drop a real organizer from a real
+# chapter.
+#
+# A conscious exception to the no-real-names rule: these are the publicly listed
+# organizers on the chapters feed, and the constant MUST stay literal —
+# TemplateCity itself now carries the placeholder, so the block can no longer be
+# derived at runtime, and a legacy doc that was never synced still carries these
+# exact four names.
 TEMPLATE_NAMES = ("Rahul Parundekar", "Arthur Coleman", "Leo Walker",
                   "Shreeganesh Ramanan (SG)")
 
@@ -504,12 +511,29 @@ def main():
         docs, counts, orphans, near = compute(args, workdir)
         print_report(docs, counts, orphans, near)
         drift = any(changed(d) for d in docs)
+        # A doc that could not be READ (an About.docx was found but download or
+        # parse raised) is UNKNOWN, not clean. Without this, a dead gws
+        # credential turns every doc into a "Skipped" line, drift stays False,
+        # and a permanently broken engine reads green in nightly forever.
+        unread = sorted(d.folder["name"] for d in docs
+                        if d.reason and d.about is not None and d.raw is None)
+        findable = sum(1 for d in docs if d.about is not None)
+        if unread and len(unread) == findable:
+            sys.exit("ABORT: every About.docx failed to read (%d of %d) — that "
+                     "is the API or auth broken, not the docs. Nothing is known "
+                     "about the estate; fix gws and re-run." % (len(unread), findable))
+        if unread:
+            # Same stdout marker contract as sync_resources: nightly.py reads
+            # this prefix, because the exit code alone cannot tell "in sync"
+            # from "only half-checked".
+            print("\nPARTIAL: %d doc(s) could not be read — their state is "
+                  "unknown, not clean: %s" % (len(unread), ", ".join(unread)))
         if not args.write:
             # Shared engine exit convention: report mode exits 0 when in sync,
             # 2 when it proposes changes (consumed by nightly.py).
-            return 2 if drift else 0
+            return 2 if (drift or unread) else 0
         if not drift:
-            return 0
+            return 2 if unread else 0
 
         print("\nWriting %d About doc(s)..." % sum(1 for d in docs if changed(d)))
         ok, failed = apply_writes(docs, workdir)
@@ -527,13 +551,25 @@ def main():
                      "%s\nRe-run without --write to confirm." % (len(ok), e))
         stale = [d.folder["name"] for d in after
                  if changed(d) and d.folder["name"] in ok]
-        if stale:
-            print("VERIFY FAILED — still out of sync: %s" % ", ".join(sorted(stale)))
+        # A written doc whose re-verify READ failed was never actually checked
+        # — and it is the one doc most likely to be damaged, since its upload
+        # just happened. Excluding it from `stale` (changed() is False on an
+        # unread doc) would make this a vacuous pass; fail it explicitly.
+        after_by_name = {d.folder["name"]: d for d in after}
+        unchecked = [n for n in ok
+                     if after_by_name.get(n) is None or after_by_name[n].reason]
+        if stale or unchecked:
+            print("VERIFY FAILED:")
+            for n in sorted(stale):
+                print("  %s — still out of sync after write" % n)
+            for n in sorted(unchecked):
+                print("  %s — written but could not be re-read; check it by hand"
+                      % n)
             sys.exit(1)
         print("Verified: a fresh read of every written doc proposes zero changes.")
         if failed:
             sys.exit(1)
-        return 0
+        return 2 if unread else 0
 
 
 if __name__ == "__main__":

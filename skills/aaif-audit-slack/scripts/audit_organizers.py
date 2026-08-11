@@ -170,8 +170,17 @@ def load_config(sheet_id=None):
         value = cell(row, idx["Value"])
         # Only the sentinel becomes "". A genuinely blank cell is a half-typed
         # row, and silently reading it as the bare-slug prefix would quietly
-        # widen the matcher — the one direction this repo never widens by accident.
+        # widen the matcher — the one direction this repo never widens by
+        # accident. Rejected HERE, at append time, in every position: the old
+        # guard checked cfg[k][1:], so a blank FIRST row (a blanked organizer
+        # suffix, say) read as the empty suffix and made the public channel
+        # itself match as the private one.
         if key in LIST_SETTINGS:
+            if value == "":
+                raise SystemExit(
+                    "ABORT: %s row labelled %r has a blank Value. A blank is a "
+                    "half-typed row; write %r if you mean the bare slug."
+                    % (SLACK_CONFIG_TAB, label, EMPTY_VALUE))
             cfg[key].append("" if value == EMPTY_VALUE else value)
         else:
             cfg[key] = value
@@ -190,12 +199,6 @@ def load_config(sheet_id=None):
             "ABORT: %s defines no value for: %s."
             % (SLACK_CONFIG_TAB,
                ", ".join(sorted(l for l, k in CONFIG_LABELS.items() if k in missing))))
-    blank = [k for k in LIST_SETTINGS if any(v == "" for v in cfg[k][1:])]
-    if blank:
-        raise SystemExit(
-            "ABORT: %s has a blank %s value that is not the first row. Write %r "
-            "if you mean the empty prefix." % (SLACK_CONFIG_TAB, blank[0],
-                                               EMPTY_VALUE))
     return cfg
 
 

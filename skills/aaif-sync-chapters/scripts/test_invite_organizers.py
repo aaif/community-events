@@ -102,28 +102,49 @@ check("an already-present member is not re-invited",
 check("an unaccounted member is never in a request",
       "U9" in _rec.calls[0][1]["users"], False)
 
-# --- a benign race is not a failure -------------------------------------------
-_rec = _Recorder({"ok": False, "error": "already_in_channel"})
+# --- a failed batch retries singly: Slack fails the WHOLE batch on one bad ----
+# invitee, so top-level already_in_channel means "at least one raced in", not
+# "everyone did" — the other N-1 must each get their own call.
+class _BatchThenSingle:
+    """Fail any multi-user call; answer single-user calls from a script."""
+
+    def __init__(self, singles):
+        self.calls, self.singles = [], singles
+
+    def __call__(self, token, method, **params):
+        self.calls.append((method, params))
+        users = params["users"]
+        if "," in users:
+            return {"ok": False, "error": "already_in_channel"}
+        return self.singles.get(users, {"ok": True})
+
+
+_rec = _BatchThenSingle({"U1": {"ok": False, "error": "already_in_channel"}})
 inv.call_write = _rec
 try:
     done, failed = inv.apply(ROWS, "token")
 finally:
     inv.call_write = _orig
-check("already_in_channel is treated as benign, not an error", (done, failed),
-      (0, []))
+check("a raced batch falls back to one call per person",
+      [c[1]["users"] for c in _rec.calls], ["U1,U2", "U1", "U2"])
+check("the raced member and the real invite both count as done, no failures",
+      (done, failed), (2, []))
 
-# --- a real error is collected, and does not abandon the batch ----------------
+# --- a real per-person error is collected, and does not abandon the rest ------
 ROWS2 = ROWS + [{"city": "X", "channel": "x-organizers", "channel_id": "C3",
                  "is_private": True, "missing": [("E", "U5")], "present": [],
                  "unaccounted": []}]
-_rec = _Recorder({"ok": False, "error": "channel_not_found"})
+_rec = _BatchThenSingle({"U1": {"ok": False, "error": "user_is_restricted"},
+                         "U5": {"ok": True}})
 inv.call_write = _rec
 try:
     done, failed = inv.apply(ROWS2, "token")
 finally:
     inv.call_write = _orig
-check("a failing channel is reported, and every other one still ran",
-      (done, len(failed), len(_rec.calls)), (0, 2, 2))
+check("a failing person is reported, and everyone else still lands",
+      (done, len(failed)), (2, 1))
+check("the failure names the person's id, not the whole channel",
+      "U1" in failed[0], True)
 
 # --- rename ordering: the London chain is the case that breaks naive order ----
 # Alphabetically london-meetup-organizers sorts BEFORE london-organizers, so an

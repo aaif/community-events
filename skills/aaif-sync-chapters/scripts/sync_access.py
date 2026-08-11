@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Move the Chapters folder off its public link-share and onto per-chapter grants.
 
-Third engine in this skill, and the one with teeth: it changes who can reach
-things. Report-only by default, like the other two.
+Fourth engine in the pipeline (feed -> about -> CRM -> access -> resources),
+and the one with teeth: it changes who can reach things. Report-only by
+default, like the other four.
 
 The Chapters folder was shared `anyone -> reader`, inherited by every chapter
 folder and every file in them. One thing depended on it: chapter organizers'
@@ -528,6 +529,18 @@ def main():
         # NOT drift: the site serves from Sanity, so pinning is a standing human
         # decision, and counting it would report drift every night forever.
         return 2 if (p["grants"] or p["public"]) else 0
+
+    # Same rule in write mode: with nothing to grant and nothing to lock, do
+    # NOT run the phases (pins are a standing decision, not drift) and do NOT
+    # print the "Verified:" line — nightly.py reads that marker as "wrote",
+    # so printing it unconditionally would label every in-sync write night
+    # "wrote+verified" and exit 2 forever. The other engines' no-drift early
+    # return, in this engine's terms.
+    if not a.phase and not (p["grants"] or p["public"]):
+        print("\nNo changes needed — every accepted organizer holds their "
+              "grant and the folder is not link-shared. (Pending banner pins, "
+              "if any, are a standing decision: run --phase pin explicitly.)")
+        return 0
 
     order = [("pin", apply_pins, (p,)), ("grant", apply_grants, (p, a.notify, a.mail_if_required)),
              ("lock", apply_lock, (p,))]

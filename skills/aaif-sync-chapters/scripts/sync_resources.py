@@ -574,7 +574,9 @@ def malformed_channel_cells(chapters):
     for ch in chapters:
         for col in CHANNEL_COLUMNS:
             v = ch["current"][col]
-            if v and v != NO_RESOURCE and _CHANNEL_CELL_BAD.search(v):
+            # Case-insensitive sentinel: a human typing "None" or "NONE" means
+            # the sentinel, not a channel literally named None.
+            if v and v.lower() != NO_RESOURCE and _CHANNEL_CELL_BAD.search(v):
                 out.append((ch["row"], ch["city"], col, v))
     return out
 
@@ -682,6 +684,11 @@ def main():
 
     _, layout, chapters = read_grid(a.city)
 
+    # Computed BEFORE slack_half, which corrects misfiled cells in place —
+    # this scan must describe what the sheet actually stores, not the
+    # hypothetical post-correction sheet.
+    malformed = malformed_channel_cells(chapters)
+
     proposals, near, folderless = [], [], []
     if a.only != "slack":
         proposals, near, folderless = propose_folders(chapters)
@@ -694,7 +701,6 @@ def main():
 
     report(chapters, proposals, near, folderless, candidates, missing_countries,
            did_slack)
-    malformed = malformed_channel_cells(chapters)
     if malformed:
         print("\nMalformed channel cell(s) (%d) — not a possible channel name; "
               "fix by hand (or write %r):" % (len(malformed), NO_RESOURCE))
@@ -802,6 +808,11 @@ def propose_handles(chapters, ao, api, slackmod):
                 unresolved.append((ch["city"], p["name"]))
         value = "; ".join(parts)
         current = ch["current"][HANDLES_COLUMN]
+        # An empty roster must not overwrite a human's `none`: proposing ""
+        # there converts "a human answered" back into "nobody has looked",
+        # the exact confusion the blank-vs-none distinction exists to prevent.
+        if not value and current == NO_RESOURCE:
+            continue
         if value != current:
             proposals.append({"row": ch["row"], "city": ch["city"],
                               "column": HANDLES_COLUMN, "value": value,
@@ -863,7 +874,11 @@ def slack_half(chapters, plan=False):
     print("  resolving organizer handles (~1.5s per person) ...", file=sys.stderr)
     handles, unresolved = propose_handles(chapters, ao, api, slackmod)
     proposals += handles
-    return proposals, candidates, missing, unresolved, True
+    # One proposal per cell: after a rename lands in Slack, propose_renames and
+    # propose_organizer_alignment both fire on the same cell with the same
+    # value — harmless, but the count inflates and the batch carries a
+    # duplicate range. First wins, and corrections were appended first.
+    return dedupe(proposals), candidates, missing, unresolved, True
 
 
 if __name__ == "__main__":

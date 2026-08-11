@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Self-tests for the nightly runner's pure logic. No network, no subprocesses.
+"""Self-tests for the nightly runner. No network; subprocess.run is mocked.
 
-The runner's one non-obvious mapping is classify(): the shared exit-code
-convention (0 in sync / 2 drift / else failure) crossed with the 'Verified:'
-log marker that separates "--write wrote" from "--write had nothing to do".
-Getting it wrong mislabels a nightly run — a FAILED read as DRIFT would send
-someone to approve a proposal that never existed.
+Three load-bearing seams, all pinned here: classify() (the shared exit-code
+convention crossed with the log markers), run_engine()'s marker DETECTION
+(a reworded engine print silently degrades WROTE to IN_SYNC, or loses the
+PARTIAL that stops a half-checked night reading healthy), and the literal
+marker strings' presence in every engine source — the contract is spelled in
+several files and nothing else checks they agree.
 """
 
 import os
@@ -54,6 +55,55 @@ check("but never beats FAILED, which is strictly worse news",
 check("engine order is the documented pipeline order",
       [n for n, _ in nightly.ENGINES],
       ["chapters", "about", "crm", "access", "resources"])
+
+# --- run_engine's marker detection: the seam classify() depends on -------------
+# A reworded engine print ("Verified." instead of "Verified:") silently turns
+# WROTE into IN_SYNC, and a missed PARTIAL makes a half-checked night read
+# healthy — the exact outcome the marker exists to prevent.
+import tempfile  # noqa: E402
+from unittest import mock  # noqa: E402
+
+
+def drive(log_text, write_mode, code=0):
+    class _Res:
+        returncode = code
+
+    def fake_run(cmd, stdout, stderr):
+        stdout.write(log_text)
+        return _Res()
+
+    with tempfile.TemporaryDirectory() as td, \
+         mock.patch.object(nightly.subprocess, "run", fake_run):
+        outcome, got_code, _secs = nightly.run_engine(
+            "sync_chapters.py", os.path.join(td, "x.log"), write_mode)
+    return outcome, got_code
+
+
+check("a Verified: line at line start marks a write",
+      drive("stuff\nVerified: a fresh run proposes zero changes.\n", True),
+      (nightly.WROTE, 0))
+check("Verified: mid-line does not count",
+      drive("note: Verified: something\n", True), (nightly.IN_SYNC, 0))
+check("a PARTIAL: line is seen even after a blank line",
+      drive("report...\n\nPARTIAL: Slack unavailable\n", False, code=2),
+      (nightly.PARTIAL, 2))
+check("accented engine output does not crash the log re-read",
+      drive("españa Montréal Logroño\nVerified: ok\n", True),
+      (nightly.WROTE, 0))
+
+# --- the marker strings must actually appear in the engine sources -------------
+# The contract is two magic prefixes spelled in several files; this is the check
+# that a reword in any one of them cannot pass silently.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for eng in ("sync_chapters.py", "sync_about.py", "sync_crm.py",
+            "sync_access.py", "sync_resources.py"):
+    src = open(os.path.join(_HERE, eng), encoding="utf-8").read()
+    check("%s prints the literal 'Verified: ' marker" % eng,
+          '"Verified: ' in src or '"\\nVerified: ' in src, True)
+for eng in ("sync_about.py", "sync_resources.py"):
+    src = open(os.path.join(_HERE, eng), encoding="utf-8").read()
+    check("%s prints the literal 'PARTIAL: ' marker" % eng,
+          '"PARTIAL: ' in src or '"\\nPARTIAL: ' in src, True)
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

@@ -281,5 +281,32 @@ with mock.patch.object(sync_chapters.subprocess, "run",
     check("gws_json keeps U+2028 inside values", sync_chapters.gws_json("sheets", "get"),
           {"a": "line1\u2028line2"})
 
+# --- resolve_city: the one function sync_about and the feed MUST agree on ------
+check("City (New) wins over both", sync_chapters.resolve_city("Boston", "Pune"),
+      "Pune")
+check("City (Existing) used when New is blank",
+      sync_chapters.resolve_city("Boston", ""), "Boston")
+check("an Other placeholder resolves to nothing",
+      sync_chapters.resolve_city("Other (please specify)", ""), "")
+check("both blank -> unresolved", sync_chapters.resolve_city("", ""), "")
+
+# --- report-mode exit codes: the contract nightly.py consumes ------------------
+# 0 = in sync, 2 = drift. Tested through main() with compute() mocked, because
+# the return statement IS the feature — a wrapper reading these codes must not
+# see 0 on a drifted report.
+def exit_code(adds, new_rows, argv):
+    state = mock.Mock(adds=adds, new_rows=new_rows)
+    with mock.patch.object(sync_chapters, "compute", return_value=state), \
+         mock.patch.object(sync_chapters, "print_report", lambda s: None), \
+         mock.patch.object(sys, "argv", ["sync_chapters.py"] + argv):
+        return sync_chapters.main()
+
+
+check("report mode, in sync -> exit 0", exit_code([], [], []), 0)
+check("report mode, drift -> exit 2",
+      exit_code([{"row": 2}], [], []), 2)
+check("write mode with nothing to do -> exit 0",
+      exit_code([], [], ["--write"]), 0)
+
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)

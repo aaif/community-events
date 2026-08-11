@@ -53,6 +53,12 @@ check("...and still resolve to one", city("Gujarat, India + Bengaluru/Mumbai"), 
 
 # --- 4. a country alone -> its capital ---------------------------------------
 check("country only -> capital", city("Bulgaria"), "Sofia")
+# The capital must go through the same canonicalization as a typed city:
+# CAPITALS says India -> "New Delhi", but the chapter is "Delhi NCR" — without
+# the alias pass, "India" and "New Delhi" land the same person in different
+# chapters.
+check("country only -> capital -> alias -> the chapter",
+      city("India"), "Delhi NCR")
 check("country only, cased", city("  NIGERIA "), "Abuja")
 check("country whose capital IS a chapter", city("Japan"), "Tokyo")
 check("the capital rule says so", extract_city("Bulgaria", KNOWN)[1],

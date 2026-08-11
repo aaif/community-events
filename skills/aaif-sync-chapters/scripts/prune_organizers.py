@@ -34,8 +34,11 @@ script is for, and why the two steps are separate.
 
 Tab `Organizer Keeplist`, columns `Slack Handle | Why`. On the sheet rather than
 in git for the same reason the channel map moved there — the people who know who
-belongs can edit a spreadsheet. **Handles, not emails**: that sheet is
-world-readable, and a roster of email addresses does not belong on it.
+belongs can edit a spreadsheet. **Never emails**: that sheet is world-readable,
+and a roster of email addresses does not belong on it. **Prefer Slack user IDs
+(U…) over @handles**: a handle is a display name its owner can change, so a
+squatter who can read the public sheet can rename themselves onto the keep-list;
+an ID cannot be worn.
 
 Usage:
     python3 prune_organizers.py                        # the three buckets
@@ -45,6 +48,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +56,7 @@ sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "aaif-audit-slack", "scripts"))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 
-from sync_chapters import NO_RESOURCE, fold  # noqa: E402
+from sync_chapters import NO_RESOURCE, fold, gws_json  # noqa: E402
 from sync_resources import read_grid  # noqa: E402
 from provision_channels import call_write, write_token  # noqa: E402
 
@@ -70,24 +74,38 @@ WAS_PUBLIC = ("frankfurt_main-organizers", "montreal-organizers",
 
 
 def read_keeplist():
-    """Handles a human has said may stay. Absent tab = empty list, not an error.
+    """Entries a human has said may stay. Absent tab = empty list, not an error.
 
     An empty keep-list is a legitimate starting state — you run the report, see
     who is there, and fill it in. Aborting would make the first run impossible.
+    BUT "absent" is proven from the spreadsheet's own tab list, never inferred
+    from a failed read: a dead gws credential raising out of gws_values used to
+    read as "no keep-list", and the report then filed every keep-listed human
+    under REMOVE while telling the operator to create a tab that already
+    existed.
+
+    Entries may be @handles or Slack user IDs (U…/W…). Prefer IDs: a handle is
+    a display name its owner can change — and this tab is world-readable, so a
+    squatter can read it and rename themselves onto it. An ID can't be worn.
     """
-    try:
-        rows = ao.gws_values(ao.CHAPTERS_ID, "'%s'!A:B" % KEEPLIST_TAB)
-    except SystemExit:
-        return set(), False
+    meta = gws_json("sheets", "spreadsheets", "get",
+                    params={"spreadsheetId": ao.CHAPTERS_ID,
+                            "fields": "sheets.properties.title"})
+    titles = {s["properties"]["title"] for s in meta.get("sheets", [])}
+    if KEEPLIST_TAB not in titles:
+        return set(), set(), False
+    rows = ao.gws_values(ao.CHAPTERS_ID, "'%s'!A:B" % KEEPLIST_TAB)
     if not rows:
-        return set(), False
+        return set(), set(), False
     headers = [h.strip() for h in rows[0]]
     if "Slack Handle" not in headers:
         sys.exit("ABORT: %s has no 'Slack Handle' column." % KEEPLIST_TAB)
     i = headers.index("Slack Handle")
-    keep = {r[i].strip().lstrip("@").lower()
+    vals = {r[i].strip().lstrip("@")
             for r in rows[1:] if len(r) > i and r[i].strip()}
-    return keep, True
+    ids = {v for v in vals if re.fullmatch(r"[UW][A-Z0-9]{6,}", v)}
+    handles = {v.lower() for v in vals - ids}
+    return handles, ids, True
 
 
 def classify(city_filter=None):
@@ -96,24 +114,31 @@ def classify(city_filter=None):
     api.require_scopes("channels:read", "groups:read",
                        "users:read", "users:read.email")
 
-    keep, had = read_keeplist()
+    keep, keep_ids, had = read_keeplist()
     _, _, chapters = read_grid(city_filter)
     chans = {c["name"]: c for c in slackmod.channels(api) if not c["is_archived"]}
 
     people, _ = ao.read_intake()
     emails = {p["email"].lower() for p in people if p["email"]}
     # Name index for the cross-check. Folded the same way every other engine
-    # folds, so "Médéric Hurier" and "Mederic Hurier" are one person.
+    # folds, so "Padmé Naberrie" and "Padme Naberrie" are one person.
     by_name = {}
     for p in people:
         if p["name"]:
             by_name.setdefault(fold(p["name"]), []).append(p)
 
-    seen, rows = {}, []
+    seen, rows, skipped = {}, [], []
     for ch in chapters:
         name = ch["current"]["Organizer Channel"]
+        if not name or name == NO_RESOURCE:
+            continue                      # nothing recorded — not this tool's gap
         chan = chans.get(name)
-        if not name or name == NO_RESOURCE or not chan:
+        if not chan:
+            # The sheet names a room Slack doesn't show: renamed, archived, or
+            # private with this token's user not a member. Silently dropping it
+            # would make the report look complete during exactly the rename
+            # window when it isn't (invite_organizers reports the same state).
+            skipped.append((ch["city"], name))
             continue
         organizers, kept, review, remove = [], [], [], []
         for uid in slackmod.members(api, chan["id"]):
@@ -130,14 +155,20 @@ def classify(city_filter=None):
                 kept.append(entry + ("bot or deactivated",))
             elif email and email in emails:
                 organizers.append(entry)
+            elif uid in keep_ids:
+                kept.append(entry + ("on the keep-list (by user id)",))
             elif handle in keep:
-                kept.append(entry + ("on the keep-list",))
+                kept.append(entry + ("on the keep-list (by handle — a handle "
+                                     "is self-service; prefer the user id)",))
             elif fold(real) in by_name:
                 # The bucket this script exists to protect: their name is on the
                 # intake, their Slack address is not. Almost certainly a real
-                # organizer who signed up twice. Never removed.
+                # organizer who signed up twice. Never removed — but the match
+                # is on a SELF-ASSERTED display name against a public roster,
+                # so it vouches for nobody; verify before keep-listing.
                 match = by_name[fold(real)][0]
-                review.append(entry + ("name matches intake row for %s"
+                review.append(entry + ("display name matches intake row for %s "
+                                       "(self-asserted — verify)"
                                        % (match["city"] or "?"),))
             else:
                 remove.append(entry)
@@ -145,10 +176,10 @@ def classify(city_filter=None):
                      "was_public": name in WAS_PUBLIC,
                      "channel_id": chan["id"], "organizers": organizers,
                      "kept": kept, "review": review, "remove": remove})
-    return rows, had
+    return rows, had, skipped
 
 
-def report(rows, had_keeplist):
+def report(rows, had_keeplist, skipped):
     total = sum(len(r["remove"]) for r in rows)
     review = sum(len(r["review"]) for r in rows)
     print("Organizer channel membership — %d channel(s)\n" % len(rows))
@@ -162,10 +193,18 @@ def report(rows, had_keeplist):
         for real, handle, _uid in r["remove"]:
             print("      - %-26s @%s" % (real[:26], handle))
 
+    if skipped:
+        print("\nChapters whose Organizer Channel is not visible in Slack (%d) — "
+              "NOT audited\n(renamed/archived, or private and this token's user "
+              "is not a member):" % len(skipped))
+        for city, name in sorted(skipped):
+            print("  %-16s #%s" % (city, name))
     if not had_keeplist:
         print("\nNo %r tab found — the keep-list is empty, so everyone unmatched "
               "is in\nthe REMOVE bucket. Create the tab (Slack Handle | Why) "
-              "before writing." % KEEPLIST_TAB)
+              "before writing.\nPrefer Slack user IDs (U…) over @handles — a "
+              "handle is self-service and this\nsheet is world-readable."
+              % KEEPLIST_TAB)
     if review:
         print("\n%d person(s) in REVIEW: their NAME is on the intake but their "
               "Slack address\nis not. They are never removed. Add them to the "
@@ -208,15 +247,15 @@ def main():
     ap.add_argument("--city", help="limit to one chapter")
     a = ap.parse_args()
 
-    rows, had = classify(a.city)
-    total = report(rows, had)
+    rows, had, skipped = classify(a.city)
+    total = report(rows, had, skipped)
 
     if not a.write:
         print("\nReport only. Nobody was removed.")
-        return
+        return 0
     if not total:
         print("\nNothing to do.")
-        return
+        return 0
     if not had:
         sys.exit("\nREFUSING: there is no keep-list. Removing %d people with "
                  "nobody marked as\nbelonging is almost certainly not what you "
@@ -236,7 +275,10 @@ def main():
     print("\nRemoved %d, %d failed." % (done, len(failed)))
     for f in failed:
         print("  %s" % f)
+    # The return code is the ONLY signal a caller or && chain gets — a run
+    # where every kick failed must not read as success.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

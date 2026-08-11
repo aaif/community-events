@@ -192,7 +192,7 @@ def call_write(token, method, **params):
 
 
 def plan(tables, live):
-    """Return (creates, renames, already).
+    """Return (creates, renames, merges, already, blocked).
 
     `creates` is [(name, is_private, why)]. A name is planned exactly once even
     when several chapters share it — #india serves six, and asking Slack to
@@ -258,7 +258,7 @@ def main():
 
     if not a.write:
         print("\nReport only. Nothing was sent to Slack.")
-        return
+        return 0
     if not a.i_have_approval:
         sys.exit("\nREFUSING: --write needs --i-have-approval too. This is the "
                  "one action in this repo that changes a shared workspace for "
@@ -290,10 +290,33 @@ def main():
         else:
             failed.append("rename %s: %s" % (old, r.get("error")))
 
-    # Retirements LAST, and only after their target exists: the members of a
-    # retired room have not been invited across yet (that is invite_organizers'
-    # job), so retiring early would leave them in a room nobody is pointed at.
+    created_names = set()
+    for name, private, why in creates:
+        r = call_write(token, "conversations.create", name=name,
+                       is_private="true" if private else "false")
+        if r.get("ok"):
+            done += 1
+            created_names.add(name)
+            print("created #%s" % name)
+        else:
+            # One bad name must not abandon the batch — a public form feeds these
+            # city names, so a rejected slug is normal input, not a crash.
+            failed.append("create %s: %s" % (name, r.get("error")))
+
+    # Retirements LAST, and only after their target VERIFIABLY exists: the
+    # members of a retired room have not been invited across yet (that is
+    # invite_organizers' job), so retiring a room whose target rename or
+    # create failed above would strand them in a -deprecated room pointing at
+    # nothing. "The comment says only-after-target-exists" is not a check —
+    # this set is.
+    renamed_to = {new for old, new in renames
+                  if not any(f.startswith("rename %s:" % old) for f in failed)}
+    live_names = set(by_name) | renamed_to | created_names
     for old, m in merges:
+        if m["into"] not in live_names:
+            failed.append("retire %s: target #%s does not exist (its rename or "
+                          "create failed above) — NOT retired" % (old, m["into"]))
+            continue
         r = call_write(token, "conversations.rename",
                        channel=by_name[old]["id"], name=m["retire_as"])
         if r.get("ok"):
@@ -303,24 +326,16 @@ def main():
         else:
             failed.append("retire %s: %s" % (old, r.get("error")))
 
-    for name, private, why in creates:
-        r = call_write(token, "conversations.create", name=name,
-                       is_private="true" if private else "false")
-        if r.get("ok"):
-            done += 1
-            print("created #%s" % name)
-        else:
-            # One bad name must not abandon the batch — a public form feeds these
-            # city names, so a rejected slug is normal input, not a crash.
-            failed.append("create %s: %s" % (name, r.get("error")))
-
     print("\n%d applied, %d failed." % (done, len(failed)))
     for f in failed:
         print("  %s" % f)
     print("\nNobody was invited to anything. `Organizer Handles` on the Chapters "
           "List says who belongs in each organizer channel; inviting them is a "
           "human's job.")
+    # The return code is the ONLY signal a caller or && chain gets — a run
+    # where every rename failed must not read as success.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

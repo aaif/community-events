@@ -102,9 +102,13 @@ def collect(city_filter=None):
             continue
         chan = chans.get(name)
         if not chan:
+            # Two indistinguishable causes: the channel genuinely doesn't exist,
+            # or it is private and this token's user is not a member —
+            # conversations.list hides those (see lib/aaif_events/slack.py).
             no_channel.append(
-                (ch["city"], "#%s does not exist yet — run provision_channels.py"
-                 % name))
+                (ch["city"], "#%s not visible — not created yet (run "
+                 "provision_channels.py), or private and this token's user "
+                 "is not in it" % name))
             continue
 
         members = set(slackmod.members(api, chan["id"]))
@@ -164,26 +168,38 @@ def report(rows, unresolved, no_channel):
 
 
 def apply(rows, token):
-    """Invite the missing organizers, one batched call per channel."""
+    """Invite the missing organizers, one batched call per channel.
+
+    Slack fails the WHOLE batch when any single invitee can't be invited: a
+    top-level `already_in_channel` means "at least one raced in", not
+    "everyone did", and the other N-1 were NOT invited. So a failed batch
+    falls back to one call per person, where that error really is per-person
+    and benign. Batches are chunked, never truncated — capping at
+    MAX_PER_CALL silently would report the overflow as invited.
+    """
     done, failed = 0, []
     for r in sorted(rows, key=lambda x: x["city"]):
         if not r["missing"]:
             continue
-        ids = [uid for _, uid in r["missing"]][:MAX_PER_CALL]
-        res = call_write(token, "conversations.invite",
-                         channel=r["channel_id"], users=",".join(ids))
-        if res.get("ok"):
-            done += len(ids)
-            print("  #%-28s added %d" % (r["channel"], len(ids)))
-        else:
-            # `already_in_channel` is benign and racy — someone may have joined
-            # between the read and the write. Everything else is a real failure,
-            # and one bad channel must not abandon the rest.
-            err = res.get("error", "unknown")
-            if err == "already_in_channel":
-                print("  #%-28s already in (raced)" % r["channel"])
-            else:
-                failed.append("%s: %s" % (r["channel"], err))
+        ids = [uid for _, uid in r["missing"]]
+        added = 0
+        for at in range(0, len(ids), MAX_PER_CALL):
+            chunk = ids[at:at + MAX_PER_CALL]
+            res = call_write(token, "conversations.invite",
+                             channel=r["channel_id"], users=",".join(chunk))
+            if res.get("ok"):
+                added += len(chunk)
+                continue
+            for uid in chunk:
+                one = call_write(token, "conversations.invite",
+                                 channel=r["channel_id"], users=uid)
+                if one.get("ok") or one.get("error") == "already_in_channel":
+                    added += 1        # in the room either way — the goal state
+                else:
+                    failed.append("%s: %s (%s)" % (
+                        r["channel"], one.get("error", "unknown"), uid))
+        done += added
+        print("  #%-28s added %d of %d" % (r["channel"], added, len(ids)))
     return done, failed
 
 
@@ -201,10 +217,10 @@ def main():
 
     if not a.write:
         print("\nReport only. Nobody was invited to anything.")
-        return
+        return 0
     if not total:
         print("\nNothing to do.")
-        return
+        return 0
     if not a.i_have_approval:
         sys.exit("\nREFUSING: --write needs --i-have-approval too. This sends a "
                  "Slack notification to %d real people." % total)
@@ -219,10 +235,13 @@ def main():
         "conversations.invite must be in the write allowlist")
 
     done, failed = apply(rows, token)
-    print("\nInvited %d, %d channel(s) failed." % (done, len(failed)))
+    print("\nInvited %d, %d invite(s) failed." % (done, len(failed)))
     for f in failed:
         print("  %s" % f)
+    # The return code is the ONLY signal a caller or && chain gets — a run
+    # where every invite failed must not read as success.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

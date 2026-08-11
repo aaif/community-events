@@ -10,11 +10,14 @@ summary is engine names, outcomes, durations and log paths, nothing else. Keep
 it that way — any new print here must be composed only of fixed strings and
 values this script computed itself, never engine output.
 
-Exit-code convention (each engine now follows it; this runner aggregates):
+Exit-code convention, in two scopes that deliberately differ:
 
-    0   in sync — nothing proposed, nothing written
-    2   drift   — a report proposed changes, or --write applied some
-    1   failure — an engine aborted, a write failed verification, etc.
+  Engines: 0 = in sync, OR --write applied and verified (a `Verified:` line on
+           stdout is what separates those two); 2 = a report proposed changes,
+           or coverage was involuntarily partial (`PARTIAL:` line); anything
+           else = failure.
+  Runner:  0 = every engine in sync; 2 = drift found, writes applied, or
+           partial coverage anywhere; 1 = any engine failed.
 
 The Slack write steps (provision_channels.py, invite_organizers.py,
 prune_organizers.py) are deliberately NOT here: they carry their own
@@ -82,7 +85,10 @@ def run_engine(script, log_path, write_mode):
         # stderr merges into the log too: the engines print progress and gws
         # retry notes there, and a FAILED outcome is undiagnosable without it.
         code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
-    with open(log_path) as log:
+    # Explicit encoding: engine output is full of accented city/channel names
+    # (españa, Montréal), and a LANG=C CI container would otherwise open this
+    # ASCII and crash the runner AFTER the engine already applied its writes.
+    with open(log_path, encoding="utf-8", errors="replace") as log:
         lines = log.readlines()
     wrote_marker = any(l.startswith("Verified:") for l in lines)
     partial_marker = any(l.startswith("PARTIAL:") for l in lines)
@@ -112,6 +118,19 @@ def main():
     picked = [(n, s) for n, s in ENGINES if not a.engines or n in a.engines]
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     run_dir = os.path.join(a.report_dir, stamp)
+
+    # The logs carry names and emails. If they land inside the repo, git must
+    # already be ignoring them — the docstring's "must be gitignored" promise
+    # is enforced here, not assumed (same guard the Slack audit uses for its
+    # cache). A report dir outside the repo is the operator's own business.
+    probe = os.path.abspath(a.report_dir)
+    if probe.startswith(REPO + os.sep):
+        r = subprocess.run(["git", "-C", REPO, "check-ignore", "-q", probe])
+        if r.returncode != 0:
+            sys.exit("ABORT: %s is inside the repo but NOT gitignored — these "
+                     "logs hold names and emails and this repo is public. Add "
+                     "it to .gitignore (nightly-reports/ already is) or point "
+                     "--report-dir elsewhere." % probe)
     os.makedirs(run_dir, exist_ok=True)
 
     print("aaif-sync-chapters nightly — %s mode — %d engine(s)"

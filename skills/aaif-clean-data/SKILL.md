@@ -1,7 +1,7 @@
 ---
 name: aaif-clean-data
 description: Normalize and fix data quality in the AAIF Community Intake Ops sheet — canonicalize LinkedIn URLs, fix name/city casing & whitespace, derive each person's city from the form's free-text answer (City > Extracted, capital when only a country is given), flag bad/missing emails and duplicates, and surface broken rows in bright red. Reports & proposes by default; only writes on explicit approval. Use when asked to clean up / normalize / fix the intake data.
-argument-hint: "[scan|apply|cities|flags]"
+argument-hint: "[scan|apply|cities|install-flags|install-colors]"
 ---
 
 # Clean AAIF Intake Data

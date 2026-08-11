@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot: open the four resource columns on the Chapters List and seed them.
+"""One-shot: open the resource columns on the Chapters List and seed them.
 
 This is a **structural migration of a live, world-readable sheet**, not a sync.
 It runs once. After it has run and been verified, `sync_resources.py` maintains
@@ -8,10 +8,12 @@ layout changed, but do not re-run it (it refuses to run twice; see below).
 
 What it does, in one `spreadsheets.batchUpdate`:
 
-1. `insertDimension` four columns after `Country`, so the resource map sits next
+1. `insertDimension` the RESOURCE_COLUMNS block after `Country` (the original
+   2026-08-10 run inserted four; `Organizer Handles` joined the block later via
+   plan_missing_columns(), so a fresh run inserts all five), so the map sits next
    to the city it describes: `Chapter Folder`, `Slack Channel`,
    `Organizer Channel`, `Country Channel`.
-2. Writes the four header cells.
+2. Writes the header cells.
 3. Backfills the three channel columns from `aaif-audit-slack`'s
    `channel_map.json` — `public` -> Slack Channel, `organizers` -> Organizer
    Channel, `regional` -> Country Channel. Those three tables are exactly these
@@ -24,7 +26,7 @@ of getting the same answer with no one having checked it.
 
 ## Why the insert is safe here, and what it would break elsewhere
 
-Everything from the old column D onward shifts right by four. That is safe for
+Everything from the old column D onward shifts right by the block width. That is safe for
 this repo because all four in-repo readers (`sync_chapters`, `sync_access`,
 `clean.py`, `audit_organizers`) read `A:AZ` and resolve every column by header
 name. Verified before writing: the spreadsheet has no named ranges, no protected
@@ -326,7 +328,7 @@ def verify(seeds):
                            % (s["row"], column, got, want))
     if bad:
         sys.exit("VERIFY FAILED:\n  " + "\n  ".join(bad))
-    print("\nVerified: the four columns exist and all %d seeded rows read back "
+    print("\nVerified: the resource columns exist and all %d seeded rows read back "
           "correctly." % len(seeds))
 
 

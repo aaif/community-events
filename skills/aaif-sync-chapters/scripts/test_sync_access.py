@@ -253,6 +253,34 @@ check("a failure mid-batch does not abandon the remaining grants",
       (applied, len(failed)), (2, 1))
 
 
+# --- verify(): the owner exception must mirror plan()'s ------------------------
+# plan() counts a folder owner as already granted (Drive rejects re-granting an
+# owner), so verify() demanding a direct writer grant from them would FAIL every
+# night on any chapter the tree owner organizes — and loosening it to accept any
+# inherited role would pass with no grant made at all.
+def run_verify(perm_rows):
+    p = {"grants": [], "pins": [], "already_pinned_ids": [],
+         "already_granted_ids": [("Boston", "F1", "a@x.com")], "role": "writer"}
+    with mock.patch.object(sync_access, "perms", lambda fid: perm_rows):
+        return sync_access.verify(p, ["grant"])
+
+
+check("an inherited owner satisfies a writer grant",
+      run_verify([{"type": "user", "emailAddress": "a@x.com",
+                   "role": "owner", "inherited": True}]), [])
+check("a direct owner satisfies a writer grant",
+      run_verify([{"type": "user", "emailAddress": "a@x.com",
+                   "role": "owner", "inherited": False}]), [])
+check("a merely-inherited writer does NOT count as a grant",
+      len(run_verify([{"type": "user", "emailAddress": "a@x.com",
+                       "role": "writer", "inherited": True}])), 1)
+check("a direct commenter where writer was expected is a mismatch",
+      len(run_verify([{"type": "user", "emailAddress": "a@x.com",
+                       "role": "commenter", "inherited": False}])), 1)
+check("a direct writer passes",
+      run_verify([{"type": "user", "emailAddress": "a@x.com",
+                   "role": "writer", "inherited": False}]), [])
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

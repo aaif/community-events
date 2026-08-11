@@ -34,7 +34,11 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # repeat of the first (see apply()). Falls back to "<field> updated -> <value>".
 AUTOFIX_COL = "Autofixes"
 AUTOFIX_PHRASE = {"LinkedIn URL": "LinkedIn normalized", "Email": "email normalized",
-                  "Full name": "name normalized", "Resolved City": "city resolved",
+                  "Full name": "name normalized",
+                  # Resolved City is DERIVED now and apply() refuses to write it;
+                  # the phrase stays so notes written before that change still
+                  # match `seen` and are never re-appended.
+                  "Resolved City": "city resolved",
                   "Extracted City": "city extracted"}
 # The Autofixes cell is a delimited list: ";" joins phrases within one run, "|"
 # joins runs. A phrase therefore may NOT contain either character — autofix_note
@@ -583,6 +587,11 @@ def extract_city(other, known):
     non_country = [s for s in segs if s.casefold() not in CAPITALS]
     if countries and not non_country:
         cap = CAPITALS[countries[0].casefold()]
+        # The capital goes through the same canonicalization as a typed city,
+        # or "India" would yield "New Delhi" while "New Delhi" itself resolves
+        # to the Delhi NCR chapter — same person, different chapter, depending
+        # on which one they happened to type.
+        cap = _canonical(cap, known) or cap
         return cap, "only a country (%s) — using its capital" % countries[0], len(countries) > 1
 
     for s in non_country:
@@ -784,8 +793,12 @@ def cities(write=False):
         path = fh.name
     # Reuse apply(): row bounds, RAW writes and the Autofixes provenance note are
     # all already correct there, and a second implementation would drift.
-    apply(path)
-    os.unlink(path)
+    # finally: apply() sys.exit()s on several guard paths, and this temp file
+    # holds names and cities — it must not outlive the run.
+    try:
+        apply(path)
+    finally:
+        os.unlink(path)
 
 
 # ---------- apply ----------
