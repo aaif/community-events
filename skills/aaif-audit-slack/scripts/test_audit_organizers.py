@@ -193,6 +193,145 @@ def _intake(rows):
         ao.gws_values = original
 
 
+# ------------------------------------------------- the map, read off the sheet ---
+
+def _chapters(rows):
+    original = ao.gws_values
+    ao.gws_values = lambda *a, **k: rows
+    try:
+        return ao.read_chapters()
+    finally:
+        ao.gws_values = original
+
+
+#: A Chapters List header row, resource block included. Only the columns
+#: read_chapters() touches need to be real.
+_CH_HEADERS = ["City", "Slack Channel", "Organizer Channel", "Country Channel"]
+
+
+def test_channel_columns_become_the_three_tables():
+    """The sheet replaces channel_map's public/organizers/regional wholesale."""
+    _, tables = _chapters([_CH_HEADERS,
+                           ["Denver", "colorado", "denver-organizers", "usa"]])
+    check("Slack Channel -> public", tables["public"], {"Denver": "colorado"})
+    check("Organizer Channel -> organizers", tables["organizers"],
+          {"Denver": "denver-organizers"})
+    check("Country Channel -> regional", tables["regional"], {"Denver": "usa"})
+
+
+def test_blank_cell_leaves_the_city_out_so_the_matcher_still_scans():
+    """Blank is 'nobody looked', not 'no channel' — the scan must still run."""
+    _, tables = _chapters([_CH_HEADERS, ["Boston", "", "", ""]])
+    check("blank is absent from every table",
+          [tables[t] for t in ("public", "organizers", "regional")], [{}, {}, {}])
+    # And end-to-end: a blank row still reaches the prefix scan.
+    rows = ao.match_channels([{"city": "Boston"}], [chan("boston")],
+                             cfg(**tables))
+    check("blank row still auto-matches", rows[0]["public"], "boston")
+
+
+def test_none_sentinel_becomes_a_null_and_stops_the_matcher():
+    """The sheet's stand-in for JSON null must still stop the guessing."""
+    _, tables = _chapters([_CH_HEADERS, ["Wellington", ao.NO_RESOURCE, "", ""]])
+    check("'none' becomes None", tables["public"], {"Wellington": None})
+    rows = ao.match_channels([{"city": "Wellington"}], [chan("wellington")],
+                             cfg(**tables))
+    check("a channel that exists is NOT claimed", rows[0]["public"], None)
+    check("and the reason is recorded", rows[0]["public_how"], "known-none")
+
+
+def test_a_typed_hash_prefix_is_tolerated():
+    """Humans type '#berlin' into spreadsheets about half the time."""
+    _, tables = _chapters([_CH_HEADERS, ["Berlin", "#berlin", "", ""]])
+    check("leading # stripped", tables["public"], {"Berlin": "berlin"})
+    rows = ao.match_channels([{"city": "Berlin"}], [chan("berlin")], cfg(**tables))
+    check("and it resolves", rows[0]["public"], "berlin")
+
+
+def test_the_sentinel_matches_the_sync_engine():
+    """One spelling of 'none' across the two skills, or the sheet lies to one."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(here, "..", "..", "aaif-sync-chapters", "scripts"))
+    import sync_chapters
+    check("NO_RESOURCE agrees", ao.NO_RESOURCE, sync_chapters.NO_RESOURCE)
+    # The audit reads only the three CHANNEL columns. Chapter Folder and
+    # Organizer Handles live in the same block but say nothing about matching, so
+    # they are excluded by name here rather than by "everything else" — a sixth
+    # resource column added later must fail this and be classified deliberately.
+    check("the columns audit reads are the channel columns sync writes",
+          sorted(ao.CHANNEL_COLUMNS),
+          sorted(set(sync_chapters.RESOURCE_COLUMNS)
+                 - {"Chapter Folder", "Organizer Handles"}))
+
+
+def _config(rows):
+    original = ao.gws_values
+    ao.gws_values = lambda *a, **k: rows
+    try:
+        return ao.load_config()
+    finally:
+        ao.gws_values = original
+
+
+_CFG_HEADERS = ["Setting", "Value", "Notes"]
+_GOOD_CFG = [_CFG_HEADERS,
+             ["Public channel prefix", ao.EMPTY_VALUE, "note"],
+             ["Public channel prefix", "meetup-"],
+             ["Organizer channel suffix", "-organizers"],
+             ["Staff email domain", "x.com"]]
+
+
+def test_config_comes_off_the_sheet_in_row_order():
+    """Order is load-bearing: the bare slug must be tried before 'meetup-'."""
+    cfg = _config(_GOOD_CFG)
+    check("the sentinel becomes the empty prefix, first",
+          cfg["public_prefixes"], ["", "meetup-"])
+    check("suffixes and scalars load too",
+          (cfg["organizer_suffixes"], cfg["staff_email_domain"]),
+          (["-organizers"], "x.com"))
+
+
+def test_a_genuinely_blank_value_is_not_read_as_the_bare_prefix():
+    """A half-typed row must not silently widen the matcher."""
+    check_raises(
+        "a trailing blank value aborts",
+        lambda: _config(_GOOD_CFG + [["Public channel prefix", ""]]),
+        "blank")
+
+
+def test_an_unknown_setting_label_aborts():
+    """A typo'd label would drop a prefix and quietly change what matches."""
+    check_raises("unknown label aborts",
+                 lambda: _config(_GOOD_CFG + [["Public channel prefixes", "x-"]]),
+                 "name no setting")
+
+
+def test_a_missing_setting_aborts():
+    check_raises(
+        "a setting with no rows aborts",
+        lambda: _config([_CFG_HEADERS, ["Public channel prefix", "meetup-"],
+                         ["Staff email domain", "x.com"]]),
+        "Organizer channel suffix")
+
+
+def test_an_absent_config_tab_names_the_migration():
+    check_raises("an empty tab aborts with the fix named",
+                 lambda: _config([]), "migrate_resource_columns")
+
+
+def test_the_config_labels_match_the_migration_that_wrote_them():
+    """Both skills must spell the row labels and sentinel the same way."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(here, "..", "..", "aaif-sync-chapters", "scripts"))
+    import migrate_resource_columns as mig
+    check("labels agree", sorted(ao.CONFIG_LABELS),
+          sorted(mig.CONFIG_LABELS.values()))
+    check("keys agree", sorted(ao.CONFIG_LABELS.values()),
+          sorted(mig.CONFIG_LABELS))
+    check("empty-value sentinel agrees", ao.EMPTY_VALUE, mig.EMPTY_VALUE)
+    check("config tab name agrees", ao.SLACK_CONFIG_TAB, mig.CONFIG_TAB)
+
+
 def test_header_index_aborts_on_missing_and_duplicate():
     check_raises("missing column aborts",
                  lambda: ao.header_index(["A"], "T", "B"), "no 'B'")
@@ -265,7 +404,7 @@ def test_folding_matches_accent_and_punctuation_variants():
 
 #: A floor, not a target. Without it, renaming the `test_` prefix or losing the
 #: functions in a bad merge prints "all checks passed" having run nothing.
-MIN_TESTS = 25
+MIN_TESTS = 36
 
 
 def test_regional_alias_that_no_longer_resolves_aborts():

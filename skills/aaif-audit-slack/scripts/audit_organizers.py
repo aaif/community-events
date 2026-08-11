@@ -30,27 +30,33 @@ from aaif_events.slack import Slack, channels, lookup_emails, members  # noqa: E
 
 read_cache, write_cache, cache_age = jsoncache.read, jsoncache.write, jsoncache.age
 
-#: Keys the engine indexes directly. Validated at load so a typo costs a second
-#: rather than surfacing after the sheet reads, the channel pull and ~100 email
-#: lookups — `staff_email_domain` is not touched until the very last step.
-REQUIRED_CFG = ("public", "regional", "organizers", "public_prefixes",
-                "organizer_suffixes", "staff_email_domain")
+#: The whole channel map now lives on the Chapters List — there is no JSON file.
+#: The per-chapter part is three columns (see CHANNEL_COLUMNS); the workspace-wide
+#: matching vocabularies are this tab.
+SLACK_CONFIG_TAB = "Slack Config"
 
+#: Row label on that tab -> the config key it fills. Labels are prose because
+#: organizers read this tab; the keys stay snake_case because the matcher does.
+CONFIG_LABELS = {
+    "Public channel prefix": "public_prefixes",
+    "Organizer channel suffix": "organizer_suffixes",
+    "Staff email domain": "staff_email_domain",
+}
 
-def load_config(path):
-    """Read channel_map.json and check its shape before anything slow happens."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except FileNotFoundError:
-        raise SystemExit("ABORT: no channel map at %s." % path)
-    except json.JSONDecodeError as exc:
-        raise SystemExit("ABORT: %s is not valid JSON (%s)." % (path, exc))
-    missing = [k for k in REQUIRED_CFG if k not in cfg]
-    if missing:
-        raise SystemExit("ABORT: %s is missing required key(s): %s."
-                         % (path, ", ".join(missing)))
-    return cfg
+#: Settings that take several values, in sheet row order. Order is load-bearing:
+#: the prefixes are tried in the order listed, so the bare slug beats
+#: "meetup-<slug>" deterministically rather than by whatever order the Slack API
+#: happened to return channels in.
+LIST_SETTINGS = ("public_prefixes", "organizer_suffixes")
+
+#: A spreadsheet cannot hold an empty string distinguishably from an empty cell,
+#: and the FIRST public prefix is exactly that — "" meaning "try the plain city
+#: slug, no prefix at all". Same problem NO_RESOURCE solves for the channel
+#: columns, same shape of answer: a visible sentinel.
+EMPTY_VALUE = "(none)"
+
+REQUIRED_CFG = ("public_prefixes", "organizer_suffixes", "staff_email_domain")
+
 
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
 CHAPTERS_TAB = "Chapters & Teams"
@@ -133,19 +139,117 @@ def header_index(headers, tab, *names):
     return idx
 
 
+def load_config(sheet_id=None):
+    """Read the matching vocabularies off the Chapters List `Slack Config` tab.
+
+    Checked here, before anything slow happens, so a renamed label costs a second
+    rather than surfacing after the sheet reads, the channel pull and ~100 email
+    lookups — `staff_email_domain` is not touched until the very last step.
+    """
+    rows = gws_values(sheet_id or CHAPTERS_ID, "'%s'!A:C" % SLACK_CONFIG_TAB)
+    if not rows:
+        raise SystemExit(
+            "ABORT: no %r tab on the Chapters List (or it is empty). The channel "
+            "matching config lives there now; run\n"
+            "  python3 skills/aaif-sync-chapters/scripts/migrate_resource_columns.py "
+            "--write\nto create it." % SLACK_CONFIG_TAB)
+
+    headers = [h.strip() for h in rows[0]]
+    idx = header_index(headers, SLACK_CONFIG_TAB, "Setting", "Value")
+
+    cfg = {k: [] for k in LIST_SETTINGS}
+    unknown = set()
+    for row in rows[1:]:
+        label = cell(row, idx["Setting"])
+        if not label:
+            continue
+        key = CONFIG_LABELS.get(label)
+        if key is None:
+            unknown.add(label)
+            continue
+        value = cell(row, idx["Value"])
+        # Only the sentinel becomes "". A genuinely blank cell is a half-typed
+        # row, and silently reading it as the bare-slug prefix would quietly
+        # widen the matcher — the one direction this repo never widens by accident.
+        if key in LIST_SETTINGS:
+            cfg[key].append("" if value == EMPTY_VALUE else value)
+        else:
+            cfg[key] = value
+
+    if unknown:
+        raise SystemExit(
+            "ABORT: %s has row(s) labelled %s, which name no setting. Known "
+            "labels: %s. A typo'd label would silently drop a prefix and change "
+            "which channels match."
+            % (SLACK_CONFIG_TAB, ", ".join(map(repr, sorted(unknown))),
+               ", ".join(sorted(CONFIG_LABELS))))
+
+    missing = [k for k in REQUIRED_CFG if not cfg.get(k)]
+    if missing:
+        raise SystemExit(
+            "ABORT: %s defines no value for: %s."
+            % (SLACK_CONFIG_TAB,
+               ", ".join(sorted(l for l, k in CONFIG_LABELS.items() if k in missing))))
+    blank = [k for k in LIST_SETTINGS if any(v == "" for v in cfg[k][1:])]
+    if blank:
+        raise SystemExit(
+            "ABORT: %s has a blank %s value that is not the first row. Write %r "
+            "if you mean the empty prefix." % (SLACK_CONFIG_TAB, blank[0],
+                                               EMPTY_VALUE))
+    return cfg
+
+
+#: Sheet column -> the config table it supplies. These three columns ARE the map
+#: that channel_map.json used to hold before the map moved onto the sheet.
+CHANNEL_COLUMNS = {"Slack Channel": "public",
+                   "Organizer Channel": "organizers",
+                   "Country Channel": "regional"}
+
+#: The sheet's stand-in for a JSON `null`: a human checked and there is no such
+#: channel. It must survive into the table as None, because that is what stops
+#: _resolve_alias() falling through to a guess. Kept in sync with
+#: sync_chapters.NO_RESOURCE by test_audit_organizers.
+NO_RESOURCE = "none"
+
+
 def read_chapters():
+    """Chapters, plus the three channel tables their rows carry.
+
+    Returns (chapters, tables). `tables` is keyed exactly like the old
+    channel_map.json sections, so match_channels() consumes it unchanged — the
+    migration moved where the map is stored, not what it means.
+
+    A BLANK cell leaves the city out of the table entirely, which is what makes
+    the matcher fall through to its prefix/suffix scan. The literal `none` puts
+    the city in with a None value, which stops the scan. Collapsing the two would
+    either re-guess a settled question forever or freeze every unfilled row.
+    """
     rows = gws_values(CHAPTERS_ID, "'%s'!A:AZ" % CHAPTERS_TAB)
     if not rows:
         raise SystemExit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
     headers = [h.strip() for h in rows[0]]
-    idx = header_index(headers, CHAPTERS_TAB, "City")
-    out = [{"city": cell(row, idx["City"])} for row in rows[1:]
-           if cell(row, idx["City"])]
+    idx = header_index(headers, CHAPTERS_TAB, "City", *CHANNEL_COLUMNS)
+
+    out, tables = [], {t: {} for t in CHANNEL_COLUMNS.values()}
+    for row in rows[1:]:
+        city = cell(row, idx["City"])
+        if not city:
+            continue
+        out.append({"city": city})
+        for column, table in CHANNEL_COLUMNS.items():
+            value = cell(row, idx[column]).strip()
+            if not value:
+                continue
+            # Channel names are stored bare; tolerate a leading '#' because a
+            # human typing into a spreadsheet will write one about half the time,
+            # and a stored "#berlin" would never match the channel "berlin".
+            tables[table][city] = (None if value == NO_RESOURCE
+                                   else value.lstrip("#").strip())
     if not out:
         raise SystemExit(
             "ABORT: %d rows in %s but none has a City value. The column was "
             "probably renamed or reordered." % (len(rows) - 1, CHAPTERS_TAB))
-    return out
+    return out, tables
 
 
 def read_intake():
@@ -267,9 +371,9 @@ def match_channels(chapters, chans, cfg):
             # The auto path refuses private channels; an alias must not be a way
             # around that, or a private room is reported as the city's home.
             raise SystemExit(
-                "ABORT: channel_map maps %r to #%s, which is PRIVATE. A city "
-                "channel must be public — move it to the organizers map."
-                % (city, pub["name"]))
+                "ABORT: the Chapters List gives %r the Slack Channel #%s, which is "
+                "PRIVATE. A city's own channel must be public — move it to that "
+                "row's Organizer Channel instead." % (city, pub["name"]))
         candidates = []
         if not pub and not how:
             # Prefixes are tried in the order the config lists them, so an exact
@@ -299,8 +403,8 @@ def match_channels(chapters, chans, cfg):
 
         org, org_how = _resolve_alias(city, cfg["organizers"], by_name)
         if not org and not org_how:
-            # Suffixes outer, mirroring the public prefix loop: channel_map lists
-            # them in a meaningful order, so "-organizers" must beat "-leads"
+            # Suffixes outer, mirroring the public prefix loop: the Slack Config
+            # tab lists them in a meaningful order, so "-organizers" must beat "-leads"
             # regardless of which city variant happens to sort first.
             for suffix in suffixes:
                 for v in sorted(vs):
@@ -335,25 +439,29 @@ def match_channels(chapters, chans, cfg):
     return out
 
 
-def assert_aliases_resolve(rows, map_path):
+def assert_aliases_resolve(rows, source=CHAPTERS_TAB):
     """Abort when a curated alias no longer points at a live channel.
 
     A human confirmed this mapping; if it stops resolving the channel was
     renamed or archived, which is a configuration bug. Left alone it silently
     downgrades the chapter to "no channel at all" and generates a "give them a
     room" action for a city that already has one.
+
+    `source` names where to go and fix it. It is the Chapters List now, not
+    channel_map.json — sending someone to edit a JSON file that no longer holds
+    the entry is worse than not naming a file at all.
     """
     broken = [(r["city"], r[k].split(":", 1)[1])
               for r in rows for k in ("public_how", "organizers_how", "regional_how")
               if r[k].startswith("alias-missing:")]
     if broken:
         raise SystemExit(
-            "ABORT: %d curated alias(es) in %s no longer resolve to a live "
+            "ABORT: %d channel(s) named on %s no longer resolve to a live "
             "channel:\n  %s\nThe channel was probably renamed or archived. Fix "
-            "the map — these chapters would otherwise be reported as having no "
-            "channel at all."
-            % (len(broken), map_path,
-               "\n  ".join("%s -> #%s" % (c, n) for c, n in broken)))
+            "the row (or set it to %r) — these chapters would otherwise be "
+            "reported as having no channel at all."
+            % (len(broken), source,
+               "\n  ".join("%s -> #%s" % (c, n) for c, n in broken), NO_RESOURCE))
 
 
 def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
@@ -625,19 +733,21 @@ def render(audit, orphans, dupes, today):
     known_none = [c["city"] for c in audit if c["public_how"] == "known-none"]
     if known_none:
         notes.append("<li><strong>%d chapters are recorded as having no channel on purpose</strong>"
-                     " (mapped to null in channel_map.json): %s. The matcher did not guess for "
-                     "these — remove the null entry if one is created.</li>"
-                     % (len(known_none), ", ".join(e(c) for c in known_none)))
+                     " (their Slack Channel cell reads <code class=\"chan\">%s</code> on the "
+                     "Chapters List): %s. The matcher did not guess for these — clear the "
+                     "cell if a channel is created.</li>"
+                     % (len(known_none), e(NO_RESOURCE),
+                        ", ".join(e(c) for c in known_none)))
     aliased = [c for c in audit if c["public_how"] == "alias"
                or c["organizers_how"] == "alias"]
     if aliased:
         notes.append("<li><strong>%d chapters were matched by a curated alias</strong> rather than "
-                     "by name, so their coverage is only as good as channel_map.json: %s.</li>"
+                     "by name, so their coverage is only as good as the Chapters List: %s.</li>"
                      % (len(aliased), ", ".join(e(c["city"]) for c in aliased)))
     cand = [c for c in audit if not c["public"] and c["public_candidates"]]
     if cand:
         notes.append("<li><strong>%d chapters have near-miss channels</strong> that were NOT "
-                     "auto-matched: %s. Confirm by hand and add to channel_map.json.</li>"
+                     "auto-matched: %s. Confirm by hand, then fill the chapter's row.</li>"
                      % (len(cand), "; ".join("%s → %s" % (e(c["city"]),
                                                           ", ".join("#" + e(n) for n in c["public_candidates"][:3]))
                                              for c in cand[:8])))
@@ -735,7 +845,7 @@ complete.</div>
 <footer>Sources: AAIF Community Chapters List (Chapters &amp; Teams), AAIF Community Intake Ops
 (Organizers, status {' or '.join(ACCEPTED)}), and the Slack Web API. Both sheets are only ever
 read. Channel matching uses the curated alias map in
-<code class="chan">channel_map.json</code>.</footer>
+<code class="chan">Chapters List</code>.</footer>
 """
     js = """
 const btns=[...document.querySelectorAll('button.f')];
@@ -756,10 +866,9 @@ def main():
     ap.add_argument("--cache", default=".slack-audit-cache")
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
     ap.add_argument("--no-pdf", action="store_true")
-    ap.add_argument("--map", default=os.path.join(os.path.dirname(__file__), "channel_map.json"))
     args = ap.parse_args()
 
-    cfg = load_config(args.map)
+    cfg = load_config()
     # Before any collection: these paths will hold organizer names, email
     # addresses and private-channel rosters, and this repo is public.
     rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
@@ -780,10 +889,18 @@ def main():
     print("workspace: %s (%s)" % (who.get("team"), team_id))
 
     print("reading the sheets ...")
-    chapters = read_chapters()
+    # The three per-city tables come off the Chapters List, not the JSON, and are
+    # merged into cfg here so match_channels() keeps taking one config object.
+    # The sheet is the only source for them — cfg.update, not setdefault, so a
+    # reintroduced JSON table could not shadow what the chapters' own rows say.
+    chapters, tables = read_chapters()
+    cfg.update(tables)
     people, dupes = read_intake()
     print("  %d chapters, %d accepted organizers (%d duplicate rows dropped)"
           % (len(chapters), len(people), dupes))
+    print("  channel map from the sheet: %d own, %d organizers, %d regional"
+          % (len(tables["public"]), len(tables["organizers"]),
+             len(tables["regional"])))
 
     chan_path = os.path.join(args.cache, "channels.json")
     chans = read_cache(chan_path, args.refresh, team_id, note=print)
@@ -796,7 +913,7 @@ def main():
               % (len(chans), cache_age(chan_path)))
 
     rows = match_channels(chapters, chans, cfg)
-    assert_aliases_resolve(rows, args.map)
+    assert_aliases_resolve(rows)
     print("  matched: %d own channel, %d organizers channel"
           % (sum(1 for r in rows if r["public"]),
              sum(1 for r in rows if r["organizers_channel"])))
