@@ -97,6 +97,12 @@ The ops skills read and write Google Drive/Sheets through **one** route: the
 every skill, script, and manual step goes through `gws`, so behaviour is the same
 whether a human or an agent runs it.
 
+> **`gws` is not an official Google tool.** It's a third‑party command‑line
+> client for the Google Workspace APIs, not published or supported by Google, and
+> not affiliated with AAIF or the Linux Foundation. You are granting it OAuth
+> scopes over your own Workspace data — vet the source and pin a version you trust
+> before pointing it at anything that matters.
+
 > **Work in native Google formats wherever possible.** Prefer the Docs, Sheets,
 > and Slides APIs against native `application/vnd.google-apps.*` files. Only fall
 > back to byte-level OOXML surgery in Python (`.docx`/`.pptx`/`.xlsx` zip parts)
