@@ -8,7 +8,11 @@ from sync_chapters import (fold, fold_city, slugify, parse_organizers, build_pro
                            col_letter)
 
 # The live feed layout — writes are resolved through it by name.
-HEADERS = ["Title", "City", "Country", "Generated Geolocation", "Summary", "Image",
+HEADERS = ["Title", "City", "Country",
+           # The resource map, inserted after Country by migrate_resource_columns.
+           "Chapter Folder", "Slack Channel", "Organizer Channel", "Country Channel",
+           "Organizer Handles",
+           "Generated Geolocation", "Summary", "Image",
            "CTA", "URL for CTA", "Organizers", "Chapter Luma Link",
            "MLOps Community Organizers"]
 
@@ -45,15 +49,19 @@ def aborts(fn):
         return True
     return False
 
-ROW2 = ["AAIF Boston Chapter", "Boston", "USA", "42,-71", "blurb", "img",
-        "Stay Updated", "u", "Kranthi Manchikanti", "luma", ""]
+ROW2 = ["AAIF Boston Chapter", "Boston", "USA",
+        "https://drive.google.com/drive/folders/F1", "boston", "boston-organizers", "none",
+        "@ada",
+        "42,-71", "blurb", "img",
+        "Stay Updated", "u", "Wedge Antilles", "luma", ""]
 _chapters, _last, LAYOUT = read_chapters_over([HEADERS, ROW2])
-check("read_chapters resolves the real layout", LAYOUT["index"]["Organizers"], 8)
+check("fixture row matches the header width", len(ROW2), len(HEADERS))
+check("read_chapters resolves the real layout", LAYOUT["index"]["Organizers"], 13)
 check("read_chapters finds the last City row", _last, 2)
 
 # --- fold: case, whitespace, accents (compare folded, write original) --------
 check("fold trims/collapses/casefolds", fold("  Chandana  Srinivasa "), "chandana srinivasa")
-check("fold strips accents", fold("Médéric Hurier"), fold("Mederic HURIER"))
+check("fold strips accents", fold("Padmé Naberrie"), fold("Padme NABERRIE"))
 
 # --- slugify: default rule + the Denver exception -----------------------------
 check("slug default", slugify("New York"), "newyork")
@@ -61,63 +69,63 @@ check("slug accents", slugify("Montréal"), "montreal")
 check("slug Denver override", slugify("Denver"), "colorado")
 
 # --- parse_organizers ----------------------------------------------------------
-check("parse Organizers cell", parse_organizers(" Gleb Lukicov;  Alex Jones ; "), ["Gleb Lukicov", "Alex Jones"])
+check("parse Organizers cell", parse_organizers(" Mon Mothma;  Kit Fisto ; "), ["Mon Mothma", "Kit Fisto"])
 check("parse empty Organizers cell", parse_organizers(""), [])
 
-CHAPTERS = [chap(2, "Boston", "Kranthi Manchikanti"),
+CHAPTERS = [chap(2, "Boston", "Wedge Antilles"),
             chap(3, "Delhi NCR", ""),
-            chap(4, "San Francisco", "Rahul Parundekar"),
+            chap(4, "San Francisco", "Ben Kenobi"),
             chap(5, "Silicon Valley", "")]
 
 # --- merge, don't overwrite: dupe detection is case/space/accent-insensitive ---
 adds, new_rows, near = build_proposal(
-    [entry(2, "kranthi  manchikanti", "Boston"),      # already present (case/space)
+    [entry(2, "wedge  antilles", "Boston"),           # already present (case/space)
      entry(3, "New Person", "Boston")],
     CHAPTERS, 5)
 check("merge appends only missing", adds,
       [{"row": 2, "city": "Boston", "names": ["New Person"],
-        "new_value": "Kranthi Manchikanti; New Person"}])
+        "new_value": "Wedge Antilles; New Person"}])
 check("merge creates no rows", (new_rows, near), ([], []))
 
 # --- city match is case-insensitive; manual B entries are kept -----------------
 adds, _, _ = build_proposal([entry(2, "Ana Ruiz", "  boston ")], CHAPTERS, 5)
 check("city matched folded, existing name kept", adds[0]["new_value"],
-      "Kranthi Manchikanti; Ana Ruiz")
+      "Wedge Antilles; Ana Ruiz")
 
 # --- near-miss reported, never written -----------------------------------------
-adds, new_rows, near = build_proposal([entry(2, "Kritika Parmar", "Delhi")], CHAPTERS, 5)
+adds, new_rows, near = build_proposal([entry(2, "Leia Organa", "Delhi")], CHAPTERS, 5)
 check("near-miss no write", (adds, new_rows), ([], []))
 check("near-miss candidates", near,
-      [{"city": "Delhi", "names": ["Kritika Parmar"],
+      [{"city": "Delhi", "names": ["Leia Organa"],
         "candidates": [("Delhi NCR", 3)]}])
 
 # --- punctuation-only differences are the SAME city, not a new row ---------------
 check("fold_city flattens punctuation", fold_city("Washington, DC"), fold_city("Washington DC"))
-DC = [chap(2, "Washington DC", "Sushant Kumar")]
-adds, new_rows, near = build_proposal([entry(2, "Donte Small", "Washington, DC")], DC, 2)
+DC = [chap(2, "Washington DC", "Han Solo")]
+adds, new_rows, near = build_proposal([entry(2, "Lando Calrissian", "Washington, DC")], DC, 2)
 check("comma variant merges into the existing row", (adds[0]["row"], adds[0]["new_value"]),
-      (2, "Sushant Kumar; Donte Small"))
+      (2, "Han Solo; Lando Calrissian"))
 check("comma variant creates no row", (new_rows, near), ([], []))
 
 # --- shared-token near-miss: 'New Delhi' must not fork 'Delhi NCR' ---------------
-adds, new_rows, near = build_proposal([entry(2, "Satyam Soni", "New Delhi")], CHAPTERS, 5)
+adds, new_rows, near = build_proposal([entry(2, "Mace Windu", "New Delhi")], CHAPTERS, 5)
 check("shared-token near-miss writes nothing", (adds, new_rows), ([], []))
 check("shared-token near-miss names the candidate",
       [c[0] for c in near[0]["candidates"]], ["Delhi NCR"])
 
 # --- SF is NOT mirrored into Silicon Valley -------------------------------------
-adds, new_rows, near = build_proposal([entry(2, "Leo Walker", "San Francisco")], CHAPTERS, 5)
+adds, new_rows, near = build_proposal([entry(2, "Luke Skywalker", "San Francisco")], CHAPTERS, 5)
 check("SF row only, SV untouched", [a["row"] for a in adds], [4])
 
 # --- new rows append after last non-empty row, in intake order ------------------
 adds, new_rows, _ = build_proposal(
-    [entry(2, "Imran Bagwan", "Pune"), entry(3, "Someone Else", "Pune"),
-     entry(4, "Jaime Vélez", "Montréal")],
+    [entry(2, "Owen Lars", "Pune"), entry(3, "Someone Else", "Pune"),
+     entry(4, "Zéno Vélar", "Montréal")],
     CHAPTERS, 5)
 check("new rows numbered from last+1",
       [(n["row"], n["city"], n["names"], n["slug"]) for n in new_rows],
-      [(6, "Pune", ["Imran Bagwan", "Someone Else"], "pune"),
-       (7, "Montréal", ["Jaime Vélez"], "montreal")])
+      [(6, "Pune", ["Owen Lars", "Someone Else"], "pune"),
+       (7, "Montréal", ["Zéno Vélar"], "montreal")])
 
 # --- empty Organizers everywhere (first-ever run) ----------------------------------------
 adds, _, _ = build_proposal([entry(2, "A B", "Delhi NCR")],
@@ -161,14 +169,18 @@ check("city with no ascii aborts rather than writing an empty slug",
 # --- read_chapters refuses layouts it cannot address safely ---------------------
 check("duplicate header aborts",
       aborts(lambda: read_chapters_over([HEADERS + ["Organizers"], ROW2 + [""]])), True)
+_i_cta = HEADERS.index("CTA")
 check("missing derived column aborts",
-      aborts(lambda: read_chapters_over([[h for h in HEADERS if h != "CTA"], ROW2[:6] + ROW2[7:]])),
-      True)
-check("non-empty row below the last City row aborts",
       aborts(lambda: read_chapters_over(
-          [HEADERS, ROW2, ["", "", "France", "", "half-written summary", "", "", "", "", "", ""]])),
+          [[h for h in HEADERS if h != "CTA"], ROW2[:_i_cta] + ROW2[_i_cta + 1:]])),
       True)
-check("blank trailing rows are fine", read_chapters_over([HEADERS, ROW2, [""] * 11])[1], 2)
+_half = [""] * len(HEADERS)
+_half[HEADERS.index("Country")] = "France"
+_half[HEADERS.index("Summary")] = "half-written summary"
+check("non-empty row below the last City row aborts",
+      aborts(lambda: read_chapters_over([HEADERS, ROW2, _half])), True)
+check("blank trailing rows are fine",
+      read_chapters_over([HEADERS, ROW2, [""] * len(HEADERS)])[1], 2)
 
 # --- col_letter rejects a negative index instead of returning "" ----------------
 try:
@@ -185,7 +197,7 @@ check("control characters abort",
 check("over-long text aborts",
       aborts(lambda: sync_chapters.check_public_text("name", "A" * 200, 5)), True)
 check("an ordinary accented name passes",
-      aborts(lambda: sync_chapters.check_public_text("name", "Médéric Hurier", 5)), False)
+      aborts(lambda: sync_chapters.check_public_text("name", "Padmé Naberrie", 5)), False)
 
 # --- apply_changes: exact ranges, column order, RAW (gws mocked, no network) -----
 CITY_COL = [["City"], ["Boston"]]        # row 2 = Boston, row 6 still empty
@@ -193,19 +205,34 @@ with mock.patch.object(sync_chapters, "gws_json") as gj, \
      mock.patch.object(sync_chapters, "get_values", return_value=CITY_COL):
     n = sync_chapters.apply_changes(
         [{"row": 2, "city": "Boston", "names": ["New Person"],
-          "new_value": "Kranthi Manchikanti; New Person"}],
-        [{"row": 6, "city": "Pune", "names": ["Imran Bagwan"], "slug": "pune"}],
+          "new_value": "Wedge Antilles; New Person"}],
+        [{"row": 6, "city": "Pune", "names": ["Owen Lars"], "slug": "pune"}],
         LAYOUT)
     body = gj.call_args.kwargs["body"]
 check("apply_changes writes both changes", n, 2)
 check("apply_changes uses RAW (no formula injection)", body["valueInputOption"], "RAW")
+# Ranges are derived from LAYOUT, not spelled out: the column letters moved once
+# already (the resource block was inserted after Country), and a hardcoded "I2"
+# fails as a stale expectation rather than as a real regression. What is being
+# asserted is that the write FOLLOWS the header row — so the expectation has to
+# be computed the same way, and the per-column values below are what pin the
+# order.
+_ORG_COL = sync_chapters.col_letter(LAYOUT["index"]["Organizers"])
+_LAST_COL = sync_chapters.col_letter(len(HEADERS) - 1)
+_expected_new = [""] * len(HEADERS)
+for _c, _v in (("Title", "AAIF Pune Chapter"), ("City", "Pune"),
+               ("CTA", "Stay Updated"),
+               ("URL for CTA", "https://luma.com/aaif-pune"),
+               ("Organizers", "Owen Lars"),
+               ("Chapter Luma Link", "https://luma.com/aaif-pune")):
+    _expected_new[LAYOUT["index"][_c]] = _v
 check("apply_changes ranges and column order", body["data"],
-      [{"range": "'%s'!I2" % sync_chapters.CHAPTERS_TAB,
-        "values": [["Kranthi Manchikanti; New Person"]]},
-       {"range": "'%s'!A6:K6" % sync_chapters.CHAPTERS_TAB,
-        "values": [["AAIF Pune Chapter", "Pune", "", "", "", "", "Stay Updated",
-                    "https://luma.com/aaif-pune", "Imran Bagwan",
-                    "https://luma.com/aaif-pune", ""]]}])
+      [{"range": "'%s'!%s2" % (sync_chapters.CHAPTERS_TAB, _ORG_COL),
+        "values": [["Wedge Antilles; New Person"]]},
+       {"range": "'%s'!A6:%s6" % (sync_chapters.CHAPTERS_TAB, _LAST_COL),
+        "values": [_expected_new]}])
+check("the derived new-row write lands past the resource block",
+      _ORG_COL, "N")
 
 # --- the sheet moving under us must abort BEFORE the write ----------------------
 with mock.patch.object(sync_chapters, "gws_json") as gj, \
@@ -235,10 +262,16 @@ with mock.patch.object(sync_chapters, "gws_json") as gj, \
 
 # --- new rows never write into the editorial columns -----------------------------
 vals = sync_chapters.new_row_values(
-    {"row": 6, "city": "Pune", "names": ["Imran Bagwan"], "slug": "pune"}, LAYOUT)
+    {"row": 6, "city": "Pune", "names": ["Owen Lars"], "slug": "pune"}, LAYOUT)
 check("new row is full feed width", len(vals), len(HEADERS))
 check("editorial columns left blank",
       [vals[LAYOUT["index"][c]] for c in sync_chapters.EDITORIAL_COLUMNS], ["", "", "", ""])
+# The resource map is sync_resources.py's job, from Drive and Slack. A new row
+# guessing its own folder or channel here would write an unverified claim into
+# the column the audit trusts.
+check("resource columns left blank on new rows",
+      [vals[LAYOUT["index"][c]] for c in sync_chapters.RESOURCE_COLUMNS],
+      [""] * len(sync_chapters.RESOURCE_COLUMNS))
 check("MLOps history untouched on new rows", vals[LAYOUT["index"]["MLOps Community Organizers"]], "")
 
 # --- gws_json survives U+2028 inside JSON string values (the splitlines() bug) ---

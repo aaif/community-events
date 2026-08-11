@@ -480,13 +480,18 @@ def verify(p, ran):
         want += [(c, fid, e, p["role"]) for c, fid, e in p.get("already_granted_ids", [])]
         for chapter, folder_id, email, role in want:
             checked += 1
+            # Mirror plan()'s owner exception: the tree's owner holds everything
+            # (inherited "owner" on every folder), Drive rejects re-granting
+            # them, and plan() therefore never proposes it — so verify must not
+            # demand the direct grant plan correctly refused to make.
             direct = {canon_email(q.get("emailAddress", "")): q["role"]
                       for q in perms(folder_id)
-                      if q["type"] == "user" and not q["inherited"]}
+                      if q["type"] == "user"
+                      and (not q["inherited"] or q["role"] == "owner")}
             got = direct.get(canon_email(email))
             if got is None:
                 bad.append("%s has no direct grant on %s" % (email, chapter))
-            elif got != role:
+            elif got != role and got != "owner":
                 bad.append("%s has %r on %s, expected %r" % (email, got, chapter, role))
     if "lock" in ran:
         checked += 1
@@ -518,7 +523,11 @@ def main():
     report(p, a.role)
     if not a.write:
         print("\nReport only — nothing was changed. Re-run with --write to apply.")
-        return 0
+        # Shared engine exit convention: report mode exits 0 when in sync, 2 when
+        # it proposes changes (consumed by nightly.py). Pending banner pins are
+        # NOT drift: the site serves from Sanity, so pinning is a standing human
+        # decision, and counting it would report drift every night forever.
+        return 2 if (p["grants"] or p["public"]) else 0
 
     order = [("pin", apply_pins, (p,)), ("grant", apply_grants, (p, a.notify, a.mail_if_required)),
              ("lock", apply_lock, (p,))]

@@ -18,3 +18,8 @@ backups/*
 .slack-audit-cache/
 slack-members-audit.*
 slack-organizers-audit.*
+
+# Nightly sync runner output (aaif-sync-chapters nightly.py). Same rule as above:
+# the per-engine logs hold the full reports — names, emails, per-person diffs —
+# and must never be committed. Only the runner's stdout summary is PII-free.
+nightly-reports/

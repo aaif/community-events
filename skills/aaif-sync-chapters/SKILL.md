@@ -1,23 +1,108 @@
 ---
 name: aaif-sync-chapters
-description: Push intake decisions out of the Intake Ops sheet — accepted organizers onto the Chapters List, accepted people plus their survey interest into their chapter's Attendee CRM, and per-chapter Drive access to replace the folder's public link-share. Reports & proposes by default; only writes on explicit approval. Use when asked to sync organizers/chapters/CRMs, push intake decisions to the chapters list, add intake people to a chapter's CRM, or give organizers access to their own chapter.
-argument-hint: "[chapters|crm|access] [--write]"
+description: Push intake decisions out of the Intake Ops sheet — accepted organizers onto the Chapters List and into each chapter's About doc, accepted people plus their survey interest into their chapter's Attendee CRM, per-chapter Drive access to replace the folder's public link-share, and each chapter's Drive folder and Slack channels onto the Chapters List resource map. Reports & proposes by default; only writes on explicit approval. Use when asked to sync organizers/chapters/CRMs, push intake decisions to the chapters list, update a chapter's About doc organizers, add intake people to a chapter's CRM, give organizers access to their own chapter, or record which Slack channel and Drive folder a chapter uses.
+argument-hint: "[chapters|about|crm|access|resources|nightly] [--write]"
 ---
 
-# Sync the Intake → Chapters List, chapter CRMs, chapter access
+# Sync the Intake → Chapters List, About docs, chapter CRMs, chapter access
 
-Three engines, one intake sheet, same house rules — **the intake sheet is only
+Five engines, one intake sheet, same house rules — **the intake sheet is only
 ever read**, the report is the default, and `--write` re-verifies itself:
 
 | Engine | Script | Pushes | Into |
 |---|---|---|---|
 | Chapters feed | `sync_chapters.py` | **accepted organizer names** | the public Chapters List sheet |
+| About docs | `sync_about.py` | **accepted organizer names** | each chapter folder's `About.docx` |
 | Chapter CRMs | `sync_crm.py` | **accepted people + their survey interest** | each chapter's private `<City> CRM.xlsx` |
 | Chapter access | `sync_access.py` | **per-chapter Drive grants** | the Chapters folder's sharing |
+| Resource map | `sync_resources.py` | **Drive folder + Slack channels** | the Chapters List resource columns |
 
-Run whichever the user asked for. "Sync everything" means feed → CRM → access, in
-that order: a net-new city needs its folder before its CRM can be written, and its
-CRM should hold the right people before anyone is granted access to it.
+Run whichever the user asked for. "Sync everything" means feed → about → CRM →
+access → resources, in that order: a net-new city needs its folder before its
+About doc or CRM can be written, its CRM should hold the right people before
+anyone is granted access to it, and the resource map records what exists once it
+exists. The feed and the About docs read the same accepted-organizer list, so
+they are run together and a chapter's doc agrees with its website row.
+
+`sync_resources.py` is the odd one out — it reads nothing from the intake. It
+answers "where does this chapter actually live", from Drive and Slack.
+
+## The recurring pipeline
+
+The whole loop, in dependency order. Every step reports first and writes only on
+approval, so this is a sequence of decisions, not a batch job. Skip what has not
+changed; never reorder.
+
+| # | Step | Command | Why here |
+|---|---|---|---|
+| 1 | Resolve cities | `aaif-clean-data` | an unresolved city is invisible to every step below — fix it at the source first |
+| 2 | Triage decisions | `aaif-triage-intake` | only `Accepted` / `Existing (from MLOps)` flow onward |
+| 3 | Chapters feed | `sync_chapters.py` | a net-new city needs its row before anything can hang off it |
+| 4 | About docs | `sync_about.py` | same accepted-organizer list as the feed, so the two agree |
+| 5 | Chapter CRMs | `sync_crm.py` | the CRM decides who gets Drive access, so it lands before access does |
+| 6 | Drive access | `sync_access.py` | grants come after the CRM holds the right people |
+| 7 | Resource map | `sync_resources.py --plan` | records folder + channels; `--plan` names channels that do not exist yet |
+| 8 | Create/rename channels | `provision_channels.py` | makes step 7's plan true. **Renames before creates**, in a computed order |
+| 9 | Add organizers | `invite_organizers.py` | needs the channels from step 8 to exist |
+| 10 | Verify | `aaif-audit-slack` | the independent check: coverage, who is missing, who is in a room we never accepted |
+
+Two ordering constraints that are not negotiable and not obvious:
+
+- **Between 7 and 8 the audit aborts.** The sheet names channels that do not
+  resolve yet, and `assert_aliases_resolve()` refuses rather than downgrading
+  those chapters to "no channel". Close the gap by running 8, not by skipping
+  the check.
+- **9 must follow 8, and a merge makes that sharper.** A *renamed* room keeps its
+  members; a *merged* one does not — `#southbay-chapter-leads` is retired as
+  `-deprecated` and its 21 people only reach `#bay-area-organizers` when step 9
+  invites them. Retiring without running step 9 strands them.
+
+A new chapter additionally needs **`aaif-create-chapter`** for its Drive folder
+and assets, and its Luma page created by hand, both before step 7 can find them.
+
+## Unattended runs (`nightly.py`)
+
+`nightly.py` runs the five engines in the pipeline order above as subprocesses —
+report-only by default, `--write` passes through to every engine. It exists for
+a scheduled CI job, and two conventions make that workable:
+
+- **Exit codes are the drift signal.** Every engine now exits `0` when in sync,
+  `2` when its report proposes changes (or, for `sync_resources`, when a filled
+  channel cell is malformed), and anything else on failure. The runner
+  aggregates the same way: `0` all clean, `2` drift somewhere, `1` any failure.
+  `sync_access` counts pending grants and a pending lock as drift, but **not**
+  pending banner pins — those are a standing human decision and would read as
+  drift every night forever.
+- **The runner's stdout never names a person.** This repo is public and a CI log
+  is a publication, so the summary is engine names, outcomes, durations and log
+  paths only. The full reports — which do carry names, emails and per-person
+  diffs — go to `nightly-reports/<UTC stamp>/<engine>.log`, which `.gitignore`
+  covers and which must never be uploaded as a public artifact. Any print added
+  to `nightly.py` must be composed of fixed strings and its own computed values,
+  never engine output.
+
+The Slack write steps (8, 9, and `prune_organizers.py`) are deliberately absent:
+they carry `--i-have-approval` because they notify or affect real people, and a
+scheduled job must never hold that approval. `sync_resources`' Slack half
+already degrades to folder-only on a dead token, which is the right unattended
+behaviour — and an *involuntary* skip (a dead token, as opposed to `--only
+folder`) prints a stdout `PARTIAL:` marker and exits `2`, which the runner
+surfaces as its own **PARTIAL** outcome. A half-checked night must never read
+green, or a token that dies in CI stays dead forever; recovery costs nothing
+because blank cells re-propose on the next authenticated run.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py                # report all five
+python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py --write        # apply, unattended
+python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py crm resources  # a subset
+```
+
+Note `--write` keeps each engine's own refusals: `sync_chapters` still aborts on
+a new row whose Luma page is not live, and `sync_access --write` still runs its
+pin/grant/lock sequence — so an unattended write run is the same set of
+decisions the interactive flow would have made, minus the pause for approval.
+Wiring this into GitHub Actions (auth, secrets, where the digest goes) is a
+separate change; the runner is deliberately CI-agnostic.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -124,6 +209,109 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
 
 ---
 
+# 1b. Sync accepted organizers → chapter About docs
+
+Every chapter folder holds one **`About.docx`** whose **Organizers** section is a
+bulleted list of names. `sync_about.py` rewrites that list from the same accepted
+organizers the feed gets, so a chapter's doc names its OWN organizers.
+
+It had never named them. Every About doc was cloned from **TemplateCity**, which
+is itself a copy of the San Francisco doc, so **79 of 80 chapters shipped listing
+the same four people** (Rahul Parundekar, Arthur Coleman, Leo Walker, Shreeganesh
+Ramanan) — correct for San Francisco, wrong everywhere else.
+
+## The flow: report → approve → write
+
+1. **Report (default, read-only):**
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/sync_about.py
+   python3 ${CLAUDE_SKILL_DIR}/scripts/sync_about.py --city Melbourne
+   ```
+   Prints a per-chapter `-` / `+` diff of the Organizers list, the chapters
+   already correct, the removals that need a second look (below), near-miss and
+   folder-less cities, and a "No changes needed" line when everything matches.
+   A full run downloads all 81 docs and takes about a minute.
+
+2. **Show the user the proposal** and get explicit approval. Never skip to write.
+
+3. **Write (on approval only):**
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/sync_about.py --write
+   ```
+   Recomputes from a fresh read, uploads each changed doc, then re-downloads
+   **every** written doc and confirms a fresh plan is empty. One failed upload is
+   reported and the rest still finish.
+
+## The section is rewritten wholesale — and that is the point
+
+There is deliberately **no "this list looks hand-edited, leave it alone" branch**,
+which is the opposite of the CRM engine's never-clobber-a-human rule. The one
+hand-edited list in the estate is why:
+
+> **Melbourne's About doc grouped applicants under `Approved` / `Submitted
+> Application` / `Planning Application`** — publishing, in a doc shared with the
+> chapter, that two named people had applied and had **not** been approved (one
+> still `New` on the intake, one not on it at all). Skipping a hand-edited list
+> preserves that disclosure. So anything in the section that is not an accepted
+> organizer comes out.
+
+The safety valve is the **report plus the approval gate**, not a skip. Removals
+are itemised in two classes, and both must be read before approving:
+
+- **Non-accepted applicants** — someone this chapter's intake knows who is not
+  `Accepted` / `Existing (from MLOps)`. This is the disclosure class; it gets its
+  own section in the report.
+- **Lines the intake cannot account for** — the interleaved sub-headings, and any
+  organizer kept off the intake entirely. Removing a real person's name because
+  "the intake has never heard of them" is the operator's call at the gate, never
+  the script's in silence. If they belong, add them to the intake and re-run.
+
+## Sync rules (what the engine does)
+
+- **Source of truth is the intake**, filtered to `Accepted` and
+  `Existing (from MLOps)`, with the city resolved through `resolve_city()`
+  **imported from `sync_chapters.py`** — a row that resolved to one city on the
+  feed and another here would put an organizer on one city's website row and in a
+  different city's doc. Names are written in intake row order.
+- **A chapter with no accepted organizer gets the placeholder `[Organizer name]`**,
+  not an empty section: a heading with nothing under it reads as a broken doc, and
+  the block keeps a bullet to clone from when the chapter's first organizer lands.
+  28 chapters are in this state today. **TemplateCity gets the placeholder too** —
+  otherwise every chapter created from it re-inherits the four wrong names, the
+  same reason `sync_crm` patches the template's Status dropdown.
+- **A name already in the list is reused verbatim**, so a hyperlinked name (the
+  template links Rahul's) and any hand formatting survive a re-run. Only the
+  trailing spacing is normalised, so the last bullet keeps its bottom margin.
+- **Near-miss cities are reported, never written** — same folding and the same
+  generic-word stoplist as the other engines, so `San Diego` never lands in
+  `San Francisco`. Cities with no folder are the `aaif-create-chapter` queue.
+- **A doc with no `Organizers` heading is skipped with a reason**, never guessed
+  at. The heading is matched on its **text**, not its style, because two of these
+  docs have been round-tripped through desktop Word — a restyled heading must not
+  make a chapter silently unsyncable.
+
+## Editing the docs
+
+The About docs are **stored `.docx`**, not native Google Docs, so they are edited
+as OOXML — and specifically by **byte-level surgery on `word/document.xml`**, not
+through ElementTree. Re-serializing the part reorders every namespace declaration
+on `<w:document>` and rewrites markup the engine never meant to touch; splicing
+one paragraph range leaves the rest of the part, and every other zip member
+(the embedded brand fonts among them, stored uncompressed), byte-identical.
+
+- Paragraphs are found by **depth-counted** `<w:p>` scanning. A flat
+  `<w:p>.*?</w:p>` match ends at the first inner `</w:p>` of a textbox paragraph
+  and splices the document in half.
+- The block runs from the heading to the **first non-list paragraph** — the
+  `Luma & Socials` heading in every chapter doc.
+- New bullets are cloned from an existing one so they inherit its `<w:pPr>`, and
+  `w14:paraId` is stripped from the clone (it is meant to be unique per
+  paragraph). When the block has no bullet left to clone, `MODEL_BULLET` rebuilds
+  it — and it carries **`numId 1`**, the Organizers list. The `Luma & Socials`
+  list below it is `numId 4`, so cloning the nearest bullet renumbers the list.
+
+---
+
 # 2. Sync Intake People + Interests → chapter CRMs
 
 Every chapter folder under the **Chapters** Drive folder
@@ -195,11 +383,22 @@ used instead of inventing one.
 
 ## Sync rules (what the engine does)
 
-- **Chapter resolution per intake row**: the role tab's `Chapter` assignment wins
-  (a human made it), then `City (New)`, then `City (Existing)` unless it's an
-  `Other…` placeholder. The result is matched to a chapter **folder** with the
-  same accent-, case- and punctuation-folded name as the chapters feed uses
-  (`Washington, DC` → the `Washington DC` folder; `Montreal` → `Montréal`).
+- **Chapter resolution per intake row**: the role tab's `Chapter` column wins,
+  then `City (New)`, then `City (Existing)` unless it's an `Other…` placeholder.
+  The result is matched to a chapter **folder** with the same accent-, case- and
+  punctuation-folded name as the chapters feed uses (`Washington, DC` → the
+  `Washington DC` folder; `Montreal` → `Montréal`).
+
+  > **`Chapter` is a formula, not a human assignment** — this said "a human made
+  > it" until 2026-08-10, and `sync_crm` was built around that. It is an
+  > `ARRAYFORMULA` on all three role tabs (`Organizers!P2`, `Speakers!V`,
+  > `Hosts!AA`), filled on 223/228, 56/58 and 26/26 rows, resolving `City (New)`
+  > → `City (Existing)` unless `Other…` → **the form's free-text city**. That last
+  > fallback is one step more than `resolve_city()` performs, so an accepted person
+  > whose only city signal is the free text would land in a CRM here while the
+  > chapters feed and the About docs still count them unresolved. Measured across
+  > all 103 accepted rows on 2026-08-10 the two agree **0 disagreements** — but the
+  > gap is real, and closing it is the point of collapsing these columns into one.
 - **Near-miss folders are reported, never written** — same discriminating-token
   rule and generic-word stoplist as the chapters engine, so `San Diego` never
   lands in `San Francisco`. Cities with no folder at all are listed as the
@@ -345,6 +544,252 @@ overrides.
 
 ---
 
+# 4. The chapter resource map (`sync_resources.py`)
+
+Four columns on the Chapters List, inserted **after `Country`**, answering "where
+does this chapter actually live":
+
+| Column | Holds | Filled from |
+|---|---|---|
+| `Chapter Folder` | Drive folder URL | the Chapters Drive folder, matched on folded name |
+| `Slack Channel` | the chapter's own public channel | live Slack, exact match only |
+| `Organizer Channel` | its private organizer channel | live Slack, exact match only |
+| `Country Channel` | the country/regional room serving it | live Slack, exact match on the row's `Country` |
+| `Organizer Handles` | **who should be in that organizer channel** | the intake's accepted organizers, resolved to Slack handles by email |
+
+`Chapter Luma Link` is the fifth resource and was already on the sheet — it stays
+where it is, because `sync_chapters.py` derives it for new rows (a new chapter's
+CTA depends on it) and this engine must not fight it for the cell.
+
+## `Organizer Handles` is the one column that is rewritten
+
+Every other resource column records *where a thing lives* and is only ever filled
+when blank. Handles are **derived** from the intake and are therefore replaced
+whenever they differ, with the old value shown in the report as a `~` diff. A
+stale handle list is worse than an empty one: it reads as a roster, so someone
+who left keeps looking current.
+
+Someone with no Slack account is written as `Name (no Slack account)` rather than
+omitted — they are exactly who an organizer needs to chase, and dropping them
+would make the roster look complete. **Their name, never their email**: this
+sheet is world-readable.
+
+Because it is a replacement, `--write` re-checks that each cell still holds what
+it held when the proposal was built (`was`), not merely that it is still blank.
+Checking for blankness would have silently clobbered every hand-corrected list.
+
+## Blank vs `none` — the distinction the whole engine turns on
+
+- **Blank** = nobody has looked yet. Every run proposes for it again, and the
+  audit's matcher falls through to its prefix/suffix scan.
+- **`none`** = a human checked and there genuinely is no such channel. Proposals
+  stop, and the audit stops guessing.
+
+This is the sheet's stand-in for the JSON `null` that `channel_map.json` used to
+carry. Collapsing the two would either re-ask a settled question on every run
+forever, or freeze every row nobody has filled in yet.
+
+## Only exact matches are ever written
+
+The audit skill's rule applies here unchanged, and it is the reason this engine
+proposes so little:
+
+> **NEVER AUTO-MAP AN ALIAS.** A wrong alias reports a chapter as covered when it
+> has no room, and nothing downstream re-checks it.
+
+So `#berlin` is written for Berlin and `#india` for a row whose Country is India,
+because those are exact name hits. `#cape-town-ai` for Cape Town is **printed as
+a candidate and never written**, however obvious it looks. "No channel found" is a
+correct, recoverable answer; a wrong channel is not.
+
+`Chapter Folder` is the exception and is filled freely — it is *derived*, not
+claimed. A folder either exists under the Chapters parent under this city's name
+or it doesn't, and Drive can be re-asked at any time.
+
+`Country Channel` cannot be derived for `#africa`, `#nordics-public`,
+`#spanish-speaking` or `#french-speaking` — they serve several countries and no
+rule gets them from a country name. Those stay whatever a human put there. The
+report lists countries that have chapters but no channel named after them, which
+is the queue for creating one.
+
+## The flow: report → approve → write
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py                # report
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py --only folder  # no Slack auth needed
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py --city Boston
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py --write
+```
+
+`--write` recomputes from a fresh read and **drops any proposal whose cell changed
+while the report was being read** — a human typing the right answer during the
+approval window wins. It then re-reads every written cell and verifies.
+
+## `--plan`: naming channels that do not exist yet
+
+By default the sheet means *the channel that exists*. `--plan` fills blank cells
+with the **convention** name — `<city>`, `<city>-organizers`, `<country>` — even
+where nothing of that name exists, turning those cells into a build list for
+`provision_channels.py`.
+
+That is a deliberate, temporary state with a real cost: **the organizer audit
+aborts** while the sheet names channels that do not resolve. That abort is not a
+bug to route around — it is the check that stops a chapter being silently
+downgraded to "no channel". So only run `--plan` if the channels really are about
+to be created.
+
+Naming, and the one rule that is not obvious:
+
+- **The organizer channel follows the chapter's OWN channel, not the city slug.**
+  Munich's room is `#munchen`, so its organizers belong in `#munchen-organizers` —
+  `munich-organizers` would name a room after a chapter that, in Slack, does not
+  go by that name. This inherits legacy names too, deliberately:
+  `#washington-dc-the-capital-organizers`, `#frankfurt_main-organizers`.
+- **Every chapter gets one**, including the 26 with no accepted organizer yet, so
+  the room is ready for a chapter's first organizer rather than something someone
+  has to remember to create.
+- A **filled cell is never re-planned.** That is what protects the
+  local-language names (`#munchen`, `#españa`, `#medellín`) and the deliberate
+  multi-chapter rooms (`#bay-area` for SF + Silicon Valley, `#españa` for Madrid,
+  Bilbao and Logroño), which the `<city>` convention cannot express at all.
+
+## Why the sheet is inconsistent, and why that is correct
+
+14 chapters point at a channel that is not `<city>`. None is an oversight, and
+`KEPT_NON_CONVENTIONAL` in the script records why: local-language names, one room
+deliberately serving several chapters, a channel whose scope is wider than the
+chapter's (`#colorado` for Denver, `#delhi` for Delhi NCR), and legacy platform
+prefixes nobody will re-join under a new name. Renaming them would move ~2,100
+people for cosmetic consistency.
+
+### A country room is not a chapter room
+
+`#españa` was seeded as Madrid's, Bilbao's and Logroño's **own** channel. It is
+Spain's *country* channel, and the difference is the entire point of the two
+columns: a country room means those chapters have **no local room**, which is what
+the audit is supposed to report ("regional only — a member there has no local
+room"). Filed as a chapter channel it reported all three as covered instead: the
+exact failure the never-auto-map rule exists to prevent, arriving through a seed
+rather than a guess. `MISFILED_COLUMNS` corrects it, and `COUNTRY_CHANNELS` stops
+a brand-new `#spain` being planned beside the 112-member room that already exists.
+
+Watch for this shape whenever one channel serves several chapters — a shared
+*chapter* room and a *country* room look identical on the sheet and mean opposite
+things.
+
+The **one** rename is `RENAMES`: `#bangalore` → `#bengaluru`, because
+Bangalore is the city's superseded name rather than a local variant. It is a
+*rename*, which keeps all 37 members and the history — never a create, which
+would split the chapter across two rooms.
+
+A dead Slack token skips the three channel columns and still reports the folder
+column; the report says which half was skipped, so an empty channel section is
+never mistaken for "nothing to do". Run `slack auth login` and re-run for the rest.
+
+One check runs even without Slack: a **filled channel cell that cannot possibly
+name a channel** (whitespace, `/`, `:`, `#`, `@` or `,` in it — a pasted URL,
+an email address, a sentence) is reported as malformed and counts as drift.
+"Filled" otherwise reads as healthy forever: Montréal's `Slack Channel` cell
+held a copy of its Drive folder URL and every count said the chapter was mapped.
+The character list is deliberately minimal so `#españa`, `#medellín` and
+`#frankfurt_main-organizers` are never flagged.
+
+## One-time migration (`migrate_resource_columns.py`)
+
+The columns did not exist until 2026-08-10, and the whole map lived in
+`aaif-audit-slack`'s `channel_map.json`. `migrate_resource_columns.py` runs in two
+independently-guarded phases:
+
+1. Inserts the four columns and seeds the three channel ones from that file's
+   `public`, `organizers` and `regional` tables.
+2. Writes the file's remaining matching config — the prefix and suffix
+   vocabularies and the staff email domain — onto a new **`Slack Config`** tab,
+   then **deletes `channel_map.json`**.
+
+After it, the channel map and its config live entirely on the sheet; there is no
+JSON file. Re-running it reports "nothing to do".
+
+It is one-shot and already run — it is documented here as the record of how the
+layout changed. Do not re-run it. Note that everything from the old column `D`
+onward shifted right by four; nothing in this repo cared, because all four
+readers resolve columns by header name, but see the Notes below.
+
+> **The seeded values are UNCONFIRMED.** `channel_map.json`'s `_provenance` block
+> said its entries were inferred by an agent from channel names during the first
+> audit and never checked with anyone who runs these chapters. Migrating them did
+> not make them true — it made them visible to the organizers who can correct
+> them, which is the actual argument for the move. Treat a seeded cell as a
+> proposal until someone who knows the chapter confirms it. The ones worth a
+> second look, because the channel name shares nothing with the chapter name:
+> Denver → `#colorado`, Munich → `#munchen`, Bengaluru → `#bangalore`,
+> Madrid/Bilbao/Logroño → `#españa` (one channel, three chapters), San Francisco
+> and Silicon Valley → `#bay-area`, Washington DC → `#washington-dc-the-capital`.
+
+## Creating the planned channels (`provision_channels.py`)
+
+The only script in the repo that **writes to Slack**. It reads the sheet, creates
+what the plan names and applies `RENAMES`.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/provision_channels.py               # report
+python3 ${CLAUDE_SKILL_DIR}/scripts/provision_channels.py --write --i-have-approval
+```
+
+It does **not** share the audit's Slack client. `lib/aaif_events/slack.py` refuses
+any method outside `ALLOWED_METHODS`, and that refusal is why a typo in a
+30k-member workspace cannot post, invite or archive — widening it for one script
+that runs once would remove the guarantee from every audit. So this file carries
+its own small write client, with its own two-method allowlist.
+
+What it will never do: **archive or delete** anything, **invite** anyone
+(`Organizer Handles` says who belongs where; a human does the inviting, because a
+script mass-inviting 100 people to 100 channels is indistinguishable from an
+attack and cannot be undone), or create a channel the sheet does not name.
+
+Renames run **before** creates — creating `#bengaluru` first would take the name
+and strand `#bangalore`'s members in the old room.
+
+Two prerequisites, neither in place by default: a token with `channels:manage`
+and `groups:write` (the audit token has read scopes only), and `--i-have-approval`
+alongside `--write`.
+
+## Adding organizers to their channel (`invite_organizers.py`)
+
+Answers "who is missing from their organizer channel", and behind a second gate,
+adds them.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py            # who is missing
+python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py --city Berlin
+python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py --write --i-have-approval
+```
+
+**Identity comes from the intake, not from the handles column.**
+`Organizer Handles` is the human-readable mirror; the authoritative chain is
+intake row → email → `users.lookupByEmail` → user id, the same chain that filled
+the column. A Slack handle is a display name a person can change, so resolving
+`@someone` back to an account would break the day they rename themselves — and an
+organizer would quietly stop being invited to their own chapter's room.
+
+Scope is deliberately narrow:
+
+- **Organizer channels only.** The public chapter channel is for people to join
+  when they choose; being an organizer is not consent to be placed in a public
+  room.
+- **Adds, never removes.** Someone in the channel the intake doesn't know is
+  reported and left alone — an audit finding, not a cleanup task.
+- **Batched per channel**, so Slack renders one event rather than N join lines.
+- `already_in_channel` is treated as benign: someone may join between the read
+  and the write.
+
+Gated harder than a sheet write, for the same reason `sync_access.py` doesn't
+mail share notices by default: an invitation is a notification to a real person,
+and a hundred arriving at once reads as a phishing wave. Needs
+`groups:write.invites` / `channels:write.invites`, which the audit token does not
+carry.
+
+---
+
 # Verify
 
 After any run (and after editing the engine):
@@ -352,20 +797,34 @@ After any run (and after editing the engine):
 - The report's intake counts should match a manual count of the sheet's Status
   column; a delta means status strings drifted.
 - After `--write`, each engine prints its OWN verify line — they differ:
-  `sync_chapters` "a fresh run proposes zero changes"; `sync_crm` "a fresh read
+  `sync_chapters` "a fresh run proposes zero changes"; `sync_about` "a fresh read
+  of every written doc proposes zero changes"; `sync_crm` "a fresh read
   of every written workbook proposes zero changes"; `sync_access` "banners are
-  directly public and Chapters/ is no longer link-shared".
+  directly public and Chapters/ is no longer link-shared"; `sync_resources` "a
+  fresh read of every written cell matches the proposal".
 - Spot-check one touched row in the sheet: `Organizers` merged correctly, the
   MLOps and Luma columns untouched, and the version history shows a single edit
   for the whole sync.
 - After a CRM `--write`, open one touched workbook and check the person's row
   reads correctly, the sample row and any hand-written notes are untouched, and
   the `Status` cell offers `Host` in its dropdown.
-- Unit tests for the pure logic in all three engines (no network, no `gws`):
+- After an About `--write`, open one rewritten doc and check the Organizers list
+  reads as a proper bulleted list (not renumbered off the Luma list below it),
+  the rest of the doc is untouched, and the brand fonts still render.
+- After a resources `--write`, open the sheet and check the folder URL opens that
+  chapter's folder, and that no cell someone had already filled was overwritten.
+- Report-mode exit codes are part of the contract now: `0` in sync, `2` drift,
+  else failure (see the `nightly.py` section) — a wrapper that treats `2` as an
+  error will misread every report that proposes anything.
+- Unit tests for the pure logic in all five engines (no network, no `gws`):
   ```bash
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_chapters.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_about.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_crm.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_access.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_resources.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_invite_organizers.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_nightly.py
   ```
 
 ## Notes
@@ -377,20 +836,37 @@ After any run (and after editing the engine):
   write target is derived from the header row's index. Every column a new row
   writes (`Title`, `City`, `Organizers`, `CTA`, `URL for CTA`, `Chapter Luma Link`)
   is resolved up front and aborts if missing — a silently skipped one would publish
-  a chapter with no title or a dead CTA. The tab was restructured from
-  `City | Organizers | Previous MLOps Organizers | Chapter Luma Link` into the
-  11-column website feed it is now; the canonical column list lives in `HEADERS` in
-  `scripts/test_sync_chapters.py`, which is executable and therefore can't go stale.
-  The old hardcoded `B`/`A:D` writes are why nothing may be addressed by letter again.
+  a chapter with no title or a dead CTA. The tab was restructured twice: from
+  `City | Organizers | Previous MLOps Organizers | Chapter Luma Link` into an
+  11-column website feed, and then again when the four resource columns were
+  **inserted after `Country`**, shifting everything from the old `D` rightwards.
+  The canonical column list lives in `HEADERS` in `scripts/test_sync_chapters.py`,
+  which is executable and therefore can't go stale.
+  The old hardcoded `B`/`A:D` writes are why nothing may be addressed by letter again —
+  and the insert is why that rule now has teeth: every in-repo reader survived it
+  untouched precisely because none of them spells a column letter. The tests assert
+  the write ranges by *deriving* them from the header row for the same reason; a
+  hardcoded `I2` there would have failed as a stale expectation, not a real bug.
   Note `Chapter Luma Link` is **hidden** in the sheet UI — hidden ≠ absent.
+- **A consumer outside Drive does not get the same protection.** Sheets rewrites
+  its own references on an insert; a Sanity import, a saved query or an external
+  script reading the feed by column position does not move. There was none to fix
+  when the resource block went in (no bound Apps Script, no formulas, no named or
+  protected ranges, and `Past Events` is keyed on City with its own columns) — but
+  confirm before inserting another column, because nothing here can detect one.
 - Quote the tab name in any manual A1 ranges (`'Chapters & Teams'!I11`) — it
   contains `&` and spaces.
 - Unresolved rows already hand-placed on the chapters list are flagged
   "no action needed" so they don't nag every run.
-- `sync_crm.py` imports the `gws` wrapper, city folding and near-miss stoplist
-  **from `sync_chapters.py`** rather than copying them. Two copies would drift,
-  and a city that folds one way in one engine and another way in the other would
-  put a person in a CRM whose feed row says something else.
+- `sync_crm.py` and `sync_about.py` import the `gws` wrapper, city folding, the
+  near-miss stoplist and `resolve_city()` **from `sync_chapters.py`** rather than
+  copying them. Two copies would drift, and a city that folds one way in one
+  engine and another way in the other would put a person in a CRM whose feed row
+  says something else.
+- `sync_about.py` re-reads the intake a second time for its **roster** — every
+  name the intake knows for a city, at any status. That is what tells a removal
+  "applicant we decided against" apart from "line we cannot account for", and
+  it is deliberately not filtered to accepted rows.
 - The CRM's `Attendees` sheet is resolved through `xl/workbook.xml` and its rels,
   never by guessing `xl/worksheets/sheet1.xml` — sheet order and file numbering
   are independent, and the older workbooks are packed in a different order and

@@ -567,10 +567,19 @@ def read_role_tab(tab, interests):
     # resolved through header_index so a rename aborts loudly:
     #   Status  — without it nothing can be filtered
     #   Email   — the only dedupe key; without it everyone re-adds every run
-    #   Chapter — the human's assignment, which outranks the self-reported city
+    #   Chapter — the tab's own resolved city, which outranks the raw dropdown
     # A soft `.index(...) if in headers else None` on Chapter silently demoted
-    # every hand-corrected assignment to the submitted dropdown, writing people
-    # into the wrong chapter's CRM with no way to tell from the report.
+    # every resolved assignment to the submitted dropdown, writing people into
+    # the wrong chapter's CRM with no way to tell from the report.
+    #
+    # `Chapter` is NOT a human assignment — it is an ARRAYFORMULA on every role
+    # tab (Organizers!P2, Speakers!V, Hosts!AA), and it resolves
+    # `City (New)` -> `City (Existing)` unless "Other..." -> the form's free-text
+    # city. That last fallback is one step MORE than resolve_city() does, so an
+    # accepted person whose only city signal is the free text lands in a CRM here
+    # while the chapters feed still counts them unresolved. That divergence is
+    # currently 0 of 103 accepted rows — verified, not assumed — but it is why
+    # the two must be reconciled rather than left to drift.
     i_status, i_email, i_chapter = header_index(headers, tab, "Status", "Email", "Chapter")
     # These two are genuinely optional — the tabs carried the legacy
     # City/Resolved City names before the rename, and either alone still
@@ -606,8 +615,9 @@ def read_role_tab(tab, interests):
             rejected.append({"row": rownum, "tab": tab, "name": name,
                              "why": "no usable email (%r) — the CRM dedupes on it" % email})
             continue
-        # Chapter assignment wins (a human made it); then the resolved city, then
-        # the submitted dropdown unless it is an "Other…" placeholder.
+        # Chapter wins — the role tab's OWN resolved city (a formula, not a human
+        # assignment); then the resolved city, then the submitted dropdown unless
+        # it is an "Other…" placeholder.
         chapter = cell(row, i_chapter)
         g = cell(row, i_g) if i_g is not None else ""
         h = cell(row, i_h) if i_h is not None else ""
@@ -982,9 +992,13 @@ def run(args):
         # problem. The full run reports them.
         orphans, near_misses = [], []
 
-    print("Intake  : %d people across %d chapters (%s); %d intake row(s) not synced."
+    # counts[] tallies qualifying ROWS per tab, len(merged) is PEOPLE after the
+    # cross-role email merge — say so, or "102 people (104 organizers)" reads
+    # like a counting bug.
+    print("Intake  : %d people across %d chapters (from %s qualifying row(s), "
+          "merged on email); %d intake row(s) not synced."
           % (len(merged), len(by_folder),
-             ", ".join("%d %s" % (counts[t], t.lower()) for t in ROLE_TABS),
+             " + ".join("%d %s" % (counts[t], t.lower()) for t in ROLE_TABS),
              len(rejected)))
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
@@ -1088,7 +1102,9 @@ def run(args):
         return 0
     if not args.write:
         print("\n%d workbook(s) would change. Re-run with --write to apply." % len(touched))
-        return 0
+        # Shared engine exit convention: report mode exits 0 when in sync,
+        # 2 when it proposes changes (consumed by nightly.py).
+        return 2
 
     print("\nWriting %d workbook(s)..." % len(touched))
     backup_dir = os.path.join(workdir, "before")
