@@ -103,7 +103,7 @@ Writes `slack-organizers-audit.html` + `.pdf`, and a machine-readable
 
 | Source | Read | Used for |
 |---|---|---|
-| Chapters List `Chapters & Teams` | `City` | the chapter roster |
+| Chapters List `Chapters & Teams` | `City`, `Slack Channel`, `Organizer Channel`, `Country Channel` | the chapter roster **and the channel map** |
 | Intake Ops `Organizers` | `Status`, `Full name`, `Email`, `Chapter`, `City (New)`, `City (Existing)` | who was accepted, for which city |
 | Slack | `conversations.list`, `conversations.members`, `users.lookupByEmail`, `users.info` | channels and membership |
 
@@ -116,26 +116,61 @@ Writes `slack-organizers-audit.html` + `.pdf`, and a machine-readable
   count reported.
 - **Organizers are matched to Slack by email** — the weak link, see below.
 
-## `channel_map.json` is the part you maintain
+## The channel map lives on the Chapters List
 
-Channel naming is not consistent, so matching is config-driven. Edit
-`scripts/channel_map.json`, never the script:
+Channel naming is not consistent, so matching is config-driven. The map is **three
+columns on the AAIF Community Chapters List**, read straight off the sheet by
+`read_chapters()`:
 
-- **`public`** — a city whose own channel breaks the plain-slug convention
-  (`Denver → colorado`, `Munich → munchen`, `New York → nyc`,
-  `Washington DC → washington-dc-the-capital`). Map a city to `null` to record
-  that no channel exists and stop the matcher guessing.
-- **`regional`** — a channel that *serves* a city without being its own
-  (`Chennai → india`, `Lagos → africa`). Reported as **regional only**, never
-  counted as chapter coverage, because a member there has no local room.
-- **`organizers`** — organizer channels not named `<city>-organizers`.
+| Column | Was | Means |
+|---|---|---|
+| `Slack Channel` | `public` | the chapter's own channel, where the slug convention doesn't hold (`Denver → colorado`, `Munich → munchen`, `Washington DC → washington-dc-the-capital`) |
+| `Organizer Channel` | `organizers` | its organizer channel, where not named `<city>-organizers` |
+| `Country Channel` | `regional` | a channel that *serves* the city without being its own (`Chennai → india`, `Lagos → africa`). Reported as **regional only**, never counted as chapter coverage — a member there has no local room. |
 
-**Never auto-map an alias.** Every entry in the map is a human judgement that a
-named channel really is that chapter's channel. When the report flags a
+- A **blank** cell means nobody has looked yet: the matcher falls through to the
+  prefix/suffix scan below.
+- The literal **`none`** records that no channel exists and stops the matcher
+  guessing. It is the sheet's stand-in for the JSON `null` this map used to use.
+- A leading `#` is tolerated and stripped — people type it about half the time.
+
+That move was deliberate. The people who can say whether `#bay-area` really is San
+Francisco's room are the organizers, and they will open a spreadsheet; they were
+never going to open a pull request against a JSON file in a plugin repo. Keeping
+the map where the people who know can correct it is the point.
+
+**`scripts/channel_map.json` is gone.** The matching vocabularies that were the
+last thing in it now live on a **`Slack Config`** tab of the same spreadsheet,
+`Setting | Value | Notes`, one row per value in priority order:
+
+| Setting | Values |
+|---|---|
+| `Public channel prefix` | tried in order when matching a chapter's own channel — `(none)`, `meetup-`, `aaif-`, `mlops-`, `aaif` |
+| `Organizer channel suffix` | tried in order as `<city><suffix>` — `-organizers`, `-organisers`, `-chapter-leads`, `-organizer`, `-leads`, `-meetup-organizers` |
+| `Staff email domain` | addresses here count as staff, not as unaccounted members |
+
+**Row order is load-bearing** — the prefixes are tried top to bottom, so the bare
+slug beats `meetup-<slug>` deterministically rather than by whatever order the
+Slack API returned channels in. Reordering the rows changes which channel matches.
+
+`(none)` is the first prefix and means *no prefix at all* — the plain city slug.
+A spreadsheet cannot hold an empty string distinguishably from an empty cell, so
+it needs a visible sentinel, exactly as `none` does in the channel columns. A
+genuinely blank Value cell **aborts** rather than being read as the bare prefix:
+a half-typed row must not quietly widen the matcher.
+
+`load_config` also aborts on a row whose `Setting` label names nothing it knows —
+a typo'd label would silently drop a prefix and change what matches.
+
+Proposals come from `aaif-sync-chapters`' `sync_resources.py`, which writes a cell
+only on an **exact** channel-name hit and prints everything weaker as a candidate.
+
+**Never auto-map an alias.** Every channel named on a chapter row is a human
+judgement that it really is that chapter's channel. When the report flags a
 near-miss, or you spot a likely match yourself, **propose it and wait** — show
 the user the chapter, the candidate channel, its member count and why you think
-they correspond, and let them confirm before anything is written. Do not add the
-entry on your own authority, and do not widen the matcher to catch it.
+they correspond, and let them confirm before anything is written. Do not fill the
+cell on your own authority, and do not widen the matcher to catch it.
 
 The audit is allowed to answer "no channel found"; that is correct and someone
 will notice. A wrong alias is neither — it reports a chapter as covered when it
@@ -144,10 +179,10 @@ every time.
 
 The engine enforces this rather than trusting it:
 
-- **`null` genuinely stops the matcher** in all three maps. It records "a human
+- **`none` genuinely stops the matcher** in all three columns. It records "a human
   checked and there is no channel", which is an answer, so no slug guess and no
   suffix scan follows. Near-misses are still listed for a human to look at.
-- **An alias that no longer resolves aborts the run — in all three maps**,
+- **An alias that no longer resolves aborts the run — in all three columns**,
   `regional` included. A renamed or archived channel is a configuration bug;
   left alone it downgrades the chapter to "no channel at all" and generates
   advice to create a room it already has.
@@ -218,7 +253,6 @@ email-domain breakdown · the limits, restated on the page.
 | `--out NAME` | Output basename |
 | `--no-pdf` | HTML only — skip the Chrome render |
 | `--cache DIR` | Where raw pulls are stored (default `.slack-audit-cache`) |
-| `--map FILE` | Organizer engine only — alternate `channel_map.json` |
 
 **Both engines cache their raw pulls**, and the first run of each is slow:
 `users.list` pages 200 at a time (~20 min on a 30k-member workspace) and
@@ -248,8 +282,9 @@ repository — there is nothing to commit them to.
 # House rules
 
 - **Never write a channel alias without a human confirming it.** Propose, wait,
-  then edit `channel_map.json`. "No channel found" is an acceptable answer; a
-  wrong alias silently reports a chapter as covered.
+  then fill the cell on the Chapters List (or run `sync_resources.py`, which only
+  writes exact hits). "No channel found" is an acceptable answer; a wrong alias
+  silently reports a chapter as covered.
 - **Read-only.** `lib/aaif_events/slack.py` refuses any method outside its
   `ALLOWED_METHODS` allowlist, so a typo cannot post, invite or archive. The
   allowlist is the exact set of methods this repo calls, not "everything

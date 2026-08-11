@@ -348,9 +348,9 @@ class TestAutofixNote(unittest.TestCase):
     def test_a_second_edit_to_the_same_field_is_not_deduped_away(self):
         # apply() carries the new value in the phrase precisely so this appends
         # rather than silently recording nothing.
-        self.assertEqual(clean.autofix_note("city resolved -> Zurich",
-                                            ["city resolved -> Zürich"]),
-                         "city resolved -> Zurich | city resolved -> Zürich")
+        self.assertEqual(clean.autofix_note("city extracted -> Zurich",
+                                            ["city extracted -> Zürich"]),
+                         "city extracted -> Zurich | city extracted -> Zürich")
 
 
 class TestInstallColorsWiring(unittest.TestCase):
@@ -653,7 +653,10 @@ class TestApplyEndToEnd(unittest.TestCase):
     count, and the value-carrying phrase could each be deleted with a green
     suite — and each is a silent data-integrity failure on a live sheet."""
 
-    HDR = ["Timestamp", "Full name", "Resolved City", "Autofixes"]
+    # Uses Extracted City, not Resolved City: the latter is derived by an
+    # ARRAYFORMULA and apply() now refuses it outright (see the guard test
+    # below). These cases are about the provenance machinery, not the column.
+    HDR = ["Timestamp", "Full name", "Extracted City", "Autofixes"]
 
     def _apply(self, wanted, rows):
         calls, out = [], io.StringIO()
@@ -675,32 +678,41 @@ class TestApplyEndToEnd(unittest.TestCase):
         return json.loads(call[call.index("--json") + 1])
 
     def test_the_note_carries_the_new_value(self):
-        calls, _ = self._apply([{"row": 2, "header": "Resolved City", "value": "Zurich"}],
+        calls, _ = self._apply([{"row": 2, "header": "Extracted City", "value": "Zurich"}],
                                [["t", "n", "", ""]])
         note = self._payload(calls[1])["data"][0]["values"][0][0]
-        self.assertEqual(note, "city resolved -> Zurich")
+        self.assertEqual(note, "city extracted -> Zurich")
 
     def test_a_second_edit_to_the_same_field_is_recorded(self):
         # Without the value in the phrase this dedupes to None and the edit is
         # applied to the sheet with NO provenance — the bug the value fixes.
-        calls, _ = self._apply([{"row": 2, "header": "Resolved City", "value": "Zürich"}],
-                               [["t", "n", "", "city resolved -> Zurich"]])
+        calls, _ = self._apply([{"row": 2, "header": "Extracted City", "value": "Zürich"}],
+                               [["t", "n", "", "city extracted -> Zurich"]])
         note = self._payload(calls[1])["data"][0]["values"][0][0]
-        self.assertEqual(note, "city resolved -> Zurich | city resolved -> Zürich")
+        self.assertEqual(note, "city extracted -> Zurich | city extracted -> Zürich")
 
     def test_no_second_write_when_every_note_is_already_present(self):
-        calls, out = self._apply([{"row": 2, "header": "Resolved City", "value": "Zurich"}],
-                                 [["t", "n", "", "city resolved -> Zurich"]])
+        calls, out = self._apply([{"row": 2, "header": "Extracted City", "value": "Zurich"}],
+                                 [["t", "n", "", "city extracted -> Zurich"]])
         self.assertEqual(len(calls), 1, "must not fire an empty-data batchUpdate")
         self.assertIn("on 0 row(s)", out)
         self.assertIn("1 row(s) already noted", out)
 
     def test_counts_report_rows_actually_annotated(self):
         calls, out = self._apply(
-            [{"row": 2, "header": "Resolved City", "value": "Zurich"},
-             {"row": 3, "header": "Resolved City", "value": "Bern"}],
-            [["t", "n", "", "city resolved -> Zurich"], ["t", "n", "", ""]])
+            [{"row": 2, "header": "Extracted City", "value": "Zurich"},
+             {"row": 3, "header": "Extracted City", "value": "Bern"}],
+            [["t", "n", "", "city extracted -> Zurich"], ["t", "n", "", ""]])
         self.assertIn("annotated 'Autofixes' on 1 row(s) (1 row(s) already noted).", out)
+
+    def test_apply_refuses_a_derived_column(self):
+        # Resolved City is an ARRAYFORMULA; a literal anywhere in its spill range
+        # collapses the whole column to #REF!, and writing one there used to be
+        # the DOCUMENTED way to fix a city. Nothing may be written at all.
+        with self.assertRaises(SystemExit) as e:
+            self._apply([{"row": 2, "header": "Resolved City", "value": "Zurich"}],
+                        [["t", "n", "", ""]])
+        self.assertIn("derived", str(e.exception))
 
     def test_values_are_written_RAW_not_USER_ENTERED(self):
         # USER_ENTERED turns a re-cased "=IMPORTXML(...)" from the public form

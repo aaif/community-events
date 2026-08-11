@@ -38,6 +38,32 @@ EDITORIAL_COLUMNS = ("Country", "Generated Geolocation", "Summary", "Image")
 # report must not tell an operator to fill it.
 NEVER_FILLED = ("MLOps Community Organizers",)
 
+# The per-chapter resource map: where this chapter's stuff actually lives.
+# Blank on new rows like the editorial columns, but they are NOT site data and no
+# human fills them by hand — `sync_resources.py` proposes them from Drive and
+# Slack. Reported separately so a new-chapter operator is pointed at that engine
+# rather than at a summary to write.
+#
+# `Chapter Luma Link` is deliberately absent: it is the one resource this engine
+# derives itself (see DERIVED_COLUMNS), because a new row's CTA depends on it.
+RESOURCE_COLUMNS = ("Chapter Folder", "Slack Channel", "Organizer Channel",
+                    "Country Channel", "Organizer Handles")
+
+# The one resource column that is DERIVED rather than recorded, and therefore the
+# one that is rewritten rather than only filled when blank. It answers "who should
+# be in that organizer channel" — a name does not tell you who to look for in
+# Slack, a handle does. A stale handle list is worse than none: it is read as a
+# roster, so someone who left keeps looking current. Everything else here is a
+# fact about where a thing lives and is never overwritten.
+REWRITTEN_COLUMNS = ("Organizer Handles",)
+
+# What a resource cell means when it is not a value. A BLANK cell is "nobody has
+# looked yet" and every engine keeps proposing for it; NO_RESOURCE is a human
+# saying "there genuinely isn't one" and stops the guessing for good. The sheet
+# needs this sentinel because a spreadsheet has no null — in channel_map.json,
+# which these columns replace, the same statement was a JSON `null`.
+NO_RESOURCE = "none"
+
 # Every column a new row writes. All must resolve, or we refuse to write at all:
 # these are the columns the old hardcoded A:D write got wrong, and a silently
 # skipped one publishes a chapter row with no title or no CTA link.
@@ -149,6 +175,16 @@ def check_public_text(kind, s, row):
         sys.exit("ABORT: intake row %d %s is %d characters (max %d)."
                  % (row, kind, len(s), MAX_PUBLIC_TEXT))
 
+def resolve_city(existing, new):
+    """Resolve an intake row's chapter city: `City (New)` wins if non-empty, else
+    `City (Existing)` unless it's an "Other…" placeholder, else "" (needs a human).
+
+    Imported by sync_about.py rather than copied: a row that resolves to one city
+    here and another there would put an organizer on the chapters list under one
+    city and into a different chapter's About doc.
+    """
+    return new or (existing if existing and not fold(existing).startswith("other") else "")
+
 def slugify(city):
     s = unicodedata.normalize("NFKD", city).encode("ascii", "ignore").decode()
     return SLUG_OVERRIDES.get(fold(city), re.sub(r"[^a-z0-9]", "", s.lower()))
@@ -217,7 +253,7 @@ def read_intake():
         g, h = cell(row, i_g), cell(row, i_h)
         # City resolution: City (New) wins; else City (Existing) unless it's an
         # "Other..." placeholder; else the row needs a human.
-        city = h or (g if g and not fold(g).startswith("other") else "")
+        city = resolve_city(g, h)
         if not name or not city:
             # placed/inferred are filled by annotate_unresolved but initialised
             # here, so the record is never half-built and print_report is safe
@@ -371,9 +407,11 @@ def print_report(st):
     adds, new_rows, near_misses = st.adds, st.new_rows, st.near_misses
     org_col = col_letter(layout["index"]["Organizers"])
     qual = " + ".join("%d %s" % (counts[s], s) for s in SYNC_STATUSES)
-    print("Intake  : %d qualifying organizers (%s) across %d cities; %d unresolved; %d duplicate row(s)."
-          % (len(entries), qual, len({fold_city(e["city"]) for e in entries}),
-             len(unresolved), len(dupes)))
+    # counts[] tallies rows BEFORE dedup, len(entries) is people AFTER — print the
+    # arithmetic, or the headline reads "102 (102 + 2)" and looks like a bug.
+    print("Intake  : %d qualifying organizers (%s, minus %d duplicate row(s)) across %d cities; %d unresolved."
+          % (len(entries), qual, len(dupes),
+             len({fold_city(e["city"]) for e in entries}), len(unresolved)))
     print("Chapters: %d city rows (2-%d)." % (len(chapters), last_row))
 
     if adds:
@@ -385,11 +423,19 @@ def print_report(st):
         print("\nProposed NEW city rows (appended after row %d):" % last_row)
         # Derived from the header row, not from EDITORIAL_COLUMNS: a twelfth feed
         # column added tomorrow is written blank, so it must be reported blank too.
+        # Split by who fills it — an operator told to "fill them before the row
+        # goes live" will go hunting for a Slack channel to type in by hand, which
+        # is exactly the guessing sync_resources.py exists to prevent.
         blanks = [h for h in layout["headers"]
                   if h and h not in DERIVED_COLUMNS and h not in NEVER_FILLED]
-        if blanks:
+        editorial = [h for h in blanks if h not in RESOURCE_COLUMNS]
+        resources = [h for h in blanks if h in RESOURCE_COLUMNS]
+        if editorial:
             print("  (%s left blank on new rows — fill them before the row goes live on the site)"
-                  % ", ".join(blanks))
+                  % ", ".join(editorial))
+        if resources:
+            print("  (%s left blank — run sync_resources.py once the chapter's folder "
+                  "and channels exist)" % ", ".join(resources))
         for n in new_rows:
             status = n["luma"] = luma_status(n["slug"])
             note = {"live": "Luma page live",
@@ -529,8 +575,13 @@ def main():
     # --write recomputes from a fresh read here — a stale proposal is never applied.
     state = compute()
     print_report(state)
-    if not a.write or (not state.adds and not state.new_rows):
-        return
+    drift = bool(state.adds or state.new_rows)
+    if not a.write:
+        # Exit convention (shared by all five engines, consumed by nightly.py):
+        # report mode exits 0 when in sync, 2 when it proposes changes.
+        return 2 if drift else 0
+    if not drift:
+        return 0
 
     # Luma page creation is manual, so "absent" is the NORMAL state for a net-new
     # city — without this gate the common path publishes a "Stay Updated" button
@@ -563,6 +614,7 @@ def main():
             print("  new row %s: %s" % (x["city"], "; ".join(x["names"])))
         sys.exit(1)
     print("Verified: a fresh run proposes zero changes.")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

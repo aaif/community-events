@@ -1,7 +1,7 @@
 ---
 name: aaif-clean-data
-description: Normalize and fix data quality in the AAIF Community Intake Ops sheet — canonicalize LinkedIn URLs, fix name/city casing & whitespace, resolve City="Other", flag bad/missing emails and duplicates, and surface broken rows in bright red. Reports & proposes by default; only writes on explicit approval. Use when asked to clean up / normalize / fix the intake data.
-argument-hint: "[scan|apply|flags]"
+description: Normalize and fix data quality in the AAIF Community Intake Ops sheet — canonicalize LinkedIn URLs, fix name/city casing & whitespace, derive each person's city from the form's free-text answer (City > Extracted, capital when only a country is given), flag bad/missing emails and duplicates, and surface broken rows in bright red. Reports & proposes by default; only writes on explicit approval. Use when asked to clean up / normalize / fix the intake data.
+argument-hint: "[scan|apply|cities|install-flags|install-colors]"
 ---
 
 # Clean AAIF Intake Data
@@ -47,7 +47,86 @@ by **header name**, never column letter.
    that would otherwise go live on write. If no requested header matches a column,
    the run aborts rather than reporting "No changes to apply".
 
-3. **Install-flags (maintenance)** — add/refresh the live error flag:
+3. **Cities** — turn the free-text city answer into a real one:
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py cities           # report only
+   python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py cities --write   # on approval
+   ```
+   Fills an **`Extracted City`** column on `Form Responses` (created on first use).
+
+   ### The four columns, and the precedence
+   | Column | What it is |
+   |---|---|
+   | `City` | the form's dropdown answer |
+   | `Don't see your city above? Enter it here.` | the free text — an **input**, never the answer |
+   | `Extracted City` | the city derived from that free text; human-correctable |
+   | `Resolved City` | **`City` when it is a real city, else `Extracted City`** |
+
+   > **`Resolved City` is an `ARRAYFORMULA` as of 2026-08-10** — it is derived,
+   > never typed. It lives in `Form Responses!CJ2` and reads:
+   > ```
+   > =ARRAYFORMULA(IF(A2:A="","",IF((F2:F<>"")*(LEFT(F2:F,5)<>"Other"),F2:F,CL2:CL)))
+   > ```
+   > Row-emptiness is tested on `Timestamp` (A), **not** on `City` — a submission
+   > with no dropdown answer at all must still resolve from `Extracted City`
+   > rather than be blanked. `(cond)*(cond)` multiplies elementwise; `AND()` would
+   > collapse the whole array to one value.
+   >
+   > **`apply` refuses to write to it** (`DERIVED_COLUMNS`). A literal in any cell
+   > of that spill range collapses the column to `#REF!` — and the previously
+   > documented fix for a wrong city was to write exactly that. Correct a city via
+   > `City` or `Extracted City` instead.
+
+   Raw free text never becomes the answer: "Hyderabad, India" resolves to
+   `Hyderabad`, not to itself. To move someone, edit **`City`** — it outranks
+   everything below it. To fix a bad parse, edit **`Extracted City`**.
+
+   > **Why this exists.** Nothing ever read the free text, so someone who typed
+   > their city sat `Accepted` but unplaced forever, while `Resolved City` — a
+   > hand-filled override — silently outranked a *corrected* dropdown. On
+   > 2026-08-10 both misfired at once: an organizer's city was edited on the
+   > dropdown and nothing moved, and another sat unresolved with "Stuttgart"
+   > typed into a column no tab reads.
+
+   ### Extraction rules (`extract_city`, unit-tested offline)
+   Each step exists for an answer the form actually received:
+   1. **the whole answer is a chapter** — `Madison, WI`, `Delhi NCR` (the chapter's
+      own name contains the comma, so splitting on it first is wrong);
+   2. **a segment is a chapter** — `UAE, Dubai` → `Dubai`; `Udaipur , Jaipur` →
+      `Jaipur`, the one that is a chapter;
+   3. **a chapter is named anywhere** — `I am in Paris, France and Toronto` →
+      `Paris`; longest name wins so `Delhi` never beats `Delhi NCR`;
+   4. **a country was all they gave** → its capital — `Bulgaria` → `Sofia`. **A
+      named city always wins**, so `UAE, Dubai` is never `Abu Dhabi`;
+   5. **otherwise the first city-like segment**, with a leading/trailing country
+      stripped — `Noida India` → `Noida`, `India, Gurugram` → `Gurugram`.
+
+   Answers naming more than one chapter are proposed **and flagged `AMBIGUOUS`**.
+   A typo is preserved, never guessed at (`Monterreyy Mexico` → `Monterreyy`) —
+   the fuzzy match that would "fix" it is the one that silently moves someone.
+   `ALIASES` maps the short forms people use (`DC`, `NYC`, `Bangalore`) onto the
+   chapter's own name; it is deliberately small and explicit.
+
+   ### Migration policy — an existing `Resolved City` always wins
+   `Extracted City` is **seeded from the 122 hand-filled `Resolved City` values**
+   rather than derived fresh. 23 of those rows have **empty** free text (the
+   question didn't exist yet) and a human supplied the city from context, so
+   deriving them would blank real organizers — Luxembourg, Tokyo, Vancouver, Pune
+   and Singapore among them. Extraction fills only what is blank, which makes
+   switching `Resolved City` to a derived value **lossless by construction**.
+
+   `--write` **refuses to run** while any row has a real `City` contradicted by a
+   different `Resolved City`, because deriving `Resolved` would then change that
+   person's chapter. There are currently none; the check is what proves it.
+
+   **The migration ran on 2026-08-10** — 154 `Extracted City` values written, then
+   `Resolved City` converted to the formula above. Verified against a pre-write
+   snapshot of all 315 rows: **0 values lost, 0 changed**, 185 gained (153 mirroring
+   a real `City`, 32 newly derived from the free text), no `#REF!` on any role tab,
+   and `sync_chapters` + `sync_about` both reported an unchanged world afterwards.
+   To revert, paste the snapshot back over `CJ2:CJ` — the formula is one cell.
+
+4. **Install-flags (maintenance)** — add/refresh the live error flag:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py install-flags
    ```
@@ -62,7 +141,7 @@ by **header name**, never column letter.
    while its colour is left alone, since the red has been re-picked in the UI and
    that choice is the operator's.
 
-4. **Install-colors (maintenance)** — label the two city columns and provenance-color
+5. **Install-colors (maintenance)** — label the two city columns and provenance-color
    the role tabs:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py install-colors

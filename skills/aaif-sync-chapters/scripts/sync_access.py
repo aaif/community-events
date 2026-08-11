@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Move the Chapters folder off its public link-share and onto per-chapter grants.
 
-Third engine in this skill, and the one with teeth: it changes who can reach
-things. Report-only by default, like the other two.
+Fourth engine in the pipeline (feed -> about -> CRM -> access -> resources),
+and the one with teeth: it changes who can reach things. Report-only by
+default, like the other four.
 
 The Chapters folder was shared `anyone -> reader`, inherited by every chapter
 folder and every file in them. One thing depended on it: chapter organizers'
@@ -480,13 +481,18 @@ def verify(p, ran):
         want += [(c, fid, e, p["role"]) for c, fid, e in p.get("already_granted_ids", [])]
         for chapter, folder_id, email, role in want:
             checked += 1
+            # Mirror plan()'s owner exception: the tree's owner holds everything
+            # (inherited "owner" on every folder), Drive rejects re-granting
+            # them, and plan() therefore never proposes it — so verify must not
+            # demand the direct grant plan correctly refused to make.
             direct = {canon_email(q.get("emailAddress", "")): q["role"]
                       for q in perms(folder_id)
-                      if q["type"] == "user" and not q["inherited"]}
+                      if q["type"] == "user"
+                      and (not q["inherited"] or q["role"] == "owner")}
             got = direct.get(canon_email(email))
             if got is None:
                 bad.append("%s has no direct grant on %s" % (email, chapter))
-            elif got != role:
+            elif got != role and got != "owner":
                 bad.append("%s has %r on %s, expected %r" % (email, got, chapter, role))
     if "lock" in ran:
         checked += 1
@@ -518,6 +524,22 @@ def main():
     report(p, a.role)
     if not a.write:
         print("\nReport only — nothing was changed. Re-run with --write to apply.")
+        # Shared engine exit convention: report mode exits 0 when in sync, 2 when
+        # it proposes changes (consumed by nightly.py). Pending banner pins are
+        # NOT drift: the site serves from Sanity, so pinning is a standing human
+        # decision, and counting it would report drift every night forever.
+        return 2 if (p["grants"] or p["public"]) else 0
+
+    # Same rule in write mode: with nothing to grant and nothing to lock, do
+    # NOT run the phases (pins are a standing decision, not drift) and do NOT
+    # print the "Verified:" line — nightly.py reads that marker as "wrote",
+    # so printing it unconditionally would label every in-sync write night
+    # "wrote+verified" and exit 2 forever. The other engines' no-drift early
+    # return, in this engine's terms.
+    if not a.phase and not (p["grants"] or p["public"]):
+        print("\nNo changes needed — every accepted organizer holds their "
+              "grant and the folder is not link-shared. (Pending banner pins, "
+              "if any, are a standing decision: run --phase pin explicitly.)")
         return 0
 
     order = [("pin", apply_pins, (p,)), ("grant", apply_grants, (p, a.notify, a.mail_if_required)),

@@ -17,7 +17,7 @@ Subcommands:
 Nothing is written unless you run `apply`, `install-flags`, or `install-colors`.
 `scan` only reports.
 """
-import argparse, json, re, subprocess, sys
+import argparse, json, os, re, subprocess, sys, tempfile, unicodedata
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 SOURCE = "Form Responses"
@@ -34,12 +34,25 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # repeat of the first (see apply()). Falls back to "<field> updated -> <value>".
 AUTOFIX_COL = "Autofixes"
 AUTOFIX_PHRASE = {"LinkedIn URL": "LinkedIn normalized", "Email": "email normalized",
-                  "Full name": "name normalized", "Resolved City": "city resolved"}
+                  "Full name": "name normalized",
+                  # Resolved City is DERIVED now and apply() refuses to write it;
+                  # the phrase stays so notes written before that change still
+                  # match `seen` and are never re-appended.
+                  "Resolved City": "city resolved",
+                  "Extracted City": "city extracted"}
 # The Autofixes cell is a delimited list: ";" joins phrases within one run, "|"
 # joins runs. A phrase therefore may NOT contain either character — autofix_note
 # strips them out of the embedded value, because a phrase that cannot be split
 # back out never matches `seen` and re-appends on every single run.
 NOTE_SEPARATORS = re.compile(r"[|;]")
+
+# Columns on Form Responses that are DERIVED and must never receive a literal.
+# `Resolved City` became an ARRAYFORMULA on 2026-08-10 (City when it is a real
+# city, else Extracted City). Writing a value into any cell of that spill range
+# collapses the whole column to #REF!, and the old documented fix for a wrong
+# city was to do exactly that — so the guard has to live in apply(), not in a
+# doc note. Correct a city via `City` or `Extracted City` instead.
+DERIVED_COLUMNS = ("Resolved City",)
 
 
 # ---------- gws helpers ----------
@@ -396,6 +409,198 @@ def norm_city(s):
     return t
 
 
+# ---------- city extraction: Other -> Extracted ----------
+#
+# The intake asks for a city two ways: a dropdown (`City`) and, when that answers
+# "Other...", a free-text box (`Other`). Nothing ever read the free text, so people
+# who typed their city sat unresolved forever while a human hand-filled a third
+# column. This turns the free text into a real answer.
+#
+# Precedence, decided 2026-08-10: `City` when it is a real city, else `Extracted`.
+# Raw `Other` NEVER becomes the answer — it is the input, not the output.
+CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
+CHAPTERS_TAB = "Chapters & Teams"
+H_OTHER = "Don't see your city above? Enter it here."
+H_EXTRACTED = "Extracted City"
+H_RESOLVED = "Resolved City"
+
+# Country -> capital. Used ONLY when a country is all someone gave: a named city
+# always wins, so "UAE, Dubai" is Dubai and never Abu Dhabi. Covers what the form
+# has actually received plus the obvious neighbours.
+CAPITALS = {
+    "india": "New Delhi", "united states": "Washington DC", "usa": "Washington DC",
+    "us": "Washington DC", "united states of america": "Washington DC",
+    "uk": "London", "united kingdom": "London", "england": "London",
+    "scotland": "Edinburgh", "ireland": "Dublin", "france": "Paris",
+    "germany": "Berlin", "spain": "Madrid", "portugal": "Lisbon",
+    "italy": "Rome", "netherlands": "Amsterdam", "belgium": "Brussels",
+    "switzerland": "Bern", "austria": "Vienna", "denmark": "Copenhagen",
+    "sweden": "Stockholm", "norway": "Oslo", "finland": "Helsinki",
+    "poland": "Warsaw", "romania": "Bucharest", "bulgaria": "Sofia",
+    "greece": "Athens", "turkey": "Ankara", "türkiye": "Ankara",
+    "russia": "Moscow", "ukraine": "Kyiv", "luxembourg": "Luxembourg",
+    "canada": "Ottawa", "mexico": "Mexico City", "brazil": "Brasilia",
+    "argentina": "Buenos Aires", "colombia": "Bogota", "chile": "Santiago",
+    "peru": "Lima", "nigeria": "Abuja", "ghana": "Accra", "kenya": "Nairobi",
+    "uganda": "Kampala", "tanzania": "Dodoma", "ethiopia": "Addis Ababa",
+    "egypt": "Cairo", "morocco": "Rabat", "south africa": "Pretoria",
+    "uae": "Abu Dhabi", "united arab emirates": "Abu Dhabi",
+    "saudi arabia": "Riyadh", "qatar": "Doha", "israel": "Jerusalem",
+    "japan": "Tokyo", "china": "Beijing", "south korea": "Seoul",
+    "korea": "Seoul", "singapore": "Singapore", "malaysia": "Kuala Lumpur",
+    "indonesia": "Jakarta", "philippines": "Manila", "vietnam": "Hanoi",
+    "thailand": "Bangkok", "bangladesh": "Dhaka", "pakistan": "Islamabad",
+    "sri lanka": "Colombo", "nepal": "Kathmandu", "australia": "Canberra",
+    "new zealand": "Wellington",
+}
+
+# Short forms and spellings people use that are not the chapter's own name. Kept
+# small and explicit — a fuzzy matcher here would silently move someone's city.
+ALIASES = {
+    "dc": "Washington DC", "washington d.c.": "Washington DC",
+    "nyc": "New York", "ny": "New York", "new york city": "New York",
+    "sf": "San Francisco", "bay area": "San Francisco",
+    "bangalore": "Bengaluru", "bombay": "Mumbai", "calcutta": "Kolkata",
+    "madras": "Chennai", "gurgaon": "Gurugram", "delhi": "Delhi NCR",
+    "new delhi": "Delhi NCR", "ncr": "Delhi NCR",
+}
+
+# Words that carry no city information, stripped before a segment is judged.
+_NOISE = re.compile(r"^(?:i\s+am\s+(?:in|from|based\s+in)|based\s+in|living\s+in|"
+                    r"currently\s+in|from|in|near|around|cities\s+in|city\s+of)\s+", re.I)
+_SEGMENT = re.compile(r"[,/;+&()\n]| and | or ", re.I)
+
+
+def fold_city(s):
+    """City comparison key — MUST fold identically to sync_chapters.fold_city().
+
+    Cannot be imported (different skill), so it is duplicated deliberately and
+    asserted by the tests: a city that folds one way here and another way there
+    would resolve someone into a chapter the sync engines cannot find.
+    """
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"\s+", " ", s).strip().casefold()
+    return re.sub(r"\s+", " ", re.sub(r"[\W_]+", " ", s)).strip() or s
+
+
+def known_cities():
+    """{folded -> canonical} for every city on the Chapters List.
+
+    Matching against the real chapter names is what keeps "Bangalore" and
+    "Vancouver BC, Canada" reaching the rows that already exist instead of
+    minting near-duplicate cities the sync engines then report as near-misses.
+    """
+    res = gws(["sheets", "spreadsheets", "values", "batchGet", "--params",
+               json.dumps({"spreadsheetId": CHAPTERS_ID,
+                           "ranges": ["'%s'!A:AZ" % CHAPTERS_TAB]})])
+    vals = res["valueRanges"][0].get("values", [])
+    if not vals:
+        sys.exit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
+    hdr = [h.strip() for h in vals[0]]
+    if "City" not in hdr:
+        sys.exit("ABORT: no 'City' column on %r." % CHAPTERS_TAB)
+    ci = hdr.index("City")
+    out = {}
+    for row in vals[1:]:
+        c = (row[ci] if ci < len(row) else "").strip()
+        if c:
+            out.setdefault(fold_city(c), c)
+    return out
+
+
+def _clean_segment(s):
+    return re.sub(r"\s+", " ", _NOISE.sub("", s.strip())).strip(" .-·")
+
+
+def _canonical(text, known):
+    """Chapter name for `text`, via the chapters list then the alias table."""
+    f = fold_city(text)
+    if not f:
+        return None
+    if f in known:
+        return known[f]
+    if f in ALIASES:
+        a = ALIASES[f]
+        return known.get(fold_city(a), a)
+    return None
+
+
+def _strip_country(seg):
+    """Drop a trailing/leading country from a bare segment: 'Noida India' -> 'Noida'.
+
+    Only ever removes a country when something else survives, so "India" alone
+    still reads as a country and reaches the capital rule.
+    """
+    words = seg.split()
+    for n in (2, 1):                      # "sri lanka" before "lanka"
+        if len(words) > n and " ".join(words[-n:]).casefold() in CAPITALS:
+            return " ".join(words[:-n])
+        if len(words) > n and " ".join(words[:n]).casefold() in CAPITALS:
+            return " ".join(words[n:])
+    return seg
+
+
+def extract_city(other, known):
+    """Free text -> (city, why, ambiguous). ('', reason, False) when nothing is found.
+
+    Order matters and each step exists for a row the intake actually received:
+      1. the whole answer IS a chapter          "Madison, WI" / "Delhi NCR"
+      2. a segment IS a chapter                 "UAE, Dubai" -> Dubai
+      3. a chapter name appears anywhere        "I am in Paris, France" -> Paris
+      4. a country was all they gave            "Bulgaria" -> Sofia
+      5. otherwise the first real segment       "India, Gurugram" -> Gurugram
+    """
+    text = re.sub(r"\s+", " ", (other or "").strip())
+    if not text:
+        return "", "no free text", False
+
+    hit = _canonical(_clean_segment(text), known)
+    if hit:
+        return hit, "whole answer matches the %s chapter" % hit, False
+
+    segs = [_clean_segment(s) for s in _SEGMENT.split(text)]
+    segs = [s for s in segs if s]
+    # Collect EVERY segment that names a chapter before returning one. Answering
+    # "Gujarat, India + Bengaluru/Mumbai" names two real chapters, and returning
+    # the first without saying so hides a choice a human should make.
+    seg_hits = [(s, _canonical(s, known)) for s in segs]
+    seg_hits = [(s, h) for s, h in seg_hits if h]
+    if seg_hits:
+        s, hit = seg_hits[0]
+        return hit, "segment %r matches the %s chapter" % (s, hit), \
+            len({h for _s, h in seg_hits}) > 1
+
+    # A chapter named anywhere inside the answer. Longest first so "Delhi NCR"
+    # wins over "Delhi", earliest position breaking ties.
+    found = []
+    for f, canon in known.items():
+        m = re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(f), fold_city(text))
+        if m:
+            found.append((m.start(), -len(f), canon))
+    if found:
+        found.sort()
+        best = found[0][2]
+        return best, "%s named in the answer" % best, len(found) > 1
+
+    countries = [s for s in segs if s.casefold() in CAPITALS]
+    non_country = [s for s in segs if s.casefold() not in CAPITALS]
+    if countries and not non_country:
+        cap = CAPITALS[countries[0].casefold()]
+        # The capital goes through the same canonicalization as a typed city,
+        # or "India" would yield "New Delhi" while "New Delhi" itself resolves
+        # to the Delhi NCR chapter — same person, different chapter, depending
+        # on which one they happened to type.
+        cap = _canonical(cap, known) or cap
+        return cap, "only a country (%s) — using its capital" % countries[0], len(countries) > 1
+
+    for s in non_country:
+        bare = _strip_country(s)
+        if bare:
+            return norm_city(bare), "first city-like segment", len(non_country) > 1
+    return "", "no city found in %r" % text, False
+
+
 # ---------- scan ----------
 def idx(hdr, name):
     return hdr.index(name) if name in hdr else None
@@ -446,7 +651,11 @@ def scan():
         # The form has two placeholders: "Other" and "Other (PLEASE TELL US
         # WHERE IN NEXT QUESTION)" — match the prefix, not the exact string.
         if city.lower().startswith("other") and not resolved:
-            flags.append({"row": rn, "who": who, "issue": "city=Other (resolve into 'City (New)' from their text)"})
+            # Points at the `cities` mode, not at a column to type into by hand:
+            # the role tabs are array-formula views, so a literal written into one
+            # #REF!s the whole tab.
+            flags.append({"row": rn, "who": who,
+                          "issue": "city=Other (run `clean.py cities` to derive it)"})
         if email:
             seen_email.setdefault(email, []).append(rn)
     for email, rns in seen_email.items():
@@ -470,6 +679,128 @@ def print_scan(changes, flags):
         print("Clean — nothing to fix.")
 
 
+# ---------- cities: fill the Extracted column ----------
+def is_placeholder(city):
+    """True when the dropdown did not answer the question. The form has shipped
+    two wordings ("Other" and "Other (PLEASE TELL US WHERE...)"), so match the
+    prefix, never the exact string."""
+    return not city.strip() or city.strip().lower().startswith("other")
+
+
+def plan_cities():
+    """Propose an `Extracted City` for every row where the dropdown didn't answer.
+
+    Migration policy — **an existing hand-filled `Resolved City` always wins.**
+    123 of those were typed by a human, 23 of them for rows whose free text is
+    empty (the question didn't exist yet), so deriving them fresh would blank
+    real organizers. Seeding Extracted from Resolved makes the switch to a
+    derived Resolved lossless by construction; extraction only fills blanks.
+    """
+    hdr, rows = read_tab(SOURCE)
+    ci, oi, ri = idx(hdr, H_CITY), idx(hdr, H_OTHER), idx(hdr, H_RESOLVED)
+    ni, ei, xi = idx(hdr, H_NAME), idx(hdr, H_EMAIL), idx(hdr, H_EXTRACTED)
+    for h, i in ((H_CITY, ci), (H_OTHER, oi)):
+        if i is None:
+            sys.exit("ABORT: no %r column in %r. Headers: %s" % (h, SOURCE, hdr))
+    known = known_cities()
+
+    seeded, derived, unresolved, overrides = [], [], [], []
+    for rn, row in enumerate(rows, start=2):
+        get = lambda i: (row[i].strip() if i is not None and i < len(row) else "")
+        name, email = get(ni), get(ei)
+        if not (name or email):
+            continue
+        city, other, res, cur = get(ci), get(oi), get(ri), get(xi)
+        # A real dropdown answer settles it, so Extracted is left empty on purpose
+        # — a value there would never be read and would rot.
+        if not is_placeholder(city):
+            # Must be empty: a Resolved that contradicts a real City is exactly
+            # the trap being removed, and it would change someone's chapter.
+            if res and fold_city(res) != fold_city(city):
+                overrides.append({"row": rn, "who": name or email,
+                                  "city": city, "resolved": res})
+            continue
+        if res:
+            if fold_city(cur) != fold_city(res):
+                seeded.append({"row": rn, "who": name or email, "other": other,
+                               "value": res, "why": "hand-filled Resolved City",
+                               "amb": False})
+            continue
+        value, why, amb = extract_city(other, known)
+        rec = {"row": rn, "who": name or email, "other": other,
+               "value": value, "why": why, "amb": amb}
+        if not value:
+            unresolved.append(rec)
+        elif fold_city(cur) != fold_city(value):
+            derived.append(rec)
+    return hdr, seeded, derived, unresolved, overrides
+
+
+def print_cities(seeded, derived, unresolved, overrides):
+    print("Extracted City plan — %d seeded from a human's value, %d newly derived, "
+          "%d still unresolved.\n" % (len(seeded), len(derived), len(unresolved)))
+    if overrides:
+        print("STOP — %d row(s) have a real City AND a contradicting Resolved City.\n"
+              "Making Resolved derived would change these people's chapter:" % len(overrides))
+        for o in overrides:
+            print("  row %-4d %-24s City=%r but Resolved=%r"
+                  % (o["row"], o["who"][:24], o["city"], o["resolved"]))
+        print()
+    if seeded:
+        print("SEEDED from the existing hand-filled Resolved City (no value changes):")
+        for r in seeded:
+            print("  row %-4d %-24s -> %-18r (free text: %r)"
+                  % (r["row"], r["who"][:24], r["value"], r["other"][:40]))
+        print()
+    if derived:
+        print("NEWLY DERIVED from the free text:")
+        for r in derived:
+            print("  row %-4d %-24s -> %-18r %s%s"
+                  % (r["row"], r["who"][:24], r["value"], r["why"],
+                     "  [AMBIGUOUS - check]" if r["amb"] else ""))
+        print()
+    if unresolved:
+        print("STILL UNRESOLVED (no dropdown answer, nothing usable in the free text):")
+        for r in unresolved:
+            print("  row %-4d %-24s %s" % (r["row"], r["who"][:24], r["why"]))
+
+
+def cities(write=False):
+    hdr, seeded, derived, unresolved, overrides = plan_cities()
+    print_cities(seeded, derived, unresolved, overrides)
+    changes = [{"row": r["row"], "header": H_EXTRACTED, "value": r["value"]}
+               for r in seeded + derived]
+    if not write:
+        if changes:
+            print("\nRe-run with --write to apply %d value(s)." % len(changes))
+        return
+    if overrides:
+        sys.exit("\nABORT: %d row(s) have a City/Resolved conflict (above). Resolve "
+                 "those by hand first — writing now would bake in a chapter change."
+                 % len(overrides))
+    if not changes:
+        print("\nNothing to write.")
+        return
+    if idx(hdr, H_EXTRACTED) is None:      # create the column at the end
+        col = colletter(len(hdr) + 1)
+        gws(["sheets", "spreadsheets", "values", "update", "--params",
+             json.dumps({"spreadsheetId": SHEET_ID, "range": "%s!%s1" % (SOURCE, col),
+                         "valueInputOption": "RAW"}),
+             "--json", json.dumps({"values": [[H_EXTRACTED]]}), "--format", "json"])
+        print("\nCreated the %r column at %s." % (H_EXTRACTED, col))
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(changes, fh)
+        path = fh.name
+    # Reuse apply(): row bounds, RAW writes and the Autofixes provenance note are
+    # all already correct there, and a second implementation would drift.
+    # finally: apply() sys.exit()s on several guard paths, and this temp file
+    # holds names and cities — it must not outlive the run.
+    try:
+        apply(path)
+    finally:
+        os.unlink(path)
+
+
 # ---------- apply ----------
 def apply(path):
     with open(path) as fh:
@@ -491,6 +822,11 @@ def apply(path):
         if not isinstance(rn, int) or not 2 <= rn <= len(rows) + 1:
             sys.exit(f"ABORT: row {rn!r} is outside the data rows (2..{len(rows) + 1}). "
                      f"Row 1 is the header; nothing written.")
+        if header in DERIVED_COLUMNS:
+            sys.exit("ABORT: %r is derived by an ARRAYFORMULA — writing a literal "
+                     "into it collapses the whole column to #REF!. Nothing written.\n"
+                     "To change someone's city, set %r (the dropdown answer) or "
+                     "%r instead." % (header, H_CITY, H_EXTRACTED))
         ci = idx(hdr, header)
         if ci is None:
             print(f"  skip: no column named {header!r}", file=sys.stderr)
@@ -717,6 +1053,8 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("scan"); sp.add_argument("--json", action="store_true")
     ap_apply = sub.add_parser("apply"); ap_apply.add_argument("file")
+    ap_cities = sub.add_parser("cities")
+    ap_cities.add_argument("--write", action="store_true")
     sub.add_parser("install-flags")
     sub.add_parser("install-colors")
     a = ap.parse_args()
@@ -728,6 +1066,8 @@ def main():
             print_scan(changes, flags)
     elif a.cmd == "apply":
         apply(a.file)
+    elif a.cmd == "cities":
+        cities(a.write)
     elif a.cmd == "install-flags":
         install_flags()
     elif a.cmd == "install-colors":

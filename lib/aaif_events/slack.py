@@ -336,9 +336,12 @@ def members(api, channel_id):
 def lookup_emails(api, emails, progress=None):
     """Map each email to its Slack account, or to a genuine miss.
 
-    Returns ``{email: {"id": ..., "real_name": ...}}`` with ``id: None`` where
-    the address matches nobody. A miss is not proof the person is absent — they
-    may hold a Slack account under a different address.
+    Returns ``{email: {"id": ..., "name": ..., "real_name": ..., "deleted":
+    ...}}`` — ``name`` is the @handle, and callers (sync_resources'
+    ``propose_handles``) depend on it, so it is part of the contract, not an
+    implementation detail. A miss is ``{"id": None, "error": ...}``, and is not
+    proof the person is absent — they may hold a Slack account under a
+    different address.
 
     **Blank addresses are skipped entirely** and do not appear in the result, so
     a caller computing a resolution rate must count them separately rather than
