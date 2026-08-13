@@ -64,7 +64,11 @@ import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 
 KEEPLIST_TAB = "Organizer Keeplist"
-NEEDED_SCOPES = ("channels:manage", "groups:write")
+# `channels:write` is the USER-token scope for conversations.kick on public
+# channels; `channels:manage` is its bot-token sibling and never appears on a
+# user token (same trap provision_channels.py documents — this is the token
+# it shares, via write_token).
+NEEDED_SCOPES = ("channels:write", "groups:write")
 
 #: Channels that were public and therefore accumulated general members. Recorded
 #: so the report can say *why* a channel has 30 strangers in it, rather than

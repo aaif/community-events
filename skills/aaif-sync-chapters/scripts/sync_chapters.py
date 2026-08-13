@@ -521,6 +521,29 @@ def new_row_values(n, layout):
         vals[layout["index"][name]] = v
     return vals
 
+def partition_new_rows(new_rows, last_row, allow_missing):
+    """Split proposed new rows into (write, held) and renumber the written ones.
+
+    A city whose Luma page is not live is HELD BACK, never written — its CTA
+    would point at a 404 — but it must not block the rows and adds that ARE
+    ready: page creation is manual and can lag a decision by weeks, so one
+    pending city used to freeze every other chapter's sync. "unknown" is held
+    too: a page we could not verify gets a human look, not a published button.
+
+    The written rows are renumbered onto consecutive rows after last_row, so a
+    held city never leaves a blank row in the middle of the feed. Rows are
+    copied, not mutated — the caller's proposal still describes what the report
+    showed. --allow-missing-luma writes everything, dead CTAs included.
+    """
+    if allow_missing:
+        write, held = [dict(n) for n in new_rows], []
+    else:
+        write = [dict(n) for n in new_rows if n.get("luma") == "live"]
+        held = [n for n in new_rows if n.get("luma") != "live"]
+    for i, n in enumerate(write):
+        n["row"] = last_row + 1 + i
+    return write, held
+
 def assert_rows_unchanged(adds, new_rows, layout):
     """Re-read the City column and confirm the proposal's row numbers still mean
     what they meant when it was computed.
@@ -586,16 +609,31 @@ def main():
     # Luma page creation is manual, so "absent" is the NORMAL state for a net-new
     # city — without this gate the common path publishes a "Stay Updated" button
     # pointing at a 404, and the only warning is one line of per-city output.
-    stale = [n for n in state.new_rows if n.get("luma") != "live"]
-    if stale and not a.allow_missing_luma:
-        sys.exit("ABORT: %d new row(s) have no live Luma page: %s.\nTheir CTA would "
-                 "point at a 404. Create the pages first, or re-run with "
-                 "--allow-missing-luma if that's intended."
-                 % (len(stale), ", ".join(n["city"] for n in stale)))
+    # print_report already stamped n["luma"]; the loop below keeps the partition
+    # correct even if a future path reaches here without printing the report,
+    # where a missing key would silently hold every row.
+    for n in state.new_rows:
+        if "luma" not in n:
+            n["luma"] = luma_status(n["slug"])
+    to_write, held = partition_new_rows(state.new_rows, state.last_row,
+                                        a.allow_missing_luma)
+    if held:
+        print("\nHELD BACK %d new row(s) with no live Luma page (their CTA would "
+              "point at a 404): %s.\nCreate the page(s) and re-run, or re-run with "
+              "--allow-missing-luma if a dead CTA is intended."
+              % (len(held), ", ".join(n["city"] for n in held)))
+    if not state.adds and not to_write:
+        print("Nothing else to write — every proposed change is held back.")
+        return 2
 
     print("\nApplying %d cell update(s) + %d new row(s) in one batchUpdate..."
-          % (len(state.adds), len(state.new_rows)))
-    n = apply_changes(state.adds, state.new_rows, state.layout)
+          % (len(state.adds), len(to_write)))
+    # The report above printed pre-partition row numbers; holding a row shifts
+    # everything after it, so name the FINAL rows — an operator filling the
+    # blank editorial cells must be pointed at the row the city actually got.
+    for nr in to_write:
+        print("  writing %s at row %d" % (nr["city"], nr["row"]))
+    n = apply_changes(state.adds, to_write, state.layout)
     print("Wrote %d range(s)." % n)
 
     print("\nRe-verifying...")
@@ -606,13 +644,38 @@ def main():
     except (Exception, SystemExit) as e:
         sys.exit("WRITE WAS APPLIED (%d range(s)) but verification could not run: %s\n"
                  "Re-run without --write to confirm the sheet state." % (n, e))
-    if after.adds or after.new_rows:
+    # Held-back rows are EXPECTED to re-propose — the verify's question is "did
+    # everything we actually wrote land", not "is the sheet fully in sync".
+    # Matching held rows by city name alone is churn-fragile: an intake edit
+    # that respells a held city during the multi-minute run window would miss
+    # held_cities and indict a write that fully succeeded. So a re-proposed row
+    # that STILL has no live Luma page is also expected — this run could never
+    # have written it, whatever it is called now. (Checked only when something
+    # was held; with --allow-missing-luma nothing is, and the verify stays
+    # strict.)
+    held_cities = {fold_city(h["city"]) for h in held}
+    still_held, leftover_rows = [], []
+    for x in after.new_rows:
+        if fold_city(x["city"]) in held_cities or \
+                (held and luma_status(x["slug"]) != "live"):
+            still_held.append(x)
+        else:
+            leftover_rows.append(x)
+    if after.adds or leftover_rows:
         print("VERIFY FAILED — still out of sync after write:")
         for x in after.adds:
             print("  row %d %s: + %s" % (x["row"], x["city"], "; ".join(x["names"])))
-        for x in after.new_rows:
+        for x in leftover_rows:
             print("  new row %s: %s" % (x["city"], "; ".join(x["names"])))
         sys.exit(1)
+    if held:
+        # Exit 2, the shared drift code: the held rows are still pending work,
+        # and a wrapper (nightly.py) must keep seeing them until the pages exist.
+        # Count what the re-read actually proposes, not len(held) — a held row
+        # deleted from the intake during the run would overstate pending work.
+        print("Verified: a fresh run proposes only held-back row(s) "
+              "(%d still pending)." % len(still_held))
+        return 2
     print("Verified: a fresh run proposes zero changes.")
     return 0
 
