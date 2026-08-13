@@ -84,6 +84,17 @@ The projection is calibrated to the **current** `image18.png` world map: it is a
 sub-pixel accuracy (mean residual 0.64 px), so no per-city overrides are needed
 anywhere. If the template's map image ever changes, refit (see below).
 
+Two consequences of dropping the override table:
+
+- **Every city now needs coordinates** — geocoding, or `--lat`/`--lon`. The
+  former override cities (Seoul, Sydney, Melbourne, Shanghai) used to be
+  placeable with no network at all; now they hit the geocoder like everyone
+  else, and if it is down the fallback above applies to them too.
+- **Decks placed under the old projection sit a few px off the fitted position**
+  (the pre-Stuttgart chapters, and the template's own hand-placed SF dot, ~9 px).
+  A small dot delta against an old deck is the fit being *right*, not a
+  regression — see the validate note below.
+
 ## Procedure
 
 1. **Confirm the city name and slug with the user.** Ask for the exact display
@@ -151,6 +162,10 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
     --city "Los Angeles" --lat 34.05 --lon -118.24 --rebrand-local /path/to/template-copy
 # then compare paragraph text against the real Los Angeles chapter, and open
 # slide 5 of the rebranded Slides.pptx to confirm the dot moved (+map dot).
+# EXPECTED: the dot sits ~8-15 px from the existing chapter's — old decks were
+# placed by the pre-2026-07-30 anchors/overrides projection. Judge the dot
+# against the COASTLINE, not the old deck, and never "fix" the projection back
+# toward a hand-placed dot.
 python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_chapter.py   # unit tests
 ```
 

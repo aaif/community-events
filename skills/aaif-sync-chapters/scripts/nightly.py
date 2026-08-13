@@ -14,8 +14,10 @@ Exit-code convention, in two scopes that deliberately differ:
 
   Engines: 0 = in sync, OR --write applied and verified (a `Verified:` line on
            stdout is what separates those two); 2 = a report proposed changes,
-           or coverage was involuntarily partial (`PARTIAL:` line); anything
-           else = failure.
+           a --write held back or left pending work (sync_chapters holds new
+           rows whose Luma page is not live — it may still have written the
+           rest, which the `Verified:` line in its log records), or coverage
+           was involuntarily partial (`PARTIAL:` line); anything else = failure.
   Runner:  0 = every engine in sync; 2 = drift found, writes applied, or
            partial coverage anywhere; 1 = any engine failed.
 
@@ -60,7 +62,10 @@ def classify(code, wrote_marker, write_mode, partial_marker=False):
     """Map an engine's exit code (+ two log markers) onto one of five outcomes.
 
     'Verified:' only ever follows an applied write, so it tells "--write had
-    nothing to do" apart from "--write wrote". 'PARTIAL:' means the engine
+    nothing to do" apart from "--write wrote". Exit 2 in write mode means work
+    is still pending (e.g. sync_chapters held back a row with no live Luma
+    page) and classifies as DRIFT even when part of the run wrote — the drift
+    is what needs eyes, and the log's 'Verified:' line records the write. 'PARTIAL:' means the engine
     involuntarily skipped part of its coverage (today: sync_resources' Slack
     half on a dead token) — it wins over in-sync/drift because a half-checked
     night must never read as a healthy one, but never over FAILED, which is
@@ -151,8 +156,14 @@ def main():
               "the pipeline's report modes are read-only and independent.")
         return 1
     notes = []
-    if DRIFT in results or WROTE in results:
-        notes.append("changes were applied and verified" if a.write
+    # WROTE and DRIFT are separate notes: a write run can exit 2 without having
+    # written anything (every proposal held back), and "changes were applied"
+    # for that night would mask a chapter stuck behind a missing Luma page.
+    if WROTE in results:
+        notes.append("changes were applied and verified")
+    if DRIFT in results:
+        notes.append("drift remains — an engine held back or re-proposed "
+                     "changes; read its log" if a.write
                      else "drift — run the flagged engine(s) with --write after review")
     if PARTIAL in results:
         notes.append("PARTIAL coverage — Slack was unavailable, the channel "

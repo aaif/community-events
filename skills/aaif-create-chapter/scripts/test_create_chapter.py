@@ -122,20 +122,17 @@ class TestProjection(unittest.TestCase):
         # NOTE this is ~9 px east of the template's hand-placed SF dot — the fit
         # wins. If this fails, the projection constants were edited; recalibrate
         # against the coastlines (see SKILL.md), don't just repin the value.
-        dot_off, _ = cc.marker_offsets("San Francisco", 37.77, -122.42)
+        dot_off, _ = cc.marker_offsets(37.77, -122.42)
         self.assertEqual(dot_off, (4119719, 2715465))
 
     def test_label_keeps_template_offset_from_dot(self):
-        dot_off, label_off = cc.marker_offsets("New York", 40.71, -74.01)
+        dot_off, label_off = cc.marker_offsets(40.71, -74.01)
         self.assertEqual(label_off[0] - dot_off[0], cc.LABEL_DX)
         self.assertEqual(label_off[1] - dot_off[1], cc.LABEL_DY)
 
-    def test_gall_reference_points(self):
-        # The Gall ordinate is 0 at the equator and lon2x is linear, so the
-        # intercepts are hit exactly.
-        self.assertAlmostEqual(cc.lat2y(0.0), 437.1541, places=6)
-        self.assertAlmostEqual(cc.lon2x(0.0), 497.6001, places=6)
-        self.assertAlmostEqual(cc.lon2x(100.0) - cc.lon2x(0.0), 244.7111, places=4)
+    # (No literal re-pins of the fitted constants beyond the SF calibration
+    # lock above: a second copy of the numbers just makes a legitimate refit
+    # touch more magic literals, and invites the repin the lock forbids.)
 
     def test_lat2y_is_monotonic_north_up(self):
         # y decreases as latitude increases (row 0 is the top of the image).
@@ -160,11 +157,11 @@ class TestReposition(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, slide5(DOT_SP, LABEL_SP, OTHER_SP))
-            moved = cc.reposition_map_marker(p, "New York", 40.71, -74.01)
+            moved = cc.reposition_map_marker(p, 40.71, -74.01)
             self.assertEqual(moved, 2)
             self.assertIsNone(zipfile.ZipFile(p).testzip())
 
-            dot_off, label_off = cc.marker_offsets("New York", 40.71, -74.01)
+            dot_off, label_off = cc.marker_offsets(40.71, -74.01)
             got = offsets_by_shape(p)
             self.assertEqual(got["dot"], dot_off)
             self.assertEqual(got["label"], label_off)      # label detected despite xml:space
@@ -174,20 +171,20 @@ class TestReposition(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, slide_xml=None)  # no slide 5 at all
-            self.assertEqual(cc.reposition_map_marker(p, "New York", 40.71, -74.01), 0)
+            self.assertEqual(cc.reposition_map_marker(p, 40.71, -74.01), 0)
 
     def test_no_green_shapes_returns_zero(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, slide5(OTHER_SP))  # shapes present, none green
-            self.assertEqual(cc.reposition_map_marker(p, "New York", 40.71, -74.01), 0)
+            self.assertEqual(cc.reposition_map_marker(p, 40.71, -74.01), 0)
 
     def test_guard_raises_when_not_exactly_two_green(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, slide5(DOT_SP, OTHER_SP))  # only 1 green shape
             with self.assertRaises(RuntimeError):
-                cc.reposition_map_marker(p, "New York", 40.71, -74.01)
+                cc.reposition_map_marker(p, 40.71, -74.01)
 
     def test_guard_raises_when_both_green_match_dot_ext(self):
         # Identity, not count: two square green shapes -> both classified as dot,
@@ -199,7 +196,7 @@ class TestReposition(unittest.TestCase):
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, two_dots)
             with self.assertRaises(RuntimeError):
-                cc.reposition_map_marker(p, "New York", 40.71, -74.01)
+                cc.reposition_map_marker(p, 40.71, -74.01)
 
     def test_guard_raises_when_neither_green_matches_dot_ext(self):
         # Both green shapes are wide -> both classified as label, zero dots -> raise.
@@ -209,7 +206,7 @@ class TestReposition(unittest.TestCase):
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, two_labels)
             with self.assertRaises(RuntimeError):
-                cc.reposition_map_marker(p, "New York", 40.71, -74.01)
+                cc.reposition_map_marker(p, 40.71, -74.01)
 
     def test_off_regex_tolerates_respaced_selfclose(self):
         # A deck re-saved as '<a:off ... />' (space before />) must still move.
@@ -218,7 +215,7 @@ class TestReposition(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, respaced)
-            self.assertEqual(cc.reposition_map_marker(p, "New York", 40.71, -74.01), 2)
+            self.assertEqual(cc.reposition_map_marker(p, 40.71, -74.01), 2)
 
     def test_rewrite_preserves_other_zip_members(self):
         # A non-slide5 binary member (like image18.png) must round-trip byte-identical.
@@ -227,7 +224,7 @@ class TestReposition(unittest.TestCase):
             p = os.path.join(d, "Slides.pptx")
             make_pptx(p, slide5(DOT_SP, LABEL_SP),
                       extra={"ppt/media/image18.png": blob})
-            cc.reposition_map_marker(p, "New York", 40.71, -74.01)
+            cc.reposition_map_marker(p, 40.71, -74.01)
             with zipfile.ZipFile(p) as z:
                 self.assertEqual(z.read("ppt/media/image18.png"), blob)
                 self.assertIn("[Content_Types].xml", z.namelist())

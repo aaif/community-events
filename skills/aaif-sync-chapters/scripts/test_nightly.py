@@ -33,6 +33,11 @@ check("report mode, exit 1 -> failed",
       nightly.classify(1, wrote_marker=False, write_mode=False), nightly.FAILED)
 check("write mode, exit 0 with Verified marker -> wrote+verified",
       nightly.classify(0, wrote_marker=True, write_mode=True), nightly.WROTE)
+# sync_chapters --write exits 2 when it held back a row with no live Luma page —
+# possibly after writing the rest. The pending work is what needs eyes, so DRIFT
+# wins even over the wrote-marker; the log's Verified: line records the write.
+check("write mode, exit 2 -> drift, even when part of the run wrote",
+      nightly.classify(2, wrote_marker=True, write_mode=True), nightly.DRIFT)
 check("write mode, exit 0 without marker -> nothing needed doing",
       nightly.classify(0, wrote_marker=False, write_mode=True), nightly.IN_SYNC)
 check("write mode, nonzero is failed even if the marker printed "

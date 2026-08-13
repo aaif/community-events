@@ -179,8 +179,8 @@ def residual_tokens(path):
 # The template's world map (ppt/media/image18.png, 1123x794 px) carries a green
 # "you-are-here" dot + a "<CITY> · TONIGHT" label, both parked at San Francisco.
 # rebrand_file fixes the label *text*; this moves the green shapes to the new city.
-# The projection anchors/overrides below are calibrated to the *current* image18.png
-# — if the template's map image changes, recalibrate (see SKILL.md "Verify").
+# The projection constants below are fitted to the *current* image18.png — if
+# the template's map image changes, refit (see SKILL.md).
 # ----------------------------------------------------------------------------
 SLIDE5 = "ppt/slides/slide5.xml"
 GREEN = "14964A"                       # AAIF green fill on both marker shapes
@@ -209,7 +209,7 @@ def project_city(lat, lon):
     """Map a city's coordinates to (x, y) pixels on image18.png."""
     return lon2x(lon), lat2y(lat)
 
-def marker_offsets(name, lat, lon):
+def marker_offsets(lat, lon):
     """Return (dot_off, label_off) in EMU for a city, matching the SF template's
     relative label placement. (The template's own hand-placed SF dot sits ~9 px
     west of the fitted position, so this does NOT reproduce it exactly — the
@@ -221,7 +221,7 @@ def marker_offsets(name, lat, lon):
     label_off = (dot_off[0] + LABEL_DX, dot_off[1] + LABEL_DY)
     return dot_off, label_off
 
-def reposition_map_marker(path, city, lat, lon):
+def reposition_map_marker(path, lat, lon):
     """Move the green dot + its label on slide 5 of a .pptx to (lat, lon).
 
     Returns the number of shapes moved (2 on success) or 0 when there is nothing
@@ -237,7 +237,7 @@ def reposition_map_marker(path, city, lat, lon):
             return 0
         xml = z.read(SLIDE5).decode("utf-8")
 
-    dot_off, label_off = marker_offsets(city, lat, lon)
+    dot_off, label_off = marker_offsets(lat, lon)
     off_re = re.compile(r'<a:off x="-?\d+" y="-?\d+"\s*/>')   # tolerate a re-saved " />"
     sp_re = re.compile(r"<p:sp\b[^>]*>.*?</p:sp>", re.S)      # slide 5 shapes are flat
 
@@ -431,7 +431,7 @@ def clone_and_rebrand(folder_id, parent, name, ctx, indent=""):
                     # the new city when we have coordinates (rebrand_file only fixed
                     # the label text). Gate the upload on either change.
                     if cname == "Slides.pptx" and ctx.get("latlon"):
-                        moved = reposition_map_marker(tmp, ctx["name"], *ctx["latlon"])
+                        moved = reposition_map_marker(tmp, *ctx["latlon"])
                     else:
                         moved = 0
                     if n or moved:
@@ -485,7 +485,7 @@ def main():
                 if os.path.splitext(f)[1].lower() in MIME_BY_EXT:
                     p = os.path.join(root, f)
                     n = rebrand_file(p, name, upper, slug)
-                    moved = reposition_map_marker(p, name, *latlon) \
+                    moved = reposition_map_marker(p, *latlon) \
                         if f == "Slides.pptx" and latlon else 0
                     left = residual_tokens(p)
                     if left:
