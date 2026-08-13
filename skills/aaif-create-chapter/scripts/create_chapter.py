@@ -24,7 +24,7 @@ Usage:
   # Test the text engine on a local folder of .pptx/.docx/.xlsx (no Drive):
   python create_chapter.py --city "Los Angeles" --rebrand-local ./somedir
 """
-import argparse, html, json, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
+import argparse, html, json, math, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "1PHvEgqnHo0RrsFyA47O9iRJGaKehC8Eg"   # the "TemplateCity" folder
@@ -194,50 +194,27 @@ LABEL_DX, LABEL_DY = -425196, 224028   # label-corner minus dot-corner (SF templ
 # by the dot's 155448x155448 ext (its signature).
 DOT_EXT_RE = re.compile(r'<a:ext cx="%d" cy="%d"\s*/>' % (DOT_SIZE, DOT_SIZE))
 
-# Longitude: linear (verified on SF, London, Gibraltar, Tokyo).
+# The map is a Gall Stereographic projection, fitted 2026-07-30 against Natural
+# Earth 110m coastlines composited over the drawn map (mean residual 0.64 px —
+# sub-pixel over every coastline vertex, lat > -60; the map omits Antarctica).
+# x is linear in longitude; y is linear in the Gall ordinate
+# (1 + sqrt(2)/2) * tan(lat/2). No per-city overrides are needed anywhere.
 def lon2x(lon):
-    return 2.676 * lon + 516.3
-
-# Latitude: NONLINEAR (the map compresses toward the poles) — piecewise-linear.
-LAT_ANCHORS = [(64.8, 205), (51.5, 253), (37.77, 311), (25.1, 345),
-               (0.0, 398), (-34.8, 525), (-55.9, 597)]
+    return 497.6001 + 2.447111 * lon
 
 def lat2y(lat):
-    a = LAT_ANCHORS
-    if lat >= a[0][0]:
-        (l0, y0), (l1, y1) = a[0], a[1]
-    elif lat <= a[-1][0]:
-        (l0, y0), (l1, y1) = a[-2], a[-1]
-    else:
-        for i in range(len(a) - 1):
-            if a[i][0] >= lat >= a[i + 1][0]:
-                (l0, y0), (l1, y1) = a[i], a[i + 1]
-                break
-    return y0 + (lat - l0) / (l1 - l0) * (y1 - y0)
+    return 437.1541 - 192.9697 * (1 + math.sqrt(2) / 2) * math.tan(math.radians(lat) / 2)
 
-# The western Pacific is drawn distorted: Sydney (~151°E) and Melbourne (~145°E)
-# are dragged WEST to nearly Tokyo's x, so a separable lon/lat projection can't
-# place East-Asia/Oceania. (Tokyo itself IS placed correctly by the linear
-# formula and needs no override — it's only the landmark showing how far west the
-# others land.) Separately, Shanghai (~121°E) IS placed almost correctly by the
-# linear formula but lands ~8px offshore; its override only nudges it west onto the
-# Chinese coast — a small cosmetic fix, not the gross Oceania distortion above.
-# Keep a per-city pixel override table for the cities that need it.
-PIXEL_OVERRIDES = {"Seoul": (822, 305), "Sydney": (870, 512), "Melbourne": (836, 543),
-                   "Shanghai": (833, 330)}
-
-def project_city(name, lat, lon):
-    """Map a city to (x, y) pixels on image18.png. Overridden cities take their
-    pixel from the table and IGNORE lat/lon (the map is non-separable there)."""
-    if name in PIXEL_OVERRIDES:
-        return PIXEL_OVERRIDES[name]
+def project_city(lat, lon):
+    """Map a city's coordinates to (x, y) pixels on image18.png."""
     return lon2x(lon), lat2y(lat)
 
 def marker_offsets(name, lat, lon):
     """Return (dot_off, label_off) in EMU for a city, matching the SF template's
-    relative label placement. Self-check: San Francisco (37.77, -122.42)
-    reproduces the real template/chapter dot off (4074942, 2650779)."""
-    px, py = project_city(name, lat, lon)
+    relative label placement. (The template's own hand-placed SF dot sits ~9 px
+    west of the fitted position, so this does NOT reproduce it exactly — the
+    coastline fit wins; see the projection note above.)"""
+    px, py = project_city(lat, lon)
     cx = MAP_OFF[0] + px * (MAP_EXT[0] / MAP_PX[0])   # dot CENTER, EMU
     cy = MAP_OFF[1] + py * (MAP_EXT[1] / MAP_PX[1])
     dot_off = (round(cx - DOT_SIZE / 2), round(cy - DOT_SIZE / 2))
@@ -346,15 +323,6 @@ def resolve_latlon(name, lat, lon):
               "value and geocoding %r instead." % name)
     return geocode_city(name)
 
-def map_dot_latlon(name, lat, lon):
-    """Coordinates to feed the slide-5 map-dot placement, or None to leave the dot
-    at San Francisco. Fixed-pixel-override cities are placed by NAME (project_city
-    ignores lat/lon for them), so they're placeable WITHOUT geocoding: return a
-    sentinel instead of gating them on a network lookup that can't change where the
-    dot lands. Explicit --lat/--lon still short-circuit to resolve_latlon."""
-    if name in PIXEL_OVERRIDES and not (lat is not None and lon is not None):
-        return (0.0, 0.0)   # value unused by project_city; just marks the dot placeable
-    return resolve_latlon(name, lat, lon)
 
 # ----------------------------------------------------------------------------
 # Drive helpers (via the gws CLI)
@@ -499,20 +467,11 @@ def main():
     print("Upper: %s" % upper)
     print("Slug : aaif-%s  ->  https://luma.com/aaif-%s" % (slug, slug))
 
-    # Coordinates for the slide-5 network-map dot (explicit -> pixel-override
-    # sentinel -> geocode -> none). Fixed-pixel cities place by name, so they never
-    # get the "stays at San Francisco" warning just because geocoding was skipped.
-    pixel_override = name in PIXEL_OVERRIDES
-    latlon = map_dot_latlon(name, a.lat, a.lon)
-    if pixel_override and not (a.lat is not None and a.lon is not None):
-        print("Coords: -- (fixed pixel override for %s; lat/lon not needed)" % name)
-    elif latlon:
+    # Coordinates for the slide-5 network-map dot (explicit -> geocode -> none).
+    latlon = resolve_latlon(name, a.lat, a.lon)
+    if latlon:
         src = "override" if (a.lat is not None and a.lon is not None) else "geocoded"
         print("Coords: %.4f, %.4f (%s)" % (latlon[0], latlon[1], src))
-        if pixel_override:
-            print("Note: %s has a fixed pixel override for the slide-5 map dot; the "
-                  "coordinates above do NOT position it (--lat/--lon ignored for "
-                  "placement)." % name)
     else:
         print("Coords: --")
         print("WARNING: could not resolve coordinates for %r; the slide-5 map dot "

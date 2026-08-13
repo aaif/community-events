@@ -116,46 +116,43 @@ class TestTransformText(unittest.TestCase):
 
 
 class TestProjection(unittest.TestCase):
-    def test_sf_selfcheck_matches_real_deck(self):
-        # Ground truth: the real San Francisco chapter deck's dot sits at exactly
-        # this offset. The projection must reproduce it (this is the calibration
-        # reference — do NOT replace it with a guessed value).
+    def test_sf_calibration_lock(self):
+        # Calibration lock for the fitted Gall Stereographic constants: the SF
+        # dot offset under the 2026-07-30 coastline fit (mean residual 0.64 px).
+        # NOTE this is ~9 px east of the template's hand-placed SF dot — the fit
+        # wins. If this fails, the projection constants were edited; recalibrate
+        # against the coastlines (see SKILL.md), don't just repin the value.
         dot_off, _ = cc.marker_offsets("San Francisco", 37.77, -122.42)
-        self.assertEqual(dot_off, (4074942, 2650779))
+        self.assertEqual(dot_off, (4119719, 2715465))
 
     def test_label_keeps_template_offset_from_dot(self):
         dot_off, label_off = cc.marker_offsets("New York", 40.71, -74.01)
         self.assertEqual(label_off[0] - dot_off[0], cc.LABEL_DX)
         self.assertEqual(label_off[1] - dot_off[1], cc.LABEL_DY)
 
-    def test_pixel_override_wins_over_formula(self):
-        # Overridden cities ignore lat/lon entirely.
-        self.assertEqual(cc.project_city("Seoul", 0.0, 0.0), (822, 305))
-        self.assertEqual(cc.project_city("Sydney", 99.0, 99.0), (870, 512))
+    def test_gall_reference_points(self):
+        # The Gall ordinate is 0 at the equator and lon2x is linear, so the
+        # intercepts are hit exactly.
+        self.assertAlmostEqual(cc.lat2y(0.0), 437.1541, places=6)
+        self.assertAlmostEqual(cc.lon2x(0.0), 497.6001, places=6)
+        self.assertAlmostEqual(cc.lon2x(100.0) - cc.lon2x(0.0), 244.7111, places=4)
 
-    def test_every_override_pixel_is_within_the_map(self):
-        # A transposed or fat-fingered override (e.g. (3833, 330)) would place the
-        # dot off-canvas and be placed silently. Guard the whole table at once.
+    def test_lat2y_is_monotonic_north_up(self):
+        # y decreases as latitude increases (row 0 is the top of the image).
+        lats = [-55, -34, 0, 25, 37.77, 51.5, 64.8]
+        ys = [cc.lat2y(lat) for lat in lats]
+        self.assertEqual(ys, sorted(ys, reverse=True))
+
+    def test_far_flung_cities_land_on_the_canvas(self):
+        # Cities at the map's extremes (including the ones the old model needed
+        # per-pixel overrides for) must all project inside the 1123x794 image.
         w, h = cc.MAP_PX
-        for city, (x, y) in cc.PIXEL_OVERRIDES.items():
-            self.assertTrue(0 <= x <= w, "%s x=%d out of 0..%d" % (city, x, w))
-            self.assertTrue(0 <= y <= h, "%s y=%d out of 0..%d" % (city, y, h))
-
-    def test_lat2y_hits_every_anchor_exactly(self):
-        for lat, y in cc.LAT_ANCHORS:
-            self.assertAlmostEqual(cc.lat2y(lat), y, places=6, msg="anchor %s" % lat)
-
-    def test_lat2y_interpolates_and_covers_southern_hemisphere(self):
-        # Midpoint of the (0.0, 398) -> (-34.8, 525) segment (a formula-driven
-        # southern city like Cape Town lands here; SH is otherwise all overrides).
-        self.assertAlmostEqual(cc.lat2y(-17.4), (398 + 525) / 2, places=3)
-        self.assertTrue(398 < cc.lat2y(-33.9) < 525)  # Cape Town, interpolated
-
-    def test_lat2y_extrapolates_past_the_end_anchors(self):
-        # Beyond the anchor range it extrapolates (does NOT clamp): a far-north
-        # city projects above the top anchor's y, a far-south one below the last.
-        self.assertLess(cc.lat2y(70.0), cc.LAT_ANCHORS[0][1])
-        self.assertGreater(cc.lat2y(-60.0), cc.LAT_ANCHORS[-1][1])
+        for city, lat, lon in [("Seoul", 37.57, 126.98), ("Sydney", -33.87, 151.21),
+                               ("Melbourne", -37.81, 144.96), ("Shanghai", 31.23, 121.47),
+                               ("Reykjavik", 64.15, -21.94), ("Wellington", -41.29, 174.78)]:
+            x, y = cc.project_city(lat, lon)
+            self.assertTrue(0 <= x <= w, "%s x=%.1f out of 0..%d" % (city, x, w))
+            self.assertTrue(0 <= y <= h, "%s y=%.1f out of 0..%d" % (city, y, h))
 
 
 class TestReposition(unittest.TestCase):
@@ -172,15 +169,6 @@ class TestReposition(unittest.TestCase):
             self.assertEqual(got["dot"], dot_off)
             self.assertEqual(got["label"], label_off)      # label detected despite xml:space
             self.assertEqual(got["other"], (111111, 222222))  # untouched
-
-    def test_uses_pixel_override_when_present(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "Slides.pptx")
-            make_pptx(p, slide5(DOT_SP, LABEL_SP))
-            # Seoul's lat/lon are deliberately wrong; the override must win.
-            cc.reposition_map_marker(p, "Seoul", 0.0, 0.0)
-            expected_dot, _ = cc.marker_offsets("Seoul", 0.0, 0.0)
-            self.assertEqual(offsets_by_shape(p)["dot"], expected_dot)
 
     def test_absent_slide5_returns_zero(self):
         with tempfile.TemporaryDirectory() as d:
@@ -267,33 +255,6 @@ class TestResolveLatlon(unittest.TestCase):
             self.assertIsNone(cc.resolve_latlon("Tatooine", None, None))
         finally:
             cc.geocode_city = orig
-
-
-class TestMapDotLatlon(unittest.TestCase):
-    def test_override_city_is_placeable_without_geocoding(self):
-        # An override city (placed by name) must stay placeable even if geocoding
-        # would fail — and must NOT hit the network to decide that.
-        calls = []
-        orig = cc.geocode_city
-        cc.geocode_city = lambda name, **kw: calls.append(name) or None
-        try:
-            self.assertIsNotNone(cc.map_dot_latlon("Shanghai", None, None))
-            self.assertEqual(calls, [])   # no geocode call for a fixed-pixel city
-        finally:
-            cc.geocode_city = orig
-
-    def test_non_override_ungeocodable_still_none(self):
-        orig = cc.geocode_city
-        cc.geocode_city = lambda name, **kw: None
-        try:
-            self.assertIsNone(cc.map_dot_latlon("Tatooine", None, None))
-        finally:
-            cc.geocode_city = orig
-
-    def test_explicit_latlon_wins_even_for_override_city(self):
-        # Passing both coords short-circuits to resolve_latlon (no network), so the
-        # user's values flow through unchanged (project_city still ignores them).
-        self.assertEqual(cc.map_dot_latlon("Shanghai", 31.23, 121.47), (31.23, 121.47))
 
 
 class _FakeResp:

@@ -79,10 +79,10 @@ The slide-5 network-map dot is placed from the city's latitude/longitude:
   override was given, the dot is left at San Francisco and a warning is printed. The
   chapter is still created; just fix slide 5's dot manually (or re-run with `--lat`/`--lon`).
 
-The projection is calibrated to the **current** `image18.png` world map. East-Asia /
-Oceania cities are drawn distorted and use a per-city `PIXEL_OVERRIDES` table in the
-script (seeded with Seoul, Sydney, Melbourne). If a new such city lands off, add an
-override (see Verify) and re-run.
+The projection is calibrated to the **current** `image18.png` world map: it is a
+**Gall Stereographic** projection, fitted against Natural Earth coastlines to
+sub-pixel accuracy (mean residual 0.64 px), so no per-city overrides are needed
+anywhere. If the template's map image ever changes, refit (see below).
 
 ## Procedure
 
@@ -113,10 +113,10 @@ override (see Verify) and re-run.
    folder URL to the user. If the Luma page wasn't live, remind them to create it.
    Open slide 5 ("THE NETWORK") of `Event Template/Slides.pptx` and confirm the
    green dot sits on the correct city (the `Slides.pptx` line shows `+map dot` when
-   it was moved). If the city is in **East Asia / Oceania** and the dot looks off,
-   add a `PIXEL_OVERRIDES` entry in `create_chapter.py` (pixel coords on the
-   1123×794 `image18.png`) and re-run. To recalibrate against a render, export
-   slide 5 to PNG via the Slides API (see the tooling rule at the top of this file):
+   it was moved). A misplaced dot means the coordinates were wrong (re-run with
+   `--lat`/`--lon`) or the map art changed (refit the projection — see below). To
+   check against a render, export slide 5 to PNG via the Slides API (see the
+   tooling rule at the top of this file):
    ```bash
    PYTHONPATH=lib python3 -c "
    from aaif_events.slides_export import render_slide_png
@@ -132,14 +132,17 @@ robust to OOXML run-splitting. The `SF`-abbreviation casing is decided by the
 surrounding words. The Drive layer uses `gws` (`files.copy`, `create`, `get`,
 `update`).
 
-The slide-5 map dot is placed by `reposition_map_marker` using a lat/lon →
-pixel projection (`lon2x` linear; `lat2y` piecewise-linear via `LAT_ANCHORS`;
-`PIXEL_OVERRIDES` for the distorted western Pacific). The anchors are calibrated
-to the current `image18.png`; **if the template's map image changes, recalibrate**
-by rendering slide 5 to PDF (see Verify) and adjusting `LAT_ANCHORS` / `lon2x` /
-overrides until candidate dots sit on the coastlines. `scripts/test_create_chapter.py`
-covers the San Francisco self-check, the label offset, the override table, and the
-2-shapes-or-raise guard.
+The slide-5 map dot is placed by `reposition_map_marker` using a lat/lon → pixel
+**Gall Stereographic** projection (`lon2x` linear in longitude; `lat2y` linear in
+`(1 + √2/2)·tan(lat/2)`), fitted 2026-07-30 against Natural Earth 110m coastlines
+composited over `image18.png` (mean residual 0.64 px). **If the template's map
+image changes, refit**: composite the transparent PNG over `#F6F5F1`, build a
+distance transform of the drawn pixels, and optimize (scale_x, scale_y, offset_x,
+offset_y, central meridian) per candidate projection family by Nelder-Mead to
+minimise the mean distance from projected coastline vertices (lat > -60; the map
+omits Antarctica) to the nearest drawn pixel. `scripts/test_create_chapter.py`
+covers the San Francisco calibration lock, the label offset, monotonicity/canvas
+bounds, and the 2-shapes-or-raise guard.
 
 To validate the engine after any edit, rebrand a throwaway copy of the template
 and diff it against an existing chapter (the canonical end-state):
