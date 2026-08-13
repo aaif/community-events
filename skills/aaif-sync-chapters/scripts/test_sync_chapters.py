@@ -308,5 +308,35 @@ check("report mode, drift -> exit 2",
 check("write mode with nothing to do -> exit 0",
       exit_code([], [], ["--write"]), 0)
 
+# --- partition_new_rows: a city with no live Luma page holds back, not aborts ---
+# One pending page used to sys.exit the whole write, freezing every OTHER
+# chapter's sync behind a manual step that can lag by weeks.
+def nrow(row, city, luma=None):
+    d = {"row": row, "city": city, "names": ["A"], "slug": fold_city(city)}
+    if luma is not None:
+        d["luma"] = luma
+    return d
+
+_rows = [nrow(82, "Pune", "absent"), nrow(83, "Boston", "live"),
+         nrow(84, "Oslo", "unknown"), nrow(85, "Kyoto", "live")]
+_write, _held = sync_chapters.partition_new_rows(_rows, 81, False)
+check("only live rows are written",
+      [n["city"] for n in _write], ["Boston", "Kyoto"])
+check("absent and unknown are both held",
+      [n["city"] for n in _held], ["Pune", "Oslo"])
+check("written rows are renumbered compactly after last_row (no blank gap)",
+      [n["row"] for n in _write], [82, 83])
+check("the caller's proposal is not mutated",
+      [n["row"] for n in _rows], [82, 83, 84, 85])
+check("a row that never got a luma status is held, not written",
+      sync_chapters.partition_new_rows([nrow(82, "Pune")], 81, False),
+      ([], [nrow(82, "Pune")]))
+_write, _held = sync_chapters.partition_new_rows(_rows, 81, True)
+check("--allow-missing-luma writes everything",
+      ([n["city"] for n in _write], _held),
+      (["Pune", "Boston", "Oslo", "Kyoto"], []))
+check("--allow-missing-luma still renumbers from last_row",
+      [n["row"] for n in _write], [82, 83, 84, 85])
+
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)

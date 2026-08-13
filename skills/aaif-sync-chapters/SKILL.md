@@ -192,9 +192,13 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   removed; same exceptions as `aaif-create-chapter`, e.g. Denver → `aaif-colorado`).
   `Country`, `Generated Geolocation`, `Summary` and `Image` are left **blank for a
   human** — the report names them; the row isn't site-ready until they're filled.
-  The report says whether the Luma page is live, and **`--write` refuses to create
-  a row whose page isn't live** (its CTA would point at a 404) unless you pass
-  `--allow-missing-luma`. Page creation is manual, and a net-new city still needs
+  The report says whether the Luma page is live, and **`--write` holds back a
+  row whose page isn't live** (its CTA would point at a 404) unless you pass
+  `--allow-missing-luma` — the adds and the live rows still land, the held
+  cities are named in the output and re-propose on every run (the write exits
+  `2`, the shared drift code, until their pages exist). Held rows never leave a
+  blank row in the feed: the written rows are renumbered onto consecutive rows.
+  Page creation is manual, and a net-new city still needs
   its Drive folder/assets: run **`aaif-create-chapter`** for it as the follow-up.
 - Duplicate intake rows for the same person+city are deduped (first wins, reported).
   Duplicate **chapter** rows (two rows for one city) are reported too — only the
@@ -751,9 +755,9 @@ attack and cannot be undone), or create a channel the sheet does not name.
 Renames run **before** creates — creating `#bengaluru` first would take the name
 and strand `#bangalore`'s members in the old room.
 
-Two prerequisites, neither in place by default: a token with `channels:manage`
-and `groups:write` (the audit token has read scopes only), and `--i-have-approval`
-alongside `--write`.
+Two prerequisites, neither in place by default: a token with `channels:write`
+and `groups:write` (the user-token scopes for create/rename; the audit token has
+read scopes only), and `--i-have-approval` alongside `--write`.
 
 ## Adding organizers to their channel (`invite_organizers.py`)
 
