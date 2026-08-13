@@ -40,7 +40,7 @@ this one file.
 
 ## Prerequisites, neither of which is in place by default
 
-1. A token with `channels:manage` (public) and `groups:write` (private), in
+1. A token with `channels:write` (public) and `groups:write` (private), in
    `$AAIF_SLACK_WRITE_TOKEN`. The Slack CLI's own token is read-only and its
    scopes cannot be widened, so this is a separate app token — run the script
    without it for the four setup steps. **Whoever's token it is joins every
@@ -95,7 +95,9 @@ WRITE_METHODS = frozenset({"conversations.create", "conversations.rename",
 
 #: Scopes each write needs. Checked up front so a missing scope fails before the
 #: first channel rather than half way through the batch.
-NEEDED_SCOPES = ("channels:manage", "groups:write")
+# `channels:write` is the USER-token scope for conversations.create/rename;
+# `channels:manage` is its bot-token sibling and never appears on a user token.
+NEEDED_SCOPES = ("channels:write", "groups:write")
 
 #: Slack renames: the room keeps its identity, members and history, and takes a
 #: new name. ORDER IS COMPUTED, not written here — see order_renames(). Two of
@@ -165,7 +167,7 @@ def write_token():
             "No write token. The Slack CLI token is read-only and its scopes "
             "cannot be widened, so writes use a separate app token:\n"
             "  1. api.slack.com/apps -> Create New App -> From scratch\n"
-            "  2. OAuth & Permissions -> User Token Scopes: channels:manage, "
+            "  2. OAuth & Permissions -> User Token Scopes: channels:write, "
             "groups:write,\n     channels:write.invites, groups:write.invites\n"
             "  3. Install to Workspace, copy the User OAuth Token (xoxp-...)\n"
             "  4. export %s='xoxp-...'\n\n"
