@@ -110,10 +110,30 @@ CHANNEL_RENAMES = {
     "london-organizers": "london-organizers-deprecated",
     "london-meetup-organizers": "london-organizers",
     "bay-area-sf-organizers": "bay-area-organizers",
-    # Austin's PUBLIC room stays #austin-area (it predates AAIF and holds the
-    # members), but the organizer room was freshly created 2026-08-16 with no
-    # history to lose, so it takes the plain city name the user asked for.
+    # The organizer room was freshly created 2026-08-16 with no history to
+    # lose, so it takes the plain city name the user asked for. (Blocked until
+    # the invisible #austin-organizers squatter is deprecated.)
     "austin-area-organizers": "austin-organizers",
+    # 2026-08-17 naming-convention sweep (user-decided): city channels take the
+    # plain city name, organizer rooms take <city>-organizers. #bay-area and
+    # #munchen are deliberate keeps.
+    # NOT "meetup-seattle": "seattle" — a live #seattle (135 members, 2022)
+    # already IS the city room; #meetup-seattle (41, 2023) merges into it below.
+    # APPLIED 2026-08-17 and removed from this map (empty junk rooms were
+    # recreated under the freed old names before the sheet caught up, and
+    # re-planning an applied rename against a junk-held old name refuses the
+    # whole run): meetup-barcelona→barcelona, colorado→denver,
+    # frankfurt_main→frankfurt(+-organizers), nyc→new-york,
+    # nyc-chapter-leads→new-york-organizers, portland-oregon→portland,
+    # washington-dc-the-capital-organizers→washington-dc-organizers.
+    # STILL PENDING below — each target name is held by an INVISIBLE private
+    # room, so they fail with name_taken (non-fatal) until those are
+    # deprecated via the admin UI:
+    "meetup-seattle-organizers": "seattle-organizers",
+    "meetup-barcelona-organizers": "barcelona-organizers",
+    "washington-dc-the-capital": "washington-dc",
+    "portland-oregon-organizers": "portland-organizers",
+    "austin-area": "austin",
 }
 
 #: Merges: the room is retired and its chapter moves to another room. Distinct
@@ -123,6 +143,11 @@ CHANNEL_RENAMES = {
 CHANNEL_MERGES = {
     "southbay-chapter-leads": {"into": "bay-area-organizers",
                                "retire_as": "southbay-chapter-leads-deprecated"},
+    # Seattle had two public rooms; the older, larger #seattle wins and the
+    # meetup-era one is retired. Its members are not carried — the country and
+    # #general posts point everyone at the surviving room.
+    "meetup-seattle": {"into": "seattle",
+                       "retire_as": "meetup-seattle-deprecated"},
 }
 
 
