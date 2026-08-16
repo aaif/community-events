@@ -110,6 +110,10 @@ CHANNEL_RENAMES = {
     "london-organizers": "london-organizers-deprecated",
     "london-meetup-organizers": "london-organizers",
     "bay-area-sf-organizers": "bay-area-organizers",
+    # Austin's PUBLIC room stays #austin-area (it predates AAIF and holds the
+    # members), but the organizer room was freshly created 2026-08-16 with no
+    # history to lose, so it takes the plain city name the user asked for.
+    "austin-area-organizers": "austin-organizers",
 }
 
 #: Merges: the room is retired and its chapter moves to another room. Distinct
