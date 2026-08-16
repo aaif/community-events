@@ -134,6 +134,12 @@ CHANNEL_RENAMES = {
     "washington-dc-the-capital": "washington-dc",
     "portland-oregon-organizers": "portland-organizers",
     "austin-area": "austin",
+    # 2026-08-17 round two (user-decided): ASCII beats the accent for
+    # typability (the #españa precedent notwithstanding), and Delhi NCR is
+    # the chapter's actual name. Their organizer-room twins are invisible
+    # squatters, so fresh rooms are created via the sheet instead.
+    "medellín": "medellin",
+    "delhi": "delhi-ncr",
 }
 
 #: Merges: the room is retired and its chapter moves to another room. Distinct
@@ -148,6 +154,9 @@ CHANNEL_MERGES = {
     # #general posts point everyone at the surviving room.
     "meetup-seattle": {"into": "seattle",
                        "retire_as": "meetup-seattle-deprecated"},
+    # Pre-existing Sydney room bypassed by the sheet's #sydney (2026-08-17).
+    "aaifsydney": {"into": "sydney",
+                   "retire_as": "aaifsydney-deprecated"},
 }
 
 
