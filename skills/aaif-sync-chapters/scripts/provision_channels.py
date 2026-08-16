@@ -58,6 +58,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -179,18 +180,33 @@ def write_token():
 
 
 def call_write(token, method, **params):
-    """POST a write method. Refuses anything outside WRITE_METHODS."""
+    """POST a write method. Refuses anything outside WRITE_METHODS.
+
+    Retries rate limits (and only rate limits): a 130-create burst trips
+    Slack's limiter partway through, and without this the tail of the batch
+    fails for a reason that fixes itself. Honouring Retry-After is what the
+    read client does too; every other error still returns to the caller.
+    """
     if method not in WRITE_METHODS:
         raise ValueError("%s is not a sanctioned write method." % method)
-    req = urllib.request.Request(
-        API + method, data=urllib.parse.urlencode(params).encode(),
-        headers={"Authorization": "Bearer " + token,
-                 "Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        return {"ok": False, "error": "http_%d" % exc.code}
+    for attempt in range(5):
+        req = urllib.request.Request(
+            API + method, data=urllib.parse.urlencode(params).encode(),
+            headers={"Authorization": "Bearer " + token,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                payload = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 4:
+                time.sleep(int(exc.headers.get("Retry-After", "10")))
+                continue
+            return {"ok": False, "error": "http_%d" % exc.code}
+        if not payload.get("ok") and payload.get("error") == "ratelimited" and attempt < 4:
+            time.sleep(int(payload.get("retry_after", 10)))
+            continue
+        return payload
+    return {"ok": False, "error": "ratelimited"}
 
 
 def plan(tables, live):
@@ -201,12 +217,17 @@ def plan(tables, live):
     create it six times would be five errors and one channel.
     """
     creates, already, seen = [], [], set()
+    # A name a rename will free INTO is satisfied by that rename, not by a
+    # create: renames run first, so `conversations.create` would answer
+    # name_taken — the right room exists, but the run reads as failed.
+    rename_targets = {n for o, n in CHANNEL_RENAMES.items() if o in live}
 
     def want(name, private, why):
         if not name or name == NO_RESOURCE or name in seen:
             return
         seen.add(name)
-        (already if name in live else creates).append((name, private, why))
+        (already if name in live or name in rename_targets
+         else creates).append((name, private, why))
 
     for table, private, label in (("public", False, "chapter channel"),
                                   ("organizers", True, "organizer channel"),
@@ -215,8 +236,17 @@ def plan(tables, live):
             want(name, private, "%s for %s" % (label, city))
 
     # Only rename what is actually there: a rename already applied is a no-op,
-    # not an error to re-attempt every run.
-    wanted = {o: n for o, n in CHANNEL_RENAMES.items() if o in live}
+    # not an error to re-attempt every run. One subtlety makes that harder than
+    # `o in live`: after a CHAIN applies (#london-organizers moved away, then
+    # #london-meetup-organizers took its name), the old name is live AGAIN —
+    # held by the right room. Re-planning it would report the chain as blocked
+    # and refuse the whole run. So a rename whose target exists is treated as
+    # applied when its old name is another rename's target (the map itself
+    # re-occupied it); a target squatted by anything else still blocks, because
+    # that genuinely is a room the plan cannot account for.
+    retaken = set(CHANNEL_RENAMES.values())
+    wanted = {o: n for o, n in CHANNEL_RENAMES.items()
+              if o in live and not (n in live and o in retaken)}
     renames, blocked = order_renames(wanted, live)
     merges = [(o, m) for o, m in sorted(CHANNEL_MERGES.items()) if o in live]
     return creates, renames, blocked, merges, already
@@ -303,7 +333,18 @@ def main():
         else:
             # One bad name must not abandon the batch — a public form feeds these
             # city names, so a rejected slug is normal input, not a crash.
-            failed.append("create %s: %s" % (name, r.get("error")))
+            err = r.get("error")
+            if err == "name_taken":
+                # The plan only sees private channels the token owner is in, so
+                # name_taken on a "missing" channel means the room EXISTS as a
+                # private channel this token cannot see. The fix is an invite
+                # for the token owner, never a create — say so, or every rerun
+                # reads as the same mysterious failure.
+                failed.append("create %s: name_taken — exists as a private "
+                              "channel this token is not in; needs an invite, "
+                              "not a create" % name)
+            else:
+                failed.append("create %s: %s" % (name, err))
 
     # Retirements LAST, and only after their target VERIFIABLY exists: the
     # members of a retired room have not been invited across yet (that is

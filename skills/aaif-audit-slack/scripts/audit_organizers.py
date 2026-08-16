@@ -336,7 +336,8 @@ def _resolve_alias(city, table, by_name):
 
     `how` is one of: "" (the map was silent), "known-none", "alias", or
     "alias-missing:<name>". Callers must run assert_aliases_resolve() to rule
-    out the last, which is always a configuration bug.
+    out the last, which is always a configuration bug — or, pre-provisioning,
+    mark_planned_aliases() to downgrade it to "planned:<name>".
     """
     if city not in table:
         return None, ""
@@ -465,6 +466,30 @@ def assert_aliases_resolve(rows, source=CHAPTERS_TAB):
             "reported as having no channel at all."
             % (len(broken), source,
                "\n  ".join("%s -> #%s" % (c, n) for c, n in broken), NO_RESOURCE))
+
+
+def mark_planned_aliases(rows):
+    """Downgrade unresolvable aliases to "planned" instead of aborting.
+
+    Before provision_channels.py has run, the Chapters List names the channel
+    each chapter *will* have (`sync_resources.py --plan` fills it ahead of
+    creation), so a name that does not resolve is the unexecuted plan, not a
+    rename/archive bug. Only reachable via --planned-ok; the default abort
+    stays, because once provisioning has run a missing alias IS a
+    configuration bug again.
+
+    The chapter is still reported as having no channel — that is the truthful
+    current state — but the report's data-quality notes list these as planned
+    rather than letting them blend into "nobody ever made a room".
+    """
+    planned = []
+    for r in rows:
+        for k in ("public_how", "organizers_how", "regional_how"):
+            if r[k].startswith("alias-missing:"):
+                name = r[k].split(":", 1)[1]
+                r[k] = "planned:" + name
+                planned.append((r["city"], name))
+    return planned
 
 
 def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
@@ -747,6 +772,19 @@ def render(audit, orphans, dupes, today):
         notes.append("<li><strong>%d chapters were matched by a curated alias</strong> rather than "
                      "by name, so their coverage is only as good as the Chapters List: %s.</li>"
                      % (len(aliased), ", ".join(e(c["city"]) for c in aliased)))
+    planned = sorted({(c["city"], c[k].split(":", 1)[1])
+                      for c in audit
+                      for k in ("public_how", "organizers_how", "regional_how")
+                      if c[k].startswith("planned:")})
+    if planned:
+        planned_cities = sorted({city for city, _ in planned})
+        notes.append("<li><strong>%d channels named on the Chapters List do not exist yet</strong> "
+                     "— they are the provisioning plan (run with --planned-ok), not renames. The "
+                     "%d chapters counting on them are reported above as having no channel, which "
+                     "is the current truth: %s. Re-run without the flag once "
+                     "provision_channels.py has created them.</li>"
+                     % (len(planned), len(planned_cities),
+                        ", ".join(e(c) for c in planned_cities)))
     cand = [c for c in audit if not c["public"] and c["public_candidates"]]
     if cand:
         notes.append("<li><strong>%d chapters have near-miss channels</strong> that were NOT "
@@ -869,6 +907,9 @@ def main():
     ap.add_argument("--cache", default=".slack-audit-cache")
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
     ap.add_argument("--no-pdf", action="store_true")
+    ap.add_argument("--planned-ok", action="store_true",
+                    help="pre-provisioning: treat sheet-named channels that do "
+                         "not exist yet as planned instead of aborting")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -916,7 +957,13 @@ def main():
               % (len(chans), cache_age(chan_path)))
 
     rows = match_channels(chapters, chans, cfg)
-    assert_aliases_resolve(rows)
+    if args.planned_ok:
+        planned = mark_planned_aliases(rows)
+        if planned:
+            print("  %d sheet-named channel(s) do not exist yet — treated as "
+                  "planned, not as renames" % len(planned))
+    else:
+        assert_aliases_resolve(rows)
     print("  matched: %d own channel, %d organizers channel"
           % (sum(1 for r in rows if r["public"]),
              sum(1 for r in rows if r["organizers_channel"])))

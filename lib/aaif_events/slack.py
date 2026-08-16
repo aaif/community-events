@@ -49,12 +49,16 @@ API = "https://slack.com/api/"
 
 #: The exact set of methods this repo calls. This is deliberately *not* "every
 #: read-only method" — narrowing it to actual callers is a stronger, self-
-#: maintaining invariant. Adding an entry is a real decision, not a formality:
-#: `conversations.history` is read-only and would still falsify the "no message
-#: data" caveat both reports print on their face.
+#: maintaining invariant. Adding an entry is a real decision, not a formality.
+#:
+#: `conversations.history` was added 2026-08-16, when the audits moved to the
+#: AAIF app token, which carries `channels:history`/`groups:history`. That
+#: falsifies the old "no message data" ceiling: activity is now measurable
+#: (see `history_activity()` / audit_activity.py), and reports that still
+#: print the caveat must scope it to runs on the old CLI token.
 ALLOWED_METHODS = frozenset({
     "auth.test",
-    "conversations.list", "conversations.members",
+    "conversations.list", "conversations.members", "conversations.history",
     "users.list", "users.info", "users.lookupByEmail",
 })
 
@@ -331,6 +335,96 @@ def members(api, channel_id):
     """Member ids of one conversation."""
     return list(api.paged("conversations.members", "members",
                           channel=channel_id, limit=1000))
+
+
+#: Message subtypes that are room plumbing, not conversation. A channel whose
+#: recent "messages" are all joins and topic edits has traffic but no talk, and
+#: the distinction is the whole point of measuring activity.
+NOISE_SUBTYPES = frozenset({
+    "channel_join", "channel_leave", "channel_topic", "channel_purpose",
+    "channel_name", "channel_archive", "channel_unarchive",
+    "group_join", "group_leave", "group_topic", "group_purpose", "group_name",
+    "bot_add", "bot_remove", "reminder_add", "tombstone",
+})
+
+
+def history_activity(api, channel_id, oldest, max_scan=5000, include_posters=False):
+    """Activity stats for one conversation. Retains NO message text.
+
+    Needs `channels:history` (public) / `groups:history` (private) — scopes the
+    Slack CLI token never had. Pages newest-first and stops as soon as it has
+    crossed `oldest` (epoch seconds) *and* found the most recent human message,
+    so a dead channel still gets a truthful "last heard from" even when that
+    predates the window.
+
+    Returns a dict of counts and timestamps only:
+
+    - `last_ts` — newest message of any kind, or None for an empty channel.
+    - `last_human_ts` — newest message written by a person (no subtype, or
+      `thread_broadcast`). None means none was found within `max_scan`
+      messages, which for any channel with traffic means "nothing human in a
+      long time", not "never" — `last_human_unknown` says which.
+    - `human_msgs` / `bot_msgs` / `joins` — counts within the window.
+    - `posters` — distinct humans who wrote in the window.
+    - `poster_ids` — those humans' user ids, only when `include_posters` is
+      set. Ids, never message text; the member audit unions them across
+      channels into "people seen posting", which one channel's count cannot
+      answer.
+    - `window_complete` — False when `max_scan` ran out before reaching
+      `oldest`; the window counts are then floors, and callers must say so
+      rather than rank a truncated channel below a fully-scanned one.
+
+    Thread replies are NOT included: `conversations.history` returns only
+    channel-level messages (plus `thread_broadcast`). Every count here is
+    therefore a floor on real conversation, and the reports must say so.
+    """
+    last_ts = None
+    last_human_ts = None
+    human_msgs = bot_msgs = joins = 0
+    posters = set()
+    scanned = 0
+    crossed_oldest = False
+
+    for m in api.paged("conversations.history", "messages",
+                       channel=channel_id, limit=200):
+        ts = float(m["ts"])
+        scanned += 1
+        if last_ts is None:
+            last_ts = ts
+        subtype = m.get("subtype")
+        human = "user" in m and subtype in (None, "thread_broadcast") \
+            and not m.get("bot_id")
+        if human and last_human_ts is None:
+            last_human_ts = ts
+        if ts >= oldest:
+            if human:
+                human_msgs += 1
+                posters.add(m["user"])
+            elif subtype == "bot_message" or m.get("bot_id"):
+                bot_msgs += 1
+            elif subtype in ("channel_join", "group_join"):
+                joins += 1
+        else:
+            crossed_oldest = True
+            if last_human_ts is not None:
+                break
+        if scanned >= max_scan:
+            break
+
+    out = {
+        "last_ts": last_ts,
+        "last_human_ts": last_human_ts,
+        "last_human_unknown": last_human_ts is None and last_ts is not None,
+        "human_msgs": human_msgs,
+        "bot_msgs": bot_msgs,
+        "joins": joins,
+        "posters": len(posters),
+        "window_complete": crossed_oldest or scanned < max_scan,
+        "scanned": scanned,
+    }
+    if include_posters:
+        out["poster_ids"] = sorted(posters)
+    return out
 
 
 def lookup_emails(api, emails, progress=None):
