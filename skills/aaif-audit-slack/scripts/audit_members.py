@@ -350,8 +350,8 @@ def main():
     team_id = who.get("team_id")
     print("workspace: %s (%s)" % (who.get("team"), team_id))
     if "channels:history" in have:
-        print("  note: this token HAS channels:history — the report's 'no message data'")
-        print("        caveat is now false and the script should be extended.")
+        print("  note: this token has channels:history — run audit_activity.py "
+              "first and the report includes measured posting activity.")
 
     chans = cached(os.path.join(args.cache, "channels.json"),
                    lambda: channels(api), args.refresh, "channel list", team_id)
