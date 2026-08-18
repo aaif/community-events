@@ -343,6 +343,7 @@ def test_header_index_aborts_on_missing_and_duplicate():
 
 def _row(city, public=None, org=None):
     return {"city": city, "regional": None, "public_how": "", "organizers_how": "",
+            "regional_how": "",
             "public": public, "public_id": "C1", "public_members": 5,
             "public_candidates": [], "organizers_channel": org,
             "organizers_id": "C2", "organizers_channel_members": 3,
