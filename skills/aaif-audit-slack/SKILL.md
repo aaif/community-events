@@ -140,7 +140,7 @@ columns on the AAIF Community Chapters List**, read straight off the sheet by
 
 | Column | Was | Means |
 |---|---|---|
-| `Slack Channel` | `public` | the chapter's own channel, where the slug convention doesn't hold (`Denver → colorado`, `Munich → munchen`, `Washington DC → washington-dc-the-capital`) |
+| `Slack Channel` | `public` | the chapter's own channel, where the slug convention doesn't hold (`San Francisco → bay-area`, `Madrid → españa`) |
 | `Organizer Channel` | `organizers` | its organizer channel, where not named `<city>-organizers` |
 | `Country Channel` | `regional` | a channel that *serves* the city without being its own (`Chennai → india`, `Lagos → africa`). Reported as **regional only**, never counted as chapter coverage — a member there has no local room. |
 

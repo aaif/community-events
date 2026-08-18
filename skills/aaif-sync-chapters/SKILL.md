@@ -645,26 +645,23 @@ to be created.
 Naming, and the one rule that is not obvious:
 
 - **The organizer channel follows the chapter's OWN channel, not the city slug.**
-  Munich's room is `#munchen`, so its organizers belong in `#munchen-organizers` —
-  `munich-organizers` would name a room after a chapter that, in Slack, does not
-  go by that name. This inherits legacy names too, deliberately:
-  `#washington-dc-the-capital-organizers`, `#frankfurt_main-organizers`.
+  SF's room is `#bay-area`, so its organizers belong in `#bay-area-organizers` —
+  `san-francisco-organizers` would name a room after a chapter that, in Slack,
+  does not go by that name.
 - **Every chapter gets one**, including those with no accepted organizer yet (26 as of 2026-08-11), so
   the room is ready for a chapter's first organizer rather than something someone
   has to remember to create.
-- A **filled cell is never re-planned.** That is what protects the
-  local-language names (`#munchen`, `#españa`, `#medellín`) and the deliberate
-  multi-chapter rooms (`#bay-area` for SF + Silicon Valley, `#españa` for Madrid,
-  Bilbao and Logroño), which the `<city>` convention cannot express at all.
+- A **filled cell is never re-planned.** That is what protects `#españa` and the
+  deliberate multi-chapter room `#bay-area` (SF + Silicon Valley), which the
+  `<city>` convention cannot express at all.
 
-## Why the sheet is inconsistent, and why that is correct
+## Why one channel name is still not `<city>`, and why that is correct
 
-Some chapters (14 as of 2026-08-11) point at a channel that is not `<city>`. None is an oversight, and
-`KEPT_NON_CONVENTIONAL` in the script records why: local-language names, one room
-deliberately serving several chapters, a channel whose scope is wider than the
-chapter's (`#colorado` for Denver, `#delhi` for Delhi NCR), and legacy platform
-prefixes nobody will re-join under a new name. Renaming them would move thousands
-of members for cosmetic consistency.
+The 2026-08-17 naming sweep renamed the legacy meetup-era, wider-scope and
+local-language channels to the convention (a rename keeps members and history,
+so nothing was lost — even `#munchen` and `#medellín` fell to typability). One
+survivor remains, recorded in `KEPT_NON_CONVENTIONAL`: `#bay-area`, one room
+deliberately serving two chapters.
 
 ### A country room is not a chapter room
 
@@ -727,9 +724,10 @@ readers resolve columns by header name, but see the Notes below.
 > them, which is the actual argument for the move. Treat a seeded cell as a
 > proposal until someone who knows the chapter confirms it. The ones worth a
 > second look, because the channel name shares nothing with the chapter name:
-> Denver → `#colorado`, Munich → `#munchen`, Bengaluru → `#bangalore`,
 > Madrid/Bilbao/Logroño → `#españa` (one channel, three chapters), San Francisco
-> and Silicon Valley → `#bay-area`, Washington DC → `#washington-dc-the-capital`.
+> and Silicon Valley → `#bay-area`. (The 2026-08-17 sweep renamed the rest of
+> this list — `#colorado`, `#munchen`, `#bangalore`,
+> `#washington-dc-the-capital` — onto the convention.)
 
 ## Creating the planned channels (`provision_channels.py`)
 
