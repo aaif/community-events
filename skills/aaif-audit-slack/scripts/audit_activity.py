@@ -84,7 +84,10 @@ def collect(api, live, cache_dir, days, refresh, team_id, now_ts):
     stats = (jsoncache.read(path, refresh, team_id, note=print)
              if not refresh else None) or {}
     today = dt.datetime.fromtimestamp(now_ts, dt.timezone.utc).date().isoformat()
-    stats = {k: v for k, v in stats.items() if v.get("day") == today}
+    # Same day AND same window: a 90-day count rendered under a --days 30
+    # headline is a wrong number that looks fully measured.
+    stats = {k: v for k, v in stats.items()
+             if v.get("day") == today and v.get("window_days") == days}
     if stats:
         print("  resuming: %d channels already pulled today" % len(stats))
 

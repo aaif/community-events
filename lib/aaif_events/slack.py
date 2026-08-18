@@ -72,6 +72,18 @@ MODULE_ERRORS = frozenset({
 })
 
 MAX_ATTEMPTS = 6
+
+
+def _retry_secs(value, default=5):
+    """A usable sleep out of whatever Retry-After held.
+
+    The header may be an HTTP-date or a fractional string; a ValueError here
+    would abort a long paged pull for a condition the retry exists to absorb.
+    """
+    try:
+        return max(1, int(float(value)))
+    except (TypeError, ValueError):
+        return default
 #: Slack's own read timeout is generous; ours bounds a half-open socket so a
 #: 20-minute directory pull cannot hang forever with no output.
 TIMEOUT_S = 30
@@ -163,7 +175,7 @@ class Slack:
             except urllib.error.HTTPError as exc:
                 if exc.code == 429 and attempt < MAX_ATTEMPTS - 1:
                     last = "http_429"
-                    self._sleep(int(exc.headers.get("Retry-After", "5")))
+                    self._sleep(_retry_secs(exc.headers.get("Retry-After")))
                     continue
                 # One vocabulary out of call(): a caller writing `except
                 # SlackError` must not miss the final 429 or a 5xx.
@@ -184,7 +196,7 @@ class Slack:
                 last = "ratelimited"
                 if attempt == MAX_ATTEMPTS - 1:
                     break          # no point sleeping before giving up
-                self._sleep(int(payload.get("retry_after", 5)))
+                self._sleep(_retry_secs(payload.get("retry_after")))
                 continue
             return payload
         raise SlackError(method, "retry_exhausted",
@@ -335,17 +347,6 @@ def members(api, channel_id):
     """Member ids of one conversation."""
     return list(api.paged("conversations.members", "members",
                           channel=channel_id, limit=1000))
-
-
-#: Message subtypes that are room plumbing, not conversation. A channel whose
-#: recent "messages" are all joins and topic edits has traffic but no talk, and
-#: the distinction is the whole point of measuring activity.
-NOISE_SUBTYPES = frozenset({
-    "channel_join", "channel_leave", "channel_topic", "channel_purpose",
-    "channel_name", "channel_archive", "channel_unarchive",
-    "group_join", "group_leave", "group_topic", "group_purpose", "group_name",
-    "bot_add", "bot_remove", "reminder_add", "tombstone",
-})
 
 
 def history_activity(api, channel_id, oldest, max_scan=5000, include_posters=False):

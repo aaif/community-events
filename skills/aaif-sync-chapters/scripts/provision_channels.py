@@ -44,11 +44,15 @@ this one file.
 
 ## Prerequisites, neither of which is in place by default
 
-1. A token with `channels:write` (public) and `groups:write` (private), in
-   `$AAIF_SLACK_WRITE_TOKEN`. The Slack CLI's own token is read-only and its
-   scopes cannot be widened, so this is a separate app token — run the script
-   without it for the four setup steps. **Whoever's token it is joins every
-   channel it creates.**
+1. A token with `channels:write` (public), `groups:write` (private) and
+   `chat:write` (the deprecated sweep's farewell pointer), in
+   `$AAIF_SLACK_WRITE_TOKEN`. `channels:join` is also worth requesting: the
+   farewell post needs membership in the room being archived, and without the
+   scope a join fails and that room's archive is skipped (reported, not
+   silent). The Slack CLI's own token is read-only and its scopes cannot be
+   widened, so this is a separate app token — run the script without it for
+   the four setup steps. **Whoever's token it is joins every channel it
+   creates.**
 2. `--i-have-approval`, on top of `--write`. Two flags, because this is the one
    irreversible-ish action in the repo and a mistyped `--write` elsewhere is
    merely a spreadsheet edit.
@@ -80,11 +84,11 @@ from aaif_events import slack as slackmod  # noqa: E402
 API = "https://slack.com/api/"
 
 #: The complete set of write methods this script may call — the same
-#: allowlist discipline as the read-only client, for the same reason. Note what
+#: allowlist discipline as the read-only client, for the same reason.
 #: `conversations.invite` and `conversations.kick` are here rather than in the
-#: scripts that use them because call_write() is the single chokepoint all three
-#: go through — an allowlist split across files is one that can disagree with
-#: itself.
+#: scripts that use them because call_write() is the single chokepoint every
+#: write goes through — an allowlist split across files is one that can
+#: disagree with itself.
 #:
 #: `conversations.kick` was deliberately absent until 2026-08-10, when removing
 #: non-organizers from organizer channels was authorised. It is the only entry
@@ -136,7 +140,8 @@ CHANNEL_RENAMES = {
     # plain city name, organizer rooms take <city>-organizers. #bay-area is a
     # deliberate keep.
     # NOT "meetup-seattle": "seattle" — a live #seattle (135 members, 2022)
-    # already IS the city room; #meetup-seattle (41, 2023) merges into it below.
+    # already IS the city room; #meetup-seattle (41, 2023) was merged into it
+    # (applied 2026-08-17 and removed; see the note in CHANNEL_MERGES).
     # APPLIED 2026-08-17 and removed from this map (empty junk rooms were
     # recreated under the freed old names before the sheet caught up, and
     # re-planning an applied rename against a junk-held old name refuses the
@@ -332,7 +337,8 @@ def write_token():
             "cannot be widened, so writes use a separate app token:\n"
             "  1. api.slack.com/apps -> Create New App -> From scratch\n"
             "  2. OAuth & Permissions -> User Token Scopes: channels:write, "
-            "groups:write,\n     channels:write.invites, groups:write.invites\n"
+            "groups:write,\n     chat:write, channels:join, "
+            "channels:write.invites, groups:write.invites\n"
             "  3. Install to Workspace, copy the User OAuth Token (xoxp-...)\n"
             "  4. export %s='xoxp-...'\n\n"
             "Use a USER token, not a bot token: the creator of a channel joins "
@@ -362,18 +368,32 @@ def call_write(token, method, **params):
                 payload = json.loads(response.read())
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < 4:
-                time.sleep(int(exc.headers.get("Retry-After", "10")))
+                time.sleep(_retry_secs(exc.headers.get("Retry-After")))
                 continue
             return {"ok": False, "error": "http_%d" % exc.code}
         if not payload.get("ok") and payload.get("error") == "ratelimited" and attempt < 4:
-            time.sleep(int(payload.get("retry_after", 10)))
+            time.sleep(_retry_secs(payload.get("retry_after")))
             continue
         return payload
     return {"ok": False, "error": "ratelimited"}
 
 
+def _retry_secs(value, default=10):
+    """A usable sleep out of whatever Retry-After held.
+
+    The header is allowed to be an HTTP-date, and fractional strings appear in
+    the wild; a ValueError here would abort a mutation batch partway through
+    and take the applied/failed summary with it — the exact loss the retry
+    exists to prevent.
+    """
+    try:
+        return max(1, int(float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def plan(tables, live, all_names=None):
-    """Return (creates, renames, merges, already, blocked).
+    """Return (creates, renames, blocked, merges, already, applied).
 
     `all_names` is every channel name INCLUDING archived ones (defaults to
     `live`). Applied-rename detection must use it: once the deprecated-room
@@ -422,9 +442,15 @@ def plan(tables, live, all_names=None):
     retaken = set(CHANNEL_RENAMES.values())
     wanted = {o: n for o, n in CHANNEL_RENAMES.items()
               if o in live and not (n in all_names and o in retaken)}
+    # What the filter above classified as applied is REPORTED, never silently
+    # dropped: the classification is an inference, and an entry it swallows by
+    # mistake would otherwise vanish from the plan with no trace — the chain
+    # step that was meant to free a name simply never appearing anywhere.
+    applied = sorted((o, n) for o, n in CHANNEL_RENAMES.items()
+                     if o in live and o not in wanted)
     renames, blocked = order_renames(wanted, live)
     merges = [(o, m) for o, m in sorted(CHANNEL_MERGES.items()) if o in live]
-    return creates, renames, blocked, merges, already
+    return creates, renames, blocked, merges, already, applied
 
 
 def main():
@@ -443,7 +469,8 @@ def main():
     live = {c["name"] for c in chans if not c["is_archived"]}
     by_name = {c["name"]: c for c in chans}
     _, tables = ao.read_chapters()
-    creates, renames, blocked, merges, already = plan(tables, live, set(by_name))
+    creates, renames, blocked, merges, already, applied = plan(
+        tables, live, set(by_name))
     # Only rooms ALREADY deprecated at plan time: one this run retires still
     # has its people, so it waits for the next run — by which point they have
     # had the pointer, or (private) have been invited across.
@@ -460,6 +487,11 @@ def main():
     if blocked:
         print("\n  BLOCKED (%d) — target name is held and nothing frees it:" % len(blocked))
         for old, new in blocked:
+            print("    #%s -> #%s" % (old, new))
+    if applied:
+        print("\n  Classified as already applied (old name re-occupied by the "
+              "map itself, %d):" % len(applied))
+        for old, new in applied:
             print("    #%s -> #%s" % (old, new))
     print("\nTo MERGE (%d) — the room is retired, members are invited across by"
           "\ninvite_organizers.py (a rename would NOT carry them):" % len(merges))
@@ -536,7 +568,10 @@ def main():
     # this set is.
     renamed_to = {new for old, new in renames
                   if not any(f.startswith("rename %s:" % old) for f in failed)}
-    live_names = set(by_name) | renamed_to | created_names
+    # `live`, not `set(by_name)`: an ARCHIVED room holding the target name is
+    # not a room members can be pointed at, and archived junk under a wanted
+    # name has already happened twice on this estate.
+    live_names = live | renamed_to | created_names
     for old, m in merges:
         if m["into"] not in live_names:
             failed.append("retire %s: target #%s does not exist (its rename or "
@@ -556,12 +591,25 @@ def main():
             continue
         # Belt to the planner's braces: this is the only call site of
         # conversations.archive, and it must stay impossible to point at a
-        # room a rename did not first retire on purpose.
-        assert name.endswith("-deprecated"), name
+        # room a rename did not first retire on purpose. A hard raise, not an
+        # assert — `python -O` strips asserts, and this is the one guard
+        # between a planner bug and closing a live room.
+        if not name.endswith("-deprecated"):
+            raise RuntimeError("archive sweep reached a non-deprecated room: "
+                               "#%s" % name)
         room = by_name[name]
         if not room.get("is_private"):
-            if not room.get("is_member"):
-                call_write(token, "conversations.join", channel=room["id"])
+            # `is_member` reflects the READ token's account; the write token
+            # may differ, and joining an already-joined room is a harmless
+            # `already_in_channel`. So always join, and treat only a real
+            # failure as one — otherwise a missing `channels:join` scope
+            # surfaces later as a baffling not_in_channel on the farewell.
+            j = call_write(token, "conversations.join", channel=room["id"])
+            if not j.get("ok") and j.get("error") not in (
+                    "already_in_channel", "method_not_supported_for_channel_type"):
+                failed.append("join %s: %s — cannot post the farewell, NOT "
+                              "archived" % (name, j.get("error")))
+                continue
             p = call_write(token, "chat.postMessage", channel=room["id"],
                            text=FAREWELL % by_name[DEPRECATED_POINTERS[name]]["id"])
             if not p.get("ok"):

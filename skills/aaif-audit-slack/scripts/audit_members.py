@@ -4,9 +4,10 @@
 Collects channel metadata and the full user directory, then renders a
 self-contained HTML report and (unless --no-pdf) a PDF beside it.
 
-Everything here is read-only. Nothing measures message activity — the audit
-token has no history or search scope — and the report says so on its face
-rather than dressing up a proxy as engagement.
+Everything here is read-only, and this engine reads no messages itself. When
+audit_activity.py's cache is present it reports a posted-recently FLOOR from
+that sweep's poster ids; without it, the report says on its face that nothing
+measures message activity rather than dressing up a proxy as engagement.
 """
 
 import argparse
@@ -395,7 +396,10 @@ def main():
     if act:
         ids = {u for rec in act.values() for u in rec.get("poster_ids", ())}
         if ids:
-            days = next(iter(act.values())).get("window_days", 90)
+            # The widest window present. Entries can disagree only when a
+            # stale file mixes sweeps; every count is still within max(N)
+            # days, so the "posted in the last N days" floor stays truthful.
+            days = max(rec.get("window_days", 90) for rec in act.values())
             activity = {"poster_ids": ids, "days": days, "channels": len(act),
                         "age": jsoncache.age(act_path)}
             print("  activity sweep found: %d channels, %d distinct posters"
