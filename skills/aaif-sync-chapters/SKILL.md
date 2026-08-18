@@ -645,26 +645,25 @@ to be created.
 Naming, and the one rule that is not obvious:
 
 - **The organizer channel follows the chapter's OWN channel, not the city slug.**
-  Munich's room is `#munchen`, so its organizers belong in `#munchen-organizers` —
-  `munich-organizers` would name a room after a chapter that, in Slack, does not
-  go by that name. This inherits legacy names too, deliberately:
-  `#washington-dc-the-capital-organizers`, `#frankfurt_main-organizers`.
+  SF's room is `#bay-area`, so its organizers belong in `#bay-area-organizers` —
+  `san-francisco-organizers` would name a room after a chapter that, in Slack,
+  does not go by that name.
 - **Every chapter gets one**, including those with no accepted organizer yet (26 as of 2026-08-11), so
   the room is ready for a chapter's first organizer rather than something someone
   has to remember to create.
-- A **filled cell is never re-planned.** That is what protects the
-  local-language names (`#munchen`, `#españa`, `#medellín`) and the deliberate
-  multi-chapter rooms (`#bay-area` for SF + Silicon Valley, `#españa` for Madrid,
-  Bilbao and Logroño), which the `<city>` convention cannot express at all.
+- A **filled cell is never re-planned.** That is what protects `#españa` and the
+  deliberate multi-chapter room `#bay-area` (SF + Silicon Valley), which the
+  `<city>` convention cannot express at all.
 
-## Why the sheet is inconsistent, and why that is correct
+## Why one channel name is still not `<city>`, and why that is correct
 
-Some chapters (14 as of 2026-08-11) point at a channel that is not `<city>`. None is an oversight, and
-`KEPT_NON_CONVENTIONAL` in the script records why: local-language names, one room
-deliberately serving several chapters, a channel whose scope is wider than the
-chapter's (`#colorado` for Denver, `#delhi` for Delhi NCR), and legacy platform
-prefixes nobody will re-join under a new name. Renaming them would move thousands
-of members for cosmetic consistency.
+The 2026-08-17 naming sweep renamed the legacy meetup-era, wider-scope and
+local-language channels to the convention (a rename keeps members and history,
+so nothing was lost — even `#munchen` and `#medellín` fell to typability; a few
+renames are still pending behind invisible squatters, see
+`provision_channels.CHANNEL_RENAMES`). One survivor remains, recorded in
+`KEPT_NON_CONVENTIONAL`: `#bay-area`, one room deliberately serving two
+chapters.
 
 ### A country room is not a chapter room
 
@@ -681,10 +680,13 @@ Watch for this shape whenever one channel serves several chapters — a shared
 *chapter* room and a *country* room look identical on the sheet and mean opposite
 things.
 
-The **one** rename is `RENAMES`: `#bangalore` → `#bengaluru`, because
-Bangalore is the city's superseded name rather than a local variant. It is a
-*rename*, which keeps the members and the history — never a create, which
-would split the chapter across two rooms.
+The sheet-side `RENAMES` map repoints cells whose channel took a new name
+(`#bangalore` → `#bengaluru` was the first; the London and Bay Area organizer
+consolidations followed). Always a *rename* on the Slack side, which keeps the
+members and the history — never a create, which would split the chapter across
+two rooms. The much larger Slack-side queue lives in
+`provision_channels.CHANNEL_RENAMES`; the two maps stopped being mirror images
+once the 2026-08-17 sweep's sheet cells were edited directly.
 
 A dead Slack token skips the three channel columns and still reports the folder
 column; the report says which half was skipped, so an empty channel section is
@@ -695,8 +697,8 @@ name a channel** (whitespace, `/`, `:`, `#`, `@` or `,` in it — a pasted URL,
 an email address, a sentence) is reported as malformed and counts as drift.
 "Filled" otherwise reads as healthy forever: Montréal's `Slack Channel` cell
 held a copy of its Drive folder URL and every count said the chapter was mapped.
-The character list is deliberately minimal so `#españa`, `#medellín` and
-`#frankfurt_main-organizers` are never flagged.
+The character list is deliberately minimal so the accented `#españa` is never
+flagged.
 
 ## One-time migration (`migrate_resource_columns.py`)
 
@@ -727,9 +729,11 @@ readers resolve columns by header name, but see the Notes below.
 > them, which is the actual argument for the move. Treat a seeded cell as a
 > proposal until someone who knows the chapter confirms it. The ones worth a
 > second look, because the channel name shares nothing with the chapter name:
-> Denver → `#colorado`, Munich → `#munchen`, Bengaluru → `#bangalore`,
 > Madrid/Bilbao/Logroño → `#españa` (one channel, three chapters), San Francisco
-> and Silicon Valley → `#bay-area`, Washington DC → `#washington-dc-the-capital`.
+> and Silicon Valley → `#bay-area`. (The rest of this list — `#colorado`,
+> `#munchen`, `#washington-dc-the-capital`, and 2026-08-10's `#bangalore` —
+> has been renamed onto the convention, a few entries still pending behind
+> invisible squatters.)
 
 ## Creating the planned channels (`provision_channels.py`)
 
@@ -745,19 +749,28 @@ It does **not** share the audit's Slack client. `lib/aaif_events/slack.py` refus
 any method outside `ALLOWED_METHODS`, and that refusal is why a typo in a
 30k-member workspace cannot post, invite or archive — widening it for one script
 that runs once would remove the guarantee from every audit. So this file carries
-its own small write client, with its own two-method allowlist.
+its own small write client, with its own allowlist.
 
-What it will never do: **archive or delete** anything, **invite** anyone
+What it will never do: **delete** anything, **invite** anyone
 (`Organizer Handles` says who belongs where; a human does the inviting, because a
 script mass-inviting 100 people to 100 channels is indistinguishable from an
 attack and cannot be undone), or create a channel the sheet does not name.
 
+It **can archive — but only rooms a rename already retired** (authorised
+2026-08-17). The deprecated-room sweep closes `*-deprecated` rooms only: public
+ones get a farewell pointer post first (no post → no archive), private ones are
+archived only once every member is already in the recorded successor room, and
+a `-deprecated` room queued for a rename back into service is skipped. A room
+with no recorded successor is reported, never archived.
+
 Renames run **before** creates — creating `#bengaluru` first would take the name
 and strand `#bangalore`'s members in the old room.
 
-Two prerequisites, neither in place by default: a token with `channels:write`
-and `groups:write` (the user-token scopes for create/rename; the audit token has
-read scopes only), and `--i-have-approval` alongside `--write`.
+Two prerequisites, neither in place by default: a token with `channels:write`,
+`groups:write` and `chat:write` (user-token scopes for create/rename and the
+farewell pointer; `channels:join` is worth adding so the sweep can join a
+public room before posting in it — the audit token has read scopes only), and
+`--i-have-approval` alongside `--write`.
 
 ## Adding organizers to their channel (`invite_organizers.py`)
 

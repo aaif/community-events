@@ -226,3 +226,76 @@ def test_lookup_emails_dedupes_and_skips_blanks(monkeypatch):
 ])
 def test_find_token_walks_arbitrary_shapes(blob, expected):
     assert slack._find_token(blob) == expected
+
+
+# --- history_activity: the classification every activity verdict rests on -----
+class _HistoryApi:
+    """A fake api whose paged() replays canned history messages."""
+
+    def __init__(self, messages):
+        self._messages = messages
+
+    def paged(self, method, key, **params):
+        assert method == "conversations.history"
+        yield from self._messages
+
+
+def _msg(ts, user=None, subtype=None, bot_id=None):
+    m = {"ts": str(ts)}
+    if user:
+        m["user"] = user
+    if subtype:
+        m["subtype"] = subtype
+    if bot_id:
+        m["bot_id"] = bot_id
+    return m
+
+
+def test_history_activity_classifies_humans_bots_and_joins():
+    api = _HistoryApi([
+        _msg(100, user="U1"),                       # human
+        _msg(90, user="U2", subtype="thread_broadcast"),  # human
+        _msg(80, user="U1", bot_id="B1"),           # bot even with "user"
+        _msg(70, subtype="bot_message", bot_id="B1"),
+        _msg(60, user="U3", subtype="channel_join"),
+        _msg(50, user="U3", subtype="channel_topic"),  # plumbing: no bucket
+    ])
+    out = slack.history_activity(api, "C1", oldest=10, include_posters=True)
+    assert (out["human_msgs"], out["bot_msgs"], out["joins"]) == (2, 2, 1)
+    assert out["posters"] == 2
+    assert out["poster_ids"] == ["U1", "U2"]
+    assert out["last_human_ts"] == 100.0
+    assert out["window_complete"] is True
+
+
+def test_history_activity_dead_channel_reports_last_human_beyond_window():
+    api = _HistoryApi([
+        _msg(30, subtype="bot_message", bot_id="B1"),   # in window
+        _msg(5, user="U1"),                             # human, BEFORE oldest
+    ])
+    out = slack.history_activity(api, "C1", oldest=10)
+    assert out["human_msgs"] == 0                       # window is truthful
+    assert out["last_human_ts"] == 5.0                  # but the answer exists
+    assert out["last_human_unknown"] is False
+    assert out["window_complete"] is True
+
+
+def test_history_activity_truncation_is_a_floor_not_a_measurement():
+    api = _HistoryApi([_msg(100 - i, user="U1") for i in range(10)])
+    out = slack.history_activity(api, "C1", oldest=1, max_scan=3)
+    assert out["scanned"] == 3
+    assert out["window_complete"] is False
+    assert out["human_msgs"] == 3
+
+
+def test_history_activity_empty_channel():
+    out = slack.history_activity(_HistoryApi([]), "C1", oldest=10)
+    assert out["last_ts"] is None
+    assert out["last_human_unknown"] is False
+    assert "poster_ids" not in out
+
+
+def test_retry_secs_never_raises():
+    assert [slack._retry_secs(v) for v in
+            ("Fri, 21 Aug 2026 07:28:00 GMT", None, "", "2.5", "30", -3)] \
+        == [5, 5, 5, 2, 30, 1]

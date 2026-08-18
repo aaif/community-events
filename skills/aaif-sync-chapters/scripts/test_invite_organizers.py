@@ -31,13 +31,17 @@ def check(label, got, want):
 check("invite goes through the same allowlist as create/rename",
       "conversations.invite" in prov.WRITE_METHODS, True)
 # The absences are the point. `conversations.kick` joined the allowlist on
-# 2026-08-10 when pruning was authorised; archive and postMessage did not, and
-# the difference is real — a rename is reversible, destroying a room or speaking
-# in one is not.
-for forbidden in ("conversations.archive", "chat.postMessage",
-                  "conversations.leave", "conversations.delete"):
+# 2026-08-10 when pruning was authorised; archive, join and postMessage joined
+# on 2026-08-17 for the deprecated-room sweep (archive refuses non-`-deprecated`
+# names; postMessage exists only for the farewell pointer). Deleting a room —
+# the one truly unrecoverable act — stays out, as does leave.
+for forbidden in ("conversations.leave", "conversations.delete"):
     check("%s stays out of the allowlist" % forbidden,
           forbidden in prov.WRITE_METHODS, False)
+for sanctioned in ("conversations.archive", "chat.postMessage",
+                   "conversations.join"):
+    check("%s is reachable for the deprecated sweep" % sanctioned,
+          sanctioned in prov.WRITE_METHODS, True)
 
 
 def refuses(method):
@@ -49,7 +53,7 @@ def refuses(method):
 
 
 check("call_write refuses a method outside the allowlist",
-      refuses("conversations.archive"), True)
+      refuses("conversations.delete"), True)
 check("kick is reachable, but only through the one chokepoint",
       "conversations.kick" in prov.WRITE_METHODS, True)
 
@@ -149,12 +153,16 @@ check("the failure names the person's id, not the whole channel",
 # --- rename ordering: the London chain is the case that breaks naive order ----
 # Alphabetically london-meetup-organizers sorts BEFORE london-organizers, so an
 # unordered pass tries to take a name that is still occupied -> name_taken.
-_live = {"bangalore", "london-organizers", "london-meetup-organizers",
-         "bay-area-sf-organizers"}
-_ordered, _blocked = prov.order_renames(prov.CHANNEL_RENAMES, _live)
+# A FIXED map (the London chain plus one free rename), not the production
+# CHANNEL_RENAMES: that map changes several times a day, and the property
+# under test — chain ordering — must not silently change with the data.
+_chain = {"bangalore": "bengaluru",
+          "london-organizers": "london-organizers-deprecated",
+          "london-meetup-organizers": "london-organizers"}
+_live = {"bangalore", "london-organizers", "london-meetup-organizers"}
+_ordered, _blocked = prov.order_renames(_chain, _live)
 check("nothing is blocked", _blocked, [])
-check("every rename is scheduled exactly once",
-      len(_ordered), len(prov.CHANNEL_RENAMES))
+check("every rename is scheduled exactly once", len(_ordered), len(_chain))
 _pos = {old: i for i, (old, _) in enumerate(_ordered)}
 check("the occupant moves out before the new name is taken",
       _pos["london-organizers"] < _pos["london-meetup-organizers"], True)
@@ -181,6 +189,171 @@ check("deprecated rooms are marked 'deprecated'",
       all(v.endswith("-deprecated") for v in
           [prov.CHANNEL_RENAMES["london-organizers"],
            prov.CHANNEL_MERGES["southbay-chapter-leads"]["retire_as"]]), True)
+
+
+# --- plan(): applied-rename detection and create suppression -------------------
+# Synthetic maps throughout: the production CHANNEL_RENAMES changes daily and
+# these properties must not drift with it. Patch, test, restore.
+def _with_maps(renames, merges, fn):
+    saved = prov.CHANNEL_RENAMES, prov.CHANNEL_MERGES
+    prov.CHANNEL_RENAMES, prov.CHANNEL_MERGES = renames, merges
+    try:
+        return fn()
+    finally:
+        prov.CHANNEL_RENAMES, prov.CHANNEL_MERGES = saved
+
+
+_TABLES = {"public": {}, "organizers": {}, "regional": {}}
+
+# The London shape after the chain applied AND the sweep archived the parked
+# room: old name live again (held by the promoted room), target name exists
+# only among ARCHIVED names. Re-planning it would rename the real room away.
+_c, _r, _b, _m, _a, _applied = _with_maps(
+    {"old-organizers": "old-organizers-deprecated",
+     "meetup-organizers": "old-organizers"}, {},
+    lambda: prov.plan(_TABLES, live={"old-organizers"},
+                      all_names={"old-organizers", "old-organizers-deprecated"}))
+check("an applied chain is not re-planned against the real room", _r, [])
+check("and nothing is blocked by it", _b, [])
+check("the applied classification is reported, not swallowed",
+      _applied, [("old-organizers", "old-organizers-deprecated")])
+
+# A genuine squatter: the old name is nobody's rename target, so target-exists
+# means blocked — never silently treated as applied.
+_c, _r, _b, _m, _a, _applied = _with_maps(
+    {"utah": "salt-lake-city"}, {},
+    lambda: prov.plan(_TABLES, live={"utah", "salt-lake-city"},
+                      all_names={"utah", "salt-lake-city"}))
+check("a squatted target still blocks", _b, [("utah", "salt-lake-city")])
+check("a blocked rename is not reported as applied", _applied, [])
+
+# A name a pending rename frees INTO is satisfied by the rename, not created.
+_tables2 = {"public": {"Bern": "bern"}, "organizers": {}, "regional": {}}
+_c, _r, _b, _m, _a, _applied = _with_maps(
+    {"old-bern": "bern"}, {},
+    lambda: prov.plan(_tables2, live={"old-bern"}, all_names={"old-bern"}))
+check("a rename-freed name is not also created", _c, [])
+check("it counts as already satisfied", [n for n, _p, _w in _a], ["bern"])
+check("and the rename itself is planned", _r, [("old-bern", "bern")])
+
+# all_names defaults to live — pre-existing behavior unchanged.
+_c, _r, _b, _m, _a, _applied = _with_maps(
+    {"a": "b"}, {}, lambda: prov.plan(_TABLES, live={"a"}))
+check("all_names defaults to live", _r, [("a", "b")])
+
+
+# --- plan_archives(): the only gate before a room is closed --------------------
+def _chan(name, private=False, archived=False, members=()):
+    return {"name": name, "id": "C-" + name, "is_private": private,
+            "is_archived": archived, "_members": list(members)}
+
+
+def _plan_archives(chans, pointers, renames=None):
+    by_name = {c["name"]: c for c in chans}
+    live = {c["name"] for c in chans if not c["is_archived"]}
+    saved = (prov.DEPRECATED_POINTERS, prov.CHANNEL_RENAMES,
+             prov.slackmod.members)
+    prov.DEPRECATED_POINTERS = pointers
+    prov.CHANNEL_RENAMES = renames or {}
+    prov.slackmod.members = lambda api, cid: next(
+        c["_members"] for c in chans if c["id"] == cid)
+    try:
+        return prov.plan_archives(None, by_name, live, "U-ME")
+    finally:
+        (prov.DEPRECATED_POINTERS, prov.CHANNEL_RENAMES,
+         prov.slackmod.members) = saved
+
+
+check("a room not named -deprecated is never planned",
+      _plan_archives([_chan("x-old"), _chan("x")], {"x-old": "x"}), [])
+check("a -deprecated room queued for a rename is skipped, not archived",
+      _plan_archives([_chan("y-deprecated"), _chan("y")],
+                     {"y-deprecated": "y"}, renames={"y-deprecated": "y2"}),
+      [("y-deprecated", "skip", "pending rename to #y2 — not retired")])
+check("no recorded successor blocks",
+      [p[:2] for p in _plan_archives([_chan("z-deprecated")], {})],
+      [("z-deprecated", "blocked")])
+check("an archived successor blocks",
+      [p[:2] for p in _plan_archives(
+          [_chan("w-deprecated"), _chan("w", archived=True)],
+          {"w-deprecated": "w"})],
+      [("w-deprecated", "blocked")])
+check("a public room archives with a pointer",
+      [p[:2] for p in _plan_archives(
+          [_chan("p-deprecated", members=["U1"]), _chan("p")],
+          {"p-deprecated": "p"})],
+      [("p-deprecated", "archive")])
+check("a private room with a straggler blocks",
+      [p[:2] for p in _plan_archives(
+          [_chan("q-deprecated", private=True, members=["U1", "U2"]),
+           _chan("q", private=True, members=["U1"])],
+          {"q-deprecated": "q"})],
+      [("q-deprecated", "blocked")])
+check("a covered private room archives, with the token's own seat excused",
+      [p[:2] for p in _plan_archives(
+          [_chan("s-deprecated", private=True, members=["U1", "U-ME"]),
+           _chan("s", private=True, members=["U1"])],
+          {"s-deprecated": "s"})],
+      [("s-deprecated", "archive")])
+
+
+# --- call_write: retry only what fixes itself ----------------------------------
+check("a malformed Retry-After falls back instead of crashing",
+      [prov._retry_secs(v) for v in
+       ("Fri, 21 Aug 2026 07:28:00 GMT", None, "", "1.5", "30", -3)],
+      [10, 10, 10, 1, 30, 1])
+
+
+def _fake_urlopen_seq(responses):
+    """Each call pops the next payload; records how many calls were made."""
+    import io, json as _json  # noqa: E401
+
+    calls = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def opener(req, timeout=None):
+        calls.append(req)
+        return _Resp(_json.dumps(responses[min(len(calls) - 1,
+                                               len(responses) - 1)]).encode())
+    return opener, calls
+
+
+_saved_urlopen, _saved_sleep = prov.urllib.request.urlopen, prov.time.sleep
+try:
+    _sleeps = []
+    prov.time.sleep = _sleeps.append
+    _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "ratelimited",
+                                        "retry_after": 2},
+                                       {"ok": True}])
+    prov.urllib.request.urlopen = _open
+    check("ratelimited retries and honours retry_after",
+          (prov.call_write("t", "conversations.rename", channel="C1",
+                           name="n"), len(_calls), _sleeps),
+          ({"ok": True}, 2, [2]))
+
+    _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "name_taken"}])
+    prov.urllib.request.urlopen = _open
+    check("any other error returns to the caller without a retry",
+          (prov.call_write("t", "conversations.rename", channel="C1",
+                           name="n"), len(_calls)),
+          ({"ok": False, "error": "name_taken"}, 1))
+
+    _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "ratelimited",
+                                        "retry_after": 1}])
+    prov.urllib.request.urlopen = _open
+    check("a permanent rate limit gives up after five attempts",
+          (prov.call_write("t", "conversations.rename", channel="C1",
+                           name="n").get("error"), len(_calls)),
+          ("ratelimited", 5))
+finally:
+    prov.urllib.request.urlopen = _saved_urlopen
+    prov.time.sleep = _saved_sleep
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

@@ -4,9 +4,10 @@
 Collects channel metadata and the full user directory, then renders a
 self-contained HTML report and (unless --no-pdf) a PDF beside it.
 
-Everything here is read-only. Nothing measures message activity — the audit
-token has no history or search scope — and the report says so on its face
-rather than dressing up a proxy as engagement.
+Everything here is read-only, and this engine reads no messages itself. When
+audit_activity.py's cache is present it reports a posted-recently FLOOR from
+that sweep's poster ids; without it, the report says on its face that nothing
+measures message activity rather than dressing up a proxy as engagement.
 """
 
 import argparse
@@ -62,7 +63,7 @@ def cached(path, build, refresh=False, label="", team_id=None):
     return data
 
 
-def build_report(chans, directory, today):
+def build_report(chans, directory, today, activity=None):
     def age(epoch):
         if not epoch:
             return None
@@ -153,7 +154,50 @@ def build_report(chans, directory, today):
     unconf_unknown = sum(1 for u in active if u["is_email_confirmed"] is None)
     guests = sum(1 for u in active if u["is_restricted"] or u["is_ultra_restricted"])
 
+    # Measured engagement, when the activity sweep has run on a history-scoped
+    # token. `posted` counts active humans seen writing a channel-level message
+    # in the window — a FLOOR: thread-only repliers, readers and invisible
+    # private rooms are all missed, and the page must say so where it shows the
+    # number, not in a footnote.
+    posted = None
+    if activity and activity.get("poster_ids"):
+        posted = sum(1 for u in active if u["id"] in activity["poster_ids"])
+
     stamp = today.strftime("%-d %B %Y")
+    if posted is None:
+        caveat = """
+<div class="caveat"><strong>What this cannot tell you: message activity.</strong>
+The audit token has no <code class="chan">channels:history</code> and no
+<code class="chan">search:read</code>, so <em>last message posted</em> is unreadable and no
+figure below is derived from one. The channel <code class="chan">updated</code> field is not
+a substitute — a bulk migration reset it in blocks. For real activity use the admin
+<strong>Analytics &rarr; Channels / Members</strong> CSV export.</div>"""
+        activity_stat = ""
+        activity_limit = ("<li><strong>No message data.</strong> Nothing here measures whether "
+                          "a channel is <em>talking</em> — only whether it exists, who is in "
+                          "it, and how it is described.</li>")
+        activity_foot = "No message content was read, and none could be."
+    else:
+        caveat = f"""
+<div class="caveat"><strong>Message activity is measured — as a floor.</strong> The
+&ldquo;posted recently&rdquo; figure comes from sweeping
+<code class="chan">conversations.history</code> across {activity["channels"]} live channels
+({activity["age"]}). It counts people who <em>wrote a channel-level message</em>: thread-only
+replies are invisible to the API, private channels are limited to the audit account's
+{len(priv)}, and readers leave no trace. For last-active dates that include readers, the admin
+<strong>Analytics &rarr; Members</strong> CSV export remains the authority.</div>"""
+        activity_stat = (
+            '<div class="stat s-warn"><span class="v">%s</span>'
+            '<span class="k">Posted in last %d days (floor)</span></div>'
+            % (format(posted, ","), activity["days"]))
+        activity_limit = ("<li><strong>Posting is the only activity measured.</strong> "
+                          "%s of %s active humans were seen writing in %d days — a floor "
+                          "that misses thread replies, invisible private rooms and every "
+                          "silent reader.</li>"
+                          % (format(posted, ","), format(len(active), ","), activity["days"]))
+        activity_foot = ("Message timestamps and author ids were read via "
+                         "<code class=\"chan\">conversations.history</code>; "
+                         "no message text was retained.")
     body = f"""
 <header>
   <div class="eyebrow">Member-side workspace audit &middot; {stamp}</div>
@@ -163,12 +207,7 @@ def build_report(chans, directory, today):
   behind the {len(active):,}-member headline are real, active people.</p>
 </header>
 
-<div class="caveat"><strong>What this cannot tell you: message activity.</strong>
-The audit token has no <code class="chan">channels:history</code> and no
-<code class="chan">search:read</code>, so <em>last message posted</em> is unreadable and no
-figure below is derived from one. The channel <code class="chan">updated</code> field is not
-a substitute — a bulk migration reset it in blocks. For real activity use the admin
-<strong>Analytics &rarr; Channels / Members</strong> CSV export.</div>
+{caveat}
 
 <section>
   <div class="eyebrow">Channels</div>
@@ -230,6 +269,7 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
     <div class="stat s-warn"><span class="v">{len(deact):,}</span><span class="k">Deactivated</span></div>
     <div class="stat"><span class="v">{len(bots)}</span><span class="k">Bots &amp; apps</span></div>
     <div class="stat"><span class="v">{sum(1 for u in active if u['is_admin'])}</span><span class="k">Admins</span></div>
+    {activity_stat}
   </div>
   <div class="two" style="margin-top:22px">
     <div class="card"><h3>How real the roster is</h3>
@@ -268,8 +308,7 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
   <div class="eyebrow">Honest limits</div>
   <h2>What this report is not built on</h2>
   <ul class="plain">
-    <li><strong>No message data.</strong> Nothing here measures whether a channel is
-    <em>talking</em> — only whether it exists, who is in it, and how it is described.</li>
+    {activity_limit}
     <li><strong>Private channels are undercounted.</strong> Only the {len(priv)} the audit account
     belongs to were visible. Probing other people's memberships does not help:
     <code class="chan">users.conversations</code> filters results to the caller's own visibility.
@@ -282,7 +321,7 @@ a substitute — a bulk migration reset it in blocks. For real activity use the 
 <code class="chan">conversations.list</code>
 ({len(chans)} conversations, public and private, archived included) and
 <code class="chan">users.list</code> ({len(directory):,} accounts).
-No message content was read, and none could be.</footer>
+{activity_foot}</footer>
 """
     return rs.page("Slack Members Audit", body)
 
@@ -312,8 +351,8 @@ def main():
     team_id = who.get("team_id")
     print("workspace: %s (%s)" % (who.get("team"), team_id))
     if "channels:history" in have:
-        print("  note: this token HAS channels:history — the report's 'no message data'")
-        print("        caveat is now false and the script should be extended.")
+        print("  note: this token has channels:history — run audit_activity.py "
+              "first and the report includes measured posting activity.")
 
     chans = cached(os.path.join(args.cache, "channels.json"),
                    lambda: channels(api), args.refresh, "channel list", team_id)
@@ -346,7 +385,28 @@ def main():
             "every count on the page. Re-run with --refresh."
             % (active_humans, general["name"], general["num_members"]))
 
-    html_doc = build_report(chans, directory, dt.datetime.now(dt.timezone.utc))
+    # Engagement, when audit_activity.py has run on a history-scoped token:
+    # union its per-channel poster ids into "people seen posting". Entries
+    # without poster_ids come from a pre-poster-ids pull and contribute
+    # nothing; if none carry ids, the report falls back to the no-message-data
+    # framing rather than printing a zero that means "not measured".
+    activity = None
+    act_path = os.path.join(args.cache, "activity.json")
+    act = jsoncache.read(act_path, team_id=team_id, note=print)
+    if act:
+        ids = {u for rec in act.values() for u in rec.get("poster_ids", ())}
+        if ids:
+            # The widest window present. Entries can disagree only when a
+            # stale file mixes sweeps; every count is still within max(N)
+            # days, so the "posted in the last N days" floor stays truthful.
+            days = max(rec.get("window_days", 90) for rec in act.values())
+            activity = {"poster_ids": ids, "days": days, "channels": len(act),
+                        "age": jsoncache.age(act_path)}
+            print("  activity sweep found: %d channels, %d distinct posters"
+                  % (len(act), len(ids)))
+
+    html_doc = build_report(chans, directory, dt.datetime.now(dt.timezone.utc),
+                            activity)
     html_path = args.out + ".html"
     # Explicit UTF-8: channel and person names carry accents and the page uses
     # em dashes; the locale default would mangle or refuse them.

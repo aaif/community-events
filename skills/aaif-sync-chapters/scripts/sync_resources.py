@@ -70,13 +70,10 @@ FOLDER_COLUMN = "Chapter Folder"
 CHANNEL_COLUMNS = ("Slack Channel", "Organizer Channel", "Country Channel")
 HANDLES_COLUMN = "Organizer Handles"
 
-#: Channels whose current name is kept even though it is not `<city>`. Decided
-#: 2026-08-10, and the reasoning matters more than the list — these are NOT
-#: oversights to tidy up later:
+#: Channels whose current name is kept even though it is not `<city>`. The
+#: reasoning matters more than the list — these are NOT oversights to tidy up
+#: later:
 #:
-#: - **Local-language names are correct**: `#munchen` (München), `#medellín`.
-#:   The convention is ASCII-folded English; the community's own name for itself
-#:   wins.
 #: - **One room deliberately serves several chapters**: `#bay-area` (San
 #:   Francisco + Silicon Valley, 782 members). The `<city>` convention cannot
 #:   express this, and splitting it would empty a working room into two.
@@ -86,21 +83,16 @@ HANDLES_COLUMN = "Organizer Handles"
 #: The two cases look identical from the sheet (one channel, several chapters)
 #: and are not: a shared *chapter* room means those chapters have a home together,
 #: a *country* room means none of them has a local home at all.
-#: - **The channel's scope is wider than the chapter's**: `#colorado` for Denver,
-#:   `#delhi` for Delhi NCR.
-#: - **Legacy platform prefixes** that nobody is going to re-join under a new
-#:   name: `#meetup-barcelona`, `#austin-area`, `#portland-oregon`,
-#:   `#frankfurt_main`, `#nyc`, `#washington-dc-the-capital`, `#meetup-seattle`.
 #:
-#: Renaming any of these would move ~2,100 people for cosmetic consistency. The
-#: engine simply never proposes for a filled cell, so this constant is
-#: documentation rather than logic — but it is the answer to "why is this sheet
-#: inconsistent", which is otherwise re-litigated every time someone reads it.
-KEPT_NON_CONVENTIONAL = (
-    "munchen", "medellín", "bay-area", "colorado", "delhi",
-    "meetup-barcelona", "austin-area", "portland-oregon", "frankfurt_main",
-    "nyc", "washington-dc-the-capital", "meetup-seattle",
-)
+#: The 2026-08-10 list was much longer (`#munchen`, `#medellín`, `#colorado`,
+#: `#delhi`, and seven legacy meetup-era prefixes). The 2026-08-17 naming sweep
+#: reversed that call: those rooms were RENAMED to the convention via
+#: provision_channels.CHANNEL_RENAMES — a rename keeps members and history, so
+#: "moving people" was never actually the cost. Even the local-language keeps
+#: fell to typability (#munchen -> #munich, #medellín -> #medellin); `#españa`,
+#: a country channel, is now the only accented survivor. Only the entry above
+#: survived on its merits.
+KEPT_NON_CONVENTIONAL = ("bay-area",)
 
 #: Country -> the channel that serves it, where that channel is not named after
 #: the country in ASCII English. Without this the engine plans a brand-new
@@ -355,9 +347,8 @@ def plan_channels(chapters, chans, ao):
       no accepted organizer yet. The room is then ready for a chapter's first
       organizer instead of being a thing someone has to remember to create, and
       the naming stays uniform across the estate.
-    - **A cell that already names something is never touched**, including the
-      local-language names (`#munchen`, `#españa`, `#medellín`, `#bangalore`) and
-      the deliberate multi-chapter rooms (`#bay-area`, `#españa`). The convention
+    - **A cell that already names something is never touched**, including
+      `#españa` and the deliberate multi-chapter room `#bay-area`. The convention
       is for chapters that have nothing, not a reason to rename a working room.
     """
     live = {c["name"] for c in chans if not c["is_archived"]}
@@ -375,11 +366,11 @@ def plan_channels(chapters, chans, ao):
                             "why": "exists" if slug in live else "TO CREATE"})
         if not ch["current"]["Organizer Channel"]:
             # Derived from the chapter's OWN channel, not from the city slug.
-            # Munich's room is #munchen, so its organizers belong in
-            # #munchen-organizers — `munich-organizers` would be a channel named
-            # after a chapter that, in Slack, does not go by that name. The
-            # public cell wins because it is the name the community actually
-            # answers to, including every local-language and legacy one.
+            # SF's room is #bay-area, so its organizers belong in
+            # #bay-area-organizers — `san-francisco-organizers` would be a
+            # channel named after a chapter that, in Slack, does not go by that
+            # name. The public cell wins because it is the name the community
+            # actually answers to.
             base = slug if public == NO_RESOURCE else public
             name = organizer_name(base)
             planned.append({"row": ch["row"], "city": ch["city"],
@@ -480,8 +471,8 @@ def propose_organizer_alignment(chapters, live):
     """Repoint a PLANNED organizer channel at the chapter's real channel name.
 
     Fixes cells written before the organizer name was derived from the public
-    channel rather than the city slug — `munich-organizers` becomes
-    `munchen-organizers`, because #munchen is what that chapter is actually
+    channel rather than the city slug — `san-francisco-organizers` becomes
+    `bay-area-organizers`, because #bay-area is what that chapter is actually
     called.
 
     The safety rule is narrow and load-bearing: **only a cell naming a channel
@@ -555,7 +546,7 @@ def _candidates(city, chans, suffixes, ao):
 # ----------------------------------------------------------------------------
 
 #: Characters a Slack channel name can never contain. Deliberately minimal — the
-#: local-language names (#españa, #medellín, #munchen) must never be flagged —
+#: local-language name #españa must never be flagged —
 #: but enough to catch a URL, an email address or a sentence pasted into the
 #: wrong column. The "filled" count treats any non-blank cell as healthy, so
 #: without this check a pasted Drive URL reads as a mapped channel forever

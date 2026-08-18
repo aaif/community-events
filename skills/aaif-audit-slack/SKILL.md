@@ -6,16 +6,20 @@ argument-hint: '[organizers|members|both] [--refresh] [--out NAME] [--no-pdf]'
 
 # AAIF Slack Audit
 
-Two engines over one workspace, same house rules — **everything is read-only**,
-and neither engine can measure message activity (see the ceiling below).
+Three engines over one workspace, same house rules — **everything is read-only**.
 
 | Engine | Script | Answers |
 |---|---|---|
 | Organizers | `audit_organizers.py` | does each chapter have a home, and are the people we accepted in it? |
 | Members | `audit_members.py` | what does the workspace look like to an ordinary member? |
+| Activity | `audit_activity.py` | who is actually talking, where — last human message and message volume per channel |
 
 Run whichever the user asked for. "Audit Slack" with no side named means **both**
-— run the organizer engine first; it is the one with decisions attached.
+of the first two — run the organizer engine first; it is the one with decisions
+attached. The activity engine needs a history-scoped token (see the ceiling
+below) and answers questions about dead channels, engagement and posting volume;
+its cache also feeds the member report's "posted recently" figure, so run it
+before the member engine when both are wanted.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -47,13 +51,18 @@ printed.
 
 # The ceiling — state this in any summary you write
 
-**Neither engine can measure activity.** The Slack CLI token carries no
+**Which ceiling applies depends on the token.** The Slack CLI token carries no
 `channels:history` and no `search:read`, and `conversations.history` returns
-`missing_scope` even for public channels. *Last message posted*, *messages per
-week* and *is this channel alive* are **unreadable**, not merely unmeasured.
-(`lib/aaif_events/slack.py` holds the authoritative scope list, and
-`Slack.scopes()` reports the live one — trust those over any list written down
-here or there.)
+`missing_scope` even for public channels — on that token, *last message posted*
+and *is this channel alive* are **unreadable**, and the organizer/member reports
+print exactly that. The **AAIF app token** (`AAIF_SLACK_WRITE_TOKEN` in the
+user's `.env`, added 2026-08-16) DOES carry `channels:history`/`groups:history`
+— `conversations.history` is in the client's allowlist for it, and
+`audit_activity.py` is the engine built on it. Even then the numbers are
+**floors**: thread replies are invisible to `conversations.history`, and the
+reports say so on their face. (`lib/aaif_events/slack.py` holds the
+authoritative scope list, and `Slack.scopes()` reports the live one — trust
+those over any list written down here or there.)
 
 Both engines check their required scopes **before** collecting anything —
 including `groups:read`, which the private-channel half of `conversations.list`
@@ -101,6 +110,13 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/audit_organizers.py
 Writes `slack-organizers-audit.html` + `.pdf`, and a machine-readable
 `audit.json` in the cache directory.
 
+`--planned-ok` exists for the **pre-provisioning** state: the Chapters List
+names the channel each chapter *will* have before `provision_channels.py` has
+created it, and without the flag every such name aborts the run as a
+rename/archive bug. With it, they are downgraded to "planned" in the
+data-quality notes and the chapter truthfully reports as having no channel.
+Drop the flag once provisioning has run, so the abort protects the map again.
+
 | Source | Read | Used for |
 |---|---|---|
 | Chapters List `Chapters & Teams` | `City`, `Slack Channel`, `Organizer Channel`, `Country Channel` | the chapter roster **and the channel map** |
@@ -124,7 +140,7 @@ columns on the AAIF Community Chapters List**, read straight off the sheet by
 
 | Column | Was | Means |
 |---|---|---|
-| `Slack Channel` | `public` | the chapter's own channel, where the slug convention doesn't hold (`Denver → colorado`, `Munich → munchen`, `Washington DC → washington-dc-the-capital`) |
+| `Slack Channel` | `public` | the chapter's own channel, where the slug convention doesn't hold (`San Francisco → bay-area`; NOT `Madrid → españa` — that's a country room, and filing it here falsely reports coverage) |
 | `Organizer Channel` | `organizers` | its organizer channel, where not named `<city>-organizers` |
 | `Country Channel` | `regional` | a channel that *serves* the city without being its own (`Chennai → india`, `Lagos → africa`). Reported as **regional only**, never counted as chapter coverage — a member there has no local room. |
 
@@ -242,6 +258,33 @@ email-domain breakdown · the limits, restated on the page.
 - **Zero guest accounts is a governance fact, not a bug** — but it means every
   member can be added to any private channel, which is why the organizer
   channels need care. The two engines meet on this point.
+
+---
+
+# 3. Activity engine
+
+Per live channel: last *human* message (plumbing subtypes and bots excluded),
+message volume, distinct posters and join noise over a trailing window
+(`--days`, default 90). **No message text is ever retained** — timestamps,
+counts and poster ids only, in the same 0600 cache as everything else.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/audit_activity.py
+```
+
+Writes `slack-activity-audit.html` + `.pdf`. Reuses the shared channel cache;
+its per-channel pulls are resumable within a UTC day, so an interrupted sweep
+continues instead of restarting. When `audit.json` from the organizer engine is
+present, the report includes a per-chapter activity table joined from it.
+
+## Reading the results
+
+- **Every count is a floor.** Thread replies are invisible except broadcasts; a
+  channel that lives in threads under-counts. The page states this.
+- **A truncated scan is marked**, not ranked as fully measured.
+- **The member report picks up this engine's cache** and turns the union of
+  poster ids into "posted in the last N days" — writers only, so it is an
+  engagement floor, never a lurker count.
 
 ---
 
