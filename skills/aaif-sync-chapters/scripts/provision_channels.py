@@ -19,7 +19,11 @@ this one file.
 
 ## What it will not do
 
-- **Never archives or deletes.** Nothing here removes a room people are in.
+- **Archives only rooms a rename already retired** — the deprecated-room sweep
+  (authorised 2026-08-17) closes `*-deprecated` rooms only, public ones only
+  after a farewell pointer post lands, private ones only once every member is
+  already in the successor. Nothing here deletes, and nothing archives a room
+  under its working name.
 - **Never invites.** This script builds rooms; it does not put people in them.
   Inviting lives in `invite_organizers.py`, deliberately separate: it needs
   different scopes, and it is less reversible than anything here. A channel can
@@ -88,17 +92,31 @@ API = "https://slack.com/api/"
 #: (`prune_organizers.py`), which refuses to act on anything but an explicit
 #: keep-list. Read that file before assuming it is safe to call from elsewhere.
 #:
-#: Still absent, and to stay absent: `conversations.archive` (nothing here
-#: destroys a room — deprecation is a rename, which is reversible) and
-#: `chat.postMessage` (nothing here speaks as a human in a community channel).
+#: `conversations.archive` and `chat.postMessage` were deliberately absent
+#: until 2026-08-17, when archiving retired rooms was authorised. Both are
+#: reachable from exactly one place — the deprecated-room sweep in main() —
+#: and under guards that keep the original fears fenced:
+#:
+#: - archive refuses any channel whose name does not end `-deprecated`, so the
+#:   only rooms it can close are ones a rename already retired on purpose;
+#: - postMessage is used solely to leave the farewell pointer in the room being
+#:   archived (public rooms only — a pointer nobody can follow into a private
+#:   room helps no one), never to speak anywhere else.
+#:
+#: `conversations.join` is here because a user token cannot post in a public
+#: channel it has not joined; it is only ever called on a room about to be
+#: archived, so the membership is momentary by construction.
 WRITE_METHODS = frozenset({"conversations.create", "conversations.rename",
-                           "conversations.invite", "conversations.kick"})
+                           "conversations.invite", "conversations.kick",
+                           "conversations.archive", "conversations.join",
+                           "chat.postMessage"})
 
 #: Scopes each write needs. Checked up front so a missing scope fails before the
 #: first channel rather than half way through the batch.
 # `channels:write` is the USER-token scope for conversations.create/rename;
 # `channels:manage` is its bot-token sibling and never appears on a user token.
-NEEDED_SCOPES = ("channels:write", "groups:write")
+# `chat:write` is for the deprecated-sweep's farewell pointer, nothing else.
+NEEDED_SCOPES = ("channels:write", "groups:write", "chat:write")
 
 #: Slack renames: the room keeps its identity, members and history, and takes a
 #: new name. ORDER IS COMPUTED, not written here — see order_renames(). Two of
@@ -115,8 +133,8 @@ CHANNEL_RENAMES = {
     # the invisible #austin-organizers squatter is deprecated.)
     "austin-area-organizers": "austin-organizers",
     # 2026-08-17 naming-convention sweep (user-decided): city channels take the
-    # plain city name, organizer rooms take <city>-organizers. #bay-area and
-    # #munchen are deliberate keeps.
+    # plain city name, organizer rooms take <city>-organizers. #bay-area is a
+    # deliberate keep.
     # NOT "meetup-seattle": "seattle" — a live #seattle (135 members, 2022)
     # already IS the city room; #meetup-seattle (41, 2023) merges into it below.
     # APPLIED 2026-08-17 and removed from this map (empty junk rooms were
@@ -128,18 +146,49 @@ CHANNEL_RENAMES = {
     # washington-dc-the-capital-organizers→washington-dc-organizers.
     # STILL PENDING below — each target name is held by an INVISIBLE private
     # room, so they fail with name_taken (non-fatal) until those are
-    # deprecated via the admin UI:
+    # deprecated via the admin UI. (NOT meetup-barcelona-organizers ->
+    # barcelona-organizers: its "squatter" turned out to be the REAL organizer
+    # room — 2024, 16 members — so the freshly provisioned 3-member room merges
+    # into it instead; see CHANNEL_MERGES.)
     "meetup-seattle-organizers": "seattle-organizers",
-    "meetup-barcelona-organizers": "barcelona-organizers",
     "washington-dc-the-capital": "washington-dc",
+    # Austin's REAL room (76 members, 2023) was hand-renamed to -deprecated in
+    # the admin UI on 2026-08-17 while #austin was still squatted, and the
+    # sheet's stale `austin-area` cell then made a --write run create a junk
+    # room under the freed name (archived 2026-08-18). This entry is the
+    # recovery: the moment the #austin squatter is cleared, the real room takes
+    # the city name — and its presence stops plan() from CREATING #austin
+    # first, which would re-run the same accident under the new name.
+    "austin-area-deprecated": "austin",
     "portland-oregon-organizers": "portland-organizers",
-    "austin-area": "austin",
+    # 2026-08-19 (user-decided, revised same day): country-named chapters
+    # become capital-city chapters — but #switzerland (80) and #scotland (71)
+    # STAY as country rooms; fresh #bern and #edinburgh city rooms are created
+    # from the sheet instead, and only the ORGANIZER rooms take city names.
+    # Utah is a state, not a country room worth keeping: the room itself
+    # renames. Scotland/Utah's organizer rooms are invisible squatters, so
+    # their -organizers rooms are fresh creates from the sheet, not renames.
+    "switzerland-organizers": "bern-organizers",
+    "utah": "salt-lake-city",
     # 2026-08-17 round two (user-decided): ASCII beats the accent for
     # typability (the #españa precedent notwithstanding), and Delhi NCR is
     # the chapter's actual name. Their organizer-room twins are invisible
     # squatters, so fresh rooms are created via the sheet instead.
     "medellín": "medellin",
     "delhi": "delhi-ncr",
+    # Sydney needs NO rename, after two wrong answers in one day (2026-08-17).
+    # #aaifsydney looked mergeable (small, meetup-era name), then looked like
+    # the real chapter room (all the recent activity) — its own message history
+    # settled it: a TEMPORARY event-coordination room with external sponsor
+    # folk in it, to be left alone under its own name. #sydney (2022, 57
+    # members) stays the city room; #sydney-organizers is planned from the
+    # sheet and currently blocked by an invisible private squatter.
+    # 2026-08-17 (user-decided): the last local-language keep falls too —
+    # English/ASCII wins for the same typability reason as medellin. The
+    # organizer room was deprecated by hand in the admin UI
+    # (#munchen-organizers-deprecated, 4 members to invite into the fresh
+    # #munich-organizers the sheet now plans).
+    "munchen": "munich",
 }
 
 #: Merges: the room is retired and its chapter moves to another room. Distinct
@@ -149,15 +198,91 @@ CHANNEL_RENAMES = {
 CHANNEL_MERGES = {
     "southbay-chapter-leads": {"into": "bay-area-organizers",
                                "retire_as": "southbay-chapter-leads-deprecated"},
-    # Seattle had two public rooms; the older, larger #seattle wins and the
-    # meetup-era one is retired. Its members are not carried — the country and
-    # #general posts point everyone at the surviving room.
-    "meetup-seattle": {"into": "seattle",
-                       "retire_as": "meetup-seattle-deprecated"},
-    # Pre-existing Sydney room bypassed by the sheet's #sydney (2026-08-17).
-    "aaifsydney": {"into": "sydney",
-                   "retire_as": "aaifsydney-deprecated"},
+    # meetup-seattle -> seattle APPLIED and removed 2026-08-17: the retired room
+    # is #meetup-seattle-deprecated, and a junk #meetup-seattle recreated under
+    # the freed name (since archived) was matching this entry and would have
+    # been "retired" into a name_taken failure.
+    # The aaifsydney -> sydney merge that used to sit here was REVERSED
+    # 2026-08-17: #aaifsydney is the active room (see CHANNEL_RENAMES), so the
+    # merge became a name swap and the entry had to go — left in place it would
+    # have re-retired the room the swap just promoted, under its old id.
+    # Provisioning created this 2026-08-16 while Barcelona's real organizer
+    # room (#barcelona-organizers, 2024, 16 members) was an invisible private
+    # channel. Once revealed, the real room wins; the fresh room's 3 members
+    # are invited across.
+    "meetup-barcelona-organizers": {
+        "into": "barcelona-organizers",
+        "retire_as": "meetup-barcelona-organizers-deprecated"},
 }
+
+#: Where each retired room's people should go — the deprecated-room sweep
+#: refuses to archive a room it cannot leave a forwarding address for. Public
+#: rooms point at the chapter's PUBLIC channel (a pointer into a private room
+#: is a door nobody can open); private rooms name the private successor, used
+#: for the membership-coverage check rather than a post.
+DEPRECATED_POINTERS = {
+    "london-organizers-deprecated": "london",
+    "meetup-seattle-deprecated": "seattle",
+    "southbay-chapter-leads-deprecated": "bay-area-organizers",
+    "luxembourg-organizers-deprecated": "luxembourg-organizers",
+    "munchen-organizers-deprecated": "munich-organizers",
+    "meetup-barcelona-organizers-deprecated": "barcelona-organizers",
+}
+
+FAREWELL = ("This channel is retired. The community now lives in <#%s> — "
+            "see you there! (This room will be archived; its history stays "
+            "searchable.)")
+
+
+def plan_archives(api, by_name, live, self_id):
+    """What the deprecated-room sweep would do: [(name, action, detail)].
+
+    action is 'archive' (public: post pointer first), 'blocked' or 'skip'.
+    The rules differ by room type, deliberately:
+
+    - **Public**: post the farewell pointer, then archive. Members chose a
+      public room and can follow a pointer with one click; mass-inviting them
+      anywhere is not this script's call.
+    - **Private**: archive only when every member is already in the successor
+      room (the token's own account excepted). A private room's members were
+      curated, so archiving out from under someone who has not been moved yet
+      would cut an organizer off from their chapter. Stragglers are counted
+      and named as the reason, and inviting them stays invite_organizers.py's
+      intake-gated job.
+    """
+    plans = []
+    for name in sorted(live):
+        if not name.endswith("-deprecated"):
+            continue
+        if name in CHANNEL_RENAMES:
+            # Queued to be renamed back into service (e.g. Austin's real room,
+            # parked at -deprecated while a squatter holds its city name) —
+            # not a room to close, whatever its name says today.
+            plans.append((name, "skip", "pending rename to #%s — not retired"
+                          % CHANNEL_RENAMES[name]))
+            continue
+        target = DEPRECATED_POINTERS.get(name)
+        if not target:
+            plans.append((name, "blocked", "no recorded successor — add it to "
+                          "DEPRECATED_POINTERS or archive by hand"))
+            continue
+        if target not in by_name or by_name[target]["is_archived"]:
+            plans.append((name, "blocked", "successor #%s is not live" % target))
+            continue
+        room = by_name[name]
+        if not room.get("is_private"):
+            plans.append((name, "archive", "public; pointer post -> #%s, then "
+                          "archive" % target))
+            continue
+        members = set(slackmod.members(api, room["id"])) - {self_id}
+        stragglers = members - set(slackmod.members(api, by_name[target]["id"]))
+        if stragglers:
+            plans.append((name, "blocked", "%d member(s) not yet in #%s — "
+                          "invite them across first" % (len(stragglers), target)))
+        else:
+            plans.append((name, "archive", "private; all members already in "
+                          "#%s" % target))
+    return plans
 
 
 def order_renames(renames, live):
@@ -247,8 +372,14 @@ def call_write(token, method, **params):
     return {"ok": False, "error": "ratelimited"}
 
 
-def plan(tables, live):
+def plan(tables, live, all_names=None):
     """Return (creates, renames, merges, already, blocked).
+
+    `all_names` is every channel name INCLUDING archived ones (defaults to
+    `live`). Applied-rename detection must use it: once the deprecated-room
+    sweep archives #london-organizers-deprecated, that name stops being live,
+    and a live-only check would re-plan the London chain's first step —
+    renaming the REAL organizer room to -deprecated.
 
     `creates` is [(name, is_private, why)]. A name is planned exactly once even
     when several chapters share it — #india serves six, and asking Slack to
@@ -282,9 +413,15 @@ def plan(tables, live):
     # applied when its old name is another rename's target (the map itself
     # re-occupied it); a target squatted by anything else still blocks, because
     # that genuinely is a room the plan cannot account for.
+    # The target-exists check runs against ALL names, not just live ones: an
+    # archived room holding the target is the same evidence of "applied" (the
+    # sweep archives retired rooms), and a not-yet-applied rename into an
+    # archived name would only ever answer name_taken anyway.
+    if all_names is None:
+        all_names = live
     retaken = set(CHANNEL_RENAMES.values())
     wanted = {o: n for o, n in CHANNEL_RENAMES.items()
-              if o in live and not (n in live and o in retaken)}
+              if o in live and not (n in all_names and o in retaken)}
     renames, blocked = order_renames(wanted, live)
     merges = [(o, m) for o, m in sorted(CHANNEL_MERGES.items()) if o in live]
     return creates, renames, blocked, merges, already
@@ -306,7 +443,11 @@ def main():
     live = {c["name"] for c in chans if not c["is_archived"]}
     by_name = {c["name"]: c for c in chans}
     _, tables = ao.read_chapters()
-    creates, renames, blocked, merges, already = plan(tables, live)
+    creates, renames, blocked, merges, already = plan(tables, live, set(by_name))
+    # Only rooms ALREADY deprecated at plan time: one this run retires still
+    # has its people, so it waits for the next run — by which point they have
+    # had the pointer, or (private) have been invited across.
+    archives = plan_archives(api, by_name, live, who.get("user_id"))
 
     print("Already exist: %d" % len(already))
     print("\nTo CREATE (%d):" % len(creates))
@@ -325,6 +466,9 @@ def main():
     for old, m in merges:
         print("  #%s -> into #%s, retired as #%s"
               % (old, m["into"], m["retire_as"]))
+    print("\nDeprecated-room sweep (%d):" % len(archives))
+    for name, action, detail in archives:
+        print("  #%-38s %-8s %s" % (name, action.upper(), detail))
 
     if not a.write:
         print("\nReport only. Nothing was sent to Slack.")
@@ -406,6 +550,31 @@ def main():
                   "members into #%s)" % (old, m["retire_as"], m["into"]))
         else:
             failed.append("retire %s: %s" % (old, r.get("error")))
+
+    for name, action, detail in archives:
+        if action != "archive":
+            continue
+        # Belt to the planner's braces: this is the only call site of
+        # conversations.archive, and it must stay impossible to point at a
+        # room a rename did not first retire on purpose.
+        assert name.endswith("-deprecated"), name
+        room = by_name[name]
+        if not room.get("is_private"):
+            if not room.get("is_member"):
+                call_write(token, "conversations.join", channel=room["id"])
+            p = call_write(token, "chat.postMessage", channel=room["id"],
+                           text=FAREWELL % by_name[DEPRECATED_POINTERS[name]]["id"])
+            if not p.get("ok"):
+                failed.append("farewell post in %s: %s — NOT archived (a room "
+                              "must not close without its forwarding address)"
+                              % (name, p.get("error")))
+                continue
+        r = call_write(token, "conversations.archive", channel=room["id"])
+        if r.get("ok"):
+            done += 1
+            print("archived #%s" % name)
+        else:
+            failed.append("archive %s: %s" % (name, r.get("error")))
 
     print("\n%d applied, %d failed." % (done, len(failed)))
     for f in failed:

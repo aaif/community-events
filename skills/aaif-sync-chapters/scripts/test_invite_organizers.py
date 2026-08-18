@@ -31,13 +31,17 @@ def check(label, got, want):
 check("invite goes through the same allowlist as create/rename",
       "conversations.invite" in prov.WRITE_METHODS, True)
 # The absences are the point. `conversations.kick` joined the allowlist on
-# 2026-08-10 when pruning was authorised; archive and postMessage did not, and
-# the difference is real — a rename is reversible, destroying a room or speaking
-# in one is not.
-for forbidden in ("conversations.archive", "chat.postMessage",
-                  "conversations.leave", "conversations.delete"):
+# 2026-08-10 when pruning was authorised; archive, join and postMessage joined
+# on 2026-08-17 for the deprecated-room sweep (archive refuses non-`-deprecated`
+# names; postMessage exists only for the farewell pointer). Deleting a room —
+# the one truly unrecoverable act — stays out, as does leave.
+for forbidden in ("conversations.leave", "conversations.delete"):
     check("%s stays out of the allowlist" % forbidden,
           forbidden in prov.WRITE_METHODS, False)
+for sanctioned in ("conversations.archive", "chat.postMessage",
+                   "conversations.join"):
+    check("%s is reachable for the deprecated sweep" % sanctioned,
+          sanctioned in prov.WRITE_METHODS, True)
 
 
 def refuses(method):
@@ -49,7 +53,7 @@ def refuses(method):
 
 
 check("call_write refuses a method outside the allowlist",
-      refuses("conversations.archive"), True)
+      refuses("conversations.delete"), True)
 check("kick is reachable, but only through the one chokepoint",
       "conversations.kick" in prov.WRITE_METHODS, True)
 
