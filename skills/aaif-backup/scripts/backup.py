@@ -82,8 +82,12 @@ def _repo_root(path):
     while not os.path.isdir(probe_dir) and probe_dir != os.sep:
         probe_dir = os.path.dirname(probe_dir) or os.sep
     try:
+        # LC_ALL=C: the "not a git repository" match below reads git's stderr,
+        # and localized git says e.g. "kein Git-Repository" — which would abort
+        # legitimate outside-repo runs instead of returning None.
         proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True,
+                              env={**os.environ, "LC_ALL": "C", "LANG": "C"})
     except FileNotFoundError:
         sys.exit("REFUSING TO RUN: git is not installed, so this cannot verify "
                  f"that {path} is ignored. Snapshots hold every applicant's name "

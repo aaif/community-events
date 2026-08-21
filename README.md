@@ -183,7 +183,7 @@ The repo root is **both** the marketplace and the single plugin — the marketpl
 entry's `source` is `"./"`, so there's no extra `plugins/<name>/` nesting.
 
 ```
-events/
+meetups/
 ├── .claude-plugin/
 │   ├── marketplace.json          # one-plugin marketplace ("aaif")
 │   └── plugin.json               # plugin manifest (aaif-events)

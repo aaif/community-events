@@ -33,6 +33,14 @@ TABS = {
 # on "New" alone — a custom --status list never needs to know about blanks.
 DEFAULT_NEEDS_REVIEW = {"New", "In progress"}
 
+
+def normalize_filter(values):
+    """Normalize a --status list the same way collect() normalizes cells: a
+    requested blank means the blank-status rows — which the rows themselves
+    report as "New" by then, so an un-normalized --status "" would silently
+    select zero rows."""
+    return {(v.strip() or "New") for v in values}
+
 # The City columns were renamed to City (Existing)/City (New). They only carry
 # those headers after `aaif-clean-data install-colors` has run; until then the
 # role tabs still show the legacy City/Resolved City. Fall back so the digest
@@ -145,9 +153,10 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--status", nargs="*", default=None,
-                    help="Status values to include (default: blank/New/In progress)")
+                    help="Status values to include (default: New/In progress; "
+                         "blank counts as New)")
     args = ap.parse_args()
-    sf = set(args.status) if args.status is not None else DEFAULT_NEEDS_REVIEW
+    sf = normalize_filter(args.status) if args.status is not None else DEFAULT_NEEDS_REVIEW
     data = collect(sf, args.all)
     if args.all:
         label = "row(s), all statuses"

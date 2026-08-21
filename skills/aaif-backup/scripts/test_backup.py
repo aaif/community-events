@@ -88,6 +88,18 @@ class TestAssertDestGitSafe(unittest.TestCase):
             # moving --dest outside the repo is the guard's own recommendation.
             backup.assert_dest_git_safe(os.path.join(d, "backups"))
 
+    def test_a_git_failure_that_is_not_outside_a_repo_aborts(self):
+        """Pins the deliberate copy of report_style._repo_root's guard: a git
+        failure other than "not a git repository" (here a corrupt .git; dubious
+        ownership behaves the same) must abort, not read as "outside any repo"
+        and silently disengage the PII guard."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".git"), "w") as f:
+                f.write("not a gitfile\n")     # exit 128: invalid gitfile format
+            with self.assertRaises(SystemExit) as e:
+                backup.assert_dest_git_safe(os.path.join(d, "backups"))
+            self.assertIn("REFUSING TO RUN", str(e.exception))
+
     def test_refuses_a_dest_holding_tracked_files(self):
         with tempfile.TemporaryDirectory() as d:
             self._repo(d)

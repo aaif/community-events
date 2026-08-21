@@ -158,6 +158,20 @@ def upload(file_id, path, raw, content_type):
           "--upload", os.path.basename(path), "--upload-content-type", content_type],
          cwd=os.path.dirname(path) or ".")
 
+def fresh_if_unchanged(file_id, tmp_path, planned_bytes):
+    """Re-download a Drive file and say whether it drifted from a plan's bytes.
+
+    Returns (fresh_bytes, changed). Shared by sync_crm.write_workbooks and
+    sync_about.apply_writes — the one compare both engines' write gates hang
+    on: planning spans minutes plus the approval pause, so a human edit in
+    that window is NORMAL, and uploading over it would silently revert it.
+    Each caller keeps its own backup and skip-reporting behaviour; only the
+    "did the remote move under the plan" question lives here, so the two
+    twins cannot drift apart in what "unchanged" means.
+    """
+    fresh = download(file_id, tmp_path)
+    return fresh, fresh != planned_bytes
+
 # ----------------------------------------------------------------------------
 # Text helpers
 # ----------------------------------------------------------------------------
@@ -294,9 +308,13 @@ def read_intake():
                                "events": cell(row, i_events), "why": cell(row, i_why),
                                "placed": [], "inferred": []})
             continue
-        # Skip-and-report, never write: excluding the row here is what keeps
-        # the injection-safety property — a flagged value can reach no cell,
-        # no About doc and no CRM, because it never becomes an entry at all.
+        # Skip-and-report, never write: excluding the row here keeps the
+        # injection-safety property — a flagged value reaches no cell and no
+        # About doc, because it never becomes an entry at all. The CRM path
+        # does NOT pass through here (sync_crm.read_role_tab reads the role
+        # tabs directly), so it runs the same bad_public_text check itself;
+        # together the two checks are what make "no cell, no About doc and
+        # no CRM" a true statement rather than a hopeful one.
         bad = bad_public_text("name", name) or bad_public_text("city", city)
         if bad:
             malformed.append({"row": rownum, "name": name, "city": city, "why": bad})

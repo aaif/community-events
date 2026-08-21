@@ -126,6 +126,38 @@ def test_a_git_failure_that_is_not_outside_a_repo_aborts(monkeypatch, tmp_path):
     assert "dubious ownership" in str(exc.value)
 
 
+def test_repo_root_pins_git_to_the_c_locale(monkeypatch, tmp_path):
+    """The "not a git repository" stderr match is defeated by localized git
+    (de_DE says "kein Git-Repository"), so the subprocess must run LC_ALL=C."""
+    seen = {}
+
+    def fake_run(*a, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(["git"], 0, stdout="/repo\n", stderr="")
+
+    monkeypatch.setattr(rs.subprocess, "run", fake_run)
+    assert rs._repo_root(str(tmp_path / "r.html")) == "/repo"
+    assert seen["env"]["LC_ALL"] == "C"
+    assert seen["env"]["LANG"] == "C"
+
+
+def test_to_pdf_makes_the_pdf_0600(monkeypatch, tmp_path):
+    """Chrome writes the PDF twin of the 0600 HTML with default (world-readable)
+    permissions; to_pdf must tighten it after a successful render."""
+    html = tmp_path / "r.html"
+    html.write_text("<p>x</p>", encoding="utf-8")
+    pdf = tmp_path / "r.pdf"
+
+    def fake_run(cmd, **kw):
+        pdf.write_bytes(b"%PDF-" + b"x" * 2000)   # written 0644-ish by umask
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(rs.subprocess, "run", fake_run)
+    assert rs.to_pdf(str(html), str(pdf)) == str(pdf)
+    assert oct(os.stat(pdf).st_mode & 0o777) == "0o600"
+
+
 def test_not_a_git_repository_still_means_outside_a_repo(monkeypatch, tmp_path):
     fake = subprocess.CompletedProcess(
         ["git"], 128, stdout="",

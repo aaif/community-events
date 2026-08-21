@@ -395,6 +395,8 @@ def to_pdf(html_path, pdf_path, timeout_s=180):
             "Chrome exited 0 but produced no usable PDF at %s (%d bytes). Quit "
             "any running Chrome and retry, or pass --no-pdf and print %s by "
             "hand.\n%s" % (pdf_path, os.path.getsize(pdf_path), html_path, stderr))
+    # Chrome creates the PDF with default (world-readable) permissions; it
+    # carries the same PII as the 0600 HTML it was rendered from.
     os.chmod(pdf_path, 0o600)
     return pdf_path
 
@@ -414,8 +416,12 @@ def _repo_root(path):
     while not os.path.isdir(probe_dir) and probe_dir != os.sep:
         probe_dir = os.path.dirname(probe_dir)   # output dir may not exist yet
     try:
+        # LC_ALL=C: the "not a git repository" match below reads git's stderr,
+        # and localized git says e.g. "kein Git-Repository" — which would abort
+        # legitimate outside-repo runs instead of returning None.
         proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True,
+                              env={**os.environ, "LC_ALL": "C", "LANG": "C"})
     except FileNotFoundError:
         raise SystemExit(
             "REFUSING TO RUN: git is not installed, so this cannot verify that "

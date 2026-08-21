@@ -121,6 +121,8 @@ def test_scopes_reports_a_dead_token_as_a_token_problem(monkeypatch):
     with pytest.raises(slack.SlackError) as exc:
         api.scopes()
     assert exc.value.error == "invalid_auth"
+    # The standing remedy is the app token; CLI login is the last resort.
+    assert slack.ENV_TOKEN_VAR in str(exc.value)
     assert "slack auth login" in str(exc.value)
 
 
@@ -179,6 +181,8 @@ def test_require_scopes_aborts_on_a_missing_scope(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         api.require_scopes("channels:read", "users:read.email")
     assert "users:read.email" in str(exc.value)
+    # The remedy names the app token first, not `slack auth login` alone.
+    assert slack.ENV_TOKEN_VAR in str(exc.value)
 
 
 def test_user_record_defaults_flags_to_booleans(monkeypatch):
@@ -306,6 +310,39 @@ def test_dotenv_parse_ignores_other_keys_and_tolerates_quotes(tmp_path):
                    "AAIF_SLACK_WRITE_TOKEN='xoxp-quoted'\n", encoding="utf-8")
     assert slack._dotenv_token(env_path=str(env)) == "xoxp-quoted"
     assert slack._dotenv_token(env_path=str(tmp_path / "nope")) is None
+
+
+def test_dotenv_strips_an_inline_comment_from_an_unquoted_value(tmp_path):
+    """`KEY=xoxb-abc  # prod` must yield the token, not token-plus-comment."""
+    env = tmp_path / ".env"
+    env.write_text("AAIF_SLACK_WRITE_TOKEN=xoxb-abc  # prod\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-abc"
+
+
+def test_dotenv_keeps_a_hash_glued_to_the_value(tmp_path):
+    """Only a whitespace-preceded '#' starts a comment."""
+    env = tmp_path / ".env"
+    env.write_text("AAIF_SLACK_WRITE_TOKEN=xoxb-a#b\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-a#b"
+
+
+def test_dotenv_quoted_values_keep_their_content(tmp_path):
+    """Inside quotes a '#' is part of the token, comment or not after."""
+    env = tmp_path / ".env"
+    env.write_text('AAIF_SLACK_WRITE_TOKEN="xoxb-a #b"  # prod\n', encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-a #b"
+
+
+def test_dotenv_accepts_an_export_prefix(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("export AAIF_SLACK_WRITE_TOKEN=xoxb-exported\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-exported"
+
+
+def test_dotenv_a_value_that_is_only_a_comment_is_a_miss(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("AAIF_SLACK_WRITE_TOKEN= # set me\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) is None
 
 
 @pytest.mark.parametrize("blob,expected", [

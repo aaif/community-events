@@ -64,7 +64,10 @@ def chapter_channel_names(cache_dir, team_id):
     would otherwise join its chapter map into this one's activity table.
     """
     path = os.path.join(cache_dir, "audit.json")
-    data = jsoncache.read(path, team_id=team_id)
+    # note=print: a pre-stamp or foreign-workspace audit.json is discarded, and
+    # without the note the chapter section just vanishes from the report with
+    # no hint that re-running audit_organizers.py would bring it back.
+    data = jsoncache.read(path, team_id=team_id, note=print)
     if data is None:
         return {}
     out = {}

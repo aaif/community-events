@@ -42,6 +42,7 @@ mechanisms they demonstrate are stable.
 import http.client
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -139,21 +140,41 @@ def _find_token(obj):
     return found[0] if found else None
 
 
-def _dotenv_token(env_path=".env", key=ENV_TOKEN_VAR):
-    """`key` out of a KEY=VALUE `.env` file, or None.
+def _dotenv_token(env_path=".env"):
+    """`AAIF_SLACK_WRITE_TOKEN` out of a KEY=VALUE `.env` file, or None.
 
     Deliberately not a dotenv loader: only this one key is read, nothing is
     exported into the environment, and the value never appears in any output.
+    It does understand the shapes real .env files take, though: an optional
+    leading `export `, quoted values (kept verbatim, `#` and all), and — for
+    unquoted values only — a trailing ` # comment`, which would otherwise ride
+    into the token and make it invalid.
     """
     if not os.path.exists(env_path):
         return None
     with open(env_path, encoding="utf-8") as fh:
         for line in fh:
-            name, sep, value = line.partition("=")
-            if sep and name.strip() == key:
-                value = value.strip().strip("'\"")
-                if value:
-                    return value
+            name, sep, value = line.strip().partition("=")
+            name = name.strip()
+            if name.startswith("export "):
+                name = name[len("export "):].strip()
+            if not sep or name != ENV_TOKEN_VAR:
+                continue
+            value = value.strip()
+            if value[:1] in ("'", '"'):
+                close = value.find(value[0], 1)
+                # A quoted value keeps its content verbatim — a '#' inside the
+                # quotes is part of the token, not a comment.
+                value = value[1:close] if close > 0 else value[1:]
+            else:
+                # Strip an inline comment: a '#' only starts one when preceded
+                # by whitespace, so a bare `xoxb-a#b` stays intact.
+                if value.startswith("#"):
+                    value = ""
+                else:
+                    value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
+            if value:
+                return value
     return None
 
 
@@ -291,7 +312,9 @@ class Slack:
             # and a "missing scopes" message that sends the operator hunting
             # through the app config for a problem that is really the token.
             raise SlackError("auth.test", body.get("error", "unknown"),
-                             "the token is not usable; run `slack auth login`")
+                             "the token is not usable; set %s (environment or "
+                             "./.env), or as a last resort run `slack auth "
+                             "login`" % ENV_TOKEN_VAR)
         raw = headers.get("x-oauth-scopes") or ""
         return {s.strip() for s in raw.split(",") if s.strip()}
 
@@ -307,7 +330,9 @@ class Slack:
             raise SystemExit(
                 "Token is missing the %s scope(s). The audit would report the "
                 "resulting failures as real findings, so it will not run.\n"
-                "Re-authenticate with `slack auth login`." % ", ".join(missing))
+                "Set %s to a token that carries them (environment or ./.env); "
+                "`slack auth login` is the last resort."
+                % (", ".join(missing), ENV_TOKEN_VAR))
         return have
 
 

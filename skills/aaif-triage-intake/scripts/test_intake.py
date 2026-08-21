@@ -108,6 +108,18 @@ class TestCollectStatusFilter(CollectBase):
         self.assertEqual(len(got), 4)                  # ghost row still skipped
         self.assertEqual(got[3]["status"], "Accepted")
 
+    def test_explicit_blank_status_selects_blank_rows(self):
+        # The regression: --status "" used to silently select zero rows, because
+        # blank cells normalize to "New" before the filter ever sees them. The
+        # filter must be normalized the same way.
+        got = self._collect(self._org(self.ROWS),
+                            status_filter=intake.normalize_filter([""]))["Organizers"]
+        self.assertEqual([r["Full name"] for r in got], ["Ada", "Grace"])
+
+    def test_normalize_filter_maps_blank_to_new_and_keeps_the_rest(self):
+        self.assertEqual(intake.normalize_filter(["", "  ", "Accepted"]),
+                         {"New", "Accepted"})
+
     def test_row_numbers_are_sheet_rows(self):
         got = self._collect(self._org(self.ROWS), status_filter={"Accepted"})["Organizers"]
         self.assertEqual([r["row"] for r in got], [5])  # row 2 = first data row

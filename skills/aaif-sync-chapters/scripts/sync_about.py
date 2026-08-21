@@ -34,9 +34,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # must mean the same thing here as on the chapters list, or an organizer lands on
 # one city's feed row and in another city's About doc.
 from sync_chapters import (INTAKE_ID, INTAKE_TAB, SYNC_STATUSES, cell,
-                           city_tokens, download, fold, fold_city, get_values,
-                           gws_json, header_index, read_intake, resolve_city,
-                           upload)
+                           city_tokens, download, fold, fold_city,
+                           fresh_if_unchanged, get_values, gws_json,
+                           header_index, read_intake, resolve_city, upload)
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"
 TEMPLATE_FOLDER = "TemplateCity"
@@ -457,9 +457,21 @@ def compute(args, workdir):
         if not folders:
             sys.exit("ABORT: no chapter folder named %r." % args.city)
 
+    # A chapter whose intake lost a row to `malformed` is HELD — not planned,
+    # not written. The section is rewritten WHOLESALE, so planning it anyway
+    # would delete that accepted organizer from the doc as a side effect of a
+    # data bug in their row, and --write would apply it and exit 0. Held docs
+    # are reported beside the malformed rows and count as drift, like
+    # changed/unread docs, until the intake text is fixed. (A malformed CITY
+    # may fold to no folder at all; then there is no doc to hold and the row
+    # is only ever an orphan — the malformed report still names it.)
+    held_keys = {fold_city(m["city"]) for m in malformed if m["city"]}
+    held = sorted(f["name"] for f in folders if fold_city(f["name"]) in held_keys)
+    folders = [f for f in folders if f["name"] not in held]
+
     with ThreadPoolExecutor(max_workers=6) as ex:
         docs = list(ex.map(lambda f: plan_one(f, by_city, roster, workdir), folders))
-    return docs, counts, orphans, near, malformed
+    return docs, counts, orphans, near, malformed, held
 
 
 def apply_writes(docs, workdir):
@@ -476,8 +488,9 @@ def apply_writes(docs, workdir):
     for d in sorted((d for d in docs if changed(d)), key=lambda d: d.folder["name"]):
         safe = re.sub(r"[^\w.-]", "_", d.folder["name"])
         try:
-            fresh = download(d.about["id"], os.path.join(workdir, "re_%s.docx" % safe))
-            if fresh != d.raw:
+            _fresh, drifted = fresh_if_unchanged(
+                d.about["id"], os.path.join(workdir, "re_%s.docx" % safe), d.raw)
+            if drifted:
                 failed.append((d.folder["name"],
                                "changed since the plan was built — NOT written; re-run"))
                 print("  %-22s SKIPPED — changed since plan; re-run" % d.folder["name"])
@@ -503,16 +516,27 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="aaif-about-") as workdir:
         # --write recomputes from a fresh read here — a stale proposal is never applied.
-        docs, counts, orphans, near, malformed = compute(args, workdir)
+        docs, counts, orphans, near, malformed, held = compute(args, workdir)
         print_report(docs, counts, orphans, near)
         if malformed:
             # read_intake excluded these rows, so an accepted organizer listed
-            # here silently drops OUT of their chapter's rewritten section —
-            # say so, or the removal reads as a decision instead of a data bug.
+            # here would drop OUT of their chapter's rewritten section — which
+            # is why compute() holds those chapters' docs back entirely.
             print("\nMalformed public-form text — these intake rows are EXCLUDED "
-                  "(their names sync nowhere, About docs included) until fixed:")
+                  "(their names sync nowhere) until fixed:")
             for m in malformed:
                 print("  intake row %d (city %r): %s" % (m["row"], m["city"], m["why"]))
+        if held:
+            # The malformed rows above cost these chapters a roster entry, and
+            # a wholesale rewrite without it would DELETE that organizer from
+            # a doc shared with the chapter — on the strength of a data bug,
+            # with a clean exit. Held like changed/unread: not planned, not
+            # written, counted as drift until the intake row is fixed.
+            print("\nHELD BACK %d About doc(s) — their chapter lost an intake "
+                  "row to the malformed text above, so a rewrite would remove "
+                  "that organizer from the doc: %s.\nNothing was planned or "
+                  "written for them; fix the intake row(s) and re-run."
+                  % (len(held), ", ".join(held)))
         drift = any(changed(d) for d in docs)
         # A doc that could not be READ (an About.docx was found but download or
         # parse raised) is UNKNOWN, not clean. Without this, a dead gws
@@ -533,10 +557,11 @@ def main():
                   "unknown, not clean: %s" % (len(unread), ", ".join(unread)))
         if not args.write:
             # Shared engine exit convention: report mode exits 0 when in sync,
-            # 2 when it proposes changes (consumed by nightly.py).
-            return 2 if (drift or unread) else 0
+            # 2 when it proposes changes (consumed by nightly.py). A held doc
+            # is pending work exactly like a proposed change.
+            return 2 if (drift or unread or held) else 0
         if not drift:
-            return 2 if unread else 0
+            return 2 if (unread or held) else 0
 
         print("\nWriting %d About doc(s)..." % sum(1 for d in docs if changed(d)))
         ok, failed = apply_writes(docs, workdir)
@@ -548,7 +573,7 @@ def main():
         # The writes have already landed. A bare traceback here would leave the
         # operator unable to tell what was modified, so say so explicitly.
         try:
-            after, _c, _o, _n, _m = compute(args, workdir)
+            after, _c, _o, _n, _m, _h = compute(args, workdir)
         except (Exception, SystemExit) as e:
             sys.exit("WRITES WERE APPLIED (%d doc(s)) but verification could not run: "
                      "%s\nRe-run without --write to confirm." % (len(ok), e))
@@ -572,7 +597,7 @@ def main():
         print("Verified: a fresh read of every written doc proposes zero changes.")
         if failed:
             sys.exit(1)
-        return 2 if unread else 0
+        return 2 if (unread or held) else 0
 
 
 if __name__ == "__main__":

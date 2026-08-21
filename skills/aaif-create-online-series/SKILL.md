@@ -91,12 +91,24 @@ placeholder the organizer fills in).
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py --series "Reading Group" --resume
    ```
-   It enters the existing folder, skips every child whose (rebranded) name is
-   already present (logged `exists, skipped`), and clones/rebrands only what's
-   missing — so resuming a fully-cloned series is a no-op. It is also the
-   backfill path when an existing series folder is missing part of the template
-   (the Luxembourg-chapter situation, series-side). Note it matches by **name
-   only**: a present-but-corrupt file is skipped, not repaired.
+   It enters the existing folder and clones/rebrands only what's missing — so
+   resuming a fully-cloned series is a no-op. It is also the backfill path when
+   an existing series folder is missing part of the template (the
+   Luxembourg-chapter situation, series-side). Two safeguards make the skip
+   decision trustworthy:
+   - Existing children are matched by their **rebranded or original** template
+     name. A survivor still under its original name (a folder part-cloned by the
+     pre-rename engine, or a hand copy) is renamed in place (logged `~ old ->
+     new`) and treated as present — never re-cloned as a duplicate.
+   - Every skipped Office file is **residual-checked**, because the likeliest
+     crash state is copied-but-never-rebranded. A clean file logs `exists,
+     skipped — residual-checked clean`; a dirty one is repaired in place
+     (downloaded, rebranded, re-uploaded) and logged as repaired. Only a
+     residual that survives the repair is flagged `!! residual (skipped)` and
+     fails the run, same as on a fresh clone.
+
+   A present file whose *content* is corrupt but token-clean is still skipped,
+   not repaired.
 
 4. **Verify & hand off.** Confirm the run printed no `!! residual` flags and report
    the new folder URL. Remind the user to (a) fill the `[bracketed]` About-the-

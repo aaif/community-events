@@ -524,6 +524,11 @@ def phases_to_run(phase, pins):
     joins only under `--pins`, so an unattended write (nightly.py never
     passes `--pins`) can never publish a file to the internet as a side
     effect of syncing grants.
+
+    `phase` and `pins` never arrive together: main() rejects `--phase --pins`
+    at parse time (the combination used to discard --pins silently, and a
+    silently dropped consent flag is the one thing a consent flag must not
+    be), so the `if phase` early return cannot swallow a pin request.
     """
     if phase:
         return [phase]
@@ -550,6 +555,16 @@ def main():
                     help="email only the organizers whose address has no Google "
                          "account, where Drive refuses to share without it")
     a = ap.parse_args()
+    # Refuse, never reinterpret: both flags speak for the pin phase, and each
+    # combination below used to be silently inert — the worst behaviour for a
+    # flag whose whole job is recording explicit human consent.
+    if a.phase and a.pins:
+        ap.error("--pins cannot be combined with --phase: --phase names the ONE "
+                 "phase to run, so --pins would be discarded. Use --phase pin "
+                 "to run pins alone, or drop --phase to run pin + grant + lock.")
+    if a.pins and not a.write:
+        ap.error("--pins does nothing without --write — the report already "
+                 "shows pending pins. Add --write to apply them.")
 
     p = plan(a.role)
     report(p, a.role)
@@ -610,26 +625,25 @@ def main():
     # Verify whatever ran, including a single --phase. `--write --phase lock` is
     # the most destructive invocation available and used to be the one path with
     # no re-read at all, reporting a PLANNED count as its result.
-    ran = selected  # phases_to_run() already returns the ordered subset
-    if ran:
-        print("\nVerifying...")
-        bad = verify(p, ran)
-        if bad:
-            print("VERIFY FAILED:")
-            for b in bad:
-                print("  " + b)
-            return 1
-        # Claim only what this run actually re-read — the old fixed line said
-        # "banners are directly public" even on runs that never touched a pin,
-        # or when zero pins exist to check.
-        bits = []
-        if "pin" in ran and (p["pins"] or p["already_pinned_ids"]):
-            bits.append("every banner holds its own public share")
-        if "grant" in ran and (p["grants"] or p["already_granted_ids"]):
-            bits.append("every accepted organizer holds their grant")
-        if "lock" in ran:
-            bits.append("Chapters/ is not link-shared")
-        print("Verified: %s." % "; ".join(bits))
+    # `selected` is never empty (phases_to_run returns at least ["grant", "lock"]).
+    print("\nVerifying...")
+    bad = verify(p, selected)
+    if bad:
+        print("VERIFY FAILED:")
+        for b in bad:
+            print("  " + b)
+        return 1
+    # Claim only what this run actually re-read — the old fixed line said
+    # "banners are directly public" even on runs that never touched a pin,
+    # or when zero pins exist to check.
+    bits = []
+    if "pin" in selected and (p["pins"] or p["already_pinned_ids"]):
+        bits.append("every banner holds its own public share")
+    if "grant" in selected and (p["grants"] or p["already_granted_ids"]):
+        bits.append("every accepted organizer holds their grant")
+    if "lock" in selected:
+        bits.append("Chapters/ is not link-shared")
+    print("Verified: %s." % "; ".join(bits))
     return 0
 
 

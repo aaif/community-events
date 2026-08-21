@@ -178,6 +178,32 @@ class TestDownload(unittest.TestCase):
                     se._download("https://example.invalid/x.png", out)
             self.assertFalse(os.path.exists(out))
 
+    def test_an_early_network_failure_leaves_a_preexisting_file_alone(self):
+        """A re-render whose fetch dies before any byte lands must not delete
+        the good PNG a previous call produced."""
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with open(out, "wb") as f:
+                f.write(b"g" * 2000)
+            with mock.patch("urllib.request.urlopen",
+                            side_effect=OSError("connection refused")):
+                with self.assertRaises(OSError):
+                    se._download("https://example.invalid/x.png", out)
+            with open(out, "rb") as f:
+                self.assertEqual(f.read(), b"g" * 2000)
+
+    def test_a_too_small_rerender_leaves_the_previous_good_file_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with open(out, "wb") as f:
+                f.write(b"g" * 2000)
+            with mock.patch("urllib.request.urlopen", return_value=self._resp(b"tiny")):
+                with self.assertRaises(RuntimeError):
+                    se._download("https://example.invalid/x.png", out)
+            with open(out, "rb") as f:
+                self.assertEqual(f.read(), b"g" * 2000)
+            self.assertEqual(os.listdir(d), ["x.png"])   # no .partial left
+
 
 if __name__ == "__main__":
     unittest.main()

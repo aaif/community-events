@@ -11,6 +11,7 @@ from unittest import mock
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sync_chapters
 import sync_crm
 from sync_crm import (Attendees, CRM_HEADERS, DV_STATUS_NEW, DV_STATUS_OLD,
                       SELF_SERVE_MIN, X,
@@ -296,6 +297,31 @@ try:
           sorted(r["name"] for r in rr
                  if "declined, parked, or not a recognised" in r["why"]),
           ["Dan", "Zed"])
+finally:
+    sync_crm.get_values = _saved_gv
+
+# The injection-safety property, enforced on the CRM path itself: read_role_tab
+# does NOT go through sync_chapters.read_intake, so it runs the same
+# bad_public_text check on the public-facing fields (name, city) — without it,
+# a hostile form submission walked straight into a private workbook (and, via
+# sync_access's roster read, toward a Drive grant).
+_BAD_GRID = [
+    ["Status", "Full name", "Email", "Chapter", "City (Existing)", "City (New)"],
+    ["Accepted", "Ada", "ada@x.io", "Boston", "", ""],
+    ["Accepted", "<script>x</script>", "evil@x.io", "Boston", "", ""],   # markup name
+    ["Accepted", "Cy", "cy@x.io", "Bo\x07ston", "", ""],                 # control-char city
+    ["Accepted", "Dee " * 40, "dee@x.io", "Boston", "", ""],             # absurd length
+]
+sync_crm.get_values = lambda *_a, **_k: _BAD_GRID
+try:
+    pp, rr, _fb = sync_crm.read_role_tab("Organizers", {})
+    check("malformed public text never becomes a CRM person",
+          [p["name"] for p in pp], ["Ada"])
+    check("each malformed row lands in the skip report with its reason",
+          sorted(r["row"] for r in rr
+                 if "must never reach the public feed" in r["why"]
+                 or "characters (max" in r["why"]),
+          [3, 4, 5])
 finally:
     sync_crm.get_values = _saved_gv
 
@@ -676,7 +702,9 @@ with tempfile.TemporaryDirectory() as _wd:
 
     _backup = os.path.join(_wd, "before")
     os.makedirs(_backup)
-    with mock.patch.object(sync_crm, "download", _fake_download), \
+    # The freshness compare goes through sync_chapters.fresh_if_unchanged, so
+    # the download to intercept lives in THAT module's namespace.
+    with mock.patch.object(sync_chapters, "download", _fake_download), \
          mock.patch.object(sync_crm, "upload",
                            lambda fid, path, raw_b, ct: _uploads.append((fid, ct))):
         _written, _changed, _failed = sync_crm.write_workbooks(

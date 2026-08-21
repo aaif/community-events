@@ -54,19 +54,22 @@ def _gws_json(*args, params=None, body=None):
 
 
 def _download(url, out_path, timeout=30):
-    """Fetch `url` to `out_path` with a bounded timeout. Any failure — network,
-    timeout, or the too-small sanity check — deletes the partial file, so a
-    truncated PNG can never be mistaken for a finished render."""
+    """Fetch `url` to `out_path` with a bounded timeout. The bytes land in a
+    temp file that is renamed over `out_path` only after the too-small sanity
+    check passes, so a failure — network, timeout, or a truncated render — can
+    neither be mistaken for a finished PNG nor destroy a pre-existing good one:
+    only what THIS call wrote is ever cleaned up."""
+    tmp = out_path + ".partial"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r, \
-                open(out_path, "wb") as fh:
+                open(tmp, "wb") as fh:
             fh.write(r.read())
-        if os.path.getsize(out_path) < 1000:
+        if os.path.getsize(tmp) < 1000:
             raise RuntimeError("rendered thumbnail suspiciously small (%s)" % out_path)
-    except BaseException:
-        if os.path.exists(out_path):
-            os.remove(out_path)
-        raise
+        os.replace(tmp, out_path)
+    finally:
+        if os.path.exists(tmp):   # gone on success (os.replace consumed it)
+            os.remove(tmp)
 
 
 def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000_PX"):

@@ -60,9 +60,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # city-folding rule, one near-miss stoplist. Two copies would drift, and a city
 # that folds one way here and another way there syncs a person to a chapter whose
 # feed row says something else.
-from sync_chapters import (INTAKE_ID, gws_json, get_values, download, upload,
-                           fold, fold_city, city_tokens, cell, header_index,
-                           resolve_city)
+from sync_chapters import (INTAKE_ID, bad_public_text, gws_json, get_values,
+                           download, upload, fold, fold_city, fresh_if_unchanged,
+                           city_tokens, cell, header_index, resolve_city)
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "TemplateCity"                        # cloned per city; never gets people
@@ -679,6 +679,17 @@ def read_role_tab(tab, interests, include_pipeline=False):
             rejected.append({"row": rownum, "tab": tab, "name": name,
                              "why": "no chapter/city on the intake row"})
             continue
+        # The same public-text gate sync_chapters.read_intake runs, enforced
+        # here too because this reader does NOT go through it: the role tabs
+        # are read directly, and without this check a name or city full of
+        # markup or control characters walked straight into a chapter CRM —
+        # and, via sync_access's roster read, toward a Drive grant target.
+        # This is what makes the documented property ("a flagged value can
+        # reach no cell, no About doc and no CRM") true on the CRM path.
+        bad = bad_public_text("name", name) or bad_public_text("city", city)
+        if bad:
+            rejected.append({"row": rownum, "tab": tab, "name": name, "why": bad})
+            continue
         detail = first_of(row, headers, f["detail"])
         # A failed join is invisible once written: the generic branch text is
         # indistinguishable from a real answer, and the cell is then non-empty
@@ -1107,13 +1118,16 @@ def write_workbooks(touched, workdir, backup_dir):
         try:
             # Keep the pre-edit bytes before touching anything: an upload that
             # lands a workbook Excel won't open is otherwise only recoverable by
-            # hand, through Drive's revision history.
-            current = download(book.crm["id"], os.path.join(workdir, "reread.xlsx"))
-            with open(os.path.join(backup_dir, os.path.basename(book.path)), "wb") as fh:
-                fh.write(current)
+            # hand, through Drive's revision history. The compare itself is the
+            # shared fresh_if_unchanged — one definition of "unchanged" for
+            # this gate and sync_about's.
             with open(book.path, "rb") as fh:
                 planned = fh.read()
-            if current != planned:
+            current, drifted = fresh_if_unchanged(
+                book.crm["id"], os.path.join(workdir, "reread.xlsx"), planned)
+            with open(os.path.join(backup_dir, os.path.basename(book.path)), "wb") as fh:
+                fh.write(current)
+            if drifted:
                 changed.append(name)
                 print("  SKIPPED %s — workbook changed since the plan was built; "
                       "NOT written, re-run to sync it" % name, file=sys.stderr)

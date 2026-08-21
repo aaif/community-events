@@ -40,7 +40,12 @@ _MISS = object()   # distinguishes "no payload key" from a stored None
 
 
 def write(path, payload, team_id=None):
-    """Write `payload` atomically, stamped with time, format and workspace."""
+    """Write `payload` atomically, stamped with time, format and workspace.
+
+    A caller that passes `team_id` to read() must also pass it here: read()
+    discards an unstamped cache, so skipping the stamp on write means every
+    run discards and re-fetches, forever.
+    """
     envelope = {"format": FORMAT,
                 "written_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
                 "team_id": team_id,

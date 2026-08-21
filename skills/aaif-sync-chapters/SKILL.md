@@ -210,7 +210,13 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   chars, gets its row skipped with a loud per-row line (row, city, reason) while
   every other row still syncs — one hostile or fat-fingered submission must not
   freeze the whole engine, but a flagged value still reaches no cell, About doc
-  or CRM until the intake row is fixed.
+  or CRM until the intake row is fixed. The CRM engine enforces the same check
+  itself (`sync_crm.read_role_tab` reads the role tabs directly, not through
+  this engine's intake read). And because `sync_about` rewrites its section
+  **wholesale**, a chapter whose roster lost a row to this filter has its whole
+  About doc **held back** — not planned, not written, exit non-zero — rather
+  than rewritten minus the excluded organizer, which would silently delete an
+  accepted person from a shared doc over a data bug in their row.
 - **The run aborts rather than guessing** when: a header is duplicated (reads and
   writes would resolve to different columns); any written column is missing; a row
   below the last City row is non-empty (new rows are appended there and would wipe
@@ -303,6 +309,12 @@ are itemised in two classes, and both must be read before approving:
   at. The heading is matched on its **text**, not its style, because two of these
   docs have been round-tripped through desktop Word — a restyled heading must not
   make a chapter silently unsyncable.
+- **A chapter whose intake lost a row to the malformed-text filter is held back
+  wholesale** — the doc is neither planned nor written (report and `--write`
+  alike), the hold is named in the output beside the malformed rows, and the run
+  exits non-zero until the intake row is fixed. The rewrite is wholesale, so
+  proceeding would have deleted that accepted organizer from the doc as a side
+  effect of a data bug — the one removal class the report could never itemise.
 
 ## Editing the docs
 
@@ -489,8 +501,13 @@ used instead of inventing one.
   not name fail closed; the row is a pipeline **organizer** for a chapter below
   the self-serve threshold (held back under central approval — see "Who syncs"
   above); the email is missing or unparsable (there'd be no dedupe key, so
-  every run would re-add them); or the row has no chapter or city at all.
-  Pipeline hosts and speakers are never skipped for their status alone.
+  every run would re-add them); the row's name or city fails the same
+  `bad_public_text` check the feed engine runs (markup, control characters,
+  absurd length) — enforced here directly, since the role tabs are read
+  without passing through `sync_chapters.read_intake`, so a flagged value
+  really does reach no cell, no About doc and no CRM; or the row has no
+  chapter or city at all. Pipeline hosts and speakers are never skipped for
+  their status alone.
 - **The run aborts** when `Form Responses` or a role tab comes back empty, or a
   role tab has no `Status`/`Email` header. A workbook whose `Attendees` tab is
   missing a column is **skipped with a reason**, never written by column letter.

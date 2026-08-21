@@ -294,6 +294,26 @@ check("--phase runs exactly the named phase",
       [sync_access.phases_to_run(p, False) for p in ("grant", "lock")],
       [["grant"], ["lock"]])
 
+
+# --- the flag combinations that used to be silently inert ----------------------
+# `--phase X --pins` discarded --pins (phases_to_run returns [phase]), and
+# `--pins` without `--write` did nothing at all — the worst behaviours for a
+# flag whose whole job is recording explicit consent. Both must now refuse at
+# parse time, before plan() touches the network (asserted by the plan mock).
+def _main_with(argv):
+    with mock.patch.object(sync_access, "plan",
+                           side_effect=AssertionError("plan() must not run")), \
+         mock.patch.object(sys, "argv", ["sync_access.py"] + argv):
+        return aborts(sync_access.main)
+
+
+check("--phase with --pins is refused loudly, never discarded",
+      _main_with(["--write", "--phase", "grant", "--pins"]), True)
+check("--phase pin with --pins is refused too — one spelling per consent",
+      _main_with(["--write", "--phase", "pin", "--pins"]), True)
+check("--pins without --write is refused, not silently inert",
+      _main_with(["--pins"]), True)
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

@@ -505,11 +505,12 @@ def main():
     a = ap.parse_args()
 
     # This estate's CLI credential expired for good in 2026-08 and cannot be
-    # re-scoped, so reads prefer the same env token the writes use — it
-    # carries the read scopes (the audits run on it). The load_token fallback
-    # exists for a DIFFERENT machine with its own live CLI credential; here it
-    # only produces a later auth failure, so name the actual fix up front
-    # instead of letting load_token's "run `slack auth login`" advice mislead.
+    # re-scoped, so reads run on the same env token the writes use — it
+    # carries the read scopes (the audits run on it). load_token now resolves
+    # that token itself (environment, then ./.env, then the CLI credential)
+    # and its error names it first, so this manual env read is belt-and-braces
+    # rather than a correction — kept so the note below can warn about the
+    # expired CLI fallback before any network call is made.
     token = os.environ.get(WRITE_TOKEN_ENV, "").strip()
     if not token:
         print("note: %s is not set — falling back to the Slack CLI credential, "

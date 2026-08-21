@@ -408,7 +408,7 @@ def test_folding_matches_accent_and_punctuation_variants():
 
 #: A floor, not a target. Without it, renaming the `test_` prefix or losing the
 #: functions in a bad merge prints "all checks passed" having run nothing.
-MIN_TESTS = 36
+MIN_TESTS = 42
 
 
 def test_regional_alias_that_no_longer_resolves_aborts():
@@ -480,6 +480,75 @@ def test_unidentified_members_are_excluded_from_the_accusing_counts():
           "1 distinct people hold 1 of these seats" in html, True)
     check("the unidentified are surfaced in Data quality",
           "could not be identified" in html, True)
+
+
+# ------------------------------------------------- membership short-pull floor ---
+
+def _floor(membership, cached_chans, chans_cached, fresh_chans=None):
+    """Run check_membership_floor over fixture channel lists; returns the
+    number of refetches made (or the SystemExit, via check_raises at callers)."""
+    calls = []
+
+    def refetch():
+        calls.append(1)
+        return fresh_chans if fresh_chans is not None else cached_chans
+
+    ao.check_membership_floor(membership, cached_chans, chans_cached, refetch,
+                              note=lambda *_: None)
+    return len(calls)
+
+
+def test_short_against_cached_size_passes_when_fresh_matches():
+    """The person-left-since-the-cache case: one refetch, then a clean pass."""
+    n = _floor({"a": ["U1"]}, [chan("a", members=2)], True,
+               fresh_chans=[chan("a", members=1)])
+    check("stale cache resolves with exactly one refetch", n, 1)
+
+
+def test_short_against_a_fresh_list_aborts_without_refetching():
+    check_raises("fresh+short aborts",
+                 lambda: _floor({"a": ["U1"]}, [chan("a", members=2)], False),
+                 "membership came back short")
+
+
+def test_still_short_after_the_refetch_aborts():
+    check_raises("still-short-after-refetch aborts",
+                 lambda: _floor({"a": ["U1"]}, [chan("a", members=2)], True,
+                                fresh_chans=[chan("a", members=2)]),
+                 "#a (1 of 2)")
+
+
+def test_a_channel_renamed_between_snapshots_is_not_silently_passed():
+    """The old code's sizes.get(n)-is-None skip let a renamed channel escape
+    the floor entirely; it must abort naming the vanished channel instead."""
+    check_raises("renamed channel aborts, not passes",
+                 lambda: _floor({"a": ["U1"]}, [chan("a", members=2)], True,
+                                fresh_chans=[chan("a-renamed", members=2)]),
+                 "#a")
+
+
+def test_a_join_after_the_pull_is_not_a_short_pull():
+    """Channel `b` triggers the refetch; `a` passed the cached floor and only
+    looks short against the FRESH size because someone joined in between —
+    re-checking it would turn the join race into a spurious abort."""
+    n = _floor({"a": ["U1"], "b": ["U1"]},
+               [chan("a", members=1), chan("b", members=2)], True,
+               fresh_chans=[chan("a", members=2), chan("b", members=1)])
+    check("a join race on an already-verified channel passes", n, 1)
+
+
+def test_settled_and_inflight_states_get_no_create_advice():
+    """`held-private:` / `planned:` / `known-none` chapters already have their
+    answer surfaced in Data quality; a create recommendation against the
+    squatting (or deliberately absent) room is guaranteed-bad advice."""
+    def c(city, how, n=2):
+        return dict(_row(city), public_how=how,
+                    accepted=[{"slack_account": True}] * n, unaccounted=[])
+    audit = [c("Boston", ""), c("Bern", "planned:bern"),
+             c("Graz", "held-private:graz"), c("Wellington", "known-none"),
+             c("Pune", "", n=1)]
+    check("only the genuinely uncovered 2+ chapter gets create advice",
+          [x["city"] for x in ao.rooms_to_create(audit)], ["Boston"])
 
 
 def main():

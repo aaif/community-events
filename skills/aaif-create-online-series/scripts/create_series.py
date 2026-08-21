@@ -256,6 +256,11 @@ def copy_file(file_id, name, parent):
                     params={"fileId": file_id, "supportsAllDrives": True},
                     body={"name": name, "parents": [parent]})["id"]
 
+def rename_file(file_id, name):
+    gws_json("drive", "files", "update",
+             params={"fileId": file_id, "supportsAllDrives": True},
+             body={"name": name})
+
 def luma_status(slug):
     """Return 'live' (HTTP 200), 'absent' (HTTP 404), or 'unknown' (could not
     verify: timeout, DNS/SSL, 403/429/5xx). Never report a hard 404 for a
@@ -276,9 +281,13 @@ def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None)
     """Recursively copy `folder_id` into `parent` as `name`, rebranding files.
 
     Under --resume, `existing_id` is an already-created target folder: it is
-    entered instead of recreated, its children are listed by (rebranded) name,
-    name-matching children are skipped, and only missing items are cloned — so
-    resuming into a fully-cloned folder is a no-op."""
+    entered instead of recreated, its children are listed, name-matching children
+    are skipped, and only missing items are cloned — so resuming into a
+    fully-cloned folder is a no-op. Matching is by rebranded OR original template
+    name (a survivor of the pre-rename engine is renamed in place, never
+    re-cloned as a duplicate), and every skipped Office file is residual-checked:
+    one that was copied but never rebranded — the likeliest crash state — is
+    repaired in place rather than trusted."""
     if existing_id:
         new_id = existing_id
         print("%s= %s/ (exists, resumed)" % (indent, name))
@@ -292,11 +301,50 @@ def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None)
         # Francisco CRM.xlsx" -> "Reading Group CRM.xlsx" — same transform as content.
         new_cname = transform_text(cname, ctx["name"], ctx["upper"], ctx["slug"])
         hit = have.get(new_cname)
+        if hit is None and new_cname != cname:
+            # A child cloned by the pre-rename engine (or a hand copy) still holds
+            # the ORIGINAL template name — treat it as a hit and rename it, or the
+            # backfill re-clones a duplicate (two CRMs; sync_crm picks the wrong one).
+            hit = have.get(cname)
+            if hit is not None:
+                rename_file(hit["id"], new_cname)
+                print("%s  ~ %s -> %s (renamed to rebranded name)"
+                      % (indent, cname, new_cname))
         if mime == FOLDER:
             clone_and_rebrand(cid, new_id, new_cname, ctx, indent + "  ",
                               existing_id=hit["id"] if hit and hit["mimeType"] == FOLDER else None)
         elif hit:
-            print("%s  - %s (exists, skipped)" % (indent, new_cname))
+            ext = os.path.splitext(cname)[1].lower()
+            if ext in MIME_BY_EXT:
+                # Never trust a skip on faith: the likeliest partial-run state is
+                # copied-under-the-new-name but never rebranded (crash between
+                # copy_file and gws_upload). Residual-check the EXISTING file, and
+                # repair a dirty one in place (download -> rebrand -> upload).
+                tmp = os.path.join(ctx["tmp"], "f" + hit["id"] + ext)
+                try:
+                    gws_download(hit["id"], tmp)
+                    left = residual_tokens(tmp)
+                    if left:
+                        n = rebrand_file(tmp, ctx["name"], ctx["upper"], ctx["slug"])
+                        if n:
+                            gws_upload(hit["id"], tmp, MIME_BY_EXT[ext])
+                        left = residual_tokens(tmp)
+                        if left:   # repair didn't clear it — fail the run like a clone would
+                            ctx["residuals"].append((new_cname, left))
+                            print("%s  - %s (exists, was not rebranded; repaired %d "
+                                  "parts)  !! residual (skipped) %s"
+                                  % (indent, new_cname, n, left))
+                        else:
+                            print("%s  - %s (exists, was not rebranded — repaired, "
+                                  "%d parts)" % (indent, new_cname, n))
+                    else:
+                        print("%s  - %s (exists, skipped — residual-checked clean)"
+                              % (indent, new_cname))
+                finally:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+            else:
+                print("%s  - %s (exists, skipped)" % (indent, new_cname))
         else:
             copy_id = copy_file(cid, new_cname, new_id)
             ext = os.path.splitext(cname)[1].lower()

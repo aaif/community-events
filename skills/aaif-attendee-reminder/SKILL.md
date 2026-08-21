@@ -15,8 +15,8 @@ by asking them to update their RSVP if plans change** so the seat can be release
 **Standard footer (always include).** After the closing update-your-RSVP sentence, append one quiet line
 with the two standing AAIF attendee links (defaults on every reminder), e.g.
 *"Reminder: our Code of Conduct
-(events.linuxfoundation.org/about/code-of-conduct) and Privacy Policy
-(linuxfoundation.org/legal/privacy-policy) apply."* This sits outside the ~70-word
+(https://events.linuxfoundation.org/about/code-of-conduct) and Privacy Policy
+(https://www.linuxfoundation.org/legal/privacy-policy) apply."* This sits outside the ~70-word
 body count.
 
 ## Input (from the event tracker)
@@ -32,5 +32,5 @@ Agentic AI Night:
 > demos. If your plans change, please update your RSVP so we can pass your seat to
 > the waitlist. See you there.
 >
-> Reminder: our Code of Conduct (events.linuxfoundation.org/about/code-of-conduct)
-> and Privacy Policy (linuxfoundation.org/legal/privacy-policy) apply.
+> Reminder: our Code of Conduct (https://events.linuxfoundation.org/about/code-of-conduct)
+> and Privacy Policy (https://www.linuxfoundation.org/legal/privacy-policy) apply.

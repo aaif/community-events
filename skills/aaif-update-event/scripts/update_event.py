@@ -12,6 +12,9 @@ from aaif_events import office, tracker  # noqa: E402
 STALE_ON_DATE = ["square banner", "Luma cover", "announcement post",
                  "carousel", "day-of slides", "attendee reminder"]
 STALE_ON_SPEAKER = ["speaker bio", "announcement post", "carousel", "day-of slides"]
+# "Where" changes: chapter trackers say VENUE / LOCATION; series trackers say
+# PLATFORM / STREAM / JOIN LINK (see tracker.py's label note). Same stale set —
+# the reminder/slides carry the join link exactly like they carry the venue.
 STALE_ON_VENUE = ["announcement post", "day-of slides", "attendee reminder"]
 
 
@@ -34,7 +37,8 @@ def apply_changes(root, event, set_pairs, date_str):
         tracker.set_field(root, event, label.strip(), value.strip())
         if "SPEAKER" in lab:
             stale.update(STALE_ON_SPEAKER)
-        if "VENUE" in lab or "LOCATION" in lab:
+        if ("VENUE" in lab or "LOCATION" in lab
+                or "PLATFORM" in lab or "JOIN LINK" in lab):
             stale.update(STALE_ON_VENUE)
     if date_str:
         # restamp DUE cells using the original date still in the doc, THEN overwrite
