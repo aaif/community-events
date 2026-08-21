@@ -52,7 +52,8 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 
 from sync_chapters import NO_RESOURCE, fold_city  # noqa: E402
 from sync_resources import read_grid  # noqa: E402
-from provision_channels import call_write, write_token, WRITE_METHODS  # noqa: E402
+from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa: E402
+                                WRITE_TOKEN_ENV)
 
 import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
@@ -75,7 +76,10 @@ def collect(city_filter=None):
     rows = [{city, channel, channel_id, missing: [(name, id)], present: [...],
              unaccounted: [ids]}].
     """
-    api = slackmod.Slack()
+    # Same read-token fallback as provision_channels.main(): the CLI credential
+    # expired for good in 2026-08, and the env write token carries the read
+    # scopes the audits already run on.
+    api = slackmod.Slack(token=os.environ.get(WRITE_TOKEN_ENV, "").strip() or None)
     api.require_scopes("channels:read", "groups:read",
                        "users:read", "users:read.email")
 

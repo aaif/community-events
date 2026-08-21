@@ -132,10 +132,9 @@ CHANNEL_RENAMES = {
     "london-organizers": "london-organizers-deprecated",
     "london-meetup-organizers": "london-organizers",
     "bay-area-sf-organizers": "bay-area-organizers",
-    # The organizer room was freshly created 2026-08-16 with no history to
-    # lose, so it takes the plain city name the user asked for. (Blocked until
-    # the invisible #austin-organizers squatter is deprecated.)
-    "austin-area-organizers": "austin-organizers",
+    # 2026-08-21: the once-queued #austin-area-organizers -> #austin-organizers
+    # rename was DROPPED along with the #austin plan below — the chapter keeps
+    # the austin-area name, so its organizer room already matches.
     # 2026-08-17 naming-convention sweep (user-decided): city channels take the
     # plain city name, organizer rooms take <city>-organizers. #bay-area is a
     # deliberate keep.
@@ -157,14 +156,14 @@ CHANNEL_RENAMES = {
     # into it instead; see CHANNEL_MERGES.)
     "meetup-seattle-organizers": "seattle-organizers",
     "washington-dc-the-capital": "washington-dc",
-    # Austin's REAL room (76 members, 2023) was hand-renamed to -deprecated in
-    # the admin UI on 2026-08-17 while #austin was still squatted, and the
-    # sheet's stale `austin-area` cell then made a --write run create a junk
-    # room under the freed name (archived 2026-08-18). This entry is the
-    # recovery: the moment the #austin squatter is cleared, the real room takes
-    # the city name — and its presence stops plan() from CREATING #austin
-    # first, which would re-run the same accident under the new name.
-    "austin-area-deprecated": "austin",
+    # Austin RESOLVED 2026-08-21 (user-decided): #austin stays squatted by an
+    # invisible private room with no path to free it on the Pro plan, so the
+    # chapter keeps its historical name instead — the real room (76 members,
+    # 2023; parked as #austin-area-deprecated on 2026-08-17) was renamed BACK
+    # to #austin-area, the sheet's Slack Channel cell now says `austin-area`,
+    # and the 2026-08-18 junk room was renamed to #austin-area-junk and
+    # re-archived to free the name. A deliberate keep like #bay-area — do NOT
+    # re-plan #austin even if the squatter is someday cleared.
     "portland-oregon-organizers": "portland-organizers",
     # 2026-08-19 (user-decided, revised same day): country-named chapters
     # become capital-city chapters — but #switzerland (80) and #scotland (71)
@@ -460,7 +459,11 @@ def main():
                     help="required alongside --write; see the module docstring")
     a = ap.parse_args()
 
-    token = slackmod.load_token()
+    # The CLI credential expired for good in 2026-08 and cannot be re-scoped,
+    # so reads fall back to the same env token the writes use — it carries the
+    # read scopes (the audits run on it), and a run that has no env token still
+    # works read-only off live CLI creds where those exist.
+    token = os.environ.get(WRITE_TOKEN_ENV, "").strip() or slackmod.load_token()
     api = slackmod.Slack(token=token)
     who = api.ok("auth.test")
     print("workspace: %s (%s)\n" % (who.get("team"), who.get("team_id")))

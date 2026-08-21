@@ -277,8 +277,10 @@ check("a country with its own named room is not re-planned",
       [(p["was"], p["value"]) for p in sr.propose_country_overrides(
           [ch("Barcelona", country="Spain", ctry="spain")])],
       [("spain", "españa")])
+# Japan, not Norway: the Nordics became COUNTRY_CHANNELS exceptions
+# (one #nordics room), so a Norway fixture now correctly gets repointed.
 check("a country whose channel matches the convention is left alone",
-      sr.propose_country_overrides([ch("Oslo", country="Norway", ctry="norway")]),
+      sr.propose_country_overrides([ch("Tokyo", country="Japan", ctry="japan")]),
       [])
 
 # Both the misfiling fix and the country override reach Madrid's country cell.

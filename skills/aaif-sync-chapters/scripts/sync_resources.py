@@ -92,7 +92,10 @@ HANDLES_COLUMN = "Organizer Handles"
 #: fell to typability (#munchen -> #munich, #medellín -> #medellin); `#españa`,
 #: a country channel, is now the only accented survivor. Only the entry above
 #: survived on its merits.
-KEPT_NON_CONVENTIONAL = ("bay-area",)
+#: `#austin-area` joined 2026-08-21: `#austin` is squatted by an invisible
+#: private room the Pro plan gives no way to reclaim, so Austin's real room
+#: (76 members) keeps its historical name instead of waiting forever.
+KEPT_NON_CONVENTIONAL = ("bay-area", "austin-area")
 
 #: Country -> the channel that serves it, where that channel is not named after
 #: the country in ASCII English. Without this the engine plans a brand-new
@@ -102,7 +105,18 @@ KEPT_NON_CONVENTIONAL = ("bay-area",)
 #: name for itself wins over the convention. Add an entry whenever the report's
 #: "countries with chapters but no channel named after them" section names a
 #: country that demonstrably already has a room.
-COUNTRY_CHANNELS = {"Spain": "españa"}
+COUNTRY_CHANNELS = {
+    "Spain": "españa",
+    # One Nordic room, not four country rooms (user-decided 2026-08-19):
+    # #nordics (129 members, the 2021 room, renamed from #nordics-public)
+    # serves all five Nordic chapters. The per-country rooms were folded —
+    # #sweden/#denmark/#finland were days-old and empty, #norway had been
+    # silent since 2024 and got a pointer post before archiving.
+    "Denmark": "nordics",
+    "Finland": "nordics",
+    "Norway": "nordics",
+    "Sweden": "nordics",
+}
 
 #: Values that channel_map.json's unconfirmed `public` table filed in the wrong
 #: COLUMN — not the wrong name, the wrong kind of thing.
