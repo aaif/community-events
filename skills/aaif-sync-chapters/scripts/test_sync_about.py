@@ -5,8 +5,10 @@ The document fixtures below are the real markup TemplateCity ships — the same
 <w:pPr>, the same numId 1, the same after="0"/after="140" spacing — so a change
 that would corrupt a live About.docx fails here first.
 """
-import sys, os, zipfile, io
+import sys, os, tempfile, zipfile, io
+from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sync_about
 from sync_about import (PLACEHOLDER, TEMPLATE_NAMES, clone_bullet,
                         find_section, is_list, para_text, paragraphs, plan_doc,
                         read_document, removals, render, set_spacing,
@@ -220,6 +222,32 @@ with zipfile.ZipFile(io.BytesIO(repacked)) as _z:
     check("write_document keeps the member order",
           _z.namelist(), ["[Content_Types].xml", "word/document.xml",
                           "word/fonts/Manrope-bold.ttf"])
+
+# --- apply_writes: a doc edited during the plan window is skipped, not reverted --
+# compute() downloads ~80 docs and the approval pause adds more, so a human
+# edit in that window is normal. The pre-upload re-download must be compared
+# against the compute()-time bytes; uploading anyway silently reverts the edit.
+def _doc(name, about_id):
+    return sync_about.Doc({"name": name}, {"id": about_id}, RAW, TEMPLATE_DOC,
+                          list(TEMPLATE_NAMES), ["Asha Rao"],
+                          plan_doc(TEMPLATE_DOC, ["Asha Rao"], set())[0],
+                          None, [], [])
+
+_remote = {"a-same": RAW,              # untouched since compute()
+           "a-edit": RAW + b"\x00tail"}  # changed in the window
+_ups = []
+with tempfile.TemporaryDirectory() as _wd, \
+     mock.patch.object(sync_about, "download", lambda fid, path: _remote[fid]), \
+     mock.patch.object(sync_about, "upload",
+                       lambda fid, path, raw, ct: _ups.append((fid, ct))):
+    _ok, _failed = sync_about.apply_writes([_doc("Boston", "a-same"),
+                                            _doc("Pune", "a-edit")], _wd)
+check("an unchanged doc is written", _ok, ["Boston"])
+check("only the unchanged doc was uploaded", [u[0] for u in _ups], ["a-same"])
+check("uploads carry the docx content type", [u[1] for u in _ups], [sync_about.DOCX])
+check("a changed doc is skipped and counted with the failures",
+      [(n, "changed since the plan" in why) for n, why in _failed],
+      [("Pune", True)])
 
 print("\n%s (%d failure(s))" % ("ALL PASS" if not fails else "FAILURES", fails))
 sys.exit(1 if fails else 0)

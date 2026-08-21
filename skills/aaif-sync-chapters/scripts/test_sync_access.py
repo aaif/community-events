@@ -281,6 +281,19 @@ check("a direct writer passes",
       run_verify([{"type": "user", "emailAddress": "a@x.com",
                    "role": "writer", "inherited": False}]), [])
 
+# --- phases_to_run: pinning is a standing human decision, never a default -------
+# nightly.py passes only --write, so the unattended path must never publish a
+# banner to the internet as a side effect of syncing grants.
+check("a plain --write runs grant + lock only",
+      sync_access.phases_to_run(None, False), ["grant", "lock"])
+check("--pins adds the pin phase, first",
+      sync_access.phases_to_run(None, True), ["pin", "grant", "lock"])
+check("--phase pin is explicit consent on its own",
+      sync_access.phases_to_run("pin", False), ["pin"])
+check("--phase runs exactly the named phase",
+      [sync_access.phases_to_run(p, False) for p in ("grant", "lock")],
+      [["grant"], ["lock"]])
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

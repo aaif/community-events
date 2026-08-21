@@ -51,7 +51,7 @@ Usage:
   python3 sync_crm.py --verbose          # also list every intake row NOT synced
   python3 sync_crm.py --write            # apply, then re-read and verify
 """
-import argparse, datetime, io, json, os, re, sys, tempfile, zipfile
+import argparse, datetime, io, os, re, shutil, sys, tempfile, zipfile
 from collections import Counter, namedtuple
 from xml.etree import ElementTree as ET
 
@@ -60,8 +60,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # city-folding rule, one near-miss stoplist. Two copies would drift, and a city
 # that folds one way here and another way there syncs a person to a chapter whose
 # feed row says something else.
-from sync_chapters import (INTAKE_ID, _gws, gws_json, get_values, fold, fold_city,
-                           city_tokens, cell, header_index)
+from sync_chapters import (INTAKE_ID, gws_json, get_values, download, upload,
+                           fold, fold_city, city_tokens, cell, header_index,
+                           resolve_city)
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "TemplateCity"                        # cloned per city; never gets people
@@ -666,12 +667,14 @@ def read_role_tab(tab, interests, include_pipeline=False):
                              "why": "no usable email (%r) — the CRM dedupes on it" % email})
             continue
         # Chapter wins — the role tab's OWN resolved city (a formula, not a human
-        # assignment); then the resolved city, then the submitted dropdown unless
-        # it is an "Other…" placeholder.
+        # assignment); the fallback is the shared resolve_city(), imported from
+        # sync_chapters so the two engines cannot disagree on what a row's city
+        # means. The Chapter formula's extra free-text step lives in the sheet,
+        # not here (see the header_index comment above).
         chapter = cell(row, i_chapter)
         g = cell(row, i_g) if i_g is not None else ""
         h = cell(row, i_h) if i_h is not None else ""
-        city = chapter or h or (g if g and not fold(g).startswith("other") else "")
+        city = chapter or resolve_city(g, h)
         if not city:
             rejected.append({"row": rownum, "tab": tab, "name": name,
                              "why": "no chapter/city on the intake row"})
@@ -1018,25 +1021,6 @@ def find_crm(folder_id):
     return crms[0], None
 
 
-def download(file_id, path):
-    # gws rejects --output paths outside its cwd, so run it in the file's dir.
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    _gws(["gws", "drive", "files", "get", "--params",
-          json.dumps({"fileId": file_id, "supportsAllDrives": True, "alt": "media"}),
-          "--output", os.path.basename(path)], cwd=os.path.dirname(path) or ".")
-    with open(path, "rb") as fh:
-        return fh.read()
-
-
-def upload(file_id, path, raw):
-    with open(path, "wb") as fh:
-        fh.write(raw)
-    _gws(["gws", "drive", "files", "update", "--params",
-          json.dumps({"fileId": file_id, "supportsAllDrives": True}),
-          "--upload", os.path.basename(path), "--upload-content-type", XLSX],
-         cwd=os.path.dirname(path) or ".")
-
-
 # ----------------------------------------------------------------------------
 # Chapter matching
 # ----------------------------------------------------------------------------
@@ -1105,7 +1089,58 @@ def open_crm(folder, workdir):
     return Book(folder, crm, names, parts, part, att, path), None
 
 
+def write_workbooks(touched, workdir, backup_dir):
+    """Upload every planned workbook. Returns (written, changed, failed).
+
+    Right before each upload the workbook is re-downloaded — that fresh copy is
+    also the pre-edit backup. Planning takes minutes across ~80 workbooks and
+    the approval pause adds more, so a human edit in that window is a NORMAL
+    event: if the fresh bytes differ from the bytes the plan was built on
+    (still sitting at book.path), the workbook is skipped loudly instead of
+    silently reverting the edit, and re-proposes on the next run. `changed`
+    counts as a failure for exit-code purposes; nothing was written to those.
+    """
+    written, changed, failed = [], [], []
+    for t in touched:
+        book = t["book"]
+        name = book.folder["name"]
+        try:
+            # Keep the pre-edit bytes before touching anything: an upload that
+            # lands a workbook Excel won't open is otherwise only recoverable by
+            # hand, through Drive's revision history.
+            current = download(book.crm["id"], os.path.join(workdir, "reread.xlsx"))
+            with open(os.path.join(backup_dir, os.path.basename(book.path)), "wb") as fh:
+                fh.write(current)
+            with open(book.path, "rb") as fh:
+                planned = fh.read()
+            if current != planned:
+                changed.append(name)
+                print("  SKIPPED %s — workbook changed since the plan was built; "
+                      "NOT written, re-run to sync it" % name, file=sys.stderr)
+                continue
+            upload(book.crm["id"], book.path, finalize(book, t["ops"], t["dv"]), XLSX)
+            written.append(name)
+            print("  wrote %s (%s)" % (name, book.crm["name"]))
+        except Exception as e:                     # one bad workbook must not
+            failed.append((name, str(e)))          # abandon the other eighty
+            print("  FAILED %s — %s" % (name, e), file=sys.stderr)
+    return written, changed, failed
+
+
 def run(args):
+    # Every opened workbook — real names, emails and survey answers — lands in
+    # this temp dir. A report-only run must not strand ~80 of them there
+    # forever, so the directory is removed on the way out; --write keeps it,
+    # because its before/ backups are the recovery path (the output says where).
+    workdir = tempfile.mkdtemp(prefix="aaif-crm-")
+    try:
+        return _run(args, workdir)
+    finally:
+        if not args.write:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _run(args, workdir):
     today = datetime.date.today().isoformat()
     interests = read_survey_interests()
 
@@ -1164,7 +1199,6 @@ def run(args):
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
     touched, skipped, no_dropdown, keepers = [], [], [], []
-    workdir = tempfile.mkdtemp(prefix="aaif-crm-")
     # Every folder is opened, not just the ones with people: the Status dropdown
     # patch has to reach chapters that gained nobody this run, and TemplateCity
     # most of all — otherwise every chapter created from it re-inherits a list
@@ -1270,23 +1304,12 @@ def run(args):
     print("\nWriting %d workbook(s)..." % len(touched))
     backup_dir = os.path.join(workdir, "before")
     os.makedirs(backup_dir, exist_ok=True)
-    written, failed = [], []
-    for t in touched:
-        book = t["book"]
-        name = book.folder["name"]
-        try:
-            # Keep the pre-edit bytes before touching anything: an upload that
-            # lands a workbook Excel won't open is otherwise only recoverable by
-            # hand, through Drive's revision history.
-            with open(os.path.join(backup_dir, os.path.basename(book.path)), "wb") as fh:
-                fh.write(download(book.crm["id"], os.path.join(workdir, "reread.xlsx")))
-            upload(book.crm["id"], book.path, finalize(book, t["ops"], t["dv"]))
-            written.append(name)
-            print("  wrote %s (%s)" % (name, book.crm["name"]))
-        except Exception as e:                     # one bad workbook must not
-            failed.append((name, str(e)))          # abandon the other eighty
-            print("  FAILED %s — %s" % (name, e), file=sys.stderr)
-    print("Wrote %d workbook(s); pre-edit copies in %s" % (len(written), backup_dir))
+    written, changed, failed = write_workbooks(touched, workdir, backup_dir)
+    print("Wrote %d workbook(s); pre-edit copies kept in %s" % (len(written), backup_dir))
+    if changed:
+        print("\n%d workbook(s) changed since the plan was built and were NOT "
+              "written — re-run to sync them:\n  %s"
+              % (len(changed), ", ".join(changed)))
 
     print("\nRe-verifying...")
     stale = []
@@ -1303,10 +1326,13 @@ def run(args):
             stale.append((folder["name"], "%d op(s) still pending" % len(left)))
         elif t["dv"] == "patched" and patch_status_dropdown(dict(book.parts), book.part) != "already":
             stale.append((folder["name"], 'Status dropdown still lacks "Host"'))
-    if failed or stale:
-        print("VERIFY FAILED:")
-        for name, why in failed + stale:
-            print("  %s — %s" % (name, why))
+    if failed or stale or changed:
+        if failed or stale:
+            print("VERIFY FAILED:")
+            for name, why in failed + stale:
+                print("  %s — %s" % (name, why))
+        # `changed` was already reported above; it shares the failure exit so a
+        # wrapper never reads a run with unwritten workbooks as complete.
         return 1
     print("Verified: a fresh read of every written workbook proposes zero changes.")
     return 0

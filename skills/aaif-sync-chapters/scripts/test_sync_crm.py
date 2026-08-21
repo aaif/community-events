@@ -6,7 +6,8 @@ same shape the real chapter CRMs have — inline strings, a styled sample row 2,
 pre-created empty rows, and the Status data-validation list. A checked-in binary
 would silently stop resembling the live workbooks; this can't.
 """
-import os, sys
+import os, sys, tempfile
+from unittest import mock
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -640,6 +641,56 @@ try:
     check("serialize refuses a non-<worksheet> root", "no error", "ValueError")
 except ValueError as e:
     check("serialize refuses a non-<worksheet> root", "refusing to write" in str(e), True)
+
+# ---------------------------------------------------------------------------
+# write_workbooks: a workbook edited during the plan window is never reverted
+# ---------------------------------------------------------------------------
+# Planning spans minutes over ~80 workbooks plus the approval pause. The bytes
+# the plan was built on still sit at book.path; the pre-upload re-download must
+# be COMPARED against them, and a mismatch skipped loudly — uploading anyway
+# silently reverts whatever a human typed in the window.
+with tempfile.TemporaryDirectory() as _wd:
+    def _touched(tag):
+        names_, parts_, att_ = book(sample_row=SAMPLE)
+        path = os.path.join(_wd, "%s.xlsx" % tag)
+        raw_ = save_parts(names_, parts_)          # the plan-time bytes
+        with open(path, "wb") as fh:
+            fh.write(raw_)
+        bk = sync_crm.Book(folder={"name": tag},
+                           crm={"id": "id-" + tag, "name": "%s CRM.xlsx" % tag},
+                           names=names_, parts=parts_,
+                           part=sheet_part(parts_, "Attendees"), att=att_, path=path)
+        return {"book": bk, "ops": plan_workbook(att_, people, TODAY), "dv": None}, raw_
+
+    t_same, raw_same = _touched("Boston")
+    t_edit, raw_edit = _touched("Pune")
+    _remote = {"id-Boston": raw_same,             # untouched since planning
+               "id-Pune": raw_edit + b"human-edit"}  # changed in the window
+    _uploads = []
+
+    def _fake_download(fid, path):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(_remote[fid])
+        return _remote[fid]
+
+    _backup = os.path.join(_wd, "before")
+    os.makedirs(_backup)
+    with mock.patch.object(sync_crm, "download", _fake_download), \
+         mock.patch.object(sync_crm, "upload",
+                           lambda fid, path, raw_b, ct: _uploads.append((fid, ct))):
+        _written, _changed, _failed = sync_crm.write_workbooks(
+            [t_same, t_edit], _wd, _backup)
+    check("an unchanged workbook is written", _written, ["Boston"])
+    check("a changed workbook is skipped, not reverted", _changed, ["Pune"])
+    check("the skip is not a failure entry", _failed, [])
+    check("only the unchanged workbook was uploaded",
+          [u[0] for u in _uploads], [("id-Boston")])
+    check("uploads carry the xlsx content type", [u[1] for u in _uploads], [sync_crm.XLSX])
+    with open(os.path.join(_backup, "Pune.xlsx"), "rb") as fh:
+        check("the changed workbook's FRESH bytes are what got backed up",
+              fh.read(), raw_edit + b"human-edit")
+
 
 # An alias bound to the spreadsheetml namespace must not displace the default
 # binding — that is what made the root serialize as <x:worksheet>.

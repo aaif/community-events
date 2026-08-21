@@ -25,7 +25,7 @@ Preserving that preserves the disclosure. So anything in the section that is not
 an accepted organizer is removed, and every removal is itemised in the report for
 the operator to approve BEFORE anything is written.
 """
-import argparse, html, io, json, os, re, sys, tempfile, zipfile
+import argparse, html, io, os, re, sys, tempfile, zipfile
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -33,9 +33,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Imported, not copied: city folding, the near-miss stoplist and city resolution
 # must mean the same thing here as on the chapters list, or an organizer lands on
 # one city's feed row and in another city's About doc.
-from sync_chapters import (INTAKE_ID, INTAKE_TAB, SYNC_STATUSES, _gws, cell,
-                           city_tokens, fold, fold_city, get_values, gws_json,
-                           header_index, read_intake, resolve_city)
+from sync_chapters import (INTAKE_ID, INTAKE_TAB, SYNC_STATUSES, cell,
+                           city_tokens, download, fold, fold_city, get_values,
+                           gws_json, header_index, read_intake, resolve_city,
+                           upload)
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"
 TEMPLATE_FOLDER = "TemplateCity"
@@ -304,25 +305,6 @@ def find_about(folder_id):
     return hits[0], None
 
 
-def download(file_id, path):
-    # gws rejects --output paths outside its cwd, so run it in the file's dir.
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    _gws(["gws", "drive", "files", "get", "--params",
-          json.dumps({"fileId": file_id, "supportsAllDrives": True, "alt": "media"}),
-          "--output", os.path.basename(path)], cwd=os.path.dirname(path) or ".")
-    with open(path, "rb") as fh:
-        return fh.read()
-
-
-def upload(file_id, path, raw):
-    with open(path, "wb") as fh:
-        fh.write(raw)
-    _gws(["gws", "drive", "files", "update", "--params",
-          json.dumps({"fileId": file_id, "supportsAllDrives": True}),
-          "--upload", os.path.basename(path), "--upload-content-type", DOCX],
-         cwd=os.path.dirname(path) or ".")
-
-
 def read_document(raw):
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         return z.read("word/document.xml").decode("utf-8")
@@ -457,7 +439,7 @@ def print_report(docs, counts, orphans, near):
 # Run
 # ----------------------------------------------------------------------------
 def compute(args, workdir):
-    entries, _unresolved, counts, _dupes = read_intake()
+    entries, _unresolved, counts, _dupes, malformed = read_intake()
     roster = read_roster()
 
     by_city, display = {}, {}
@@ -477,18 +459,31 @@ def compute(args, workdir):
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         docs = list(ex.map(lambda f: plan_one(f, by_city, roster, workdir), folders))
-    return docs, counts, orphans, near
+    return docs, counts, orphans, near, malformed
 
 
 def apply_writes(docs, workdir):
     """Upload every changed doc. A failure is collected, not raised — one bad
-    upload must not abandon the rest, and the operator needs the whole list."""
+    upload must not abandon the rest, and the operator needs the whole list.
+
+    Each doc is re-downloaded and compared against its compute()-time bytes
+    first: the plan window spans ~80 downloads plus the approval pause, and a
+    spliced document.xml uploaded over a human's edit from that window would
+    silently revert it. A changed doc is skipped (counted with the failures,
+    so the run exits non-zero) and re-proposes on the next run.
+    """
     ok, failed = [], []
     for d in sorted((d for d in docs if changed(d)), key=lambda d: d.folder["name"]):
+        safe = re.sub(r"[^\w.-]", "_", d.folder["name"])
         try:
+            fresh = download(d.about["id"], os.path.join(workdir, "re_%s.docx" % safe))
+            if fresh != d.raw:
+                failed.append((d.folder["name"],
+                               "changed since the plan was built — NOT written; re-run"))
+                print("  %-22s SKIPPED — changed since plan; re-run" % d.folder["name"])
+                continue
             raw = write_document(d.raw, d.new_xml)
-            upload(d.about["id"], os.path.join(workdir, "up_%s.docx" % re.sub(
-                r"[^\w.-]", "_", d.folder["name"])), raw)
+            upload(d.about["id"], os.path.join(workdir, "up_%s.docx" % safe), raw, DOCX)
         except Exception as e:
             failed.append((d.folder["name"], "%s: %s" % (type(e).__name__, e)))
             print("  %-22s FAILED" % d.folder["name"])
@@ -508,8 +503,16 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="aaif-about-") as workdir:
         # --write recomputes from a fresh read here — a stale proposal is never applied.
-        docs, counts, orphans, near = compute(args, workdir)
+        docs, counts, orphans, near, malformed = compute(args, workdir)
         print_report(docs, counts, orphans, near)
+        if malformed:
+            # read_intake excluded these rows, so an accepted organizer listed
+            # here silently drops OUT of their chapter's rewritten section —
+            # say so, or the removal reads as a decision instead of a data bug.
+            print("\nMalformed public-form text — these intake rows are EXCLUDED "
+                  "(their names sync nowhere, About docs included) until fixed:")
+            for m in malformed:
+                print("  intake row %d (city %r): %s" % (m["row"], m["city"], m["why"]))
         drift = any(changed(d) for d in docs)
         # A doc that could not be READ (an About.docx was found but download or
         # parse raised) is UNKNOWN, not clean. Without this, a dead gws
@@ -545,7 +548,7 @@ def main():
         # The writes have already landed. A bare traceback here would leave the
         # operator unable to tell what was modified, so say so explicitly.
         try:
-            after, _c, _o, _n = compute(args, workdir)
+            after, _c, _o, _n, _m = compute(args, workdir)
         except (Exception, SystemExit) as e:
             sys.exit("WRITES WERE APPLIED (%d doc(s)) but verification could not run: "
                      "%s\nRe-run without --write to confirm." % (len(ok), e))

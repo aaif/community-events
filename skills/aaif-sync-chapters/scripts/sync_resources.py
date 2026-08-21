@@ -925,7 +925,8 @@ def slack_half(chapters, plan=False):
         chans = slackmod.channels(api)
     except (slackmod.SlackError, SystemExit) as exc:
         print("Slack unavailable (%s) — channel columns skipped.\n"
-              "Run `slack auth login`, then re-run for those.\n" % exc,
+              "Set AAIF_SLACK_WRITE_TOKEN (env or .env — the Slack CLI credential "
+              "expired for good in 2026-08), then re-run for those.\n" % exc,
               file=sys.stderr)
         return [], [], {}, [], False
 
