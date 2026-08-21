@@ -107,6 +107,10 @@ KEPT_NON_CONVENTIONAL = ("bay-area", "austin-area")
 #: country that demonstrably already has a room.
 COUNTRY_CHANNELS = {
     "Spain": "españa",
+    # #germany is squatted by an invisible private room (Pro plan, no way to
+    # reclaim), so Germany's country room takes the native name instead —
+    # created 2026-08-22, same precedent as #españa.
+    "Germany": "deutschland",
     # One Nordic room, not four country rooms (user-decided 2026-08-19):
     # #nordics (129 members, the 2021 room, renamed from #nordics-public)
     # serves all five Nordic chapters. The per-country rooms were folded —
