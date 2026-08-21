@@ -7,18 +7,32 @@ onto the public chapters feed, this one pushes accepted *people and their stated
 interest* into the private per-chapter CRM. Same house rules — the intake sheet
 is only ever READ, the report is the default, and --write re-verifies itself.
 
-Only Accepted / Existing (from MLOps) people sync, across all three role tabs
-(see SYNC_STATUSES). The CRM is the onboarding list that decides who gets access
-to a chapter folder, so a person reaches it after a decision, not on submitting
-the form.
+Who syncs (the 2026-08 organizer-selection policy):
+
+  * Accepted / Existing (from MLOps) people always sync, across all three role
+    tabs (see SYNC_STATUSES).
+  * Hosts and Speakers in the pipeline (PIPELINE_STATUSES — the recognised
+    in-flight statuses; Denied / Inactive / Duplicate and any value the list
+    does not name are excluded) sync too, so a chapter sees its candidate
+    venues and talks without waiting on central triage.
+  * Organizers in the pipeline sync ONLY into a self-serve chapter — one with
+    SELF_SERVE_MIN (4) or more accepted organizers, not counting AAIF ops
+    people (AAIF_OPS_NAMES). Those chapters run their own interviews and grow
+    their own team; below the threshold, organizer approval stays with AAIF
+    ops and pipeline organizers are held back and reported.
+
+A pipeline person lands as `Prospect` (organizers) or their role status
+(hosts/speakers), never as a trusted team member — Drive access still keys off
+acceptance in sync_access.py, so reaching the CRM grants nothing by itself.
 
 Each chapter folder under the Chapters Drive holds one "<City> CRM.xlsx" whose
 "Attendees" tab has eleven columns. Only six are ever written (CRM_WRITTEN) —
 identity, decision and interest, and nothing else:
 
     Full name           <- role tab name
-    Trusted/Regular     <- "Yes" for an organizer (they're on the team)
-    Status              <- Organizer / Speaker / Host
+    Trusted/Regular     <- "Yes" for an ACCEPTED organizer (they're on the team)
+    Status              <- Organizer / Speaker / Host — or Prospect, for a
+                           pipeline organizer in a self-serve chapter
     Notes (CRM)         <- provenance: role, intake status, date
     Email               <- role tab email        (also the dedupe key)
     What brings you here? <- the survey answer verbatim, + talk/venue/city detail
@@ -38,7 +52,7 @@ Usage:
   python3 sync_crm.py --write            # apply, then re-read and verify
 """
 import argparse, datetime, io, json, os, re, sys, tempfile, zipfile
-from collections import namedtuple
+from collections import Counter, namedtuple
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -63,19 +77,40 @@ CRM_HEADERS = ("Full name", "Signal", "Trusted/Regular", "Status", "Notes (CRM)"
                "Email", "LinkedIn URL", "Company", "Role / title",
                "Technical expertise", "What brings you here?")
 
-# ONLY these two statuses sync. The CRM is the onboarding list that decides who
-# gets access to a chapter folder, so a person reaches it after a decision, not
-# on submitting the form. This is an allowlist: every other value on the intake
-# dropdown is held back by construction, so do not enumerate the complement here
-# — the dropdown is maintained in a Google Sheet and any list written down would
-# rot silently. See aaif-triage-intake/SKILL.md for the current status set.
+# The "decided yes" statuses. A person with one of these always syncs, and they
+# are what an organizer must hold to count toward a chapter's self-serve
+# threshold and to earn Trusted/Regular + Drive access downstream.
 # Exact dropdown strings — "Existing" alone would miss every MLOps row.
-# Consequence, and it is intended: as of 2026-08 the Hosts and Speakers tabs
-# had no accepted row, so in practice this synced organizers only. Both start
-# flowing the moment someone accepts them and nothing here needs to change —
-# do NOT read the organizers-only shape as permanent. The report's per-tab
-# counts are the live source of truth.
 SYNC_STATUSES = ("Accepted", "Existing (from MLOps)")
+
+# The "still in flight" statuses ("" is a blank cell, which triage treats as
+# New — and the "" entry must STAY: read_role_tab checks membership on the RAW
+# cell value, before the `status or "New"` normalization, so removing the
+# "redundant" empty string would reject every untriaged row).
+# Pipeline hosts/speakers sync unconditionally; pipeline organizers sync
+# only into a self-serve chapter (see gate_pipeline_organizers). Both lists are
+# ALLOWLISTS on purpose: a status added to the intake dropdown tomorrow —
+# including a new rejected-ish one — syncs nobody until it is placed here, which
+# is the fail-closed direction. Denied / Inactive / Duplicate are excluded by
+# not appearing. See aaif-triage-intake/SKILL.md for the current dropdown.
+PIPELINE_STATUSES = ("", "New", "In progress", "Tentative", "Interviewing")
+
+# A chapter with this many accepted organizers (SYNC_STATUSES, minus AAIF ops
+# people) runs its own organizer interviews: its pipeline organizers sync into
+# its CRM as Prospects. Below it, organizer approval stays with AAIF ops.
+SELF_SERVE_MIN = 4
+
+# AAIF / MLOps-community ops people. They appear on the intake like anyone else
+# but are not a chapter's own team, so they never count toward SELF_SERVE_MIN.
+# Matched on the folded FULL name exactly — never a substring, which would also
+# catch an unrelated organizer sharing a first name. The bare "Demetrios" entry
+# is a deliberate alias for a real intake row that carries only the first name;
+# it can exact-match an unrelated mononymous "Demetrios", and that failure
+# direction is accepted (the chapter is merely held longer). Names, not emails,
+# so this public repo carries no addresses.
+AAIF_OPS_NAMES = ("Rahul Parundekar", "Demetrios Brinkmann", "Demetrios",
+                  "Ijeoma Onwuka")
+AAIF_OPS_FOLDED = frozenset(fold(n) for n in AAIF_OPS_NAMES)
 
 ROLE_TABS = ("Organizers", "Speakers", "Hosts")   # also the merge priority order
 CRM_STATUS = {"Organizers": "Organizer", "Speakers": "Speaker", "Hosts": "Host"}
@@ -553,11 +588,17 @@ def read_survey_interests():
     return out
 
 
-def read_role_tab(tab, interests):
-    """Return (people, rejected) for one role tab.
+def read_role_tab(tab, interests, include_pipeline=False):
+    """Return (people, rejected, fallbacks) for one role tab.
 
     people   = [{row, tab, name, email, city, status, ...}]
-    rejected = [{row, tab, name, why}]   not accepted / no email / no city
+    rejected = [{row, tab, name, why}]   not syncable / no email / no city
+
+    `include_pipeline=False` (the default) keeps the original contract — only
+    SYNC_STATUSES people — and every other caller depends on it staying that
+    way: sync_access turns this roster into Drive grants, and a pipeline person
+    must never reach one. Only sync_crm's own run() opts in, and it still gates
+    pipeline ORGANIZERS per chapter afterwards (gate_pipeline_organizers).
     """
     rows = get_values(INTAKE_ID, "%s!A:BB" % tab)
     if not rows:
@@ -607,10 +648,19 @@ def read_role_tab(tab, interests):
         if not (email or name):
             continue                          # trailing empty grid row
         status = cell(row, i_status)
-        if status not in SYNC_STATUSES:
-            rejected.append({"row": rownum, "tab": tab, "name": name,
-                             "why": "status %r — not accepted yet" % (status or "New")})
-            continue
+        accepted = status in SYNC_STATUSES
+        if not accepted:
+            if not include_pipeline:
+                rejected.append({"row": rownum, "tab": tab, "name": name,
+                                 "why": "status %r — not accepted yet" % (status or "New")})
+                continue
+            if status not in PIPELINE_STATUSES:
+                # Denied / Inactive / Duplicate, or a dropdown value this script
+                # has never seen — either way, fail closed and say so.
+                rejected.append({"row": rownum, "tab": tab, "name": name,
+                                 "why": "status %r — declined, parked, or not a "
+                                        "recognised pipeline status" % status})
+                continue
         if not valid_email(email):
             rejected.append({"row": rownum, "tab": tab, "name": name,
                              "why": "no usable email (%r) — the CRM dedupes on it" % email})
@@ -635,7 +685,7 @@ def read_role_tab(tab, interests):
             fallbacks.append(rownum)
         interest = joined or DEFAULT_INTEREST[tab]
         people.append({
-            "row": rownum, "tab": tab, "status": status,
+            "row": rownum, "tab": tab, "status": status or "New",
             "name": clean_text(name) or clean_text(email),
             "email": clean_text(email), "city": clean_text(city),
             "linkedin": clean_text(first_of(row, headers, ("LinkedIn",))),
@@ -658,31 +708,105 @@ def read_role_tab(tab, interests):
     return people, rejected, fallbacks
 
 
-def merge_people(people):
+def is_aaif_ops(name):
+    """Exact folded-name match against AAIF_OPS_FOLDED — never a substring."""
+    return fold(name) in AAIF_OPS_FOLDED
+
+
+def is_accepted(p):
+    """Whether a PRE-MERGE person/row dict carries a decided-yes intake status.
+
+    Only valid before merge_people: a merged person has `status` popped, so
+    calling this on one raises KeyError — deliberately, per the stale-read rule.
+    """
+    return p["status"] in SYNC_STATUSES
+
+
+def gate_pipeline_organizers(people):
+    """Split (kept, held): pipeline organizers whose chapter is below
+    SELF_SERVE_MIN accepted organizers are held back for central approval.
+    Held entries carry a `why`, authored here beside the rule itself; they are
+    a SUPERSET of the rejection shape (the full person dict plus `why`, not the
+    4-key {row, tab, name, why}) — run()'s Held summary reads `city` off them,
+    which a plain rejection does not have.
+
+    The threshold counts DISTINCT accepted-organizer emails per folded city,
+    excluding AAIF ops people — a chapter is self-serve on the strength of its
+    own team, not because central staff appear on its roster. Accepted people
+    and pipeline hosts/speakers pass through untouched; the count comes from
+    the same intake read, so a chapter crossing the threshold starts pulling
+    its Prospects on the very next run.
+    """
+    accepted = {}
+    for p in people:
+        if p["tab"] == "Organizers" and is_accepted(p) and not is_aaif_ops(p["name"]):
+            accepted.setdefault(fold_city(p["city"]), set()).add(fold_email(p["email"]))
+    kept, held = [], []
+    for p in people:
+        if (p["tab"] == "Organizers" and not is_accepted(p)
+                and len(accepted.get(fold_city(p["city"]), ())) < SELF_SERVE_MIN):
+            # The folded key is named in the why: the count groups by it, so a
+            # chapter whose accepted organizers split across spellings that
+            # fold differently shows the split instead of stating a false
+            # count as fact.
+            held.append(dict(p, why="status %r — %r (city key %r) has fewer "
+                                    "than %d accepted organizers, so organizer "
+                                    "approval stays with AAIF ops"
+                                    % (p["status"], p["city"],
+                                       fold_city(p["city"]), SELF_SERVE_MIN)))
+        else:
+            kept.append(p)
+    return kept, held
+
+
+def merge_people(people, blocked=None):
     """One CRM row per person per chapter, even when they applied twice.
 
     Keyed on (folded city, folded email). Role precedence follows ROLE_TABS, so
     someone who is both an organizer and a speaker lands as Organizer with both
     interests recorded — the alternative, two rows, breaks the workbook's own
     "keep one row per person, merge by email" rule.
+
+    One refusal (2026-08-22, security review): a NOT-yet-accepted row never
+    merges into a person whose rows so far are ALL accepted. The form is
+    public and email is the merge key, so a stranger submitting under an
+    accepted organizer's address would otherwise fill that person's blank CRM
+    cells and restamp their Notes — attacker content attributed to a trusted
+    identity. Refused rows are appended to `blocked` (rejection-shaped, for
+    the report) when the caller passes a list; the legitimate mixed case — one
+    person pipeline in one role and accepted in another — still merges when
+    the pipeline row seeds first (ROLE_TABS order), which is how a real
+    person's rows arrive, and is covered by the tests either way.
     """
     merged = {}
     for tab in ROLE_TABS:                       # priority order
         for p in (x for x in people if x["tab"] == tab):
             key = (fold_city(p["city"]), fold_email(p["email"]))
             cur = merged.get(key)
+            if (cur is not None and not is_accepted(p)
+                    and all(s in SYNC_STATUSES for s in cur["statuses"])):
+                if blocked is not None:
+                    blocked.append({
+                        "row": p["row"], "tab": tab, "name": p["name"],
+                        "why": "status %r — same email as an accepted person's "
+                               "CRM row; refusing to merge an unvetted "
+                               "submission into it. Review the intake row."
+                               % p["status"]})
+                continue
             if cur is None:
-                m = dict(p, tabs=[tab], rows=[p["row"]])
-                # Drop the singular forms: on a merged person `tab`/`row` are
-                # an arbitrary member of `tabs`/`rows`, equal to the winning
-                # one only by the accident that the highest-priority tab seeds
-                # the entry. Removing them makes a stale read a KeyError
-                # instead of a plausible wrong answer.
-                m.pop("tab", None), m.pop("row", None)
+                m = dict(p, tabs=[tab], rows=[p["row"]], statuses=[p["status"]])
+                # Drop the singular forms: on a merged person `tab`/`row`/
+                # `status` are an arbitrary member of the plural lists, equal
+                # to the winning one only by the accident that the
+                # highest-priority tab seeds the entry. Removing them makes a
+                # stale read a KeyError instead of a plausible wrong answer.
+                for k in ("tab", "row", "status"):
+                    m.pop(k, None)
                 merged[key] = m
                 continue
             cur["tabs"].append(tab)
             cur["rows"].append(p["row"])
+            cur["statuses"].append(p["status"])
             for field in ("linkedin", "company", "title"):
                 cur[field] = cur[field] or p[field]
             cur["expertise"] = join_distinct([cur["expertise"], p["expertise"]])
@@ -697,17 +821,36 @@ def crm_fields(p, today):
     deliberately absent, so the automation never touches them. A blank value
     means "leave that cell alone", never "blank it out".
 
-    Every person reaching here is Accepted or Existing (from MLOps): read_role_tab
-    drops everything else, so the CRM Status is always the role itself.
+    Status and Trusted/Regular follow the ACCEPTED roles only:
+      * any accepted role -> that role's status (highest-priority accepted tab
+        wins), and Trusted/Regular = "Yes" for an accepted organizer;
+      * no accepted role, but an organizer application in flight -> "Prospect"
+        — a candidate for the chapter's own interviews, not on the team;
+      * a pipeline host/speaker -> their role status, never trusted.
+    "Prospect" is in AUTO_STATUS, so acceptance upgrades the row on a later run
+    without a human having to touch it.
     """
-    role_tab = p["tabs"][0]
+    # Derived, not stored: tabs/statuses are index-aligned by merge_people, so
+    # the accepted roles need no third parallel list to keep in sync. strict=
+    # True is the alignment tripwire: a future edit that appends to one list
+    # but not the other must raise here, not silently truncate the zip and
+    # demote an accepted person to Prospect.
+    acc = [t for t, s in zip(p["tabs"], p["statuses"], strict=True)
+           if s in SYNC_STATUSES]
+    if acc:
+        status = CRM_STATUS[acc[0]]
+        # An accepted organizer is on the chapter's team, not a guest to triage.
+        trusted = "Yes" if acc[0] == "Organizers" else ""
+    else:
+        status = "Prospect" if "Organizers" in p["tabs"] else CRM_STATUS[p["tabs"][0]]
+        trusted = ""
     return {
         "Full name": p["name"],
-        # An accepted organizer is on the chapter's team, not a guest to triage.
-        "Trusted/Regular": "Yes" if role_tab == "Organizers" else "",
-        "Status": CRM_STATUS[role_tab],
+        "Trusted/Regular": trusted,
+        "Status": status,
         "Notes (CRM)": "Intake: %s · %s · %s" % (
-            "/".join(CRM_STATUS[t] for t in p["tabs"]), p["status"], today),
+            join_distinct([CRM_STATUS[t] for t in p["tabs"]], "/"),
+            join_distinct(p["statuses"], "/"), today),
         "Email": p["email"],
         "What brings you here?": p["interest"],
     }
@@ -967,14 +1110,19 @@ def run(args):
     interests = read_survey_interests()
 
     people, rejected, fallbacks = [], [], []
-    counts = {}
     for tab in ROLE_TABS:
-        pp, rr, fb = read_role_tab(tab, interests)
-        counts[tab] = len(pp)
+        pp, rr, fb = read_role_tab(tab, interests, include_pipeline=True)
         people += pp
         rejected += rr
         fallbacks += fb
-    merged = merge_people(people)
+    people, held = gate_pipeline_organizers(people)
+    # Held-back pipeline organizers surface through the same not-synced channel
+    # as every other excluded row, so --verbose names them individually.
+    rejected += held
+    counts = Counter(p["tab"] for p in people)
+    merge_blocked = []
+    merged = merge_people(people, blocked=merge_blocked)
+    rejected += merge_blocked
 
     # People are matched against EVERY chapter folder, then --city narrows only
     # which workbooks get opened. Filtering first made --city report every other
@@ -1000,6 +1148,19 @@ def run(args):
           % (len(merged), len(by_folder),
              " + ".join("%d %s" % (counts[t], t.lower()) for t in ROLE_TABS),
              len(rejected)))
+    if held:
+        # Distinct people, not rows — the same candidate with two intake rows
+        # must not inflate a number that gets quoted in status reports.
+        print("Held    : %d pipeline organizer(s) across %d chapter(s) still under "
+              "central approval (fewer than %d accepted organizers) — counted in "
+              "the not-synced total above."
+              % (len({fold_email(p["email"]) for p in held}),
+                 len({fold_city(p["city"]) for p in held}), SELF_SERVE_MIN))
+    if merge_blocked:
+        print("SECURITY: %d not-yet-accepted intake row(s) share an email with "
+              "an accepted person and were NOT merged into their CRM row — "
+              "--verbose lists them; review those intake rows."
+              % len(merge_blocked))
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
     touched, skipped, no_dropdown, keepers = [], [], [], []

@@ -11,9 +11,11 @@ from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sync_crm
-from sync_crm import (Attendees, CRM_HEADERS, DV_STATUS_NEW, DV_STATUS_OLD, X,
+from sync_crm import (Attendees, CRM_HEADERS, DV_STATUS_NEW, DV_STATUS_OLD,
+                      SELF_SERVE_MIN, X,
                       apply_ops, cell_ref, clean_text, col_of, crm_fields,
-                      fold_email, join_distinct, load_parts, match_chapters,
+                      fold_email, gate_pipeline_organizers, is_aaif_ops,
+                      join_distinct, load_parts, match_chapters,
                       merge_people, patch_status_dropdown, plan_workbook,
                       save_parts, sheet_part, valid_email)
 
@@ -136,14 +138,14 @@ check("col_of round-trips", [col_of(cell_ref(i, 3)) for i in (0, 10, 26, 701)],
 # merge_people: one row per person per chapter
 # ---------------------------------------------------------------------------
 both = merge_people([
-    person("Ada L", "ada@x.io", "Boston", "Speakers", "New", interest="I want to be a speaker",
-           title="Staff Eng", expertise="Agents"),
+    person("Ada L", "ada@x.io", "Boston", "Speakers", "Accepted",
+           interest="I want to be a speaker", title="Staff Eng", expertise="Agents"),
     person("Ada Lovelace", "ADA@x.io", "boston", "Organizers", "Accepted",
            interest="I want to be an organizer/volunteer", expertise="Agents"),
 ])
 check("merge collapses one person to one row", len(both), 1)
 check("merge takes the highest-priority role first", both[0]["tabs"], ["Organizers", "Speakers"])
-check("merge keeps the acceptance", both[0]["status"], "Accepted")
+check("merge keeps every tab's intake status", both[0]["statuses"], ["Accepted", "Accepted"])
 check("merge keeps the speaker's title", both[0]["title"], "Staff Eng")
 check("merge unions the interests", both[0]["interest"],
       "I want to be an organizer/volunteer · I want to be a speaker")
@@ -151,15 +153,52 @@ check("merge dedupes identical expertise", both[0]["expertise"], "Agents")
 check("merge keeps different cities apart",
       len(merge_people([person("A", "a@x.io", "Boston"), person("A", "a@x.io", "Berlin")])), 2)
 
+# Security guard: a NOT-yet-accepted row never merges into an all-accepted
+# person — the public form + email-keyed merge would otherwise let a stranger
+# writing under an accepted organizer's address fill their CRM row.
+_blk = []
+guarded = merge_people(
+    [person("Ada", "ada@x.io", "Boston", "Organizers", "Accepted"),
+     person("Mallory", "ada@x.io", "Boston", "Speakers", "New",
+            interest="totally a real talk")], blocked=_blk)
+check("a pipeline row does not merge into an all-accepted person",
+      guarded[0]["tabs"], ["Organizers"])
+check("...its content does not reach the person's record",
+      "totally a real talk" in guarded[0]["interest"], False)
+check("...and the refusal is reported in rejection shape",
+      (len(_blk), sorted(_blk[0]), "refusing to merge" in _blk[0]["why"]),
+      (1, ["name", "row", "tab", "why"], True))
+check("without a blocked list the row is still refused",
+      merge_people([person("Ada", "ada@x.io", "B", "Organizers", "Accepted"),
+                    person("M", "ada@x.io", "B", "Speakers", "New")])[0]["tabs"],
+      ["Organizers"])
+
 f_acc = crm_fields(both[0], TODAY)
 check("accepted organizer -> Organizer", f_acc["Status"], "Organizer")
 check("accepted organizer -> Trusted", f_acc["Trusted/Regular"], "Yes")
-check("note carries role, status and date",
+check("note carries every role, statuses deduped",
       f_acc["Notes (CRM)"], "Intake: Organizer/Speaker · Accepted · 2026-08-06")
 
 f_host = crm_fields(merge_people([person("Bo", "bo@x.io", "B", "Hosts", "Accepted")])[0], TODAY)
 check("accepted host -> Host", f_host["Status"], "Host")
 check("accepted host is not auto-Trusted", f_host["Trusted/Regular"], "")
+
+# Pipeline (not-yet-accepted) people, per the self-serve policy.
+f_pipe = crm_fields(merge_people([person("Cy", "cy@x.io", "B", "Organizers", "Tentative")])[0], TODAY)
+check("pipeline organizer -> Prospect", f_pipe["Status"], "Prospect")
+check("pipeline organizer is not Trusted", f_pipe["Trusted/Regular"], "")
+check("pipeline note carries the intake status",
+      f_pipe["Notes (CRM)"], "Intake: Organizer · Tentative · 2026-08-06")
+f_pspk = crm_fields(merge_people([person("Dee", "dee@x.io", "B", "Speakers", "New")])[0], TODAY)
+check("pipeline speaker -> Speaker (not Prospect)", f_pspk["Status"], "Speaker")
+check("pipeline speaker is not Trusted", f_pspk["Trusted/Regular"], "")
+# Accepted in one role while still in the pipeline for another: the accepted
+# role wins the Status, and the organizer application alone earns no trust.
+f_mix = crm_fields(merge_people([
+    person("Eve", "eve@x.io", "B", "Organizers", "Interviewing"),
+    person("Eve", "eve@x.io", "B", "Speakers", "Accepted")])[0], TODAY)
+check("accepted speaker beats pipeline organizer", f_mix["Status"], "Speaker")
+check("...and does not become Trusted", f_mix["Trusted/Regular"], "")
 
 # Minimal by construction: the automation must not touch Signal or any of the
 # detail columns, so they are absent from the mapping rather than written blank.
@@ -167,6 +206,97 @@ check("only the minimal columns are produced",
       sorted(f_acc), sorted(sync_crm.CRM_WRITTEN))
 for col in ("Signal", "LinkedIn URL", "Company", "Role / title", "Technical expertise"):
     check("%r is never written" % col, col in f_acc, False)
+
+
+# ---------------------------------------------------------------------------
+# The self-serve gate: pipeline organizers need a 4-organizer chapter
+# ---------------------------------------------------------------------------
+# Synthetic roster throughout this section (CLAUDE.md: no real names in
+# tests). is_aaif_ops reads the module global at call time, so patching
+# AAIF_OPS_FOLDED exercises the exact production code path; the shipped
+# roster's shape is asserted without repeating its contents.
+check("the shipped roster folds one entry per name",
+      len(sync_crm.AAIF_OPS_FOLDED), len(sync_crm.AAIF_OPS_NAMES))
+_saved_ops = sync_crm.AAIF_OPS_FOLDED
+sync_crm.AAIF_OPS_FOLDED = frozenset({sync_crm.fold("Ops Person")})
+check("is_aaif_ops matches an ops person's exact name", is_aaif_ops("Ops Person"), True)
+check("is_aaif_ops folds case", is_aaif_ops("ops PERSON"), True)
+check("is_aaif_ops never matches on a name fragment", is_aaif_ops("Ops Person Jr"), False)
+
+def team(city, n):
+    return [person("Org %s %d" % (city, i), "org-%s-%d@x.io" % (city.lower(), i),
+                   city, "Organizers", "Accepted") for i in range(n)]
+
+cand = person("Nia", "nia@x.io", "Big", "Organizers", "Tentative")
+small_cand = person("Kim", "kim@x.io", "Small", "Organizers", "Interviewing")
+kept, held = gate_pipeline_organizers(
+    team("Big", SELF_SERVE_MIN) + [cand] + team("Small", SELF_SERVE_MIN - 1) + [small_cand])
+check("a self-serve chapter keeps its pipeline organizer", cand in kept, True)
+check("a small chapter's pipeline organizer is held",
+      [p["name"] for p in held], ["Kim"])
+check("accepted people always pass the gate",
+      len([p for p in kept if sync_crm.is_accepted(p)]), 2 * SELF_SERVE_MIN - 1)
+
+# AAIF ops people never count toward the threshold: 3 locals + Rahul is 4 rows
+# but still a centrally-approved chapter.
+_, held = gate_pipeline_organizers(
+    team("Bern", SELF_SERVE_MIN - 1)
+    + [person("Ops Person", "o@x.io", "Bern", "Organizers", "Accepted"),
+       dict(small_cand, city="Bern")])
+check("an ops person does not make a chapter self-serve",
+      [p["name"] for p in held], ["Kim"])
+check("a held person carries the reason beside the rule",
+      "fewer than %d accepted organizers" % SELF_SERVE_MIN in held[0]["why"], True)
+
+# The count is distinct emails, so a duplicated accepted row cannot tip it.
+dup = team("Twin", SELF_SERVE_MIN - 1)
+_, held = gate_pipeline_organizers(
+    dup + [dict(dup[0], row=99)] + [dict(cand, city="Twin")])
+check("a duplicated accepted row does not tip the threshold",
+      [p["name"] for p in held], ["Nia"])
+
+# Pipeline hosts/speakers pass regardless of their chapter's size.
+pipe_host = person("Vee", "vee@x.io", "Small", "Hosts", "New")
+kept, held = gate_pipeline_organizers([pipe_host])
+check("a pipeline host is never gated", (kept, held), ([pipe_host], []))
+sync_crm.AAIF_OPS_FOLDED = _saved_ops
+
+
+# ---------------------------------------------------------------------------
+# read_role_tab: the status filter that decides who enters the flow at all
+# ---------------------------------------------------------------------------
+# Mocked grid, no gws. These pin the two contracts nothing else enforces:
+# the accepted-only DEFAULT (sync_access turns this roster into Drive grants)
+# and the fail-closed rejection of Denied/unknown statuses even in pipeline
+# mode.
+_GRID = [
+    ["Status", "Full name", "Email", "Chapter", "City (Existing)", "City (New)"],
+    ["Accepted", "Ada", "ada@x.io", "Boston", "", ""],
+    ["Tentative", "Tess", "tess@x.io", "Boston", "", ""],
+    ["Denied", "Dan", "dan@x.io", "Boston", "", ""],
+    ["Zebra", "Zed", "zed@x.io", "Boston", "", ""],
+    ["", "Bea", "bea@x.io", "Boston", "", ""],
+]
+_saved_gv = sync_crm.get_values
+sync_crm.get_values = lambda *_a, **_k: _GRID
+try:
+    pp, rr, _fb = sync_crm.read_role_tab("Organizers", {})
+    check("the DEFAULT is accepted-only — the Drive-grant contract",
+          [p["name"] for p in pp], ["Ada"])
+    check("everyone else is rejected as not-accepted by default",
+          [r["name"] for r in rr if "not accepted yet" in r["why"]],
+          ["Tess", "Dan", "Zed", "Bea"])
+    pp, rr, _fb = sync_crm.read_role_tab("Organizers", {}, include_pipeline=True)
+    check("pipeline mode admits in-flight statuses",
+          sorted(p["name"] for p in pp), ["Ada", "Bea", "Tess"])
+    check("a blank status is normalized to New on the person",
+          [p["status"] for p in pp if p["name"] == "Bea"], ["New"])
+    check("Denied and unknown statuses fail closed even in pipeline mode",
+          sorted(r["name"] for r in rr
+                 if "declined, parked, or not a recognised" in r["why"]),
+          ["Dan", "Zed"])
+finally:
+    sync_crm.get_values = _saved_gv
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +462,20 @@ for before, want in (("", "Organizer"), ("New", "Organizer"), ("Prospect", "Orga
     check("Status %-10r -> op kinds" % before, [o["kind"] for o in ops_s], ["fill"])
     got = ops_s[0]["sets"].get("Status") if ops_s else None
     check("Status %-10r -> %r" % (before, want), got, want)
+
+# The self-serve lifecycle end-to-end: a Prospect synced while in the pipeline
+# is upgraded in place once the chapter accepts them — Status is in AUTO_STATUS
+# and the blank Trusted/Regular cell fills.
+_, _, alc = book(sample_row=SAMPLE)
+pipe = merge_people([person("Ada", "ada@x.io", "Boston", "Organizers", "Tentative",
+                            linkedin="https://li/ada", expertise="Agents, MCP")])
+apply_ops(alc, plan_workbook(alc, pipe, TODAY))
+check("a prospect lands untrusted",
+      [alc.value(3, "Status"), alc.value(3, "Trusted/Regular")], ["Prospect", ""])
+up = plan_workbook(alc, people, TODAY)
+check("acceptance upgrades the prospect in place",
+      (up[0]["kind"], up[0]["sets"].get("Status"), up[0]["sets"].get("Trusted/Regular")),
+      ("fill", "Organizer", "Yes"))
 
 
 # ---------------------------------------------------------------------------

@@ -272,14 +272,65 @@ check("the misfiled value moves column, and the row is repaired",
 check("a row that never claimed it is untouched",
       sr.propose_column_corrections([ch("Berlin", slack="berlin")], _AO), [])
 
+# --- parse_erstwhile(): the history column's fixed grammar ---------------------
+check("parse_erstwhile reads slugs around annotations",
+      sr.parse_erstwhile("seattle-organizers (squatted) · formerly meetup-seattle-organizers"),
+      {"seattle-organizers", "meetup-seattle-organizers"})
+check("parenthesized prose never yields a name",
+      sr.parse_erstwhile("munich (squatted) · germany (squatted country room)"),
+      {"munich", "germany"})
+check("comma-separated names all survive",
+      sr.parse_erstwhile("austin (squatted) · formerly austin-area, austin-area-organizers"),
+      {"austin", "austin-area", "austin-area-organizers"})
+check("a leading # is shorthand, not a parse failure",
+      sr.parse_erstwhile("#austin (squatted) · #munich"), {"austin", "munich"})
+_disc = []
+check("punctuation-bearing junk under-protects instead of inventing names",
+      sr.parse_erstwhile("TBD?? (ask ops) · n/a!", _disc), set())
+check("...and the dropped tokens are reported to the caller",
+      sorted(_disc), ["n/a!", "tbd??"])
+check("an empty cell yields nothing", sr.parse_erstwhile(""), set())
+# Documented limitations, pinned so a change is a decision rather than drift:
+check("bare lowercase prose IS read as names (annotate in parens instead)",
+      sr.parse_erstwhile("pending decision"), {"pending", "decision"})
+check("accented slugs fall out unprotected — record the ASCII spelling",
+      sr.parse_erstwhile("españa (kept)"), set())
+
+# read_erstwhile(): tolerate an absent column, but SAY so via column_present.
+_saved_gv = sr.get_values
+def _fake_grid(rows):
+    sr.get_values = lambda *_a, **_k: rows
+try:
+    _fake_grid([])
+    check("an empty sheet yields an inactive guard",
+          sr.read_erstwhile(), (set(), [], False))
+    _fake_grid([["City", "Country"], ["Boston", "USA"]])
+    check("a sheet without the column yields an inactive guard",
+          sr.read_erstwhile(), (set(), [], False))
+    _fake_grid([["City", " Erstwhile Channels "],
+                ["Boston", "boston-old (squatted)"],
+                ["Berlin", "#berlin-old · junk!!"]])
+    _n, _d, _p = sr.read_erstwhile()
+    check("names union across rows, header whitespace stripped",
+          (_n, _p), ({"boston-old", "berlin-old"}, True))
+    check("unparsable tokens are surfaced, not swallowed", _d, ["junk!!"])
+finally:
+    sr.get_values = _saved_gv
+
 # The country override stops a brand-new #spain being planned beside #espana.
 check("a country with its own named room is not re-planned",
       [(p["was"], p["value"]) for p in sr.propose_country_overrides(
           [ch("Barcelona", country="Spain", ctry="spain")])],
       [("spain", "españa")])
+# Japan, not Norway: the Nordics became COUNTRY_CHANNELS exceptions
+# (one #nordics room), so a Norway fixture now correctly gets repointed.
 check("a country whose channel matches the convention is left alone",
-      sr.propose_country_overrides([ch("Oslo", country="Norway", ctry="norway")]),
+      sr.propose_country_overrides([ch("Tokyo", country="Japan", ctry="japan")]),
       [])
+check("a Nordic country is repointed at the shared #nordics room",
+      [(p["was"], p["value"]) for p in sr.propose_country_overrides(
+          [ch("Oslo", country="Norway", ctry="norway")])],
+      [("norway", "nordics")])
 
 # Both the misfiling fix and the country override reach Madrid's country cell.
 _madrid = [ch("Madrid", country="Spain", slack="españa",

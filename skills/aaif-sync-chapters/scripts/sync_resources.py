@@ -89,10 +89,88 @@ HANDLES_COLUMN = "Organizer Handles"
 #: reversed that call: those rooms were RENAMED to the convention via
 #: provision_channels.CHANNEL_RENAMES — a rename keeps members and history, so
 #: "moving people" was never actually the cost. Even the local-language keeps
-#: fell to typability (#munchen -> #munich, #medellín -> #medellin); `#españa`,
-#: a country channel, is now the only accented survivor. Only the entry above
-#: survived on its merits.
-KEPT_NON_CONVENTIONAL = ("bay-area",)
+#: fell to typability then (#munchen -> #munich, #medellín -> #medellin), but
+#: the 2026-08-22 qualified-slug decision brought `#munchen` BACK — its
+#: `#munich` target turned out to be squatted, and the native name beats
+#: waiting (the #españa / #deutschland precedent).
+#: 2026-08-22 (user-decided): squatted city names resolve to a QUALIFIED slug
+#: instead of waiting on the squatter — `<city>-<state>` for US cities
+#: (austin-tx, charlotte-nc, dallas-tx; austin-tx superseded the one-day
+#: `#austin-area` keep of 2026-08-21). The squatted originals are recorded in
+#: the sheet's `Erstwhile Channels` column; never re-plan them.
+#: NOTE this tuple is a DECISION RECORD, not config: nothing at runtime reads
+#: it (only a test asserts against it). The live protection is the sheet cell
+#: plus the erstwhile guard.
+KEPT_NON_CONVENTIONAL = ("bay-area", "austin-tx", "charlotte-nc", "dallas-tx",
+                         "munchen")
+
+#: The sheet column that records each chapter's squatted and former channel
+#: names ("erstwhile"), added 2026-08-22. Free text per cell, but with a fixed
+#: grammar so it stays machine-readable: bare channel slugs, annotations only
+#: inside parentheses, `·` or `,` between entries, and the word `formerly` as
+#: an allowed connective. parse_erstwhile() below is the one reader; the
+#: provisioner refuses to create or rename into any name it yields. The column
+#: is optional — a sheet without it just yields no forbidden names — because
+#: this engine must keep working against older copies of the tab.
+ERSTWHILE_COLUMN = "Erstwhile Channels"
+_ERSTWHILE_PARENS = re.compile(r"\([^)]*\)")
+# ASCII slugs only, deliberately: an accented erstwhile name (españa, münchen)
+# would fall out unprotected. This workspace HAS accented channel history, so
+# record such names in their typable ASCII spelling — the test pins the drop.
+_ERSTWHILE_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def parse_erstwhile(text, discarded=None):
+    """The channel names recorded in one Erstwhile Channels cell.
+
+    Strips parenthesized annotations first, then splits on the separators; a
+    leading `#` is shorthand people will type and is stripped before matching.
+    A token that fails the slug shape (or is the `formerly` connective) is
+    dropped — and appended to `discarded` when the caller passes a list, so
+    the provisioner can say how many names it is NOT protecting. Two failure
+    directions, both deliberate: punctuation-bearing junk under-protects
+    (dropped, reported), while bare lowercase prose IS read as names — put
+    annotations in parentheses, because a stray word here over-protects by
+    refusing an unrelated create (loudly, in the REFUSED report).
+    """
+    out = set()
+    for part in re.split(r"[·,]", _ERSTWHILE_PARENS.sub(" ", text or "")):
+        for tok in part.split():
+            tok = tok.strip().lower().lstrip("#")
+            if not tok or tok == "formerly":
+                continue
+            if _ERSTWHILE_SLUG.match(tok):
+                out.add(tok)
+            elif discarded is not None:
+                discarded.append(tok)
+    return out
+
+
+def read_erstwhile():
+    """Return (names, discarded, column_present) for the whole sheet.
+
+    names   — every erstwhile channel name, folded to one set
+    discarded — tokens that failed the slug grammar and are NOT protected
+    column_present — False when the sheet has no ERSTWHILE_COLUMN header
+
+    Its own small read (not part of read_grid) so the provisioner can call it
+    without adopting read_grid's abort-on-missing-column contract. The absent
+    column is TOLERATED (older tab copies) but must be SURFACED by the caller:
+    on the live sheet the column exists as of 2026-08-22, so absence means a
+    rename or restructure silently disarmed the guard — the exact failure the
+    2026-08 A:D-range breakage already demonstrated on this tab.
+    """
+    rows = get_values(CHAPTERS_ID, "'%s'!A:AZ" % CHAPTERS_TAB)
+    if not rows:
+        return set(), [], False
+    headers = [h.strip() for h in rows[0]]
+    if ERSTWHILE_COLUMN not in headers:
+        return set(), [], False
+    i = headers.index(ERSTWHILE_COLUMN)
+    names, discarded = set(), []
+    for row in rows[1:]:
+        names |= parse_erstwhile(cell(row, i), discarded)
+    return names, discarded, True
 
 #: Country -> the channel that serves it, where that channel is not named after
 #: the country in ASCII English. Without this the engine plans a brand-new
@@ -102,7 +180,24 @@ KEPT_NON_CONVENTIONAL = ("bay-area",)
 #: name for itself wins over the convention. Add an entry whenever the report's
 #: "countries with chapters but no channel named after them" section names a
 #: country that demonstrably already has a room.
-COUNTRY_CHANNELS = {"Spain": "españa"}
+COUNTRY_CHANNELS = {
+    "Spain": "españa",
+    # #germany is squatted by an invisible private room (Pro plan, no way to
+    # reclaim), so Germany's country room takes the native name instead —
+    # created 2026-08-22, same precedent as #españa.
+    "Germany": "deutschland",
+    # One Nordic room, not per-country rooms (user-decided 2026-08-19):
+    # #nordics (129 members, the 2021 room, renamed from #nordics-public)
+    # serves the Nordic chapters. The four countries with chapters today are
+    # folded below; if a Reykjavik/Iceland chapter lands, add "Iceland" here
+    # in the same change. The per-country rooms were folded —
+    # #sweden/#denmark/#finland were days-old and empty, #norway had been
+    # silent since 2024 and got a pointer post before archiving.
+    "Denmark": "nordics",
+    "Finland": "nordics",
+    "Norway": "nordics",
+    "Sweden": "nordics",
+}
 
 #: Values that channel_map.json's unconfirmed `public` table filed in the wrong
 #: COLUMN — not the wrong name, the wrong kind of thing.
