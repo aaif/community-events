@@ -208,7 +208,7 @@ _TABLES = {"public": {}, "organizers": {}, "regional": {}}
 # The London shape after the chain applied AND the sweep archived the parked
 # room: old name live again (held by the promoted room), target name exists
 # only among ARCHIVED names. Re-planning it would rename the real room away.
-_c, _r, _b, _m, _a, _applied = _with_maps(
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
     {"old-organizers": "old-organizers-deprecated",
      "meetup-organizers": "old-organizers"}, {},
     lambda: prov.plan(_TABLES, live={"old-organizers"},
@@ -220,7 +220,7 @@ check("the applied classification is reported, not swallowed",
 
 # A genuine squatter: the old name is nobody's rename target, so target-exists
 # means blocked — never silently treated as applied.
-_c, _r, _b, _m, _a, _applied = _with_maps(
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
     {"utah": "salt-lake-city"}, {},
     lambda: prov.plan(_TABLES, live={"utah", "salt-lake-city"},
                       all_names={"utah", "salt-lake-city"}))
@@ -229,7 +229,7 @@ check("a blocked rename is not reported as applied", _applied, [])
 
 # A name a pending rename frees INTO is satisfied by the rename, not created.
 _tables2 = {"public": {"Bern": "bern"}, "organizers": {}, "regional": {}}
-_c, _r, _b, _m, _a, _applied = _with_maps(
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
     {"old-bern": "bern"}, {},
     lambda: prov.plan(_tables2, live={"old-bern"}, all_names={"old-bern"}))
 check("a rename-freed name is not also created", _c, [])
@@ -237,7 +237,7 @@ check("it counts as already satisfied", [n for n, _p, _w in _a], ["bern"])
 check("and the rename itself is planned", _r, [("old-bern", "bern")])
 
 # all_names defaults to live — pre-existing behavior unchanged.
-_c, _r, _b, _m, _a, _applied = _with_maps(
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
     {"a": "b"}, {}, lambda: prov.plan(_TABLES, live={"a"}))
 check("all_names defaults to live", _r, [("a", "b")])
 
@@ -256,6 +256,16 @@ check("refusals are reported, not dropped",
 check("an empty forbidden set changes nothing",
       prov.forbid_erstwhile(_creates, _renames, frozenset()),
       (_creates, _renames, []))
+
+# The guard lives INSIDE plan(): no caller can obtain an unfiltered plan.
+_c, _r, _b, _m, _a, _applied, _ref = _with_maps(
+    {"old-x": "munich"}, {},
+    lambda: prov.plan({"public": {"Austin": "austin"}, "organizers": {},
+                       "regional": {}},
+                      live={"old-x"}, forbidden={"austin", "munich"}))
+check("plan() itself refuses erstwhile creates and rename targets",
+      (_c, _r, sorted(k for k, _n, _d in _ref)), ([], [], ["create", "rename"]))
+check("plan() without forbidden refuses nothing", _ref0, [])
 
 
 # --- plan_archives(): the only gate before a room is closed --------------------

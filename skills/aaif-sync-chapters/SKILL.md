@@ -343,7 +343,11 @@ A pipeline person lands as `Prospect` (organizers) or their role status
 (hosts/speakers), never `Trusted/Regular`. Acceptance upgrades the row in place
 on a later run. **Drive access still keys off acceptance** — `sync_access.py`
 reads the intake with the accepted-only default, so a Prospect in the CRM gets
-no folder grant. One gap to know about: a Prospect whose intake row is later
+no folder grant. One merge refusal (the form is public and email is the merge
+key): a **not-yet-accepted row never merges into a person whose rows are all
+accepted** — it is reported under the not-synced count ("SECURITY" line;
+`--verbose` names it) for a human to review, so a stranger submitting under an
+accepted organizer's address cannot write into that person's CRM row. One gap to know about: a Prospect whose intake row is later
 `Denied` stays in the CRM (the engine never deletes people) and shows up under
 "Already in a CRM and NOT touched" — remove that row by hand.
 
@@ -678,16 +682,21 @@ local-language channels to the convention (a rename keeps members and history,
 so nothing was lost). The exceptions that remain are all deliberate and all
 recorded in code:
 
-- **`KEPT_NON_CONVENTIONAL`** — rooms whose name is kept: `#bay-area` (one room
-  serving two chapters) and the 2026-08-22 **qualified slugs**.
+- **`KEPT_NON_CONVENTIONAL`** — a *decision record* (nothing reads it at
+  runtime) of city rooms whose name is kept: `#bay-area` (one room serving two
+  chapters) plus the 2026-08-22 qualified **city** slugs and `#munchen`. The
+  qualified *organizer* slugs live on the sheet and in `CHANNEL_RENAMES`, not
+  here.
 - **Qualified slugs (2026-08-22, user-decided — "fewest divergences"):** where a
   conventional name is held by an *invisible private squatter* the Pro plan
   cannot reclaim, the room takes a qualified form instead of waiting: city rooms
   get a state code (`#austin-tx`, `#charlotte-nc`, `#dallas-tx`) or keep the
-  native name (`#munchen`, `#deutschland` — the `#españa` precedent); organizer
-  rooms get `<city>-<state|countrycode>-organizers` (`seattle-wa-organizers`,
-  `toronto-ca-organizers`, …). The suffix and column semantics never change —
-  only the city slug gains a code.
+  native name (`#munchen`, the `#españa` precedent); organizer rooms get
+  `<city>-<state|countrycode>-organizers` (`seattle-wa-organizers`,
+  `toronto-ca-organizers`, …). Country rooms follow the same native-name move —
+  `#deutschland` was *created* as Germany's country room because `#germany` is
+  squatted (`COUNTRY_CHANNELS`). The suffix and column semantics never change —
+  only the slug diverges.
 - **`Erstwhile Channels` (sheet column):** every squatted or superseded name is
   recorded there per chapter, and `provision_channels.py` **refuses to create or
   rename into any recorded name** (`forbid_erstwhile`, fed by
@@ -799,10 +808,13 @@ Renames run **before** creates — creating `#bengaluru` first would take the na
 and strand `#bangalore`'s members in the old room.
 
 Two prerequisites, neither in place by default: a token with `channels:write`,
-`groups:write` and `chat:write` (user-token scopes for create/rename and the
-farewell pointer; `channels:join` is worth adding so the sweep can join a
-public room before posting in it — the audit token has read scopes only), and
-`--i-have-approval` alongside `--write`.
+`groups:write` and `chat:write` in `$AAIF_SLACK_WRITE_TOKEN` (user-token scopes
+for create/rename and the farewell pointer; `channels:join` is worth adding so
+the sweep can join a public room before posting in it), and `--i-have-approval`
+alongside `--write`. Since 2026-08-22 the **read-only report also prefers
+`$AAIF_SLACK_WRITE_TOKEN`** — the Slack CLI credential expired for good and
+cannot be re-scoped, so without the env var the run falls back to a dead
+credential and says so on stderr.
 
 ## Adding organizers to their channel (`invite_organizers.py`)
 

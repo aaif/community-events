@@ -76,10 +76,16 @@ def collect(city_filter=None):
     rows = [{city, channel, channel_id, missing: [(name, id)], present: [...],
              unaccounted: [ids]}].
     """
-    # Same read-token fallback as provision_channels.main(): the CLI credential
-    # expired for good in 2026-08, and the env write token carries the read
-    # scopes the audits already run on.
-    api = slackmod.Slack(token=os.environ.get(WRITE_TOKEN_ENV, "").strip() or None)
+    # Same read-token fallback as provision_channels.main(): this estate's CLI
+    # credential expired for good in 2026-08, and the env write token carries
+    # the read scopes the audits already run on. Name the real fix when the
+    # env var is absent, or the eventual auth error blames the wrong credential.
+    token = os.environ.get(WRITE_TOKEN_ENV, "").strip()
+    if not token:
+        print("note: %s is not set — falling back to the Slack CLI credential, "
+              "which on this estate is expired. If auth fails, export %s."
+              % (WRITE_TOKEN_ENV, WRITE_TOKEN_ENV), file=sys.stderr)
+    api = slackmod.Slack(token=token or None)
     api.require_scopes("channels:read", "groups:read",
                        "users:read", "users:read.email")
 

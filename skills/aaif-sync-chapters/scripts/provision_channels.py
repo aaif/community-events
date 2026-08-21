@@ -133,8 +133,9 @@ CHANNEL_RENAMES = {
     "london-meetup-organizers": "london-organizers",
     "bay-area-sf-organizers": "bay-area-organizers",
     # 2026-08-21: the once-queued #austin-area-organizers -> #austin-organizers
-    # rename was DROPPED along with the #austin plan below — the chapter keeps
-    # the austin-area name, so its organizer room already matches.
+    # rename was DROPPED with the #austin plan; on 2026-08-22 the qualified
+    # convention then renamed the pair by hand: #austin-area -> #austin-tx and
+    # #austin-area-organizers -> #austin-tx-organizers (see the block below).
     # 2026-08-17 naming-convention sweep (user-decided): city channels take the
     # plain city name, organizer rooms take <city>-organizers. #bay-area is a
     # deliberate keep.
@@ -148,29 +149,32 @@ CHANNEL_RENAMES = {
     # frankfurt_main→frankfurt(+-organizers), nyc→new-york,
     # nyc-chapter-leads→new-york-organizers, portland-oregon→portland,
     # washington-dc-the-capital-organizers→washington-dc-organizers.
-    # STILL PENDING below — each target name is held by an INVISIBLE private
-    # room, so they fail with name_taken (non-fatal) until those are
-    # deprecated via the admin UI. (NOT meetup-barcelona-organizers ->
-    # barcelona-organizers: its "squatter" turned out to be the REAL organizer
-    # room — 2024, 16 members — so the freshly provisioned 3-member room merges
-    # into it instead; see CHANNEL_MERGES.)
-    # 2026-08-22 (user-decided): squat-affected organizer rooms take the
-    # QUALIFIED convention `<city>-<state|countrycode>-organizers` instead of
-    # waiting on their invisible squatters — the suffix stays, only the city
-    # slug gains a code, mirroring the austin-tx / charlotte-nc / dallas-tx
-    # city rooms. Applied same day for Seattle, Portland and Austin, and for
-    # the seven rooms that had briefly carried the reversed organizers-<city>
-    # names (Toronto/Melbourne/Milan/Oslo/Seoul/Sydney/Vancouver).
+    # (NOT meetup-barcelona-organizers -> barcelona-organizers: its "squatter"
+    # turned out to be the REAL organizer room — 2024, 16 members — so the
+    # freshly provisioned 3-member room merges into it instead; see
+    # CHANNEL_MERGES.)
+    # 2026-08-22 (user-decided, "fewest divergences"): squat-affected organizer
+    # rooms take the QUALIFIED convention `<city>-<state|countrycode>-organizers`
+    # instead of waiting on their invisible squatters — the suffix stays, only
+    # the city slug gains a code, mirroring the austin-tx / charlotte-nc /
+    # dallas-tx city rooms. The qualified targets have NO squatter, and every
+    # rename below was APPLIED BY HAND the same day (kept here as the record;
+    # plan() classifies them applied because the old names are no longer live).
+    # Also applied by hand, no entries needed: the seven rooms that briefly
+    # carried reversed organizers-<city> names (Toronto/Melbourne/Milan/Oslo/
+    # Seoul/Sydney/Vancouver) were renamed to their qualified forms, and
+    # #austin-area / #austin-area-organizers became #austin-tx /
+    # #austin-tx-organizers.
     "meetup-seattle-organizers": "seattle-wa-organizers",
     "washington-dc-the-capital": "washington-dc",
-    # Austin RESOLVED 2026-08-21 (user-decided): #austin stays squatted by an
-    # invisible private room with no path to free it on the Pro plan, so the
-    # chapter keeps its historical name instead — the real room (76 members,
-    # 2023; parked as #austin-area-deprecated on 2026-08-17) was renamed BACK
-    # to #austin-area, the sheet's Slack Channel cell now says `austin-area`,
-    # and the 2026-08-18 junk room was renamed to #austin-area-junk and
-    # re-archived to free the name. A deliberate keep like #bay-area — do NOT
-    # re-plan #austin even if the squatter is someday cleared.
+    # Austin, full history: #austin is squatted with no path to free it on the
+    # Pro plan. 2026-08-21 parked the chapter on its historical #austin-area
+    # (junk room archived as #austin-area-junk); 2026-08-22's qualified
+    # convention superseded that with #austin-tx (the sheet's Slack Channel
+    # cell now says `austin-tx`, KEPT_NON_CONVENTIONAL carries it, and the
+    # squatted `austin`/`austin-organizers` names live in the sheet's
+    # Erstwhile Channels column). Do NOT re-plan #austin even if the squatter
+    # is someday cleared.
     "portland-oregon-organizers": "portland-or-organizers",
     # 2026-08-19 (user-decided, revised same day): country-named chapters
     # become capital-city chapters — but #switzerland (80) and #scotland (71)
@@ -192,8 +196,9 @@ CHANNEL_RENAMES = {
     # the real chapter room (all the recent activity) — its own message history
     # settled it: a TEMPORARY event-coordination room with external sponsor
     # folk in it, to be left alone under its own name. #sydney (2022, 57
-    # members) stays the city room; #sydney-organizers is planned from the
-    # sheet and currently blocked by an invisible private squatter.
+    # members) stays the city room; the organizer room is
+    # #sydney-au-organizers (created 2026-08-22 under the qualified
+    # convention — the squatted #sydney-organizers is recorded as erstwhile).
     # munchen -> munich DROPPED 2026-08-22 (user-decided): #munich is squatted
     # by an invisible private room, so #munchen (107 members) keeps its native
     # name — the #españa / #deutschland precedent. The sheet's Slack Channel
@@ -327,10 +332,14 @@ def order_renames(renames, live):
 
 
 #: Write scopes cannot be added to the Slack CLI's own token, so the write path
-#: takes a SEPARATE token from `AAIF_SLACK_WRITE_TOKEN`. The audit keeps using
-#: `~/.slack/credentials.json` untouched — which is the point: the read path
-#: cannot acquire write power by accident, and revoking the write app does not
-#: disturb the audits.
+#: takes a SEPARATE token from `AAIF_SLACK_WRITE_TOKEN`. Since 2026-08-22 the
+#: READ path here (and in invite_organizers) prefers the same env token: the
+#: CLI credential expired for good that month and cannot be re-scoped, so the
+#: old "reads never touch the write token" separation is retired for these two
+#: scripts — the remaining guarantees are call-level, not token-level:
+#: call_write() is the only door to WRITE_METHODS, and every write still sits
+#: behind `--write --i-have-approval`. (On a machine with live CLI creds and
+#: no env token, reads still work read-only off the CLI credential.)
 WRITE_TOKEN_ENV = "AAIF_SLACK_WRITE_TOKEN"
 
 
@@ -398,8 +407,14 @@ def _retry_secs(value, default=10):
         return default
 
 
-def plan(tables, live, all_names=None):
-    """Return (creates, renames, blocked, merges, already, applied).
+def plan(tables, live, all_names=None, forbidden=frozenset()):
+    """Return (creates, renames, blocked, merges, already, applied, refused).
+
+    `forbidden` is the erstwhile-name set (sync_resources.read_erstwhile):
+    creates and rename TARGETS matching it are moved to `refused` — inside
+    plan(), not at the call site, so no future caller can obtain an unfiltered
+    plan. The filter runs BEFORE rename ordering, so a refused rename can
+    never leave order_renames() counting on a name it would have freed.
 
     `all_names` is every channel name INCLUDING archived ones (defaults to
     `live`). Applied-rename detection must use it: once the deprecated-room
@@ -454,9 +469,12 @@ def plan(tables, live, all_names=None):
     # step that was meant to free a name simply never appearing anywhere.
     applied = sorted((o, n) for o, n in CHANNEL_RENAMES.items()
                      if o in live and o not in wanted)
+    creates, wanted_pairs, refused = forbid_erstwhile(
+        creates, sorted(wanted.items()), forbidden)
+    wanted = dict(wanted_pairs)
     renames, blocked = order_renames(wanted, live)
     merges = [(o, m) for o, m in sorted(CHANNEL_MERGES.items()) if o in live]
-    return creates, renames, blocked, merges, already, applied
+    return creates, renames, blocked, merges, already, applied, refused
 
 
 def forbid_erstwhile(creates, renames, forbidden):
@@ -486,11 +504,18 @@ def main():
                     help="required alongside --write; see the module docstring")
     a = ap.parse_args()
 
-    # The CLI credential expired for good in 2026-08 and cannot be re-scoped,
-    # so reads fall back to the same env token the writes use — it carries the
-    # read scopes (the audits run on it), and a run that has no env token still
-    # works read-only off live CLI creds where those exist.
-    token = os.environ.get(WRITE_TOKEN_ENV, "").strip() or slackmod.load_token()
+    # This estate's CLI credential expired for good in 2026-08 and cannot be
+    # re-scoped, so reads prefer the same env token the writes use — it
+    # carries the read scopes (the audits run on it). The load_token fallback
+    # exists for a DIFFERENT machine with its own live CLI credential; here it
+    # only produces a later auth failure, so name the actual fix up front
+    # instead of letting load_token's "run `slack auth login`" advice mislead.
+    token = os.environ.get(WRITE_TOKEN_ENV, "").strip()
+    if not token:
+        print("note: %s is not set — falling back to the Slack CLI credential, "
+              "which on this estate is expired. If auth fails, export %s."
+              % (WRITE_TOKEN_ENV, WRITE_TOKEN_ENV), file=sys.stderr)
+        token = slackmod.load_token()
     api = slackmod.Slack(token=token)
     who = api.ok("auth.test")
     print("workspace: %s (%s)\n" % (who.get("team"), who.get("team_id")))
@@ -499,18 +524,33 @@ def main():
     live = {c["name"] for c in chans if not c["is_archived"]}
     by_name = {c["name"]: c for c in chans}
     _, tables = ao.read_chapters()
-    creates, renames, blocked, merges, already, applied = plan(
-        tables, live, set(by_name))
     # Imported here, not at module top: sync_resources pulls in the whole CRM
     # engine, and the plan()/forbid_erstwhile() unit tests import this module
     # without a sheet to read.
-    from sync_resources import read_erstwhile
-    creates, renames, refused = forbid_erstwhile(creates, renames, read_erstwhile())
+    from sync_resources import ERSTWHILE_COLUMN, read_erstwhile
+    forbidden, unparsed, col_present = read_erstwhile()
+    creates, renames, blocked, merges, already, applied, refused = plan(
+        tables, live, set(by_name), forbidden=forbidden)
     # Only rooms ALREADY deprecated at plan time: one this run retires still
     # has its people, so it waits for the next run — by which point they have
     # had the pointer, or (private) have been invited across.
     archives = plan_archives(api, by_name, live, who.get("user_id"))
 
+    # The guard's state prints on EVERY run, active or not: a run with the
+    # column missing/renamed must not be indistinguishable from a run where
+    # the guard loaded and had nothing to refuse — this sheet has silently
+    # broken a reader through restructuring once already.
+    if not col_present:
+        print("WARNING: erstwhile guard INACTIVE — column %r is not on the "
+              "sheet. On the live tab it has existed since 2026-08-22, so its "
+              "absence means a rename/restructure disarmed the guard."
+              % ERSTWHILE_COLUMN)
+    else:
+        print("erstwhile guard: %d name(s) protected%s"
+              % (len(forbidden),
+                 "; %d unparsable token(s) NOT protected: %s"
+                 % (len(unparsed), ", ".join(sorted(set(unparsed))))
+                 if unparsed else ""))
     print("Already exist: %d" % len(already))
     if refused:
         print("\nREFUSED — erstwhile name(s) the estate walked away from "
