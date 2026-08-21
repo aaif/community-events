@@ -1,6 +1,6 @@
 ---
 name: aaif-sync-chapters
-description: Push intake decisions out of the Intake Ops sheet — accepted organizers onto the Chapters List and into each chapter's About doc, accepted people plus their survey interest into their chapter's Attendee CRM, per-chapter Drive access to replace the folder's public link-share, and each chapter's Drive folder and Slack channels onto the Chapters List resource map. Reports & proposes by default; only writes on explicit approval. Use when asked to sync organizers/chapters/CRMs, push intake decisions to the chapters list, update a chapter's About doc organizers, add intake people to a chapter's CRM, give organizers access to their own chapter, or record which Slack channel and Drive folder a chapter uses.
+description: Push intake decisions out of the Intake Ops sheet — accepted organizers onto the Chapters List and into each chapter's About doc, intake people plus their survey interest into their chapter's Attendee CRM (accepted people always; organizer candidates only where the chapter is big enough to self-serve), per-chapter Drive access to replace the folder's public link-share, and each chapter's Drive folder and Slack channels onto the Chapters List resource map. Reports & proposes by default; only writes on explicit approval. Use when asked to sync organizers/chapters/CRMs, push intake decisions to the chapters list, update a chapter's About doc organizers, add intake people to a chapter's CRM, give organizers access to their own chapter, or record which Slack channel and Drive folder a chapter uses.
 argument-hint: "[chapters|about|crm|access|resources|nightly] [--write]"
 ---
 
@@ -13,7 +13,7 @@ ever read**, the report is the default, and `--write` re-verifies itself:
 |---|---|---|---|
 | Chapters feed | `sync_chapters.py` | **accepted organizer names** | the public Chapters List sheet |
 | About docs | `sync_about.py` | **accepted organizer names** | each chapter folder's `About.docx` |
-| Chapter CRMs | `sync_crm.py` | **accepted people + their survey interest** | each chapter's private `<City> CRM.xlsx` |
+| Chapter CRMs | `sync_crm.py` | **accepted + pipeline people (self-serve policy) + their survey interest** | each chapter's private `<City> CRM.xlsx` |
 | Chapter access | `sync_access.py` | **per-chapter Drive grants** | the Chapters folder's sharing |
 | Resource map | `sync_resources.py` | **Drive folder + Slack channels** | the Chapters List resource columns |
 
@@ -323,16 +323,29 @@ Every chapter folder under the **Chapters** Drive folder
 `Attendees` tab is the chapter's private people database. `sync_crm.py` fills it
 from the intake and carries each person's survey interest across.
 
-**This CRM is the onboarding list.** It decides who gets access to a chapter's
-Drive folder, so a person reaches it after a **decision**, not on submitting the
-form. Only `Accepted` and `Existing (from MLOps)` sync. This is an allowlist:
-every other status on the intake dropdown is held back and reported, by
-construction — see `aaif-triage-intake` for the current set rather than trusting
-an enumeration here, which would rot the next time the dropdown changes.
+**Who syncs — the self-serve organizer policy (2026-08).**
 
-> As of 2026-08 that means **organizers only** — the Hosts and Speakers tabs have
-> never been triaged off `New` (0 of 26 and 0 of 55). Both start flowing the
-> moment someone accepts them; nothing in the engine needs to change for that.
+- `Accepted` and `Existing (from MLOps)` people always sync, all three role tabs.
+- **Hosts and speakers still in the pipeline** (`New` / blank / `In progress` /
+  `Tentative` / `Interviewing`) sync too, so a chapter sees its candidate venues
+  and talks without waiting on central triage.
+- **Organizers still in the pipeline** sync **only into a self-serve chapter** —
+  one with **4+ accepted organizers** (`SELF_SERVE_MIN`), not counting AAIF ops
+  people (`AAIF_OPS_NAMES`: Rahul, Demetrios, Ijeoma). Those chapters run their
+  own interviews and grow their own team; below the threshold, organizer
+  approval stays with AAIF ops and the candidates are held back and reported
+  ("Held" line; `--verbose` names them).
+- `Denied` / `Inactive` / `Duplicate` never sync. Both status sets are
+  **allowlists** in `sync_crm.py` (`SYNC_STATUSES`, `PIPELINE_STATUSES`), so a
+  new dropdown value syncs nobody until it's placed — fail closed.
+
+A pipeline person lands as `Prospect` (organizers) or their role status
+(hosts/speakers), never `Trusted/Regular`. Acceptance upgrades the row in place
+on a later run. **Drive access still keys off acceptance** — `sync_access.py`
+reads the intake with the accepted-only default, so a Prospect in the CRM gets
+no folder grant. One gap to know about: a Prospect whose intake row is later
+`Denied` stays in the CRM (the engine never deletes people) and shows up under
+"Already in a CRM and NOT touched" — remove that row by hand.
 
 **Keep it minimal.** Only six of the eleven columns are ever written. `Signal`,
 `LinkedIn URL`, `Company`, `Role / title` and `Technical expertise` still exist
@@ -369,9 +382,9 @@ are being onboarded (see the sharing note at the end of this section).
 | CRM column | Filled from |
 |---|---|
 | `Full name` | role tab `Name` / `Full name` |
-| `Trusted/Regular` | `Yes` for an organizer — they're on the team, not a guest to triage |
-| `Status` | `Organizer` / `Speaker` / `Host` (everyone syncing is already accepted) |
-| `Notes (CRM)` | provenance — `Intake: Organizer · Accepted · 2026-08-07` |
+| `Trusted/Regular` | `Yes` for an **accepted** organizer — they're on the team, not a guest to triage |
+| `Status` | the accepted role (`Organizer` / `Speaker` / `Host`); a pipeline organizer is `Prospect`, a pipeline host/speaker keeps the role status |
+| `Notes (CRM)` | provenance — `Intake: Organizer · Accepted · 2026-08-07` (every merged role and status, in priority order) |
 | `Email` | role tab `Email` — **also the dedupe key** |
 | `What brings you here?` | the survey answer **verbatim**, plus the role's detail (`Talk title` / `Venue name` / `Chapter / city wanted`) |
 
@@ -475,9 +488,12 @@ is why row writes, serialization and the dropdown patch all live inside
 
 ## Sharing: minimal by design
 
-`CRM_WRITTEN` (six columns) and `SYNC_STATUSES` (accepted only) are what keep
-un-vetted applicants and their survey detail out of a folder shared more widely
-than intended. **Re-check the folder's sharing before widening either** — they
+`CRM_WRITTEN` (six columns) plus the status allowlists (`SYNC_STATUSES`,
+`PIPELINE_STATUSES` and the `SELF_SERVE_MIN` gate on pipeline organizers) are
+what keep declined applicants and everyone's survey detail out of a folder
+shared more widely than intended — and since 2026-08 a *vetting-in-progress*
+person can legitimately appear in a self-serve chapter's CRM as a `Prospect`.
+**Re-check the folder's sharing before widening any of them** — they
 are the whole mitigation, and the CRM is written *before* access is narrowed
 (feed → CRM → access), so the write lands under whatever sharing exists at the
 time.
