@@ -373,7 +373,7 @@ def main():
     # pass a pull that had lost half the workspace.
     general = next((c for c in chans if c.get("is_general")), None)
     active_humans = sum(1 for u in directory
-                        if not u["is_bot"] and not u["is_app_user"]
+                        if not u["is_bot"] and not u.get("is_app_user")
                         and not u["deleted"] and u["id"] != "USLACKBOT")
     if general is None or general["num_members"] is None:
         print("  note: no default channel size available — the directory "
@@ -408,11 +408,7 @@ def main():
     html_doc = build_report(chans, directory, dt.datetime.now(dt.timezone.utc),
                             activity)
     html_path = args.out + ".html"
-    # Explicit UTF-8: channel and person names carry accents and the page uses
-    # em dashes; the locale default would mangle or refuse them.
-    with open(html_path, "w", encoding="utf-8") as fh:
-        fh.write(html_doc)
-    os.chmod(html_path, 0o600)   # names + emails: same handling as the cache
+    rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
     if not args.no_pdf:
         print("wrote %s" % rs.to_pdf(os.path.abspath(html_path), os.path.abspath(args.out + ".pdf")))

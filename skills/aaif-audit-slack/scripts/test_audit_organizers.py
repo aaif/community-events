@@ -22,6 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import audit_organizers as ao  # noqa: E402
 
+# ao's own import shims lib/ onto sys.path, so this resolves after it.
+from aaif_events.slack import SlackError  # noqa: E402
+
 FAILS = []
 
 
@@ -38,7 +41,7 @@ def check_raises(label, fn, needle=""):
             FAILS.append("%s: aborted, but message lacked %r:\n     %s"
                          % (label, needle, exc))
         return
-    except ao.SlackError as exc:  # pragma: no cover - defensive
+    except SlackError as exc:  # pragma: no cover - defensive
         if needle and needle not in str(exc):
             FAILS.append("%s: raised, but message lacked %r" % (label, needle))
         return
@@ -441,11 +444,26 @@ def test_organizer_suffix_precedence_is_config_order():
 
 def test_a_public_alias_pointing_at_a_private_channel_aborts():
     """The auto path refuses private channels; an alias must not bypass it."""
-    check_raises(
-        "private public-alias aborts",
-        lambda: ao.match_channels([{"city": "Boston"}], [chan("secret", private=True)],
-                                  cfg(public={"Boston": "secret"})),
-        "PRIVATE")
+    rows = ao.match_channels([{"city": "Boston"}], [chan("secret", private=True)],
+                             cfg(public={"Boston": "secret"}))
+    check("private public-alias is recorded, not matched",
+          (rows[0]["public"], rows[0]["public_how"]),
+          (None, "alias-private:secret"))
+    check_raises("private public-alias aborts by default",
+                 lambda: ao.assert_aliases_resolve(rows, "map.json"), "PRIVATE")
+
+
+def test_a_private_public_alias_downgrades_under_planned_ok():
+    """--planned-ok reports the pre-convert state truthfully instead of dying."""
+    rows = ao.match_channels([{"city": "Boston"}], [chan("secret", private=True)],
+                             cfg(public={"Boston": "secret"}))
+    planned, held = ao.mark_planned_aliases(rows)
+    check("held-private downgrade is distinct from planned",
+          (planned, held), ([], [("Boston", "secret")]))
+    check("downgraded row still reports no public channel",
+          (rows[0]["public"], rows[0]["public_how"]),
+          (None, "held-private:secret"))
+    ao.assert_aliases_resolve(rows, "map.json")  # must no longer raise
 
 
 def test_unidentified_members_are_excluded_from_the_accusing_counts():

@@ -42,21 +42,26 @@ HTML, not Office files, and render to PDF through **headless Chrome**;
 `lib/aaif_events/report_style.to_pdf` does that correctly, so call it rather than
 shelling out to a converter yourself.
 
-Prereqs: the Slack CLI authenticated (`slack auth login`); for the organizer
-engine, `gws` installed and authenticated (see the user's `gws-cli-access`
-memory). The Slack token is read from `~/.slack/credentials.json` and never
-printed.
+Prereqs: for the organizer engine, `gws` installed and authenticated (see the
+user's `gws-cli-access` memory); for Slack, the **AAIF app token**. The client
+looks for `AAIF_SLACK_WRITE_TOKEN` in the environment first, then in a `.env`
+in the working directory, and only then falls back to
+`~/.slack/credentials.json` — where the Slack CLI credential now sits expired.
+In practice the app token is the standing token for all three engines; the
+credentials file is the last resort, not the source. Wherever it came from,
+the token is never printed.
 
 ---
 
 # The ceiling — state this in any summary you write
 
-**Which ceiling applies depends on the token.** The Slack CLI token carries no
-`channels:history` and no `search:read`, and `conversations.history` returns
-`missing_scope` even for public channels — on that token, *last message posted*
-and *is this channel alive* are **unreadable**, and the organizer/member reports
-print exactly that. The **AAIF app token** (`AAIF_SLACK_WRITE_TOKEN` in the
-user's `.env`, added 2026-08-16) DOES carry `channels:history`/`groups:history`
+**Which ceiling applies depends on the token.** The Slack CLI token — the
+expired credentials-file fallback — carries no `channels:history` and no
+`search:read`, and `conversations.history` returns `missing_scope` even for
+public channels: on a token like that, *last message posted* and *is this
+channel alive* are **unreadable**, and the organizer/member reports print
+exactly that. The **AAIF app token** — the standing token, see the prereqs —
+DOES carry `channels:history`/`groups:history`
 — `conversations.history` is in the client's allowlist for it, and
 `audit_activity.py` is the engine built on it. Even then the numbers are
 **floors**: thread replies are invisible to `conversations.history`, and the
@@ -115,6 +120,10 @@ names the channel each chapter *will* have before `provision_channels.py` has
 created it, and without the flag every such name aborts the run as a
 rename/archive bug. With it, they are downgraded to "planned" in the
 data-quality notes and the chapter truthfully reports as having no channel.
+The flag also covers the sibling pre-convert state: a `Slack Channel` cell
+naming a room that exists but is still **private** (a squat awaiting an
+admin-UI convert) is downgraded to "held private" instead of aborting, and the
+chapter reports as having no public channel yet.
 Drop the flag once provisioning has run, so the abort protects the map again.
 
 | Source | Read | Used for |
@@ -203,7 +212,9 @@ The engine enforces this rather than trusting it:
   left alone it downgrades the chapter to "no channel at all" and generates
   advice to create a room it already has.
 - **A `public` alias pointing at a private channel aborts.** The automatic path
-  refuses private channels, and an alias must not be a way around that.
+  refuses private channels, and an alias must not be a way around that. Under
+  `--planned-ok` it is downgraded to "held private" and the chapter truthfully
+  reports as having no public channel yet — never as covered.
 - **The report says how each chapter matched.** Aliased chapters and deliberate
   `null`s are listed in *Data quality*, so coverage that rests on the map is
   visible rather than indistinguishable from a name match.

@@ -337,7 +337,9 @@ def _resolve_alias(city, table, by_name):
     `how` is one of: "" (the map was silent), "known-none", "alias", or
     "alias-missing:<name>". Callers must run assert_aliases_resolve() to rule
     out the last, which is always a configuration bug — or, pre-provisioning,
-    mark_planned_aliases() to downgrade it to "planned:<name>".
+    mark_planned_aliases() to downgrade it to "planned:<name>". match_channels()
+    adds "alias-private:<name>" for a public alias held by a private room,
+    policed by the same pair of callers.
     """
     if city not in table:
         return None, ""
@@ -374,10 +376,10 @@ def match_channels(chapters, chans, cfg):
         if pub and pub["is_private"]:
             # The auto path refuses private channels; an alias must not be a way
             # around that, or a private room is reported as the city's home.
-            raise SystemExit(
-                "ABORT: the Chapters List gives %r the Slack Channel #%s, which is "
-                "PRIVATE. A city's own channel must be public — move it to that "
-                "row's Organizer Channel instead." % (city, pub["name"]))
+            # Recorded rather than raised so --planned-ok can downgrade the
+            # pre-convert state (the sheet-named room exists but is still held
+            # private); the default run aborts in assert_aliases_resolve().
+            pub, how = None, "alias-private:%s" % pub["name"]
         candidates = []
         if not pub and not how:
             # Prefixes are tried in the order the config lists them, so an exact
@@ -466,6 +468,16 @@ def assert_aliases_resolve(rows, source=CHAPTERS_TAB):
             "reported as having no channel at all."
             % (len(broken), source,
                "\n  ".join("%s -> #%s" % (c, n) for c, n in broken), NO_RESOURCE))
+    held = [(r["city"], r["public_how"].split(":", 1)[1])
+            for r in rows if r["public_how"].startswith("alias-private:")]
+    if held:
+        raise SystemExit(
+            "ABORT: %d Slack Channel cell(s) on %s point at a PRIVATE channel:\n"
+            "  %s\nA city's own channel must be public. Convert the room to "
+            "public, or run with --planned-ok to report these chapters truthfully "
+            "as having no public channel yet."
+            % (len(held), source,
+               "\n  ".join("%s -> #%s" % (c, n) for c, n in held)))
 
 
 def mark_planned_aliases(rows):
@@ -481,15 +493,24 @@ def mark_planned_aliases(rows):
     The chapter is still reported as having no channel — that is the truthful
     current state — but the report's data-quality notes list these as planned
     rather than letting them blend into "nobody ever made a room".
+
+    A `public` alias held by a PRIVATE room is the sibling pre-convert state
+    (the name exists, the admin-UI convert has not happened) and is downgraded
+    to "held-private:<name>" the same way, kept distinct so the report does not
+    claim the channel is yet to be created.
     """
-    planned = []
+    planned, held = [], []
     for r in rows:
         for k in ("public_how", "organizers_how", "regional_how"):
             if r[k].startswith("alias-missing:"):
                 name = r[k].split(":", 1)[1]
                 r[k] = "planned:" + name
                 planned.append((r["city"], name))
-    return planned
+        if r["public_how"].startswith("alias-private:"):
+            name = r["public_how"].split(":", 1)[1]
+            r["public_how"] = "held-private:" + name
+            held.append((r["city"], name))
+    return planned, held
 
 
 def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
@@ -785,6 +806,13 @@ def render(audit, orphans, dupes, today):
                      "provision_channels.py has created them.</li>"
                      % (len(planned), len(planned_cities),
                         ", ".join(e(c) for c in planned_cities)))
+    held = sorted((c["city"], c["public_how"].split(":", 1)[1])
+                  for c in audit if c["public_how"].startswith("held-private:"))
+    if held:
+        notes.append("<li><strong>%d chapters' named channels exist but are still private</strong> "
+                     "— awaiting an admin-UI convert to public, so they are reported above as "
+                     "having no public channel, which is the current truth: %s.</li>"
+                     % (len(held), ", ".join("%s (#%s)" % (e(c), e(n)) for c, n in held)))
     cand = [c for c in audit if not c["public"] and c["public_candidates"]]
     if cand:
         notes.append("<li><strong>%d chapters have near-miss channels</strong> that were NOT "
@@ -948,6 +976,7 @@ def main():
 
     chan_path = os.path.join(args.cache, "channels.json")
     chans = read_cache(chan_path, args.refresh, team_id, note=print)
+    chans_cached = chans is not None      # the short-check below needs to know
     if chans is None:
         print("  fetching channels ...")
         chans = channels(api)
@@ -958,10 +987,13 @@ def main():
 
     rows = match_channels(chapters, chans, cfg)
     if args.planned_ok:
-        planned = mark_planned_aliases(rows)
+        planned, held = mark_planned_aliases(rows)
         if planned:
             print("  %d sheet-named channel(s) do not exist yet — treated as "
                   "planned, not as renames" % len(planned))
+        if held:
+            print("  %d sheet-named channel(s) exist but are still PRIVATE — "
+                  "reported as no public channel yet" % len(held))
     else:
         assert_aliases_resolve(rows)
     print("  matched: %d own channel, %d organizers channel"
@@ -1005,14 +1037,32 @@ def main():
     # conversations.list already told us how big each channel is; comparing that
     # against what conversations.members returned is a free floor on a short
     # paged pull, which would otherwise render as "accepted but absent" pills.
-    sizes = {c["name"]: c["num_members"] for c in chans}
-    short = ["#%s (%d of %d)" % (n, len(ids), sizes[n])
-             for n, ids in sorted(membership.items())
-             if sizes.get(n) is not None and len(ids) < sizes[n]]
+    # But the size may be a CACHED size: one person leaving a channel since it
+    # was written makes a complete pull look short, and aborting on that with
+    # "re-run" advice loops forever — a plain re-run reuses the same cache. So
+    # when the sizes came from cache, re-fetch the channel list (and re-stamp
+    # the cache) before accusing the pull; against fresh sizes, short really
+    # does mean a dropped page. `rows` keeps the earlier snapshot — the
+    # membership ids above were pulled for exactly those channels.
+    def undersized(chans):
+        sizes = {c["name"]: c["num_members"] for c in chans}
+        return ["#%s (%d of %d)" % (n, len(ids), sizes[n])
+                for n, ids in sorted(membership.items())
+                if sizes.get(n) is not None and len(ids) < sizes[n]]
+    short = undersized(chans)
+    if short and chans_cached:
+        print("  %d channel(s) smaller than their cached size — re-fetching the "
+              "channel list to tell a stale cache from a short pull ..."
+              % len(short))
+        chans = channels(api)
+        write_cache(chan_path, chans, team_id)
+        short = undersized(chans)
     if short:
         raise SystemExit(
-            "ABORT: membership came back short for %d channel(s): %s.\n"
-            "People would be reported as absent from rooms they are in. Re-run."
+            "ABORT: membership came back short for %d channel(s) against a "
+            "fresh channel list: %s.\nPeople would be reported as absent from "
+            "rooms they are in. Re-run with --refresh; if it persists, the "
+            "members() pagination is dropping pages."
             % (len(short), ", ".join(short)))
 
     # Only the organizer-channel members need naming, so resolve those ids
@@ -1057,11 +1107,7 @@ def main():
 
     html_doc = render(audit, orphans, dupes, dt.datetime.now(dt.timezone.utc))
     html_path = args.out + ".html"
-    # Explicit UTF-8: the page carries españa, Montréal and em dashes, and the
-    # locale default would mangle or refuse them.
-    with open(html_path, "w", encoding="utf-8") as fh:
-        fh.write(html_doc)
-    os.chmod(html_path, 0o600)   # names + emails + rosters: as sensitive as the cache
+    rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
     if not args.no_pdf:
         print("wrote %s" % rs.to_pdf(os.path.abspath(html_path),
