@@ -459,6 +459,26 @@ def plan(tables, live, all_names=None):
     return creates, renames, blocked, merges, already, applied
 
 
+def forbid_erstwhile(creates, renames, forbidden):
+    """Drop any create or rename whose TARGET is a recorded erstwhile name.
+
+    Returns (creates, renames, refused) where refused = [(kind, name, detail)].
+    An erstwhile name is one the sheet's Erstwhile Channels column records as
+    squatted or superseded (see sync_resources.ERSTWHILE_COLUMN): the estate
+    deliberately walked away from it, so recreating it — because a cell was
+    hand-reverted, or a squatter was archived and the name came free — would
+    resurrect a divergence the 2026-08-22 convention closed. Refused entries
+    are REPORTED, never silently dropped; fixing one means editing the sheet
+    (both the resource cell and the history column), not this code.
+    """
+    refused = ([("create", n, why) for n, _, why in creates if n in forbidden]
+               + [("rename", new, "#%s -> #%s" % (old, new))
+                  for old, new in renames if new in forbidden])
+    return ([c for c in creates if c[0] not in forbidden],
+            [r for r in renames if r[1] not in forbidden],
+            refused)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true")
@@ -481,12 +501,22 @@ def main():
     _, tables = ao.read_chapters()
     creates, renames, blocked, merges, already, applied = plan(
         tables, live, set(by_name))
+    # Imported here, not at module top: sync_resources pulls in the whole CRM
+    # engine, and the plan()/forbid_erstwhile() unit tests import this module
+    # without a sheet to read.
+    from sync_resources import read_erstwhile
+    creates, renames, refused = forbid_erstwhile(creates, renames, read_erstwhile())
     # Only rooms ALREADY deprecated at plan time: one this run retires still
     # has its people, so it waits for the next run — by which point they have
     # had the pointer, or (private) have been invited across.
     archives = plan_archives(api, by_name, live, who.get("user_id"))
 
     print("Already exist: %d" % len(already))
+    if refused:
+        print("\nREFUSED — erstwhile name(s) the estate walked away from "
+              "(fix the sheet, not the plan):")
+        for kind, name, detail in refused:
+            print("  #%-28s %-8s %s" % (name, kind, detail))
     print("\nTo CREATE (%d):" % len(creates))
     for name, private, why in creates:
         print("  #%-28s %-8s %s" % (name, "private" if private else "public", why))

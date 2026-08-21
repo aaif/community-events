@@ -272,6 +272,20 @@ check("the misfiled value moves column, and the row is repaired",
 check("a row that never claimed it is untouched",
       sr.propose_column_corrections([ch("Berlin", slack="berlin")], _AO), [])
 
+# --- parse_erstwhile(): the history column's fixed grammar ---------------------
+check("parse_erstwhile reads slugs around annotations",
+      sr.parse_erstwhile("seattle-organizers (squatted) · formerly meetup-seattle-organizers"),
+      {"seattle-organizers", "meetup-seattle-organizers"})
+check("parenthesized prose never yields a name",
+      sr.parse_erstwhile("munich (squatted) · germany (squatted country room)"),
+      {"munich", "germany"})
+check("comma-separated names all survive",
+      sr.parse_erstwhile("austin (squatted) · formerly austin-area, austin-area-organizers"),
+      {"austin", "austin-area", "austin-area-organizers"})
+check("a malformed cell under-protects instead of inventing names",
+      sr.parse_erstwhile("TBD?? (ask Rahul) · n/a!"), set())
+check("an empty cell yields nothing", sr.parse_erstwhile(""), set())
+
 # The country override stops a brand-new #spain being planned beside #espana.
 check("a country with its own named room is not re-planned",
       [(p["was"], p["value"]) for p in sr.propose_country_overrides(

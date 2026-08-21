@@ -103,6 +103,55 @@ HANDLES_COLUMN = "Organizer Handles"
 KEPT_NON_CONVENTIONAL = ("bay-area", "austin-tx", "charlotte-nc", "dallas-tx",
                          "munchen")
 
+#: The sheet column that records each chapter's squatted and former channel
+#: names ("erstwhile"), added 2026-08-22. Free text per cell, but with a fixed
+#: grammar so it stays machine-readable: bare channel slugs, annotations only
+#: inside parentheses, `·` or `,` between entries, and the word `formerly` as
+#: an allowed connective. parse_erstwhile() below is the one reader; the
+#: provisioner refuses to create or rename into any name it yields. The column
+#: is optional — a sheet without it just yields no forbidden names — because
+#: this engine must keep working against older copies of the tab.
+ERSTWHILE_COLUMN = "Erstwhile Channels"
+_ERSTWHILE_PARENS = re.compile(r"\([^)]*\)")
+_ERSTWHILE_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def parse_erstwhile(text):
+    """The channel names recorded in one Erstwhile Channels cell.
+
+    Strips parenthesized annotations first, then splits on the separators; a
+    token that doesn't look like a channel slug (or is the `formerly`
+    connective) is dropped rather than guessed at — a malformed cell can only
+    under-protect, never invent a forbidden name.
+    """
+    out = set()
+    for part in re.split(r"[·,]", _ERSTWHILE_PARENS.sub(" ", text or "")):
+        for tok in part.split():
+            tok = tok.strip().lower()
+            if tok != "formerly" and _ERSTWHILE_SLUG.match(tok):
+                out.add(tok)
+    return out
+
+
+def read_erstwhile():
+    """Every erstwhile channel name on the sheet, folded to a set.
+
+    Its own small read (not part of read_grid) so the provisioner can call it
+    without adopting read_grid's abort-on-missing-column contract — see the
+    ERSTWHILE_COLUMN note above.
+    """
+    rows = get_values(CHAPTERS_ID, "'%s'!A:AZ" % CHAPTERS_TAB)
+    if not rows:
+        return set()
+    headers = [h.strip() for h in rows[0]]
+    if ERSTWHILE_COLUMN not in headers:
+        return set()
+    i = headers.index(ERSTWHILE_COLUMN)
+    names = set()
+    for row in rows[1:]:
+        names |= parse_erstwhile(cell(row, i))
+    return names
+
 #: Country -> the channel that serves it, where that channel is not named after
 #: the country in ASCII English. Without this the engine plans a brand-new
 #: `#spain` alongside `#españa`, which IS Spain's room and has 112 people in it.

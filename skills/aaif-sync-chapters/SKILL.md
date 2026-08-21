@@ -671,15 +671,31 @@ Naming, and the one rule that is not obvious:
   deliberate multi-chapter room `#bay-area` (SF + Silicon Valley), which the
   `<city>` convention cannot express at all.
 
-## Why one channel name is still not `<city>`, and why that is correct
+## Why some channel names are still not `<city>`, and why that is correct
 
 The 2026-08-17 naming sweep renamed the legacy meetup-era, wider-scope and
 local-language channels to the convention (a rename keeps members and history,
-so nothing was lost — even `#munchen` and `#medellín` fell to typability; a few
-renames are still pending behind invisible squatters, see
-`provision_channels.CHANNEL_RENAMES`). One survivor remains, recorded in
-`KEPT_NON_CONVENTIONAL`: `#bay-area`, one room deliberately serving two
-chapters.
+so nothing was lost). The exceptions that remain are all deliberate and all
+recorded in code:
+
+- **`KEPT_NON_CONVENTIONAL`** — rooms whose name is kept: `#bay-area` (one room
+  serving two chapters) and the 2026-08-22 **qualified slugs**.
+- **Qualified slugs (2026-08-22, user-decided — "fewest divergences"):** where a
+  conventional name is held by an *invisible private squatter* the Pro plan
+  cannot reclaim, the room takes a qualified form instead of waiting: city rooms
+  get a state code (`#austin-tx`, `#charlotte-nc`, `#dallas-tx`) or keep the
+  native name (`#munchen`, `#deutschland` — the `#españa` precedent); organizer
+  rooms get `<city>-<state|countrycode>-organizers` (`seattle-wa-organizers`,
+  `toronto-ca-organizers`, …). The suffix and column semantics never change —
+  only the city slug gains a code.
+- **`Erstwhile Channels` (sheet column):** every squatted or superseded name is
+  recorded there per chapter, and `provision_channels.py` **refuses to create or
+  rename into any recorded name** (`forbid_erstwhile`, fed by
+  `sync_resources.read_erstwhile`). If a refusal is wrong, fix the sheet — both
+  the resource cell and the history column — not the plan.
+- **Renames are individually confirmed.** Never batch-rename on a scheme
+  approval: present each `old → new` to the user and wait, then delete the
+  "renamed the channel" system message the rename leaves behind.
 
 ### A country room is not a chapter room
 

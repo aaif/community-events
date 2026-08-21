@@ -242,6 +242,22 @@ _c, _r, _b, _m, _a, _applied = _with_maps(
 check("all_names defaults to live", _r, [("a", "b")])
 
 
+# --- forbid_erstwhile(): recorded-history names are never planned again --------
+_creates = [("boston-organizers", True, "organizer channel for Boston"),
+            ("austin", False, "chapter channel for Austin")]
+_renames = [("x-organizers", "y-organizers"), ("old", "munich")]
+_fc, _fr, _ref = prov.forbid_erstwhile(_creates, _renames,
+                                       {"austin", "munich", "germany"})
+check("an erstwhile create is refused", _fc, [_creates[0]])
+check("an erstwhile rename TARGET is refused", _fr, [("x-organizers", "y-organizers")])
+check("refusals are reported, not dropped",
+      sorted((k, n) for k, n, _d in _ref),
+      [("create", "austin"), ("rename", "munich")])
+check("an empty forbidden set changes nothing",
+      prov.forbid_erstwhile(_creates, _renames, frozenset()),
+      (_creates, _renames, []))
+
+
 # --- plan_archives(): the only gate before a room is closed --------------------
 def _chan(name, private=False, archived=False, members=()):
     return {"name": name, "id": "C-" + name, "is_private": private,
