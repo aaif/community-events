@@ -29,7 +29,7 @@ Maya Chen, Agentic AI Night:
 > tool-calling agents reliable once they leave the demo and hit real traffic. The
 > past year she has lived in what changes past ten million tool calls a day —
 > retries, idempotency, and the failure modes nobody warns you about. She brings
-> those lessons back to the community. At @mayabuilds.
+> those lessons back to the community, and shares her notes at @mayabuilds.
 >
 > **One-liner:** Maya Chen, Staff Engineer on payments — tool calling at scale,
 > and what broke at 10M requests a day.

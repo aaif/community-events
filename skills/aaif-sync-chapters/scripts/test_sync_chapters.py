@@ -14,7 +14,10 @@ HEADERS = ["Title", "City", "Country",
            "Organizer Handles",
            "Generated Geolocation", "Summary", "Image",
            "CTA", "URL for CTA", "Organizers", "Chapter Luma Link",
-           "MLOps Community Organizers"]
+           "MLOps Community Organizers",
+           # Column Q since 2026-08-22: squatted/superseded channel names that
+           # provision_channels refuses to create or rename into.
+           "Erstwhile Channels"]
 
 def chap(row, city, orgs):
     return {"row": row, "city": city, "organizers_raw": orgs}
@@ -53,7 +56,7 @@ ROW2 = ["AAIF Boston Chapter", "Boston", "USA",
         "https://drive.google.com/drive/folders/F1", "boston", "boston-organizers", "none",
         "@ada",
         "42,-71", "blurb", "img",
-        "Stay Updated", "u", "Wedge Antilles", "luma", ""]
+        "Stay Updated", "u", "Wedge Antilles", "luma", "", ""]
 _chapters, _last, LAYOUT = read_chapters_over([HEADERS, ROW2])
 check("fixture row matches the header width", len(ROW2), len(HEADERS))
 check("read_chapters resolves the real layout", LAYOUT["index"]["Organizers"], 13)
@@ -190,14 +193,34 @@ except ValueError:
 check("col_letter(-1) raises", raised, True)
 
 # --- public-form text is charset/length checked before it can reach the feed ----
-check("markup in a name aborts",
-      aborts(lambda: sync_chapters.check_public_text("name", "<img src=x onerror=1>", 5)), True)
-check("control characters abort",
-      aborts(lambda: sync_chapters.check_public_text("city", "Bo\x00ston", 5)), True)
-check("over-long text aborts",
-      aborts(lambda: sync_chapters.check_public_text("name", "A" * 200, 5)), True)
+# Skip-and-report, not abort: one hostile row must not hold every other
+# chapter's sync hostage, but the flagged value must still never be written.
+check("markup in a name is flagged",
+      sync_chapters.bad_public_text("name", "<img src=x onerror=1>") is not None, True)
+check("control characters are flagged",
+      sync_chapters.bad_public_text("city", "Bo\x00ston") is not None, True)
+check("over-long text is flagged",
+      sync_chapters.bad_public_text("name", "A" * 200) is not None, True)
 check("an ordinary accented name passes",
-      aborts(lambda: sync_chapters.check_public_text("name", "Padmé Naberrie", 5)), False)
+      sync_chapters.bad_public_text("name", "Padmé Naberrie"), None)
+
+# read_intake excludes the offending ROW and reports it; everything else syncs.
+INTAKE_HEADERS = ["Status", "Full name", "City (Existing)", "City (New)",
+                  "Run events before?", "Why organize / ties"]
+def intake_row(status, name, city):
+    return [status, name, city, "", "", ""]
+with mock.patch.object(sync_chapters, "get_values", return_value=[
+        INTAKE_HEADERS,
+        intake_row("Accepted", "Ada Lovelace", "Boston"),
+        intake_row("Accepted", "<b>Mallory</b>", "Boston"),
+        intake_row("Accepted", "Owen Lars", "Pune")]):
+    _e, _u, _c, _d, _m = sync_chapters.read_intake()
+check("a malformed row is excluded, the rest still sync",
+      [e["name"] for e in _e], ["Ada Lovelace", "Owen Lars"])
+check("the malformed row is reported with its row and reason",
+      (_m[0]["row"], _m[0]["city"], "angle brackets" in _m[0]["why"]),
+      (3, "Boston", True))
+check("a malformed row is never an unresolved/dupe entry", (_u, _d), ([], []))
 
 # --- apply_changes: exact ranges, column order, RAW (gws mocked, no network) -----
 CITY_COL = [["City"], ["Boston"]]        # row 2 = Boston, row 6 still empty

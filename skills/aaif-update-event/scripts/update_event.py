@@ -12,6 +12,10 @@ from aaif_events import office, tracker  # noqa: E402
 STALE_ON_DATE = ["square banner", "Luma cover", "announcement post",
                  "carousel", "day-of slides", "attendee reminder"]
 STALE_ON_SPEAKER = ["speaker bio", "announcement post", "carousel", "day-of slides"]
+# "Where" changes: chapter trackers say VENUE / LOCATION; series trackers say
+# PLATFORM / STREAM / JOIN LINK (see tracker.py's label note). Same stale set —
+# the reminder/slides carry the join link exactly like they carry the venue.
+STALE_ON_VENUE = ["announcement post", "day-of slides", "attendee reminder"]
 
 
 def apply_changes(root, event, set_pairs, date_str):
@@ -23,9 +27,19 @@ def apply_changes(root, event, set_pairs, date_str):
         if "=" not in pair:
             raise ValueError("--set must be LABEL=VALUE (got %r)" % pair)
         label, _, value = pair.partition("=")
+        lab = label.strip().upper()
+        if lab == "DATE & TIME":
+            # A bare field write would skip the due-date recompute (which must run
+            # against the ORIGINAL date) — that's exactly what --date exists for.
+            raise ValueError('--set cannot write DATE & TIME - use --date "..." '
+                             "so every phase due-date is recomputed from the "
+                             "original date.")
         tracker.set_field(root, event, label.strip(), value.strip())
-        if "SPEAKER" in label.upper():
+        if "SPEAKER" in lab:
             stale.update(STALE_ON_SPEAKER)
+        if ("VENUE" in lab or "LOCATION" in lab
+                or "PLATFORM" in lab or "JOIN LINK" in lab):
+            stale.update(STALE_ON_VENUE)
     if date_str:
         # restamp DUE cells using the original date still in the doc, THEN overwrite
         # DATE & TIME with the user's full string (so weekday/time are exactly as given).
@@ -42,10 +56,25 @@ def main():
     ap.add_argument("--set", action="append", default=[],
                     metavar="LABEL=VALUE", help='e.g. --set "SPEAKER(S)=Jane Doe"')
     ap.add_argument("--date", help="new DATE & TIME value; triggers due-date recompute")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print the field diff and stale-asset list; write nothing")
     a = ap.parse_args()
 
     root = office.read_document(a.docx)
+    before = dict(tracker.read_event(root, a.event)["details"]) if a.dry_run else None
     stale = apply_changes(root, a.event, a.set, a.date)
+    if a.dry_run:
+        after = tracker.read_event(root, a.event)["details"]
+        print("[dry-run] would update %r in %s:" % (a.event, a.docx))
+        for label in sorted(set(before) | set(after)):
+            if before.get(label) != after.get(label):
+                print("  %-18s %r -> %r" % (label + ":", before.get(label), after.get(label)))
+        if a.date:
+            print("  (all phase due-dates recomputed from the original date)")
+        if stale:
+            print("[dry-run] now stale — re-run these skills: " + ", ".join(sorted(stale)))
+        print("[dry-run] nothing written; re-run without --dry-run to apply.")
+        return
     office.save_document(a.docx, root, a.docx)
     print("Updated %r in %s." % (a.event, a.docx))
     if stale:

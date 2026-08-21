@@ -52,6 +52,15 @@ class TestEventModel(unittest.TestCase):
         ev = tracker.read_event(self.root, "next")
         self.assertIn("Agentic AI Night", ev["title"])
 
+    def test_select_refuses_duplicate_identical_titles(self):
+        # Two events carrying the very same title: an exact match is still
+        # ambiguous, and a write must never silently land on the wrong one.
+        events = [{"title": "Agentic AI Night", "date": dt.date(2026, 6, 24)},
+                  {"title": "Agentic AI Night", "date": dt.date(2026, 9, 15)}]
+        with self.assertRaises(LookupError) as cm:
+            tracker._select(events, "Agentic AI Night")
+        self.assertIn("identical titles", str(cm.exception))
+
 
 class TestWrites(unittest.TestCase):
     def setUp(self):

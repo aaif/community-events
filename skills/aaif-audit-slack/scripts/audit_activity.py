@@ -54,15 +54,20 @@ def cached_channels(api, cache_dir, refresh, team_id):
     return data
 
 
-def chapter_channel_names(cache_dir):
+def chapter_channel_names(cache_dir, team_id):
     """{channel name: city} for channels the organizer audit tied to a chapter.
 
     Read from the organizer audit's own output, so the two reports can never
     disagree about which channel is whose. Empty when that audit hasn't run —
     the chapter section is then omitted rather than re-derived badly here.
+    Stamped like every other read: an audit.json from a different workspace
+    would otherwise join its chapter map into this one's activity table.
     """
     path = os.path.join(cache_dir, "audit.json")
-    data = jsoncache.read(path)
+    # note=print: a pre-stamp or foreign-workspace audit.json is discarded, and
+    # without the note the chapter section just vanishes from the report with
+    # no hint that re-running audit_organizers.py would bring it back.
+    data = jsoncache.read(path, team_id=team_id, note=print)
     if data is None:
         return {}
     out = {}
@@ -81,8 +86,7 @@ def collect(api, live, cache_dir, days, refresh, team_id, now_ts):
     enough that an interrupted 15-minute sweep resumes instead of restarting.
     """
     path = os.path.join(cache_dir, "activity.json")
-    stats = (jsoncache.read(path, refresh, team_id, note=print)
-             if not refresh else None) or {}
+    stats = jsoncache.read(path, refresh, team_id, note=print) or {}
     today = dt.datetime.fromtimestamp(now_ts, dt.timezone.utc).date().isoformat()
     # Same day AND same window: a 90-day count rendered under a --days 30
     # headline is a wrong number that looks fully measured.
@@ -109,7 +113,10 @@ def collect(api, live, cache_dir, days, refresh, team_id, now_ts):
 
 def build_report(live, stats, chapter_of, days, today):
     def age_days(ts):
-        return int((today.timestamp() - ts) // 86400)
+        # `today` is stamped before the sweep, so a message posted while the
+        # sweep runs is newer than it; a negative age would fall outside every
+        # AGE_BUCKET and trip the histogram check. It is simply "this week".
+        return max(0, int((today.timestamp() - ts) // 86400))
 
     rows = []
     for c in live:
@@ -253,12 +260,10 @@ def main():
     stats = collect(api, live, args.cache, args.days, args.refresh,
                     team_id, now.timestamp())
 
-    html_doc = build_report(live, stats, chapter_channel_names(args.cache),
+    html_doc = build_report(live, stats, chapter_channel_names(args.cache, team_id),
                             args.days, now)
     html_path = args.out + ".html"
-    with open(html_path, "w", encoding="utf-8") as fh:
-        fh.write(html_doc)
-    os.chmod(html_path, 0o600)
+    rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
     if not args.no_pdf:
         print("wrote %s" % rs.to_pdf(os.path.abspath(html_path),

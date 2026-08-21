@@ -113,6 +113,72 @@ def test_a_path_outside_any_repo_is_allowed(tmp_path, monkeypatch):
     rs.assert_git_ignored(str(outside) + os.sep, str(outside / "r.html"))
 
 
+def test_a_git_failure_that_is_not_outside_a_repo_aborts(monkeypatch, tmp_path):
+    """Exit 128 for e.g. dubious ownership must not read as "outside any repo"
+    and silently disengage the guard."""
+    fake = subprocess.CompletedProcess(
+        ["git"], 128, stdout="",
+        stderr="fatal: detected dubious ownership in repository at '/x'")
+    monkeypatch.setattr(rs.subprocess, "run", lambda *a, **kw: fake)
+    with pytest.raises(SystemExit) as exc:
+        rs._repo_root(str(tmp_path / "r.html"))
+    assert "REFUSING TO RUN" in str(exc.value)
+    assert "dubious ownership" in str(exc.value)
+
+
+def test_repo_root_pins_git_to_the_c_locale(monkeypatch, tmp_path):
+    """The "not a git repository" stderr match is defeated by localized git
+    (de_DE says "kein Git-Repository"), so the subprocess must run LC_ALL=C."""
+    seen = {}
+
+    def fake_run(*a, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(["git"], 0, stdout="/repo\n", stderr="")
+
+    monkeypatch.setattr(rs.subprocess, "run", fake_run)
+    assert rs._repo_root(str(tmp_path / "r.html")) == "/repo"
+    assert seen["env"]["LC_ALL"] == "C"
+    assert seen["env"]["LANG"] == "C"
+
+
+def test_to_pdf_makes_the_pdf_0600(monkeypatch, tmp_path):
+    """Chrome writes the PDF twin of the 0600 HTML with default (world-readable)
+    permissions; to_pdf must tighten it after a successful render."""
+    html = tmp_path / "r.html"
+    html.write_text("<p>x</p>", encoding="utf-8")
+    pdf = tmp_path / "r.pdf"
+
+    def fake_run(cmd, **kw):
+        pdf.write_bytes(b"%PDF-" + b"x" * 2000)   # written 0644-ish by umask
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(rs.subprocess, "run", fake_run)
+    assert rs.to_pdf(str(html), str(pdf)) == str(pdf)
+    assert oct(os.stat(pdf).st_mode & 0o777) == "0o600"
+
+
+def test_not_a_git_repository_still_means_outside_a_repo(monkeypatch, tmp_path):
+    fake = subprocess.CompletedProcess(
+        ["git"], 128, stdout="",
+        stderr="fatal: not a git repository (or any of the parent directories): .git")
+    monkeypatch.setattr(rs.subprocess, "run", lambda *a, **kw: fake)
+    assert rs._repo_root(str(tmp_path / "r.html")) is None
+
+
+def test_a_relative_path_is_judged_from_the_cwd_not_the_repo_root(tmp_path, monkeypatch):
+    """From a repo subdirectory, a relative --out must be checked as the file
+    it actually names, not as root/<name>."""
+    root = _repo(tmp_path)
+    (root / ".gitignore").write_text("sub/report.html\n", encoding="utf-8")
+    sub = root / "sub"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    rs.assert_git_ignored("report.html")       # sub/report.html is ignored
+    with pytest.raises(SystemExit):
+        rs.assert_git_ignored("leaky.html")    # sub/leaky.html is not
+
+
 def test_the_check_follows_the_path_not_the_cwd(tmp_path, monkeypatch):
     """Running from a non-repo directory must not disable the control for an
     absolute path pointing into a repo."""
@@ -122,3 +188,17 @@ def test_the_check_follows_the_path_not_the_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(elsewhere)
     with pytest.raises(SystemExit):
         rs.assert_git_ignored(str(root / "leaky.html"))
+
+
+def test_write_private_is_0600_and_tightens_existing(tmp_path):
+    import os
+    from aaif_events import report_style as rs
+    p = tmp_path / "report.html"
+    rs.write_private(str(p), "névé — ok")
+    assert oct(os.stat(p).st_mode & 0o777) == "0o600"
+    assert p.read_text(encoding="utf-8") == "névé — ok"
+    # A pre-existing looser file is tightened, not left world-readable.
+    os.chmod(p, 0o644)
+    rs.write_private(str(p), "second")
+    assert oct(os.stat(p).st_mode & 0o777) == "0o600"
+    assert p.read_text(encoding="utf-8") == "second"

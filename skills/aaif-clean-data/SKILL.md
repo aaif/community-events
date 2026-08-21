@@ -197,15 +197,21 @@ by **header name**, never column letter.
 1. **Scan** and show the user the proposed mechanical fixes and the flags, grouped
    and skimmable. Lead with anything that blocks usability (missing/invalid email).
 2. **Resolve judgment flags yourself before asking the user to.** For each
-   `City="Other"` row, read that person's free-text in `Form Responses` (their
-   "Why organize / ties", "Have you helped run events before?", LinkedIn, etc.) and
-   infer the real city — e.g. Bangalore, Frankfurt, Luxembourg. Write the inferred
-   value into the **`Resolved City`** source column (found by header name — shown in
-   the role tabs as **`City (New)`**), **never overwrite the submitted `City` dropdown**
-   (shown as **`City (Existing)`**) — that's the non-destructive rule. `City (New)`
-   holds **only net-new cities** (rows where `City = "Other"`); existing form cities
-   stay in `City (Existing)` and must **not** be copied across. A row stops being
-   flagged once `Resolved City` is filled. Don't guess with no signal.
+   `City="Other"` row, run `cities` first — extraction resolves most of them from
+   the free text. For the rows it leaves unresolved, read that person's free-text
+   in `Form Responses` (their "Why organize / ties", "Have you helped run events
+   before?", LinkedIn, etc.) and infer the real city — e.g. Bangalore, Frankfurt,
+   Luxembourg. Write the inferred value into **`Extracted City`** via `apply`
+   (`{"row": ..., "header": "Extracted City", "value": ...}`) — the derived
+   `Resolved City` (shown in the role tabs as **`City (New)`**) picks it up on
+   its own. **Never write `Resolved City` itself**: it is an `ARRAYFORMULA` (see
+   the Cities section above) and `apply` refuses it — a literal would `#REF!`
+   the whole column. And **never overwrite the submitted `City` dropdown**
+   (shown as **`City (Existing)`**) — that's the non-destructive rule. `City
+   (New)` holds **only net-new cities** (rows where `City = "Other"`); existing
+   form cities stay in `City (Existing)` and must **not** be copied across. A
+   row stops being flagged once `Extracted City` fills its `Resolved City`.
+   Don't guess with no signal.
 3. **Confirm with the user** which fixes to apply. Mechanical fixes are safe to
    batch; city resolutions should be eyeballed since they're inferred.
 4. **Build `changes.json`** (rows + header names + new values) and run `apply`.

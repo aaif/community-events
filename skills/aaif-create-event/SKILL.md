@@ -115,7 +115,10 @@ keys are per-calendar). The script detects this itself and its dry-run says so:
 3. **Create — only after the user says yes:** re-run the same command with
    `--create`. It uploads the cover, creates the event, adds hosts, writes the
    new event URL into the tracker's LUMA URL field (re-upload the docx to Drive),
-   and prints the URL.
+   and prints the URL. Note the same caveat as `--luma` in step 3 above: the
+   write-back sets the cell's **displayed URL text only** — if the template
+   pre-fills that cell as a hyperlink, the clickable link target still points at
+   the old destination and must be fixed on the doc (or on the Luma page link).
 
 4. **Verify**: open the printed URL and check name/time/venue/cover/description
    against the proposal; confirm the hosts appear. Later detail changes go

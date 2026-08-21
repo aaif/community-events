@@ -97,10 +97,12 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py --write        # apply, unattende
 python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py crm resources  # a subset
 ```
 
-Note `--write` keeps each engine's own refusals: `sync_chapters` still aborts on
-a new row whose Luma page is not live, and `sync_access --write` still runs its
-pin/grant/lock sequence — so an unattended write run is the same set of
-decisions the interactive flow would have made, minus the pause for approval.
+Note `--write` keeps each engine's own refusals: `sync_chapters` still holds
+back a new row whose Luma page is not live, and `sync_access --write` runs its
+grant/lock sequence (**never** the pin phase — that needs the explicit `--pins`
+flag, which `nightly.py` must never pass; pending pins stay named in the
+report) — so an unattended write run is the same set of decisions the
+interactive flow would have made, minus the pause for approval.
 Wiring this into GitHub Actions (auth, secrets, where the digest goes) is a
 separate change; the runner is deliberately CI-agnostic.
 
@@ -203,13 +205,24 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
 - Duplicate intake rows for the same person+city are deduped (first wins, reported).
   Duplicate **chapter** rows (two rows for one city) are reported too — only the
   last is ever updated, so merge them by hand.
+- **Malformed public-form text is excluded and reported, never written.** An
+  intake name or city containing markup or control characters, or exceeding 120
+  chars, gets its row skipped with a loud per-row line (row, city, reason) while
+  every other row still syncs — one hostile or fat-fingered submission must not
+  freeze the whole engine, but a flagged value still reaches no cell, About doc
+  or CRM until the intake row is fixed. The CRM engine enforces the same check
+  itself (`sync_crm.read_role_tab` reads the role tabs directly, not through
+  this engine's intake read). And because `sync_about` rewrites its section
+  **wholesale**, a chapter whose roster lost a row to this filter has its whole
+  About doc **held back** — not planned, not written, exit non-zero — rather
+  than rewritten minus the excluded organizer, which would silently delete an
+  accepted person from a shared doc over a data bug in their row.
 - **The run aborts rather than guessing** when: a header is duplicated (reads and
   writes would resolve to different columns); any written column is missing; a row
   below the last City row is non-empty (new rows are appended there and would wipe
-  it); a city has no ASCII characters, so its Luma slug would be empty; intake text
-  contains markup or control characters, or exceeds 120 chars; or the sheet changed
-  between building the proposal and writing it (row numbers are snapshot indices,
-  and the per-city Luma checks sit in that window).
+  it); a city has no ASCII characters, so its Luma slug would be empty; or the
+  sheet changed between building the proposal and writing it (row numbers are
+  snapshot indices, and the per-city Luma checks sit in that window).
 
 ---
 
@@ -242,9 +255,12 @@ San Francisco organizers) — correct for San Francisco, wrong everywhere else.
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/sync_about.py --write
    ```
-   Recomputes from a fresh read, uploads each changed doc, then re-downloads
-   **every** written doc and confirms a fresh plan is empty. One failed upload is
-   reported and the rest still finish.
+   Recomputes from a fresh read, re-downloads each doc right before its upload
+   and **skips it if it changed since the plan was built** (a human edit in the
+   approval window is never silently reverted; the skip is loud and the doc
+   re-proposes next run), uploads the rest, then re-downloads **every** written
+   doc and confirms a fresh plan is empty. One failed upload is reported and
+   the rest still finish.
 
 ## The section is rewritten wholesale — and that is the point
 
@@ -293,6 +309,12 @@ are itemised in two classes, and both must be read before approving:
   at. The heading is matched on its **text**, not its style, because two of these
   docs have been round-tripped through desktop Word — a restyled heading must not
   make a chapter silently unsyncable.
+- **A chapter whose intake lost a row to the malformed-text filter is held back
+  wholesale** — the doc is neither planned nor written (report and `--write`
+  alike), the hold is named in the output beside the malformed rows, and the run
+  exits non-zero until the intake row is fixed. The rewrite is wholesale, so
+  proceeding would have deleted that accepted organizer from the doc as a side
+  effect of a data bug — the one removal class the report could never itemise.
 
 ## Editing the docs
 
@@ -376,10 +398,16 @@ are being onboarded (see the sharing note at the end of this section).
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/sync_crm.py --write
    ```
-   Saves each workbook's pre-edit bytes to a temp `before/` directory, uploads,
-   then re-downloads every written workbook and confirms a fresh plan is empty.
-   A workbook that fails is reported and the rest still finish — one bad file
-   must not abandon the rest.
+   Saves each workbook's pre-edit bytes to a temp `before/` directory (the
+   output names the path; report-only runs delete their downloads on exit
+   instead — the workbooks are full of real people), compares that fresh
+   download against the bytes the plan was built on and **skips any workbook
+   that changed in the window** (planning takes minutes, and a human edit must
+   never be silently reverted — the skip is loud, exits non-zero, and the
+   workbook re-proposes next run), uploads the rest, then re-downloads every
+   written workbook and confirms a fresh plan is empty. A workbook that fails
+   is reported and the rest still finish — one bad file must not abandon the
+   rest.
 
 ## Column mapping (intake → CRM `Attendees`)
 
@@ -467,10 +495,19 @@ used instead of inventing one.
   template writes `"…"`, older workbooks write `&quot;…&quot;`). A workbook with
   no Status list at all is reported, not guessed at.
 - **TemplateCity never receives people** — only the dropdown patch.
-- **Rows are skipped, and reported, when**: `Status` is anything other than
-  `Accepted` / `Existing (from MLOps)`; the email is missing or unparsable
-  (there'd be no dedupe key, so every run would re-add them); or the row has no
-  chapter or city at all.
+- **Rows are skipped, and reported, when**: `Status` is neither a decided-yes
+  (`Accepted` / `Existing (from MLOps)`) nor a recognised pipeline status —
+  `Denied` / `Inactive` / `Duplicate` and any dropdown value the allowlists do
+  not name fail closed; the row is a pipeline **organizer** for a chapter below
+  the self-serve threshold (held back under central approval — see "Who syncs"
+  above); the email is missing or unparsable (there'd be no dedupe key, so
+  every run would re-add them); the row's name or city fails the same
+  `bad_public_text` check the feed engine runs (markup, control characters,
+  absurd length) — enforced here directly, since the role tabs are read
+  without passing through `sync_chapters.read_intake`, so a flagged value
+  really does reach no cell, no About doc and no CRM; or the row has no
+  chapter or city at all. Pipeline hosts and speakers are never skipped for
+  their status alone.
 - **The run aborts** when `Form Responses` or a role tab comes back empty, or a
   role tab has no `Status`/`Email` header. A workbook whose `Attendees` tab is
   missing a column is **skipped with a reason**, never written by column letter.
@@ -526,10 +563,16 @@ Numbered as the console prints them:
    their only access.
 3. **lock** — remove `anyone:reader` from Chapters/.
 
-`--write` runs all three in that order; `--phase pin|grant|lock` runs one, and
-verifies whatever it ran. **`lock` refuses to run when any grant failed** —
-locking then would leave those organizers with no access at all; `--lock-anyway`
-overrides.
+`--write` runs **grant then lock**. The pin phase runs only behind the explicit
+**`--pins`** flag (`--write --pins` runs all three, pin first) or as
+`--phase pin` — publishing a file to the whole internet is a standing human
+decision, never a side effect of syncing grants, and `nightly.py` must never
+pass `--pins`. Unpinned banners stay named in every report and write run so the
+pending decision is visible. `--phase pin|grant|lock` runs one phase, and the
+run verifies whatever it ran; the final `Verified:` line claims **only** the
+phases that actually ran and checked something. **`lock` refuses to run when
+any grant failed** — locking then would leave those organizers with no access
+at all; `--lock-anyway` overrides.
 
 > **The website does not depend on this share — verified, not assumed.** The
 > chapters feed's `Image` column is full of `lh3.googleusercontent.com/d/<id>`
@@ -731,7 +774,9 @@ once the 2026-08-17 sweep's sheet cells were edited directly.
 
 A dead Slack token skips the three channel columns and still reports the folder
 column; the report says which half was skipped, so an empty channel section is
-never mistaken for "nothing to do". Run `slack auth login` and re-run for the rest.
+never mistaken for "nothing to do". Set `$AAIF_SLACK_WRITE_TOKEN` (env var, or
+`.env` in the working directory) and re-run for the rest — the Slack CLI
+credential expired for good in 2026-08 and is only the last-resort fallback.
 
 One check runs even without Slack: a **filled channel cell that cannot possibly
 name a channel** (whitespace, `/`, `:`, `#`, `@` or `,` in it — a pasted URL,
@@ -873,9 +918,11 @@ After any run (and after editing the engine):
 - After `--write`, each engine prints its OWN verify line — they differ:
   `sync_chapters` "a fresh run proposes zero changes"; `sync_about` "a fresh read
   of every written doc proposes zero changes"; `sync_crm` "a fresh read
-  of every written workbook proposes zero changes"; `sync_access` "banners are
-  directly public and Chapters/ is no longer link-shared"; `sync_resources` "a
-  fresh read of every written cell matches the proposal".
+  of every written workbook proposes zero changes"; `sync_access` a composed
+  line naming only the phases that ran (e.g. "every accepted organizer holds
+  their grant; Chapters/ is not link-shared" — the banner claim appears only
+  after a pin run); `sync_resources` "a fresh read of every written cell
+  matches the proposal".
 - Spot-check one touched row in the sheet: `Organizers` merged correctly, the
   MLOps and Luma columns untouched, and the version history shows a single edit
   for the whole sync.
@@ -898,6 +945,7 @@ After any run (and after editing the engine):
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_access.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_resources.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_invite_organizers.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_prune_organizers.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_nightly.py
   ```
 
@@ -932,11 +980,15 @@ After any run (and after editing the engine):
   contains `&` and spaces.
 - Unresolved rows already hand-placed on the chapters list are flagged
   "no action needed" so they don't nag every run.
-- `sync_crm.py` and `sync_about.py` import the `gws` wrapper, city folding, the
-  near-miss stoplist and `resolve_city()` **from `sync_chapters.py`** rather than
-  copying them. Two copies would drift, and a city that folds one way in one
-  engine and another way in the other would put a person in a CRM whose feed row
-  says something else.
+- `sync_crm.py` and `sync_about.py` import the `gws` wrapper, the Drive
+  `download()`/`upload()` helpers, city folding, the near-miss stoplist and
+  `resolve_city()` **from `sync_chapters.py`** rather than copying them. Two
+  copies would drift, and a city that folds one way in one engine and another
+  way in the other would put a person in a CRM whose feed row says something
+  else. In `sync_crm` the shared `resolve_city()` is the **fallback** beneath
+  the role tab's own `Chapter` formula, which additionally resolves the form's
+  free-text city (the one extra step documented in §2's chapter-resolution
+  note).
 - `sync_about.py` re-reads the intake a second time for its **roster** — every
   name the intake knows for a city, at any status. That is what tells a removal
   "applicant we decided against" apart from "line we cannot account for", and

@@ -28,8 +28,18 @@ TABS = {
                    "Talk title", "Ships in production?", "Past talks / portfolio"],
 }
 
-# Rows in these Status states (or blank) are "awaiting review".
-DEFAULT_NEEDS_REVIEW = {"", "New", "In progress"}
+# Rows in these Status states are "awaiting review". A blank Status IS "New"
+# (the form writes none) and is normalized to it in collect(), so filters match
+# on "New" alone — a custom --status list never needs to know about blanks.
+DEFAULT_NEEDS_REVIEW = {"New", "In progress"}
+
+
+def normalize_filter(values):
+    """Normalize a --status list the same way collect() normalizes cells: a
+    requested blank means the blank-status rows — which the rows themselves
+    report as "New" by then, so an un-normalized --status "" would silently
+    select zero rows."""
+    return {(v.strip() or "New") for v in values}
 
 # The City columns were renamed to City (Existing)/City (New). They only carry
 # those headers after `aaif-clean-data install-colors` has run; until then the
@@ -40,8 +50,14 @@ LEGACY_ALIASES = {"City (Existing)": "City", "City (New)": "Resolved City"}
 
 def fetch(tab):
     """Return (headers, rows) for a tab; rows are padded to len(headers)."""
+    # The range is the bare tab name — deliberately NOT a bounded window: a
+    # hardcoded "A1:BB" silently drops any column added past the bound, and the
+    # column it drops first is the newest one (this is the same anti-pattern
+    # clean.py's read_tab removed from this very spreadsheet). Sheets trims
+    # trailing empty rows/columns. A bare title also needs no quoting, unlike an
+    # "A1"-style range where a name with spaces must be quoted before the "!".
     params = json.dumps({"spreadsheetId": SHEET_ID,
-                         "range": f"{tab}!A1:BB", "majorDimension": "ROWS"})
+                         "range": tab, "majorDimension": "ROWS"})
     out = subprocess.run(["gws", "sheets", "spreadsheets", "values", "get",
                           "--params", params, "--format", "json"],
                          capture_output=True, text=True)
@@ -88,10 +104,12 @@ def collect(status_filter, show_all):
         for rn, row in enumerate(rows, start=2):  # row 2 = first data row
             if not (row[ti] or "").strip():
                 continue  # skip empty trailing rows (no Timestamp)
-            status = (row[si].strip() if si is not None else "")
+            # Blank IS "New" — normalized once here, so the filter below and the
+            # reported status can never disagree about what a blank cell means.
+            status = (row[si].strip() if si is not None else "") or "New"
             if not show_all and status not in status_filter:
                 continue
-            rec = {"row": rn, "status": status or "New"}
+            rec = {"row": rn, "status": status}
             for f in fields:
                 ci = col(headers, f)
                 if ci is None and f in LEGACY_ALIASES:
@@ -107,10 +125,12 @@ def truncate(s, n=70):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def text_digest(data):
+def text_digest(data, label="awaiting review"):
+    """`label` names the population actually selected — under --all or a custom
+    --status filter, "awaiting review" would misdescribe every count printed."""
     total = sum(len(v) for v in data.values())
     counts = " · ".join(f"{len(v)} {t.lower()}" for t, v in data.items())
-    print(f"AAIF intake — {total} awaiting review ({counts})\n")
+    print(f"AAIF intake — {total} {label} ({counts})\n")
     for tab, recs in data.items():
         if not recs:
             continue
@@ -133,16 +153,21 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--status", nargs="*", default=None,
-                    help="Status values to include (default: blank/New/In progress)")
+                    help="Status values to include (default: New/In progress; "
+                         "blank counts as New)")
     args = ap.parse_args()
-    sf = set(args.status) if args.status is not None else DEFAULT_NEEDS_REVIEW
-    if args.status is not None:
-        sf.add("") if "New" in sf else None
+    sf = normalize_filter(args.status) if args.status is not None else DEFAULT_NEEDS_REVIEW
     data = collect(sf, args.all)
+    if args.all:
+        label = "row(s), all statuses"
+    elif args.status is not None:
+        label = "with status " + " / ".join(sorted(sf))
+    else:
+        label = "awaiting review"
     if args.json:
         print(json.dumps(data, indent=1))
     else:
-        text_digest(data)
+        text_digest(data, label)
 
 
 if __name__ == "__main__":

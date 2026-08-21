@@ -41,8 +41,9 @@ row older than 1 week (of a 2-week response SLA) — paints it pink. Acting on a
 `Reviewed at`, `Decision notes`, and a `Chapter` assignment.
 
 **City provenance colors** (on the two city columns, below the error rule; installed by
-`aaif-clean-data install-colors`): the role tabs show **`City (Existing)`** (col G, the
-submitted dropdown) and **`City (New)`** (col H, the resolved city for `Other` rows).
+`aaif-clean-data install-colors`): the role tabs show **`City (Existing)`** (the
+submitted dropdown) and **`City (New)`** (the resolved city for `Other` rows) — an
+adjacent pair, found by header name; its position has already moved once.
 `City (New)` is painted **amber** when it holds a net-new resolved city; `City
 (Existing)` is painted **green** when it holds a real submitted city (non-empty, not
 "Other"). These tell you at a glance whether an applicant is from an existing chapter

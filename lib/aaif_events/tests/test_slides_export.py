@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -96,8 +98,8 @@ class TestRenderSlidePng(unittest.TestCase):
             return self._fake_gws_json(responses)(*args, **kwargs)
 
         with mock.patch.object(se, "_gws_json", side_effect=fake), \
-                mock.patch("urllib.request.urlretrieve"), \
-                mock.patch("os.path.getsize", return_value=10):  # < 1000 -> triggers the raise
+                mock.patch.object(se, "_download",
+                                  side_effect=RuntimeError("rendered thumbnail suspiciously small")):
             with self.assertRaises(RuntimeError) as cm:
                 se.render_slide_png("file1", "/tmp/out.png")
             self.assertIn("suspiciously small", str(cm.exception))
@@ -134,10 +136,73 @@ class TestRenderSlidePng(unittest.TestCase):
             ("drive", "files", "update"): {"id": "pres1"},
         }
         with mock.patch.object(se, "_gws_json", side_effect=self._fake_gws_json(responses)), \
-                mock.patch("urllib.request.urlretrieve"), \
-                mock.patch("os.path.getsize", return_value=5000):
+                mock.patch.object(se, "_download"):
             out = se.render_slide_png("file1", "/tmp/out.png", slide_index=1)
             self.assertEqual(out, "/tmp/out.png")
+
+
+class TestDownload(unittest.TestCase):
+    """_download must never leave a partial PNG behind, whatever failed."""
+
+    def _resp(self, data):
+        r = mock.MagicMock()
+        r.__enter__.return_value = r
+        r.read.return_value = data
+        return r
+
+    def test_success_writes_the_file_with_a_timeout(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with mock.patch("urllib.request.urlopen",
+                            return_value=self._resp(b"p" * 2000)) as uo:
+                self.assertIsNone(se._download("https://example.invalid/x.png", out))
+            self.assertEqual(os.path.getsize(out), 2000)
+            self.assertEqual(uo.call_args.kwargs.get("timeout"), 30)
+
+    def test_a_too_small_render_is_deleted_not_left_behind(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with mock.patch("urllib.request.urlopen", return_value=self._resp(b"tiny")):
+                with self.assertRaises(RuntimeError) as cm:
+                    se._download("https://example.invalid/x.png", out)
+            self.assertIn("suspiciously small", str(cm.exception))
+            self.assertFalse(os.path.exists(out))
+
+    def test_a_read_failure_deletes_the_partial_file(self):
+        r = self._resp(b"")
+        r.read.side_effect = TimeoutError("timed out")
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with mock.patch("urllib.request.urlopen", return_value=r):
+                with self.assertRaises(TimeoutError):
+                    se._download("https://example.invalid/x.png", out)
+            self.assertFalse(os.path.exists(out))
+
+    def test_an_early_network_failure_leaves_a_preexisting_file_alone(self):
+        """A re-render whose fetch dies before any byte lands must not delete
+        the good PNG a previous call produced."""
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with open(out, "wb") as f:
+                f.write(b"g" * 2000)
+            with mock.patch("urllib.request.urlopen",
+                            side_effect=OSError("connection refused")):
+                with self.assertRaises(OSError):
+                    se._download("https://example.invalid/x.png", out)
+            with open(out, "rb") as f:
+                self.assertEqual(f.read(), b"g" * 2000)
+
+    def test_a_too_small_rerender_leaves_the_previous_good_file_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with open(out, "wb") as f:
+                f.write(b"g" * 2000)
+            with mock.patch("urllib.request.urlopen", return_value=self._resp(b"tiny")):
+                with self.assertRaises(RuntimeError):
+                    se._download("https://example.invalid/x.png", out)
+            with open(out, "rb") as f:
+                self.assertEqual(f.read(), b"g" * 2000)
+            self.assertEqual(os.listdir(d), ["x.png"])   # no .partial left
 
 
 if __name__ == "__main__":

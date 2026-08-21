@@ -364,7 +364,7 @@ def config_rows(cfg):
     return rows
 
 
-def migrate_config(path, gid_taken):
+def migrate_config(path):
     """Move the matching vocabularies onto a `Slack Config` tab, then delete the JSON.
 
     The file goes entirely. Leaving a config-only remnant was the half-measure
@@ -490,7 +490,7 @@ def main():
         # would destroy the seed source while the migration could still fail — so
         # the states this can leave behind are "not migrated", "columns only" and
         # "done", never a sheet seeded from a file that no longer exists.
-        migrate_config(a.map, None)
+        migrate_config(a.map)
 
 
 if __name__ == "__main__":

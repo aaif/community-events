@@ -5,8 +5,11 @@ The document fixtures below are the real markup TemplateCity ships — the same
 <w:pPr>, the same numId 1, the same after="0"/after="140" spacing — so a change
 that would corrupt a live About.docx fails here first.
 """
-import sys, os, zipfile, io
+import sys, os, tempfile, zipfile, io
+from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sync_about
+import sync_chapters
 from sync_about import (PLACEHOLDER, TEMPLATE_NAMES, clone_bullet,
                         find_section, is_list, para_text, paragraphs, plan_doc,
                         read_document, removals, render, set_spacing,
@@ -220,6 +223,82 @@ with zipfile.ZipFile(io.BytesIO(repacked)) as _z:
     check("write_document keeps the member order",
           _z.namelist(), ["[Content_Types].xml", "word/document.xml",
                           "word/fonts/Manrope-bold.ttf"])
+
+# --- apply_writes: a doc edited during the plan window is skipped, not reverted --
+# compute() downloads ~80 docs and the approval pause adds more, so a human
+# edit in that window is normal. The pre-upload re-download must be compared
+# against the compute()-time bytes; uploading anyway silently reverts the edit.
+def _doc(name, about_id):
+    return sync_about.Doc({"name": name}, {"id": about_id}, RAW, TEMPLATE_DOC,
+                          list(TEMPLATE_NAMES), ["Asha Rao"],
+                          plan_doc(TEMPLATE_DOC, ["Asha Rao"], set())[0],
+                          None, [], [])
+
+_remote = {"a-same": RAW,              # untouched since compute()
+           "a-edit": RAW + b"\x00tail"}  # changed in the window
+_ups = []
+# The freshness compare goes through sync_chapters.fresh_if_unchanged, so the
+# download to intercept lives in THAT module's namespace, not sync_about's.
+with tempfile.TemporaryDirectory() as _wd, \
+     mock.patch.object(sync_chapters, "download", lambda fid, path: _remote[fid]), \
+     mock.patch.object(sync_about, "upload",
+                       lambda fid, path, raw, ct: _ups.append((fid, ct))):
+    _ok, _failed = sync_about.apply_writes([_doc("Boston", "a-same"),
+                                            _doc("Pune", "a-edit")], _wd)
+check("an unchanged doc is written", _ok, ["Boston"])
+check("only the unchanged doc was uploaded", [u[0] for u in _ups], ["a-same"])
+check("uploads carry the docx content type", [u[1] for u in _ups], [sync_about.DOCX])
+check("a changed doc is skipped and counted with the failures",
+      [(n, "changed since the plan" in why) for n, why in _failed],
+      [("Pune", True)])
+
+# --- a malformed intake row holds the whole chapter's doc back ----------------
+# read_intake EXCLUDES a malformed row, and the section is rewritten WHOLESALE,
+# so planning that chapter anyway would DELETE the accepted organizer the row
+# names — on --write, with a clean exit. The chapter must be held instead: not
+# planned, not written, exit non-zero, while every other chapter still syncs.
+_MAL = [{"row": 3, "name": "Bo <b>Lin</b>", "city": "Boston",
+         "why": "name %r contains control characters or angle brackets" % "Bo <b>Lin</b>"}]
+_ENTRIES = [{"row": 2, "name": "Asha Rao", "city": "Pune", "status": "Accepted"}]
+_COUNTS = {"Accepted": 2, "Existing (from MLOps)": 0}
+
+def _run_main(argv):
+    _rem = {"a-Boston": RAW, "a-Pune": RAW}
+    dl, ups = [], []
+
+    def _dl(fid, path):
+        dl.append(fid)
+        return _rem[fid]
+
+    def _up(fid, path, raw, ct):
+        ups.append(fid)
+        _rem[fid] = raw                     # so --write's re-verify converges
+
+    with mock.patch.object(sync_about, "read_intake",
+                           lambda: (_ENTRIES, [], _COUNTS, [], _MAL)), \
+         mock.patch.object(sync_about, "read_roster", lambda: {}), \
+         mock.patch.object(sync_about, "list_chapter_folders",
+                           lambda: [{"id": "f-Boston", "name": "Boston"},
+                                    {"id": "f-Pune", "name": "Pune"}]), \
+         mock.patch.object(sync_about, "find_about",
+                           lambda fid: ({"id": fid.replace("f-", "a-")}, None)), \
+         mock.patch.object(sync_about, "download", _dl), \
+         mock.patch.object(sync_chapters, "download", _dl), \
+         mock.patch.object(sync_about, "upload", _up), \
+         mock.patch.object(sys, "argv", ["sync_about.py"] + argv):
+        return sync_about.main(), dl, ups
+
+_rc, _dl, _up2 = _run_main([])
+check("a malformed row makes the report run exit non-zero", _rc, 2)
+check("report mode never even downloads the held chapter's doc",
+      "a-Boston" in _dl, False)
+check("the other chapter is still read and planned", "a-Pune" in _dl, True)
+
+_rc, _dl, _up2 = _run_main(["--write"])
+check("write mode writes only the unaffected chapter", _up2, ["a-Pune"])
+check("write mode neither reads nor writes the held chapter",
+      "a-Boston" in _dl, False)
+check("the hold keeps the write run's exit non-zero", _rc, 2)
 
 print("\n%s (%d failure(s))" % ("ALL PASS" if not fails else "FAILURES", fails))
 sys.exit(1 if fails else 0)

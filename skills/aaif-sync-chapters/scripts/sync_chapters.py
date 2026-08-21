@@ -16,7 +16,7 @@ near-miss city names (never auto-matched), and a "no changes" line when the
 sheets are already in sync. --write recomputes the proposal from a fresh read,
 applies it atomically, then re-reads and verifies the diff is empty.
 """
-import argparse, json, re, subprocess, sys, time, unicodedata, urllib.error, urllib.request
+import argparse, json, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.request
 from collections import namedtuple
 
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
@@ -97,7 +97,7 @@ def _transient(msg):
 
 def _gws(cmd, retries=5, cwd=None):
     # cwd: gws rejects --output/--upload paths outside its working directory, so
-    # the Drive callers in sync_crm.py run it from the file's own directory.
+    # the shared download()/upload() below run it from the file's own directory.
     for i in range(max(1, retries)):   # retries<=0 must raise below, not return None
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
         if r.returncode == 0:
@@ -134,6 +134,44 @@ def get_values(sheet_id, rng):
                    params={"spreadsheetId": sheet_id, "ranges": [rng]})
     return res["valueRanges"][0].get("values", [])
 
+# Shared by sync_about.py (.docx) and sync_crm.py (.xlsx) — one copy, here with
+# the other gws plumbing, because two byte-identical Drive helpers inside one
+# skill had already drifted apart once in comment text alone.
+def download(file_id, path):
+    """Fetch a Drive file's bytes to `path` and return them.
+
+    gws rejects --output paths outside its cwd, so it runs in the file's dir.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    _gws(["gws", "drive", "files", "get", "--params",
+          json.dumps({"fileId": file_id, "supportsAllDrives": True, "alt": "media"}),
+          "--output", os.path.basename(path)], cwd=os.path.dirname(path) or ".")
+    with open(path, "rb") as fh:
+        return fh.read()
+
+def upload(file_id, path, raw, content_type):
+    """Replace a Drive file's content with `raw` (staged at `path` for gws)."""
+    with open(path, "wb") as fh:
+        fh.write(raw)
+    _gws(["gws", "drive", "files", "update", "--params",
+          json.dumps({"fileId": file_id, "supportsAllDrives": True}),
+          "--upload", os.path.basename(path), "--upload-content-type", content_type],
+         cwd=os.path.dirname(path) or ".")
+
+def fresh_if_unchanged(file_id, tmp_path, planned_bytes):
+    """Re-download a Drive file and say whether it drifted from a plan's bytes.
+
+    Returns (fresh_bytes, changed). Shared by sync_crm.write_workbooks and
+    sync_about.apply_writes — the one compare both engines' write gates hang
+    on: planning spans minutes plus the approval pause, so a human edit in
+    that window is NORMAL, and uploading over it would silently revert it.
+    Each caller keeps its own backup and skip-reporting behaviour; only the
+    "did the remote move under the plan" question lives here, so the two
+    twins cannot drift apart in what "unchanged" means.
+    """
+    fresh = download(file_id, tmp_path)
+    return fresh, fresh != planned_bytes
+
 # ----------------------------------------------------------------------------
 # Text helpers
 # ----------------------------------------------------------------------------
@@ -161,19 +199,25 @@ def city_tokens(s):
     """Discriminating tokens only — see GENERIC_CITY_TOKENS."""
     return set(fold_city(s).split()) - GENERIC_CITY_TOKENS
 
-def check_public_text(kind, s, row):
-    """Reject intake free-text that must not reach the public website feed.
+def bad_public_text(kind, s):
+    """Why this intake free-text must not reach the public website feed — or None.
 
     The intake sheet is fed by a public Google Form, and this script is the last
     controlled point before a name or city is republished. RAW input mode already
     stops formula injection; this stops markup and control characters.
+
+    The caller EXCLUDES the offending row and reports it — one hostile or fat-
+    fingered form submission used to sys.exit the whole engine, report mode
+    included, holding every other chapter's sync hostage to a row only a human
+    can fix. The safety property is unchanged: a row this flags is never
+    written anywhere.
     """
     if _UNSAFE_PUBLIC_TEXT.search(s):
-        sys.exit("ABORT: intake row %d %s %r contains control characters or angle "
-                 "brackets, which must never reach the public feed." % (row, kind, s))
+        return ("%s %r contains control characters or angle brackets, which "
+                "must never reach the public feed" % (kind, s))
     if len(s) > MAX_PUBLIC_TEXT:
-        sys.exit("ABORT: intake row %d %s is %d characters (max %d)."
-                 % (row, kind, len(s), MAX_PUBLIC_TEXT))
+        return "%s is %d characters (max %d)" % (kind, len(s), MAX_PUBLIC_TEXT)
+    return None
 
 def resolve_city(existing, new):
     """Resolve an intake row's chapter city: `City (New)` wins if non-empty, else
@@ -228,11 +272,12 @@ def luma_status(slug):
 # Read the two sheets
 # ----------------------------------------------------------------------------
 def read_intake():
-    """Return (entries, unresolved, status_counts, dupes).
+    """Return (entries, unresolved, status_counts, dupes, malformed).
 
     entries    = [{row, name, city, status}]                        city resolved, deduped
     unresolved = [{row, name, status, g, h, events, why,
                    placed, inferred}]                               needs a human
+    malformed  = [{row, name, city, why}]      public-unsafe text — never written
     """
     rows = get_values(INTAKE_ID, "%s!A:U" % INTAKE_TAB)
     if not rows:
@@ -241,7 +286,7 @@ def read_intake():
         rows[0], INTAKE_TAB, "Status", "Full name", "City (Existing)", "City (New)",
         "Run events before?", "Why organize / ties")
 
-    entries, unresolved, dupes = [], [], []
+    entries, unresolved, dupes, malformed = [], [], [], []
     counts = {s: 0 for s in SYNC_STATUSES}
     seen = set()
     for rownum, row in enumerate(rows[1:], start=2):
@@ -263,15 +308,24 @@ def read_intake():
                                "events": cell(row, i_events), "why": cell(row, i_why),
                                "placed": [], "inferred": []})
             continue
-        check_public_text("name", name, rownum)
-        check_public_text("city", city, rownum)
+        # Skip-and-report, never write: excluding the row here keeps the
+        # injection-safety property — a flagged value reaches no cell and no
+        # About doc, because it never becomes an entry at all. The CRM path
+        # does NOT pass through here (sync_crm.read_role_tab reads the role
+        # tabs directly), so it runs the same bad_public_text check itself;
+        # together the two checks are what make "no cell, no About doc and
+        # no CRM" a true statement rather than a hopeful one.
+        bad = bad_public_text("name", name) or bad_public_text("city", city)
+        if bad:
+            malformed.append({"row": rownum, "name": name, "city": city, "why": bad})
+            continue
         key = (fold(name), fold(city))
         if key in seen:
             dupes.append({"row": rownum, "name": name, "city": city})
             continue
         seen.add(key)
         entries.append({"row": rownum, "name": name, "city": city, "status": status})
-    return entries, unresolved, counts, dupes
+    return entries, unresolved, counts, dupes, malformed
 
 def read_chapters():
     """Return (chapters, last_row, layout). chapters = [{row, city, organizers_raw}].
@@ -465,6 +519,14 @@ def print_report(st):
         print("\nDuplicate intake rows (deduped, first occurrence wins):")
         for d in dupes:
             print("  intake row %d: %s / %s" % (d["row"], d["name"], d["city"]))
+    if st.malformed:
+        # Excluded, loudly: everything else still syncs, but a row listed here
+        # reaches nothing until the intake text is fixed — the values are
+        # printed repr'd so control characters are visible.
+        print("\nMalformed public-form text — EXCLUDED from every write until the "
+              "intake row is fixed:")
+        for m in st.malformed:
+            print("  intake row %d (city %r): %s" % (m["row"], m["city"], m["why"]))
 
     # The chapters side has its own duplicate problem, and only the intake side
     # was ever reported. chap_by_fold is last-wins, so an earlier duplicate row
@@ -486,15 +548,15 @@ def print_report(st):
 # takes the State itself, not *state), so adding a field can't silently rebind a
 # positional parameter the way it did when `layout` landed.
 State = namedtuple("State", "entries unresolved counts dupes chapters last_row "
-                            "adds new_rows near_misses layout")
+                            "adds new_rows near_misses layout malformed")
 
 def compute():
-    entries, unresolved, counts, dupes = read_intake()
+    entries, unresolved, counts, dupes, malformed = read_intake()
     chapters, last_row, layout = read_chapters()
     adds, new_rows, near_misses = build_proposal(entries, chapters, last_row)
     annotate_unresolved(unresolved, chapters)
     return State(entries, unresolved, counts, dupes, chapters, last_row,
-                 adds, new_rows, near_misses, layout)
+                 adds, new_rows, near_misses, layout, malformed)
 
 def new_row_values(n, layout):
     """Full-width feed row for a brand-new city.

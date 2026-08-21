@@ -121,6 +121,8 @@ def test_scopes_reports_a_dead_token_as_a_token_problem(monkeypatch):
     with pytest.raises(slack.SlackError) as exc:
         api.scopes()
     assert exc.value.error == "invalid_auth"
+    # The standing remedy is the app token; CLI login is the last resort.
+    assert slack.ENV_TOKEN_VAR in str(exc.value)
     assert "slack auth login" in str(exc.value)
 
 
@@ -179,6 +181,8 @@ def test_require_scopes_aborts_on_a_missing_scope(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         api.require_scopes("channels:read", "users:read.email")
     assert "users:read.email" in str(exc.value)
+    # The remedy names the app token first, not `slack auth login` alone.
+    assert slack.ENV_TOKEN_VAR in str(exc.value)
 
 
 def test_user_record_defaults_flags_to_booleans(monkeypatch):
@@ -216,6 +220,129 @@ def test_lookup_emails_dedupes_and_skips_blanks(monkeypatch):
     api, calls = client(monkeypatch, [{"ok": True, "user": {"id": "U1", "profile": {}}}])
     slack.lookup_emails(api, ["a@x.com", "a@x.com", ""])
     assert len(calls) == 1
+
+
+def test_a_200_html_body_is_a_slackerror_not_a_bare_traceback(monkeypatch):
+    """A proxy/outage page can answer 200 with HTML mid-pull."""
+    class HtmlResponse:
+        headers = {}
+
+        def read(self):
+            return b"<html>maintenance</html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(slack.urllib.request, "urlopen", lambda *a, **kw: HtmlResponse())
+    api = slack.Slack(token="xoxp-test", sleep=lambda s: None)
+    with pytest.raises(slack.SlackError) as exc:
+        api.call("auth.test")
+    assert exc.value.error == "not_json"
+    assert "not JSON" in str(exc.value)
+
+
+def test_scopes_retries_a_429_like_call_does(monkeypatch):
+    """scopes() bypasses call() for the headers, but keeps its retry and its
+    one-vocabulary contract."""
+    err = urllib.error.HTTPError("u", 429, "slow down", {"Retry-After": "2"}, None)
+    sleeps = []
+    api, calls = client(monkeypatch, [err, {"ok": True}], sleeps)
+    assert api.scopes() == set()
+    assert len(calls) == 2 and sleeps == [2]
+
+
+def test_scopes_translates_a_transport_failure(monkeypatch):
+    api, _ = client(monkeypatch,
+                    [urllib.error.URLError("dns")] * slack.MAX_ATTEMPTS, [])
+    with pytest.raises(slack.SlackError) as exc:
+        api.scopes()
+    assert exc.value.error == "transport_failed"
+
+
+def test_scopes_reads_the_header_off_the_live_response(monkeypatch):
+    def fake_urlopen(request, *a, **kw):
+        return FakeResponse({"ok": True},
+                            headers={"x-oauth-scopes": "users:read, channels:read"})
+
+    monkeypatch.setattr(slack.urllib.request, "urlopen", fake_urlopen)
+    api = slack.Slack(token="xoxp-test")
+    assert api.scopes() == {"users:read", "channels:read"}
+
+
+# ------------------------------------------------------- token resolution ---
+
+def test_load_token_prefers_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv(slack.ENV_TOKEN_VAR, "xoxp-env")
+    assert slack.load_token(path=str(tmp_path / "absent.json")) == "xoxp-env"
+
+
+def test_load_token_falls_back_to_a_dotenv_file(monkeypatch, tmp_path):
+    monkeypatch.delenv(slack.ENV_TOKEN_VAR, raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        'OTHER=1\n%s="xoxp-dotenv"\n' % slack.ENV_TOKEN_VAR, encoding="utf-8")
+    assert slack.load_token(path=str(tmp_path / "absent.json")) == "xoxp-dotenv"
+
+
+def test_load_token_falls_back_to_the_cli_credentials(monkeypatch, tmp_path):
+    monkeypatch.delenv(slack.ENV_TOKEN_VAR, raising=False)
+    monkeypatch.chdir(tmp_path)                # no .env here
+    cred = tmp_path / "credentials.json"
+    cred.write_text(json.dumps({"team": {"token": "xoxp-cli"}}), encoding="utf-8")
+    assert slack.load_token(path=str(cred)) == "xoxp-cli"
+
+
+def test_load_token_with_nothing_anywhere_names_both_remedies(monkeypatch, tmp_path):
+    monkeypatch.delenv(slack.ENV_TOKEN_VAR, raising=False)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        slack.load_token(path=str(tmp_path / "absent.json"))
+    assert slack.ENV_TOKEN_VAR in str(exc.value)
+    assert "slack auth login" in str(exc.value)
+
+
+def test_dotenv_parse_ignores_other_keys_and_tolerates_quotes(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("# comment\nAAIF_SLACK_WRITE_TOKEN_OLD=x\n"
+                   "AAIF_SLACK_WRITE_TOKEN='xoxp-quoted'\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxp-quoted"
+    assert slack._dotenv_token(env_path=str(tmp_path / "nope")) is None
+
+
+def test_dotenv_strips_an_inline_comment_from_an_unquoted_value(tmp_path):
+    """`KEY=xoxb-abc  # prod` must yield the token, not token-plus-comment."""
+    env = tmp_path / ".env"
+    env.write_text("AAIF_SLACK_WRITE_TOKEN=xoxb-abc  # prod\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-abc"
+
+
+def test_dotenv_keeps_a_hash_glued_to_the_value(tmp_path):
+    """Only a whitespace-preceded '#' starts a comment."""
+    env = tmp_path / ".env"
+    env.write_text("AAIF_SLACK_WRITE_TOKEN=xoxb-a#b\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-a#b"
+
+
+def test_dotenv_quoted_values_keep_their_content(tmp_path):
+    """Inside quotes a '#' is part of the token, comment or not after."""
+    env = tmp_path / ".env"
+    env.write_text('AAIF_SLACK_WRITE_TOKEN="xoxb-a #b"  # prod\n', encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-a #b"
+
+
+def test_dotenv_accepts_an_export_prefix(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("export AAIF_SLACK_WRITE_TOKEN=xoxb-exported\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) == "xoxb-exported"
+
+
+def test_dotenv_a_value_that_is_only_a_comment_is_a_miss(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("AAIF_SLACK_WRITE_TOKEN= # set me\n", encoding="utf-8")
+    assert slack._dotenv_token(env_path=str(env)) is None
 
 
 @pytest.mark.parametrize("blob,expected", [

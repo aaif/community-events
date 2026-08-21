@@ -691,7 +691,7 @@ def plan_cities():
     """Propose an `Extracted City` for every row where the dropdown didn't answer.
 
     Migration policy — **an existing hand-filled `Resolved City` always wins.**
-    123 of those were typed by a human, 23 of them for rows whose free text is
+    122 of those were typed by a human, 23 of them for rows whose free text is
     empty (the question didn't exist yet), so deriving them fresh would blank
     real organizers. Seeding Extracted from Resolved makes the switch to a
     derived Resolved lossless by construction; extraction only fills blanks.
@@ -874,9 +874,28 @@ def apply(path):
 
 
 # ---------- install live Issues flag + bright-red rule ----------
+# Headers the Issues ARRAYFORMULA is built from. The formula goes out
+# USER_ENTERED, so there is no downstream safety net: a missing "Timestamp"
+# yields a literal `$None2:$None` range installed live, and a renamed Email or
+# LinkedIn silently shrinks the coverage the bright-red rule still claims.
+FLAG_HEADERS = ("Timestamp", "Email", "LinkedIn")
+
+
 def install_flags():
-    for tab, sid in ROLE_TABS.items():
+    # Pre-flight: validate EVERY tab before writing to any of them (the same
+    # contract install_colors has). Aborting mid-loop used to leave the first
+    # tab rewritten and the rest untouched.
+    headers = {}
+    for tab in ROLE_TABS:
         hdr, _ = read_tab(tab)
+        missing = [h for h in FLAG_HEADERS if h not in hdr]
+        if missing:
+            sys.exit("ABORT: %s has no %s column(s) — the Issues formula would be "
+                     "built on a hole. No tab modified. Headers: %s"
+                     % (tab, ", ".join(repr(m) for m in missing), hdr))
+        headers[tab] = hdr
+    for tab, sid in ROLE_TABS.items():
+        hdr = headers[tab]
         def L(name):
             return colletter(hdr.index(name) + 1) if name in hdr else None
         ts = L("Timestamp")

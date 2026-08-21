@@ -1,8 +1,11 @@
 """Read-only Slack Web API client for the workspace audits.
 
-Auth comes from the Slack CLI's own credentials (`slack auth login`), so no token
-is ever stored in this repo or passed on a command line. The token is never
-printed — callers get data, not credentials.
+Auth resolution, in order: the `AAIF_SLACK_WRITE_TOKEN` app token from the
+environment, then from a `.env` file in the current directory, then the Slack
+CLI's own credentials (`slack auth login`). The app token is the standing way
+the audits run — it is strictly more capable than the CLI credential, which has
+expired. No token is ever stored in this repo or passed on a command line, and
+the token is never printed — callers get data, not credentials.
 
 **This client is read-only.** `call()` refuses any method outside
 `ALLOWED_METHODS`; the audits inspect a community workspace, and a typo must not
@@ -39,12 +42,14 @@ mechanisms they demonstrate are stable.
 import http.client
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 CRED_PATH = os.path.expanduser("~/.slack/credentials.json")
+ENV_TOKEN_VAR = "AAIF_SLACK_WRITE_TOKEN"
 API = "https://slack.com/api/"
 
 #: The exact set of methods this repo calls. This is deliberately *not* "every
@@ -67,6 +72,7 @@ ALLOWED_METHODS = frozenset({
 MODULE_ERRORS = frozenset({
     "retry_exhausted",     # burnt the retry budget; detail names the last cause
     "transport_failed",    # socket/TLS/DNS failure on the final attempt
+    "not_json",            # a 200 whose body was not JSON (proxy/outage page)
     "malformed_page",      # ok:true but the collection key was absent
     "lookup_failed",       # a lookup failed for API reasons, not absence
 })
@@ -134,11 +140,60 @@ def _find_token(obj):
     return found[0] if found else None
 
 
+def _dotenv_token(env_path=".env"):
+    """`AAIF_SLACK_WRITE_TOKEN` out of a KEY=VALUE `.env` file, or None.
+
+    Deliberately not a dotenv loader: only this one key is read, nothing is
+    exported into the environment, and the value never appears in any output.
+    It does understand the shapes real .env files take, though: an optional
+    leading `export `, quoted values (kept verbatim, `#` and all), and — for
+    unquoted values only — a trailing ` # comment`, which would otherwise ride
+    into the token and make it invalid.
+    """
+    if not os.path.exists(env_path):
+        return None
+    with open(env_path, encoding="utf-8") as fh:
+        for line in fh:
+            name, sep, value = line.strip().partition("=")
+            name = name.strip()
+            if name.startswith("export "):
+                name = name[len("export "):].strip()
+            if not sep or name != ENV_TOKEN_VAR:
+                continue
+            value = value.strip()
+            if value[:1] in ("'", '"'):
+                close = value.find(value[0], 1)
+                # A quoted value keeps its content verbatim — a '#' inside the
+                # quotes is part of the token, not a comment.
+                value = value[1:close] if close > 0 else value[1:]
+            else:
+                # Strip an inline comment: a '#' only starts one when preceded
+                # by whitespace, so a bare `xoxb-a#b` stays intact.
+                if value.startswith("#"):
+                    value = ""
+                else:
+                    value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
+            if value:
+                return value
+    return None
+
+
 def load_token(path=CRED_PATH):
-    """Read the Slack CLI credentials and return its token."""
+    """Return a Slack token, preferring the app token over the CLI credential.
+
+    Resolution order: `AAIF_SLACK_WRITE_TOKEN` in the environment, the same key
+    in a `./.env` file, then the Slack CLI credentials at `path`. The app token
+    is checked first because it is strictly more capable than the CLI one and
+    is how the audits run since the CLI credential expired.
+    """
+    token = os.environ.get(ENV_TOKEN_VAR, "").strip() or _dotenv_token()
+    if token:
+        return token
     if not os.path.exists(path):
         raise SystemExit(
-            "No Slack credentials at %s — run `slack auth login` first." % path)
+            "No Slack token: %s is not set (environment or ./.env) and there "
+            "are no Slack CLI credentials at %s — set the app token or run "
+            "`slack auth login`." % (ENV_TOKEN_VAR, path))
     with open(path, encoding="utf-8") as fh:
         token = _find_token(json.load(fh))
     if not token:
@@ -166,19 +221,27 @@ class Slack:
                 "%s is not a read-only audit method; refusing to call it." % method)
         body = urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None}).encode()
+        return self._fetch(method, body)[0]
+
+    def _fetch(self, method, body):
+        """The retry loop under call() and scopes(): (payload, headers).
+
+        One exception vocabulary out of here — a caller writing `except
+        SlackError` must not miss a final 429, a 5xx, a transport failure, or a
+        200 whose body is an HTML outage page instead of JSON.
+        """
         last = "unknown"
         for attempt in range(MAX_ATTEMPTS):
             try:
                 with urllib.request.urlopen(self._request(method, body),
                                             timeout=TIMEOUT_S) as response:
-                    payload = json.loads(response.read())
+                    headers = response.headers
+                    raw = response.read()
             except urllib.error.HTTPError as exc:
                 if exc.code == 429 and attempt < MAX_ATTEMPTS - 1:
                     last = "http_429"
                     self._sleep(_retry_secs(exc.headers.get("Retry-After")))
                     continue
-                # One vocabulary out of call(): a caller writing `except
-                # SlackError` must not miss the final 429 or a 5xx.
                 raise SlackError(method, "http_%d" % exc.code, exc.reason or "")
             except (http.client.HTTPException, urllib.error.URLError,
                     ConnectionError, TimeoutError) as exc:
@@ -192,13 +255,19 @@ class Slack:
                 last = type(exc).__name__
                 self._sleep(2 * (attempt + 1))
                 continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                raise SlackError(method, "not_json",
+                                 "HTTP 200 but the body was not JSON "
+                                 "(starts %r)" % raw[:80])
             if not payload.get("ok") and payload.get("error") == "ratelimited":
                 last = "ratelimited"
                 if attempt == MAX_ATTEMPTS - 1:
                     break          # no point sleeping before giving up
                 self._sleep(_retry_secs(payload.get("retry_after")))
                 continue
-            return payload
+            return payload, headers
         raise SlackError(method, "retry_exhausted",
                          "%d attempts, last failure: %s" % (MAX_ATTEMPTS, last))
 
@@ -233,19 +302,20 @@ class Slack:
         """OAuth scopes on this client's token, read from a live response header.
 
         The one request that bypasses `call()` — it needs the response headers,
-        which `call()` discards. Hardcoded to `auth.test`; see the module
-        docstring.
+        which `call()` discards — but it shares `_fetch`, so a 429 or a network
+        blip retries and fails as a SlackError here exactly as it would there.
+        Hardcoded to `auth.test`; see the module docstring.
         """
-        with urllib.request.urlopen(self._request("auth.test"),
-                                    timeout=TIMEOUT_S) as response:
-            raw = response.headers.get("x-oauth-scopes") or ""
-            body = json.loads(response.read())
+        body, headers = self._fetch("auth.test", b"")
         if not body.get("ok"):
             # Without this, a dead token yields no scope header, an empty set,
             # and a "missing scopes" message that sends the operator hunting
             # through the app config for a problem that is really the token.
             raise SlackError("auth.test", body.get("error", "unknown"),
-                             "the token is not usable; run `slack auth login`")
+                             "the token is not usable; set %s (environment or "
+                             "./.env), or as a last resort run `slack auth "
+                             "login`" % ENV_TOKEN_VAR)
+        raw = headers.get("x-oauth-scopes") or ""
         return {s.strip() for s in raw.split(",") if s.strip()}
 
     def require_scopes(self, *needed):
@@ -260,7 +330,9 @@ class Slack:
             raise SystemExit(
                 "Token is missing the %s scope(s). The audit would report the "
                 "resulting failures as real findings, so it will not run.\n"
-                "Re-authenticate with `slack auth login`." % ", ".join(missing))
+                "Set %s to a token that carries them (environment or ./.env); "
+                "`slack auth login` is the last resort."
+                % (", ".join(missing), ENV_TOKEN_VAR))
         return have
 
 
@@ -471,13 +543,3 @@ def lookup_emails(api, emails, progress=None):
             "Refusing to report these people as having no Slack account."
             % (len(failures), len(resolved), ", ".join(sorted(set(failures)))))
     return resolved
-
-
-def scopes(token=None):
-    """OAuth scopes for a token, loading one from disk if not given.
-
-    Prefer `Slack.scopes()` when you already hold a client — this function reads
-    the credentials a second time and could therefore answer for a different
-    token than the one your client is using.
-    """
-    return Slack(token=token).scopes()

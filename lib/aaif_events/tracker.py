@@ -112,8 +112,9 @@ def list_events(root):
 def _select(events, event):
     """Resolve an event ref. 'next'/'latest' pick by date; otherwise prefer an
     exact (case-insensitive) title match, then a unique substring match. Raises
-    LookupError if a substring is ambiguous (matches 2+ titles) so a write never
-    silently lands on the wrong event."""
+    LookupError when the match is ambiguous — a substring matching 2+ titles,
+    or 2+ events carrying the identical title — so a write never silently lands
+    on the wrong event."""
     key = (event or "").strip().lower()
     dated = [e for e in events if e["date"]]
     if key == "next":
@@ -125,6 +126,10 @@ def _select(events, event):
     if key == "latest":
         return max(dated, key=lambda e: e["date"]) if dated else None
     exact = [e for e in events if e["title"].strip().lower() == key]
+    if len(exact) > 1:
+        raise LookupError("event %r matches %d events with identical titles; "
+                          "rename one, or select by 'next'/'latest'"
+                          % (event, len(exact)))
     if exact:
         return exact[0]
     partial = [e for e in events if key in e["title"].lower()]

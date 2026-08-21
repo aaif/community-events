@@ -1,7 +1,7 @@
 ---
 name: aaif-create-online-series
 description: Create a new AAIF online event series in the "Online" Google Drive folder by cloning TemplateSeries and rebranding all assets. Use when asked to add/launch/set up a new AAIF online series (reading group, paper club, webinar, online discussion) — not a city chapter.
-argument-hint: '<Series Name> [--slug <lumaslug>]'
+argument-hint: '<Series Name> [--slug <lumaslug>] [--resume]'
 ---
 
 # Create AAIF Online Series
@@ -51,6 +51,7 @@ placeholder the organizer fills in).
 | `San Francisco` / `SAN FRANCISCO` | new series, case-matched | contiguous in the clean template |
 | `SF` abbreviation (`AAIF SF …`, doc metadata) | full series name | **UPPER** in all-caps contexts, **Title case** in prose |
 | `aaif-sanfrancisco` / `aaif-sf` (Luma slug, incl. hyperlink targets) | `aaif-<slug>` | see slug rules below |
+| File/folder **names** carrying any of the above (e.g. `San Francisco CRM.xlsx`) | renamed with the same transform | not just file contents; unit-tested |
 
 ## Luma slug rules
 
@@ -83,6 +84,32 @@ placeholder the organizer fills in).
    downloads, rebrands, and re-uploads each `.pptx/.docx/.xlsx` in place. It prints
    a tree and flags any file with `!! residual` tokens.
 
+   **Recovering a failed or partial run — `--resume`.** If a run dies midway
+   (a `gws` 403, template drift raising in the rebrand engine, network loss),
+   the half-created series folder is already in Drive and a plain re-run aborts
+   on the name collision. Don't trash the folder — re-run with `--resume`:
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py --series "Reading Group" --resume
+   ```
+   It enters the existing folder and clones/rebrands only what's missing — so
+   resuming a fully-cloned series is a no-op. It is also the backfill path when
+   an existing series folder is missing part of the template (the
+   Luxembourg-chapter situation, series-side). Two safeguards make the skip
+   decision trustworthy:
+   - Existing children are matched by their **rebranded or original** template
+     name. A survivor still under its original name (a folder part-cloned by the
+     pre-rename engine, or a hand copy) is renamed in place (logged `~ old ->
+     new`) and treated as present — never re-cloned as a duplicate.
+   - Every skipped Office file is **residual-checked**, because the likeliest
+     crash state is copied-but-never-rebranded. A clean file logs `exists,
+     skipped — residual-checked clean`; a dirty one is repaired in place
+     (downloaded, rebranded, re-uploaded) and logged as repaired. Only a
+     residual that survives the repair is flagged `!! residual (skipped)` and
+     fails the run, same as on a fresh clone.
+
+   A present file whose *content* is corrupt but token-clean is still skipped,
+   not repaired.
+
 4. **Verify & hand off.** Confirm the run printed no `!! residual` flags and report
    the new folder URL. Remind the user to (a) fill the `[bracketed]` About-the-
    series blurb in `Event Tracker.docx`, and (b) create the Luma page if it wasn't
@@ -104,6 +131,7 @@ and check for residuals + that identity reads right:
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
     --series "Reading Group" --rebrand-local /path/to/templateseries-copy
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_series.py   # unit tests (offline)
 ```
 
 The template must stay "clean": `San Francisco` contiguous and the slug normalized

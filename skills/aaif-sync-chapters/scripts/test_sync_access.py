@@ -281,6 +281,39 @@ check("a direct writer passes",
       run_verify([{"type": "user", "emailAddress": "a@x.com",
                    "role": "writer", "inherited": False}]), [])
 
+# --- phases_to_run: pinning is a standing human decision, never a default -------
+# nightly.py passes only --write, so the unattended path must never publish a
+# banner to the internet as a side effect of syncing grants.
+check("a plain --write runs grant + lock only",
+      sync_access.phases_to_run(None, False), ["grant", "lock"])
+check("--pins adds the pin phase, first",
+      sync_access.phases_to_run(None, True), ["pin", "grant", "lock"])
+check("--phase pin is explicit consent on its own",
+      sync_access.phases_to_run("pin", False), ["pin"])
+check("--phase runs exactly the named phase",
+      [sync_access.phases_to_run(p, False) for p in ("grant", "lock")],
+      [["grant"], ["lock"]])
+
+
+# --- the flag combinations that used to be silently inert ----------------------
+# `--phase X --pins` discarded --pins (phases_to_run returns [phase]), and
+# `--pins` without `--write` did nothing at all — the worst behaviours for a
+# flag whose whole job is recording explicit consent. Both must now refuse at
+# parse time, before plan() touches the network (asserted by the plan mock).
+def _main_with(argv):
+    with mock.patch.object(sync_access, "plan",
+                           side_effect=AssertionError("plan() must not run")), \
+         mock.patch.object(sys, "argv", ["sync_access.py"] + argv):
+        return aborts(sync_access.main)
+
+
+check("--phase with --pins is refused loudly, never discarded",
+      _main_with(["--write", "--phase", "grant", "--pins"]), True)
+check("--phase pin with --pins is refused too — one spelling per consent",
+      _main_with(["--write", "--phase", "pin", "--pins"]), True)
+check("--pins without --write is refused, not silently inert",
+      _main_with(["--pins"]), True)
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

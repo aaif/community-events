@@ -11,13 +11,14 @@ The launch post for when RSVPs open. Structure: **one-line hook**, the
 ~120 words, scannable, **at most one emoji, max 3 hashtags**.
 
 **House voice:** share the practice, never sell the product. Specific over grand,
-builder-to-builder. Signal, not numbers. The RSVP line MUST be a Luma link. Edit
-the draft before it ships.
+builder-to-builder. Signal, not numbers. The RSVP line MUST link the event's RSVP
+page — Luma for chapter events; some online events use Gradual.AI. Edit the draft
+before it ships.
 
 **Standard footer (always include).** Below the RSVP/hashtag block, add one quiet
 line with the two standing AAIF attendee links (defaults on every announcement):
-Code of Conduct (events.linuxfoundation.org/about/code-of-conduct) and Privacy
-Policy (linuxfoundation.org/legal/privacy-policy).
+Code of Conduct (https://events.linuxfoundation.org/about/code-of-conduct) and
+Privacy Policy (https://www.linuxfoundation.org/legal/privacy-policy).
 
 ## Input (from the event tracker)
 - Chapter : `[CHAPTER]`
@@ -33,7 +34,7 @@ Agentic AI Night:
 
 > Agents in production: what's working at scale, and what the demos never showed.
 >
-> AAIF San Francisco is back with Agentic AI Night — our Launch Series — on Tue,
+> AAIF San Francisco is back with Agentic AI Night — our Launch Series — on Wed,
 > June 24, 17:30 in SoMa.
 >
 > Maya Chen (payments) opens with tool calling at 10M requests a day: the retries,
@@ -46,5 +47,5 @@ Agentic AI Night:
 > RSVP → lu.ma/aaif-sanfrancisco
 > #AgenticAI #MCP
 >
-> Code of Conduct: events.linuxfoundation.org/about/code-of-conduct · Privacy:
-> linuxfoundation.org/legal/privacy-policy
+> Code of Conduct: https://events.linuxfoundation.org/about/code-of-conduct ·
+> Privacy: https://www.linuxfoundation.org/legal/privacy-policy

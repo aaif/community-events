@@ -25,7 +25,11 @@ The Slack write steps (provision_channels.py, invite_organizers.py,
 prune_organizers.py) are deliberately NOT here: they carry their own
 --i-have-approval gate because they notify or affect real people, and a nightly
 job must never hold that approval. sync_resources' Slack half degrades to
-folder-only on a dead token, which is the right nightly behaviour.
+folder-only on a dead token, which is the right nightly behaviour. For the same
+reason this runner passes ONLY --write and must never pass sync_access's
+--pins: publishing a banner to the internet is a standing human decision, and
+the engine leaves it pending (and visible in its report) until someone runs
+`sync_access.py --write --pins` by hand.
 
 Usage:
     python3 nightly.py                 # report-only run of all five engines

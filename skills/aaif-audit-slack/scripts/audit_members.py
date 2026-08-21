@@ -74,11 +74,17 @@ def build_report(chans, directory, today, activity=None):
     pub = [c for c in live if not c["is_private"]]
     priv = [c for c in live if c["is_private"]]
 
+    # Bracket access on is_app_user, deliberately, here and at the directory
+    # floor in main(): slack.users() defaults every USER_FLAGS boolean, so a
+    # record without the key is schema drift or a foreign cache — and a soft
+    # .get() would silently promote every app user to "human", inflating the
+    # very counts (and the 0.9 short-pull floor) this report exists to state.
+    # Drift must abort as a KeyError, not skew the numbers.
     humans = [u for u in directory
-              if not u["is_bot"] and not u.get("is_app_user") and u["id"] != "USLACKBOT"]
+              if not u["is_bot"] and not u["is_app_user"] and u["id"] != "USLACKBOT"]
     active = [u for u in humans if not u["deleted"]]
     deact = [u for u in humans if u["deleted"]]
-    bots = [u for u in directory if u["is_bot"] or u.get("is_app_user")]
+    bots = [u for u in directory if u["is_bot"] or u["is_app_user"]]
 
     # Slack omits num_members on some conversations. "Not reported" is not
     # "empty": bucketing an unknown as 0 publishes it as an abandoned channel and
@@ -372,6 +378,10 @@ def main():
     # members, so measuring it against all humans (deactivated included) would
     # pass a pull that had lost half the workspace.
     general = next((c for c in chans if c.get("is_general")), None)
+    # is_app_user by bracket access, like build_report's partition: the key is
+    # guaranteed by slack.users(), so its absence is schema drift and must
+    # KeyError here — a .get() quietly counted app users as active humans,
+    # inflating exactly the number the 0.9 tripwire below compares.
     active_humans = sum(1 for u in directory
                         if not u["is_bot"] and not u["is_app_user"]
                         and not u["deleted"] and u["id"] != "USLACKBOT")
@@ -408,11 +418,7 @@ def main():
     html_doc = build_report(chans, directory, dt.datetime.now(dt.timezone.utc),
                             activity)
     html_path = args.out + ".html"
-    # Explicit UTF-8: channel and person names carry accents and the page uses
-    # em dashes; the locale default would mangle or refuse them.
-    with open(html_path, "w", encoding="utf-8") as fh:
-        fh.write(html_doc)
-    os.chmod(html_path, 0o600)   # names + emails: same handling as the cache
+    rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
     if not args.no_pdf:
         print("wrote %s" % rs.to_pdf(os.path.abspath(html_path), os.path.abspath(args.out + ".pdf")))

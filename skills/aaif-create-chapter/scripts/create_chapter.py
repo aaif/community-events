@@ -162,15 +162,21 @@ def rebrand_file(path, name, upper, newslug):
     return _rewrite_zip(path, lambda n, d: rebrand_part(n, d, name, upper, newslug))
 
 def residual_tokens(path):
-    """List any stale San Francisco / SF / aaif-sf tokens still present."""
-    z = zipfile.ZipFile(path); hits = []
-    for n in z.namelist():
-        if not n.endswith((".xml", ".rels")):
-            continue
-        d = z.read(n)
-        for pat in (rb"San Francisco", rb"SAN FRANCISCO", rb"aaif-sf(?![a-z])", rb"\bSF\b"):
-            if re.search(pat, d, re.I):
-                hits.append((n.split("/")[-1], pat.decode("latin1")))
+    """List any stale San Francisco / SF / aaif-sf tokens still present. The city
+    name and slug are matched case-insensitively; the bare "SF" abbreviation is
+    matched case-SENSITIVELY (uppercase only) — theme/font XML legitimately holds
+    lowercase "sf" tokens that are not stale brand text."""
+    hits = []
+    with zipfile.ZipFile(path) as z:
+        for n in z.namelist():
+            if not n.endswith((".xml", ".rels")):
+                continue
+            d = z.read(n)
+            for pat, flags in ((rb"San Francisco", re.I),
+                               (rb"aaif-sf(?![a-z])", re.I),
+                               (rb"\bSF\b", 0)):
+                if re.search(pat, d, flags):
+                    hits.append((n.split("/")[-1], pat.decode("latin1")))
     return hits
 
 # ----------------------------------------------------------------------------
@@ -392,6 +398,11 @@ def copy_file(file_id, name, parent):
                     params={"fileId": file_id, "supportsAllDrives": True},
                     body={"name": name, "parents": [parent]})["id"]
 
+def rename_file(file_id, name):
+    gws_json("drive", "files", "update",
+             params={"fileId": file_id, "supportsAllDrives": True},
+             body={"name": name})
+
 def luma_status(slug):
     """Return 'live' (HTTP 200), 'absent' (HTTP 404), or 'unknown' (could not
     verify: timeout, DNS/SSL, 403/429/5xx). Never report a hard 404 for a
@@ -408,17 +419,81 @@ def luma_status(slug):
         return "unknown"
 
 # ----------------------------------------------------------------------------
-def clone_and_rebrand(folder_id, parent, name, ctx, indent=""):
-    """Recursively copy `folder_id` into `parent` as `name`, rebranding files."""
-    new_id = create_folder(name, parent)
-    print("%s+ %s/" % (indent, name))
+def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None):
+    """Recursively copy `folder_id` into `parent` as `name`, rebranding files.
+
+    Under --resume, `existing_id` is an already-created target folder: it is
+    entered instead of recreated, its children are listed, name-matching children
+    are skipped, and only missing items are cloned — so resuming into a
+    fully-cloned folder is a no-op. Matching is by rebranded OR original template
+    name (a survivor of the pre-rename engine is renamed in place, never
+    re-cloned as a duplicate), and every skipped Office file is residual-checked:
+    one that was copied but never rebranded — the likeliest crash state — is
+    repaired in place rather than trusted."""
+    if existing_id:
+        new_id = existing_id
+        print("%s= %s/ (exists, resumed)" % (indent, name))
+    else:
+        new_id = create_folder(name, parent)
+        print("%s+ %s/" % (indent, name))
+    have = {c["name"]: c for c in list_children(new_id)} if existing_id else {}
     for child in list_children(folder_id):
         cname, cid, mime = child["name"], child["id"], child["mimeType"]
         # Names (not just file content) can carry the source city, e.g. "San
         # Francisco CRM.xlsx" -> "New York CRM.xlsx" — same transform as content.
         new_cname = transform_text(cname, ctx["name"], ctx["upper"], ctx["slug"])
+        hit = have.get(new_cname)
+        if hit is None and new_cname != cname:
+            # A child cloned by the pre-rename engine (or a hand copy) still holds
+            # the ORIGINAL template name — treat it as a hit and rename it, or the
+            # backfill re-clones a duplicate (two CRMs; sync_crm picks the wrong one).
+            hit = have.get(cname)
+            if hit is not None:
+                rename_file(hit["id"], new_cname)
+                print("%s  ~ %s -> %s (renamed to rebranded name)"
+                      % (indent, cname, new_cname))
         if mime == FOLDER:
-            clone_and_rebrand(cid, new_id, new_cname, ctx, indent + "  ")
+            clone_and_rebrand(cid, new_id, new_cname, ctx, indent + "  ",
+                              existing_id=hit["id"] if hit and hit["mimeType"] == FOLDER else None)
+        elif hit:
+            ext = os.path.splitext(cname)[1].lower()
+            if ext in MIME_BY_EXT:
+                # Never trust a skip on faith: the likeliest partial-run state is
+                # copied-under-the-new-name but never rebranded (crash between
+                # copy_file and gws_upload). Residual-check the EXISTING file, and
+                # repair a dirty one in place (download -> rebrand -> upload).
+                tmp = os.path.join(ctx["tmp"], "f" + hit["id"] + ext)
+                try:
+                    gws_download(hit["id"], tmp)
+                    left = residual_tokens(tmp)
+                    if left:
+                        n = rebrand_file(tmp, ctx["name"], ctx["upper"], ctx["slug"])
+                        # The dot was never moved either if the rebrand never ran.
+                        if cname == "Slides.pptx" and ctx.get("latlon"):
+                            moved = reposition_map_marker(tmp, *ctx["latlon"])
+                        else:
+                            moved = 0
+                        if n or moved:
+                            gws_upload(hit["id"], tmp, MIME_BY_EXT[ext])
+                        left = residual_tokens(tmp)
+                        if left:   # repair didn't clear it — fail the run like a clone would
+                            ctx["residuals"].append((new_cname, left))
+                            print("%s  - %s (exists, was not rebranded; repaired %d "
+                                  "parts%s)  !! residual (skipped) %s"
+                                  % (indent, new_cname, n,
+                                     " +map dot" if moved else "", left))
+                        else:
+                            print("%s  - %s (exists, was not rebranded — repaired, "
+                                  "%d parts%s)" % (indent, new_cname, n,
+                                                   " +map dot" if moved else ""))
+                    else:
+                        print("%s  - %s (exists, skipped — residual-checked clean)"
+                              % (indent, new_cname))
+                finally:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+            else:
+                print("%s  - %s (exists, skipped)" % (indent, new_cname))
         else:
             copy_id = copy_file(cid, new_cname, new_id)
             ext = os.path.splitext(cname)[1].lower()
@@ -454,6 +529,10 @@ def main():
     ap.add_argument("--city", required=True, help='Full city name, e.g. "New York"')
     ap.add_argument("--slug", help="Luma slug override (default: city, lowercased, no spaces)")
     ap.add_argument("--dry-run", action="store_true", help="Plan only; create nothing")
+    ap.add_argument("--resume", action="store_true",
+                    help="Enter an existing target folder instead of aborting: skip "
+                         "name-matching children and clone only what's missing "
+                         "(recovery for a failed/partial run)")
     ap.add_argument("--lat", type=float, help="City latitude (use with --lon) to override geocoding of the map dot")
     ap.add_argument("--lon", type=float, help="City longitude (use with --lat) to override geocoding of the map dot")
     ap.add_argument("--rebrand-local", metavar="DIR",
@@ -466,6 +545,12 @@ def main():
     print("City : %s" % name)
     print("Upper: %s" % upper)
     print("Slug : aaif-%s  ->  https://luma.com/aaif-%s" % (slug, slug))
+
+    # --rebrand-local is documented "no Drive, for testing" — it must not make a
+    # live geocoding call either. Require the coordinates explicitly.
+    if a.rebrand_local and (a.lat is None or a.lon is None):
+        sys.exit("ABORT: --rebrand-local is offline-only and does not geocode; "
+                 "pass --lat and --lon explicitly (they place the slide-5 map dot).")
 
     # Coordinates for the slide-5 network-map dot (explicit -> geocode -> none).
     latlon = resolve_latlon(name, a.lat, a.lon)
@@ -505,11 +590,23 @@ def main():
 
     existing = [c for c in list_children(CHAPTERS_PARENT)
                 if c["name"].lower() == name.lower() and c["mimeType"] == FOLDER]
+    resume_id = None
     if existing:
-        sys.exit("ABORT: a chapter folder named %r already exists (%s)" % (name, existing[0]["id"]))
+        if a.resume:
+            resume_id = existing[0]["id"]
+            print("Resume: entering existing folder %s — children already present "
+                  "are skipped; only missing items are cloned." % resume_id)
+        else:
+            sys.exit("ABORT: a chapter folder named %r already exists (%s). To fill "
+                     "in missing items from a failed/partial run, re-run with "
+                     "--resume." % (name, existing[0]["id"]))
 
     if a.dry_run:
-        print("\n[dry-run] Would clone TemplateCity -> %r under Chapters and rebrand all files." % name)
+        if resume_id:
+            print("\n[dry-run] Would resume into the existing %r folder under Chapters "
+                  "and clone only the missing items." % name)
+        else:
+            print("\n[dry-run] Would clone TemplateCity -> %r under Chapters and rebrand all files." % name)
         if status == "absent":
             print("[dry-run] WARNING: Luma page aaif-%s is not live yet." % slug)
         elif status == "unknown":
@@ -520,7 +617,8 @@ def main():
            "tmp": os.path.join(os.environ.get("TMPDIR", "/tmp"), "aaif_chapter")}
     os.makedirs(ctx["tmp"], exist_ok=True)
     print()
-    new_id = clone_and_rebrand(TEMPLATE_FOLDER, CHAPTERS_PARENT, name, ctx)
+    new_id = clone_and_rebrand(TEMPLATE_FOLDER, CHAPTERS_PARENT, name, ctx,
+                               existing_id=resume_id)
     print("\nDone. New chapter folder id: %s" % new_id)
     print("https://drive.google.com/drive/folders/%s" % new_id)
     if status == "absent":

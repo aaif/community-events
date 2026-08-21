@@ -16,7 +16,7 @@ builder-to-builder. Signal, not numbers.
 
 **Standard footer (always include).** Close with the two standing AAIF attendee
 links — these are defaults on every event page:
-- Code of Conduct — https://events.linuxfoundation.org/about/code-of-conduct/
+- Code of Conduct — https://events.linuxfoundation.org/about/code-of-conduct
 - Privacy Policy — https://www.linuxfoundation.org/legal/privacy-policy
 
 One quiet line is enough; it sits below the vendor-neutral line, not in the body.
@@ -46,5 +46,5 @@ Agentic AI Night:
 > Curated, RSVP-based — signal, not numbers.
 >
 > By attending you agree to our Code of Conduct
-> (events.linuxfoundation.org/about/code-of-conduct) and Privacy Policy
-> (linuxfoundation.org/legal/privacy-policy).
+> (https://events.linuxfoundation.org/about/code-of-conduct) and Privacy Policy
+> (https://www.linuxfoundation.org/legal/privacy-policy).

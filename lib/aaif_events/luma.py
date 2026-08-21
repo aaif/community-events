@@ -99,7 +99,15 @@ def call(method, path, params=None, body=None, retries=4):
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read().decode("utf-8") or "{}")
+                text = r.read().decode("utf-8") or "{}"
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                # A proxy or outage page can answer 200 with HTML; a bare
+                # JSONDecodeError mid-run names neither the request nor the fact
+                # that the body was the problem.
+                raise LumaError("%s %s answered 200 but the body was not JSON "
+                                "(starts %r)" % (method, path, text[:120]))
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:300]
             retryable = e.code == 429 or (method == "GET" and e.code in _TRANSIENT_HTTP)
@@ -128,10 +136,6 @@ def call(method, path, params=None, body=None, retries=4):
 # ---------------------------------------------------------------------------
 # Endpoints (thin)
 # ---------------------------------------------------------------------------
-def get_self():
-    return call("GET", "/v1/users/get-self")
-
-
 def get_calendar():
     return call("GET", "/v1/calendars/get")
 

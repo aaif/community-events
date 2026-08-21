@@ -9,8 +9,10 @@ __pycache__/
 # themselves are the durable artifact, not the notes that produced them.
 /docs/
 
-# Local versioned backups from the aaif-backup skill (binary snapshots stay out of git)
-backups/*
+# Local versioned backups from the aaif-backup skill (binary snapshots stay out of
+# git). Unanchored so a backups/ dir anywhere (e.g. under skills/aaif-backup/) is
+# covered; contents-not-directory (`/*`) so the README re-include below can work.
+**/backups/*
 !backups/README.md
 
 # Slack audit output (aaif-audit-slack). THIS REPO IS PUBLIC. The cache holds the
@@ -18,9 +20,7 @@ backups/*
 # and the reports carry organizer names, emails and private-channel rosters. None of
 # it may ever be committed; a single `git add -A` would publish it irreversibly.
 .slack-audit-cache/
-slack-members-audit.*
-slack-organizers-audit.*
-slack-activity-audit.*
+slack-*-audit.*
 
 # Nightly sync runner output (aaif-sync-chapters nightly.py). Same rule as above:
 # the per-engine logs hold the full reports — names, emails, per-person diffs —

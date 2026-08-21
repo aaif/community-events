@@ -53,8 +53,11 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/backup.py --dest /some/dir
 ```
 
 - `<dest>` defaults to **`./backups`** (relative to where you run it — inside the
-  `events/` repo when run from there). `backups/` is **git-ignored**, so the binary
-  snapshots never enter the repo.
+  `meetups` repo when run from there). `backups/` is **git-ignored**, so the binary
+  snapshots never enter the repo — and the script verifies that at run time: it
+  **refuses to start** if the destination is committable (not git-ignored, or
+  already holding tracked files) inside any repo. A `--dest` outside every repo
+  is always fine.
 - Filenames are UTC timestamps, so a folder listing is the version history in order.
 - The target's type decides the format: a Google Sheet is exported to `.xlsx`, a Doc to
   `.docx`, Slides to `.pptx`; already-binary Drive files and local files are copied as-is.

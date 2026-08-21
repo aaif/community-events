@@ -547,6 +547,59 @@ class TestInstallFlagsRedRule(unittest.TestCase):
         self.assertEqual(adds, [])
 
 
+class TestInstallFlagsPreflight(unittest.TestCase):
+    """The Issues formula ships USER_ENTERED, so a missing 'Timestamp' used to
+    install a literal `$None2:$None` formula live, and a renamed Email/LinkedIn
+    silently shrank the coverage the bright-red rule still claims. Every tab is
+    validated before ANY write, mirroring install_colors."""
+
+    GOOD = ["Status", "Timestamp", "Email", "LinkedIn", "City", "Resolved City"]
+
+    def _run(self, headers_by_tab, calls=None):
+        # `calls` may be passed in so an aborting run's writes stay observable —
+        # a list created here is unreachable once SystemExit propagates.
+        calls = [] if calls is None else calls
+        for name in ("gws", "read_tab", "_all_conditional_formats",
+                     "ROLE_TABS", "install_colors"):
+            self.addCleanup(setattr, clean, name, getattr(clean, name))
+        clean.gws = lambda args: calls.append(args) or {}
+        clean.read_tab = lambda tab: (headers_by_tab[tab], [])
+        clean._all_conditional_formats = lambda: {i: [] for i in range(1, 4)}
+        clean.ROLE_TABS = {t: i for i, t in enumerate(headers_by_tab, start=1)}
+        clean.install_colors = lambda: None
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            clean.install_flags()
+        return calls
+
+    def test_aborts_naming_the_missing_headers_before_any_write(self):
+        calls = []
+        with self.assertRaises(SystemExit) as e:
+            self._run({"Organizers": ["Status", "Email", "LinkedIn"]}, calls)
+        self.assertIn("'Timestamp'", str(e.exception))
+        self.assertIn("No tab modified", str(e.exception))
+        self.assertEqual(calls, [], "nothing may be written on a preflight abort")
+
+    def test_a_renamed_email_or_linkedin_is_an_abort_not_shrunk_coverage(self):
+        for gone in ("Email", "LinkedIn"):
+            hdr = [h for h in self.GOOD if h != gone]
+            with self.assertRaises(SystemExit) as e:
+                self._run({"Organizers": hdr})
+            self.assertIn(repr(gone), str(e.exception))
+
+    def test_no_tab_is_written_when_a_later_tab_fails_preflight(self):
+        calls = []
+        with self.assertRaises(SystemExit) as e:
+            self._run({"Organizers": self.GOOD,
+                       "Hosts": ["Status", "Email", "LinkedIn"]}, calls)
+        self.assertIn("Hosts", str(e.exception))
+        self.assertEqual(calls, [], "Organizers must not be written when Hosts fails")
+
+    def test_a_clean_tab_still_installs(self):
+        calls = self._run({"Organizers": self.GOOD})
+        self.assertTrue(calls, "the happy path must still write")
+
+
 class TestAutofixNoteSeparators(unittest.TestCase):
     """The regression the value-carrying phrase introduced: a value containing a
     separator could not be split back out of `prior`, so it never matched `seen`

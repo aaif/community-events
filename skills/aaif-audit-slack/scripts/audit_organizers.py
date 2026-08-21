@@ -337,7 +337,9 @@ def _resolve_alias(city, table, by_name):
     `how` is one of: "" (the map was silent), "known-none", "alias", or
     "alias-missing:<name>". Callers must run assert_aliases_resolve() to rule
     out the last, which is always a configuration bug — or, pre-provisioning,
-    mark_planned_aliases() to downgrade it to "planned:<name>".
+    mark_planned_aliases() to downgrade it to "planned:<name>". match_channels()
+    adds "alias-private:<name>" for a public alias held by a private room,
+    policed by the same pair of callers.
     """
     if city not in table:
         return None, ""
@@ -374,10 +376,10 @@ def match_channels(chapters, chans, cfg):
         if pub and pub["is_private"]:
             # The auto path refuses private channels; an alias must not be a way
             # around that, or a private room is reported as the city's home.
-            raise SystemExit(
-                "ABORT: the Chapters List gives %r the Slack Channel #%s, which is "
-                "PRIVATE. A city's own channel must be public — move it to that "
-                "row's Organizer Channel instead." % (city, pub["name"]))
+            # Recorded rather than raised so --planned-ok can downgrade the
+            # pre-convert state (the sheet-named room exists but is still held
+            # private); the default run aborts in assert_aliases_resolve().
+            pub, how = None, "alias-private:%s" % pub["name"]
         candidates = []
         if not pub and not how:
             # Prefixes are tried in the order the config lists them, so an exact
@@ -466,6 +468,16 @@ def assert_aliases_resolve(rows, source=CHAPTERS_TAB):
             "reported as having no channel at all."
             % (len(broken), source,
                "\n  ".join("%s -> #%s" % (c, n) for c, n in broken), NO_RESOURCE))
+    held = [(r["city"], r["public_how"].split(":", 1)[1])
+            for r in rows if r["public_how"].startswith("alias-private:")]
+    if held:
+        raise SystemExit(
+            "ABORT: %d Slack Channel cell(s) on %s point at a PRIVATE channel:\n"
+            "  %s\nA city's own channel must be public. Convert the room to "
+            "public, or run with --planned-ok to report these chapters truthfully "
+            "as having no public channel yet."
+            % (len(held), source,
+               "\n  ".join("%s -> #%s" % (c, n) for c, n in held)))
 
 
 def mark_planned_aliases(rows):
@@ -481,15 +493,87 @@ def mark_planned_aliases(rows):
     The chapter is still reported as having no channel — that is the truthful
     current state — but the report's data-quality notes list these as planned
     rather than letting them blend into "nobody ever made a room".
+
+    A `public` alias held by a PRIVATE room is the sibling pre-convert state
+    (the name exists, the admin-UI convert has not happened) and is downgraded
+    to "held-private:<name>" the same way, kept distinct so the report does not
+    claim the channel is yet to be created.
     """
-    planned = []
+    planned, held = [], []
     for r in rows:
         for k in ("public_how", "organizers_how", "regional_how"):
             if r[k].startswith("alias-missing:"):
                 name = r[k].split(":", 1)[1]
                 r[k] = "planned:" + name
                 planned.append((r["city"], name))
-    return planned
+        if r["public_how"].startswith("alias-private:"):
+            name = r["public_how"].split(":", 1)[1]
+            r["public_how"] = "held-private:" + name
+            held.append((r["city"], name))
+    return planned, held
+
+
+def check_membership_floor(membership, chans, chans_cached, refetch, note=print):
+    """The free floor on a paged membership pull: no channel's pulled ids may
+    number fewer than conversations.list said it has members. A short pull
+    would render real members as "accepted but absent" pills, so it aborts.
+
+    `membership` is {name: [ids]}; `chans` is the channel list those names came
+    from; `refetch` re-pulls the list (and re-stamps its cache) and is called
+    at most once, only when `chans_cached` — a CACHED size may simply predate
+    someone leaving, and aborting on that with "re-run" advice loops forever
+    because a plain re-run reuses the same cache.
+
+    Two silences this function exists to keep loud:
+
+    * only the channels short against the CACHED size are re-checked against
+      the fresh list. A channel that passed the cached floor and gained a
+      member between the membership pull and the re-fetch is the normal join
+      race, not a dropped page — re-checking everything turned that race into
+      a spurious abort about a pull that was complete.
+    * a re-checked channel MISSING from the fresh list was renamed (or
+      archived/deleted) mid-run. Its floor is unverifiable and everything
+      matched against the old name is stale, so it aborts naming the rename —
+      the alternative, re-pulling that one membership, would quietly verify a
+      roster the rest of the report still files under a name that no longer
+      exists.
+
+    Returns the channel list the final check ran against.
+    """
+    def undersized(chans, only=None):
+        sizes = {c["name"]: c["num_members"] for c in chans}
+        return [(n, len(ids), sizes[n])
+                for n, ids in sorted(membership.items())
+                if (only is None or n in only)
+                and sizes.get(n) is not None and len(ids) < sizes[n]]
+
+    short = undersized(chans)
+    if short and chans_cached:
+        note("  %d channel(s) smaller than their cached size — re-fetching the "
+             "channel list to tell a stale cache from a short pull ..."
+             % len(short))
+        chans = refetch()
+        names = {c["name"] for c in chans}
+        short_names = {n for n, _got, _want in short}
+        gone = sorted(short_names - names)
+        if gone:
+            raise SystemExit(
+                "ABORT: %d channel(s) whose membership pull came back short "
+                "no longer appear in a fresh channel list under that name: %s."
+                "\nThey were renamed, archived or deleted mid-run, so their "
+                "membership floor cannot be verified — and every chapter match "
+                "in this run still uses the old name. Re-run with --refresh."
+                % (len(gone), ", ".join("#" + n for n in gone)))
+        short = undersized(chans, only=short_names)
+    if short:
+        raise SystemExit(
+            "ABORT: membership came back short for %d channel(s) against a "
+            "fresh channel list: %s.\nPeople would be reported as absent from "
+            "rooms they are in. Re-run with --refresh; if it persists, the "
+            "members() pagination is dropping pages."
+            % (len(short),
+               ", ".join("#%s (%d of %d)" % s for s in short)))
+    return chans
 
 
 def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
@@ -557,6 +641,23 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
 # --------------------------------------------------------------------------
 # Report
 # --------------------------------------------------------------------------
+
+def rooms_to_create(audit):
+    """The chapters the report may honestly tell an admin to build a room for.
+
+    Uncovered plus two accepted organizers is not enough on its own: a
+    public_how of "planned:<name>" or "held-private:<name>" means the room is
+    already provisioned-or-pending (often behind a squatting name, where a
+    create is guaranteed to fail), and "known-none" is a human's standing
+    answer that there is no channel on purpose. All three are surfaced in the
+    Data-quality notes; repeating them here as create advice would send an
+    admin to fight Slack over a name that is already spoken for.
+    """
+    return [c for c in audit
+            if not c["public"] and len(c["accepted"]) >= 2
+            and c["public_how"] != "known-none"
+            and not c["public_how"].startswith(("planned:", "held-private:"))]
+
 
 def render(audit, orphans, dupes, today):
     allp = [p for c in audit for p in c["accepted"]]
@@ -685,7 +786,7 @@ def render(audit, orphans, dupes, today):
                       % (e(c["city"]), chips or '<span class="nil">no channels</span>',
                          "".join(items)))
 
-    create = [c for c in audit if not c["public"] and len(c["accepted"]) >= 2]
+    create = rooms_to_create(audit)
     unreachable = [c for c in audit if c["accepted"]
                    and not any(p["slack_account"] for p in c["accepted"])]
     empty_room = [c for c in audit if c["public"] and c["accepted"]
@@ -785,6 +886,13 @@ def render(audit, orphans, dupes, today):
                      "provision_channels.py has created them.</li>"
                      % (len(planned), len(planned_cities),
                         ", ".join(e(c) for c in planned_cities)))
+    held = sorted((c["city"], c["public_how"].split(":", 1)[1])
+                  for c in audit if c["public_how"].startswith("held-private:"))
+    if held:
+        notes.append("<li><strong>%d chapters' named channels exist but are still private</strong> "
+                     "— awaiting an admin-UI convert to public, so they are reported above as "
+                     "having no public channel, which is the current truth: %s.</li>"
+                     % (len(held), ", ".join("%s (#%s)" % (e(c), e(n)) for c, n in held)))
     cand = [c for c in audit if not c["public"] and c["public_candidates"]]
     if cand:
         notes.append("<li><strong>%d chapters have near-miss channels</strong> that were NOT "
@@ -948,6 +1056,7 @@ def main():
 
     chan_path = os.path.join(args.cache, "channels.json")
     chans = read_cache(chan_path, args.refresh, team_id, note=print)
+    chans_cached = chans is not None      # the short-check below needs to know
     if chans is None:
         print("  fetching channels ...")
         chans = channels(api)
@@ -958,10 +1067,13 @@ def main():
 
     rows = match_channels(chapters, chans, cfg)
     if args.planned_ok:
-        planned = mark_planned_aliases(rows)
+        planned, held = mark_planned_aliases(rows)
         if planned:
             print("  %d sheet-named channel(s) do not exist yet — treated as "
                   "planned, not as renames" % len(planned))
+        if held:
+            print("  %d sheet-named channel(s) exist but are still PRIVATE — "
+                  "reported as no public channel yet" % len(held))
     else:
         assert_aliases_resolve(rows)
     print("  matched: %d own channel, %d organizers channel"
@@ -1002,18 +1114,17 @@ def main():
                 targets[name] = cid
     print("  pulling membership for %d channels ..." % len(targets))
     membership = {name: members(api, cid) for name, cid in sorted(targets.items())}
-    # conversations.list already told us how big each channel is; comparing that
-    # against what conversations.members returned is a free floor on a short
-    # paged pull, which would otherwise render as "accepted but absent" pills.
-    sizes = {c["name"]: c["num_members"] for c in chans}
-    short = ["#%s (%d of %d)" % (n, len(ids), sizes[n])
-             for n, ids in sorted(membership.items())
-             if sizes.get(n) is not None and len(ids) < sizes[n]]
-    if short:
-        raise SystemExit(
-            "ABORT: membership came back short for %d channel(s): %s.\n"
-            "People would be reported as absent from rooms they are in. Re-run."
-            % (len(short), ", ".join(short)))
+    # conversations.list already told us how big each channel is; comparing
+    # that against what conversations.members returned is a free floor on a
+    # short paged pull, which would otherwise render as "accepted but absent"
+    # pills. The stale-cache / join-race / renamed-channel reasoning lives on
+    # check_membership_floor. `rows` keeps the earlier snapshot — the
+    # membership ids above were pulled for exactly those channels.
+    def refetch():
+        fresh = channels(api)
+        write_cache(chan_path, fresh, team_id)
+        return fresh
+    chans = check_membership_floor(membership, chans, chans_cached, refetch)
 
     # Only the organizer-channel members need naming, so resolve those ids
     # individually rather than pulling a 30k-row directory.
@@ -1057,11 +1168,7 @@ def main():
 
     html_doc = render(audit, orphans, dupes, dt.datetime.now(dt.timezone.utc))
     html_path = args.out + ".html"
-    # Explicit UTF-8: the page carries españa, Montréal and em dashes, and the
-    # locale default would mangle or refuse them.
-    with open(html_path, "w", encoding="utf-8") as fh:
-        fh.write(html_doc)
-    os.chmod(html_path, 0o600)   # names + emails + rosters: as sensitive as the cache
+    rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
     if not args.no_pdf:
         print("wrote %s" % rs.to_pdf(os.path.abspath(html_path),

@@ -29,9 +29,17 @@ the tree. It is a NO-OP while the parent is still shared: Drive merges a child's
 hold its own public share AFTER the parent's is gone. Never trust its "N changes"
 line — re-read the permission and check `permissionDetails[].inherited`.
 
+Pinning runs ONLY behind the explicit `--pins` flag (or `--phase pin`).
+Publishing a file to the whole internet is a standing human decision, not
+drift: the site serves from Sanity, nothing needs the banners public, and an
+unattended `--write` (nightly.py, which must never pass `--pins`) has no
+business making that call. `--write` alone therefore runs grant + lock; the
+report keeps naming any unpinned banners so the pending decision stays visible.
+
 Usage:
   python3 sync_access.py                    # full plan, changes nothing
-  python3 sync_access.py --write            # apply every phase, in order
+  python3 sync_access.py --write            # apply grant + lock, in order
+  python3 sync_access.py --write --pins     # also run the pin phase first
   python3 sync_access.py --write --phase grant
   python3 sync_access.py --role reader      # grant something other than writer
   python3 sync_access.py --write --mail-if-required   # email only the addresses
@@ -240,6 +248,11 @@ def report(p, role):
         print("     %-20s %s" % (x["chapter"], x["file_id"]))
     if len(p["pins"]) > 6:
         print("     … and %d more" % (len(p["pins"]) - 6))
+    if p["pins"]:
+        # Keep the standing decision visible without letting an unattended
+        # --write make it: pins never run unless explicitly asked for.
+        print("  (pins run ONLY with --pins or --phase pin — a plain --write "
+              "applies grant + lock and leaves these pending)")
     if p["no_banner"]:
         print("  !! %d chapter(s) have no resolvable Image id on the feed (the cell is "
               "empty or not a Drive URL): %s"
@@ -503,13 +516,36 @@ def verify(p, ran):
     return bad
 
 
+def phases_to_run(phase, pins):
+    """The pin/grant/lock subset this invocation applies, in order.
+
+    `--phase` names exactly one — pin included, because naming it IS the
+    explicit consent. Without `--phase`, `--write` runs grant + lock; pin
+    joins only under `--pins`, so an unattended write (nightly.py never
+    passes `--pins`) can never publish a file to the internet as a side
+    effect of syncing grants.
+
+    `phase` and `pins` never arrive together: main() rejects `--phase --pins`
+    at parse time (the combination used to discard --pins silently, and a
+    silently dropped consent flag is the one thing a consent flag must not
+    be), so the `if phase` early return cannot swallow a pin request.
+    """
+    if phase:
+        return [phase]
+    return (["pin"] if pins else []) + ["grant", "lock"]
+
+
 def main():
     ap = argparse.ArgumentParser(description="Plan/apply per-chapter access for the Chapters folder.")
     ap.add_argument("--write", action="store_true", help="apply (default: report only)")
     ap.add_argument("--role", default="writer", choices=("writer", "reader", "commenter"),
                     help="role granted to each organizer on their chapter (default: writer)")
     ap.add_argument("--phase", choices=("pin", "grant", "lock"),
-                    help="apply only one phase (default: all three, in order)")
+                    help="apply only one phase (default with --write: grant "
+                         "then lock; add --pins to run pin first)")
+    ap.add_argument("--pins", action="store_true",
+                    help="also run the pin phase (make each banner directly "
+                         "public) — never run by a plain --write or by nightly.py")
     ap.add_argument("--notify", action="store_true",
                     help="let Drive email EVERY organizer about their new access")
     ap.add_argument("--lock-anyway", action="store_true",
@@ -519,6 +555,16 @@ def main():
                     help="email only the organizers whose address has no Google "
                          "account, where Drive refuses to share without it")
     a = ap.parse_args()
+    # Refuse, never reinterpret: both flags speak for the pin phase, and each
+    # combination below used to be silently inert — the worst behaviour for a
+    # flag whose whole job is recording explicit human consent.
+    if a.phase and a.pins:
+        ap.error("--pins cannot be combined with --phase: --phase names the ONE "
+                 "phase to run, so --pins would be discarded. Use --phase pin "
+                 "to run pins alone, or drop --phase to run pin + grant + lock.")
+    if a.pins and not a.write:
+        ap.error("--pins does nothing without --write — the report already "
+                 "shows pending pins. Add --write to apply them.")
 
     p = plan(a.role)
     report(p, a.role)
@@ -536,17 +582,19 @@ def main():
     # so printing it unconditionally would label every in-sync write night
     # "wrote+verified" and exit 2 forever. The other engines' no-drift early
     # return, in this engine's terms.
-    if not a.phase and not (p["grants"] or p["public"]):
+    if not a.phase and not (p["grants"] or p["public"] or (a.pins and p["pins"])):
         print("\nNo changes needed — every accepted organizer holds their "
               "grant and the folder is not link-shared. (Pending banner pins, "
-              "if any, are a standing decision: run --phase pin explicitly.)")
+              "if any, are a standing decision: run --pins or --phase pin "
+              "explicitly.)")
         return 0
 
+    selected = phases_to_run(a.phase, a.pins)
     order = [("pin", apply_pins, (p,)), ("grant", apply_grants, (p, a.notify, a.mail_if_required)),
              ("lock", apply_lock, (p,))]
     grant_failures = []
     for name, fn, args in order:
-        if a.phase and a.phase != name:
+        if name not in selected:
             continue
         # Removing the public share is the last thing that happens, and only if
         # every organizer actually has their own grant. Skipping a no-Google-
@@ -569,19 +617,33 @@ def main():
             n, grant_failures = n
         print("  phase %r: %d change(s)" % (name, n))
 
+    if p["pins"] and "pin" not in selected:
+        # The skipped standing decision stays visible on every write run.
+        print("\nNOTE: %d banner(s) still lack their own public share — pins run "
+              "only with --pins or --phase pin." % len(p["pins"]))
+
     # Verify whatever ran, including a single --phase. `--write --phase lock` is
     # the most destructive invocation available and used to be the one path with
     # no re-read at all, reporting a PLANNED count as its result.
-    ran = [n for n, _, _ in order if not a.phase or a.phase == n]
-    if ran:
-        print("\nVerifying...")
-        bad = verify(p, ran)
-        if bad:
-            print("VERIFY FAILED:")
-            for b in bad:
-                print("  " + b)
-            return 1
-        print("Verified: banners are directly public and Chapters/ is no longer link-shared.")
+    # `selected` is never empty (phases_to_run returns at least ["grant", "lock"]).
+    print("\nVerifying...")
+    bad = verify(p, selected)
+    if bad:
+        print("VERIFY FAILED:")
+        for b in bad:
+            print("  " + b)
+        return 1
+    # Claim only what this run actually re-read — the old fixed line said
+    # "banners are directly public" even on runs that never touched a pin,
+    # or when zero pins exist to check.
+    bits = []
+    if "pin" in selected and (p["pins"] or p["already_pinned_ids"]):
+        bits.append("every banner holds its own public share")
+    if "grant" in selected and (p["grants"] or p["already_granted_ids"]):
+        bits.append("every accepted organizer holds their grant")
+    if "lock" in selected:
+        bits.append("Chapters/ is not link-shared")
+    print("Verified: %s." % "; ".join(bits))
     return 0
 
 

@@ -23,7 +23,7 @@ Maya Chen, Agentic AI Night:
 
 > Hi Maya — I help run AAIF San Francisco, a curated, vendor-neutral event for
 > people building agents (no pitches, just folks who ship). I'd love to have you
-> open our June night with a 25-minute talk on tool calling at scale — Tue June
+> open our June night with a 25-minute talk on tool calling at scale — Wed June
 > 24, evening, in SoMa, ~120 builders. Slides optional; a live walkthrough works
-> great too. Happy to flex on the date if that week's tight. Would June 24 work
-> for you?
+> great too. Would June 24 work for you? If that week's tight, happy to flex on
+> the date.
