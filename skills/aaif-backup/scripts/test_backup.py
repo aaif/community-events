@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -57,6 +58,51 @@ class TestBackupLocal(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(SystemExit):
                 backup.backup_local(os.path.join(d, "nope.xlsx"), d)
+
+
+class TestAssertDestGitSafe(unittest.TestCase):
+    """The committable-path guard: snapshots are the full applicant export, and
+    the repo is public, so an unignored --dest must refuse before any fetch."""
+
+    def _repo(self, d):
+        subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
+        return d
+
+    def test_refuses_an_unignored_dest_inside_a_repo(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            with self.assertRaises(SystemExit) as e:
+                backup.assert_dest_git_safe(os.path.join(d, "backups"))
+            self.assertIn("committable", str(e.exception))
+
+    def test_allows_an_ignored_dest_even_before_it_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            with open(os.path.join(d, ".gitignore"), "w") as f:
+                f.write("backups/\n")
+            backup.assert_dest_git_safe(os.path.join(d, "backups"))  # must not raise
+
+    def test_allows_a_dest_outside_any_repo(self):
+        with tempfile.TemporaryDirectory() as d:
+            # check-ignore exits 128 out here; that must read as "safe", since
+            # moving --dest outside the repo is the guard's own recommendation.
+            backup.assert_dest_git_safe(os.path.join(d, "backups"))
+
+    def test_refuses_a_dest_holding_tracked_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            bk = os.path.join(d, "backups")
+            os.makedirs(bk)
+            with open(os.path.join(bk, "old.xlsx"), "w") as f:
+                f.write("x")
+            subprocess.run(["git", "-C", d, "add", "backups/old.xlsx"],
+                           check=True, capture_output=True)
+            # ignored NOW, but the earlier commit-era file still rides `git add -A`
+            with open(os.path.join(d, ".gitignore"), "w") as f:
+                f.write("backups/\n")
+            with self.assertRaises(SystemExit) as e:
+                backup.assert_dest_git_safe(bk)
+            self.assertIn("TRACKED", str(e.exception))
 
 
 class TestDriveIdDispatch(unittest.TestCase):

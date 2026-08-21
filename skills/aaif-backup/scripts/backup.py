@@ -72,6 +72,75 @@ def gws_download(args, out_path):
 DRIVE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 
 
+def _repo_root(path):
+    """Git repo root containing `path`, or None when it lives outside any repo.
+
+    Resolved from the destination itself, not the process cwd — where the script
+    is run from must not decide whether the *snapshots* are protected. Walks up
+    to the nearest existing dir first, since the destination may not exist yet."""
+    probe_dir = os.path.abspath(path)
+    while not os.path.isdir(probe_dir) and probe_dir != os.sep:
+        probe_dir = os.path.dirname(probe_dir) or os.sep
+    try:
+        proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.exit("REFUSING TO RUN: git is not installed, so this cannot verify "
+                 f"that {path} is ignored. Snapshots hold every applicant's name "
+                 "and email; install git or pass --dest outside any repository.")
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    # Mirrors report_style._repo_root (the reference implementation): only
+    # git's own "not a git repository" answer means outside-a-repo. Any other
+    # failure (dubious ownership, corrupt .git, ...) aborts — mapping it to
+    # None would silently disengage the PII guard.
+    stderr = (proc.stderr or "").strip()
+    if "not a git repository" in stderr.lower():
+        return None
+    sys.exit(f"REFUSING TO RUN: `git rev-parse` failed in {probe_dir} (exit "
+             f"{proc.returncode}: {stderr[:200]}), so this cannot verify that "
+             f"{path} is ignored. Fix the git error, or pass --dest outside "
+             "any repository.")
+
+
+def assert_dest_git_safe(dest_root):
+    """Refuse to write snapshots git would happily commit.
+
+    The default target is the full Intake Ops export — every applicant's name,
+    email and free-text answers — and the repo this usually runs in is PUBLIC,
+    so `.gitignore` coverage is a safety control, not tidiness. Verified at run
+    time (git check-ignore) rather than trusted to a `.gitignore` rule that a
+    rename or an unanchored pattern can silently stop matching. Mirrors the
+    audit skills' assert_git_ignored; inlined because this script is
+    deliberately self-contained (see AGENTS.md on the lib coupling).
+
+    A destination outside every repository is fine — there is nothing to commit
+    it to. `check-ignore` exits 128 (not 1) there, which is why the repo root is
+    resolved first instead of treating that exit as "unignored"."""
+    root = _repo_root(dest_root)
+    if root is None:
+        return                       # outside any repo — nothing to leak into
+    # Probe through a child: `check-ignore` answers differently for a bare
+    # directory name, and this works before the directory exists.
+    probe = os.path.join(dest_root, "probe")
+    ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", probe],
+                             capture_output=True).returncode == 0
+    # .gitignore has no effect on already-tracked files, so a snapshot committed
+    # before the rules landed would still ride along on `git add -A` while
+    # check-ignore reports the folder as ignored.
+    tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch",
+                              dest_root], capture_output=True).returncode == 0
+    if tracked:
+        sys.exit(f"REFUSING TO RUN: {dest_root} already holds files TRACKED by "
+                 f"the repo at {root} — git rm --cached them first. Snapshots "
+                 "hold every applicant's name and email.")
+    if not ignored:
+        sys.exit(f"REFUSING TO RUN: {dest_root} is committable — not ignored in "
+                 f"{root}. Snapshots hold every applicant's name and email. Add "
+                 "the path to .gitignore, or pass --dest to a location outside "
+                 "any git repository.")
+
+
 def slugify(name):
     s = re.sub(r"[^\w.-]+", "-", name.strip()).strip("-.")
     return (s or "backup").lower()
@@ -143,6 +212,7 @@ def main():
                     help="Root folder for snapshots (default: ./backups)")
     a = ap.parse_args()
     dest_root = os.path.abspath(a.dest)
+    assert_dest_git_safe(dest_root)   # before ANY fetch: fail in a second, not after a pull
     # Dispatch explicitly so a mistyped local path can't silently fall through to
     # Drive (and die with a cryptic 404): existing path -> local; a clean Drive-id
     # shape -> Drive; anything else is a mistake, so say so.
