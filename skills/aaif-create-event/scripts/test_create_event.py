@@ -24,7 +24,7 @@ class TestCreateCore(unittest.TestCase):
             create_event.apply_local(local, {
                 "EVENT TITLE": "Eval Night",
                 "DATE & TIME": "Wed · August 12, 2026 · 18:00 — late",
-            }, dt.date(2026, 8, 12))
+            }, dt.date(2026, 8, 12), office.read_document(local))
             root = office.read_document(local)
             titles = [e["title"] for e in tracker.list_events(root)]
             self.assertIn("Eval Night", titles)
@@ -39,7 +39,7 @@ class TestCreateCore(unittest.TestCase):
                     "EVENT TITLE": "X",
                     "DATE & TIME": "Wed · August 12, 2026 · 18:00 — late",
                     "PLATFORM": "Zoom",
-                }, dt.date(2026, 8, 12))
+                }, dt.date(2026, 8, 12), office.read_document(local))
 
     def test_title_exists_is_exact_not_substring(self):
         root = office.read_document(FIX)

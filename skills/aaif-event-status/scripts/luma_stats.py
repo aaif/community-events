@@ -39,7 +39,7 @@ def stats_for_tracker(docx, event_filter):
     refs = tracker.list_events(root)
     if event_filter:
         refs = [e for e in refs if event_filter.lower() in e["title"].lower()]
-    shown, errors = 0, 0
+    errors = 0
     for ref in refs:
         view = tracker.view_event(ref)
         cell = (view["details"].get("LUMA URL") or "").strip()
@@ -60,12 +60,11 @@ def stats_for_tracker(docx, event_filter):
             errors += 1
             continue
         print_stats(live, label=view["title"])
-        shown += 1
     if not refs:
         print("No matching events in %s." % docx)
     if errors:
         print("!! %d event(s) errored — stats above are incomplete." % errors)
-    return shown, errors
+    return errors
 
 
 def main():
@@ -82,12 +81,19 @@ def main():
               "Read the numbers off the event page manually, or set up the key "
               "(see aaif-create-event's SKILL.md).")
         return
-    if a.event_id:
-        print_stats(luma.get_event(a.event_id))
-    elif a.url:
-        print_stats(luma.get_event(luma.resolve_event_id(a.url)))
+    # The direct paths get the same clean messages as the tracker loop — a bad
+    # id/URL or a network failure must not surface as a raw traceback.
+    if a.event_id or a.url:
+        try:
+            event_id = a.event_id or luma.resolve_event_id(a.url)
+            print_stats(luma.get_event(event_id))
+        except luma.NotAnEventUrl:
+            sys.exit("!! %s doesn't point to an event page — likely a calendar "
+                     "link; pass the event's own URL or --event-id." % a.url)
+        except luma.LumaError as e:
+            sys.exit("!! %s" % e)
     elif a.docx:
-        _, errors = stats_for_tracker(a.docx, a.event)
+        errors = stats_for_tracker(a.docx, a.event)
         if errors:
             sys.exit(1)   # partial digest — don't let the caller read it as complete
     else:

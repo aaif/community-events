@@ -108,7 +108,9 @@ def main():
 
     # verify: re-fetch and re-diff. description_md is excluded — Luma's Spark
     # round-trip isn't byte-stable, so it would always look dirty right after a
-    # push (cover_url likewise: the CDN rewrites the URL).
+    # push. cover_url needs no such pop: it is never part of `desired` (it only
+    # enters `changes` when --cover is given), so the CDN rewriting the uploaded
+    # URL can't make the verify look dirty either.
     desired.pop("description_md", None)
     still = luma.diff_payload(luma.get_event(event_id), desired)
     if still:

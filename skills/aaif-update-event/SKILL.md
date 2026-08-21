@@ -1,6 +1,6 @@
 ---
 name: aaif-update-event
-description: Apply a change to an existing AAIF event (chapter or series) — edit detail fields like speakers/venue/capacity, or move the date and recompute all task due-dates, then flag which marketing/banner assets are now stale; can also sync the change to the live Luma event page (diff shown first, pushed only on explicit user approval). Use when asked to update/change/edit an event's details or date.
+description: Apply a change to an existing AAIF event (chapter or series) — edit detail fields like speakers/venue/capacity, or move the date and recompute all task due-dates, then flag which marketing/banner assets are now stale (speaker, venue/location, and date changes set flags); can also sync the change to the live Luma event page (diff shown first, pushed only on explicit user approval). Use when asked to update/change/edit an event's details or date.
 argument-hint: '<chapter|series> <event> [--set "LABEL=value"] [--date "..."]'
 ---
 
@@ -62,7 +62,13 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
    - **series (online):** same, but `PLATFORM` and `STREAM / JOIN LINK` replace
      `LOCATION / CITY` and `VENUE`.
 
-   `--set` with a label absent from that tracker raises an error (it won't silently no-op).
+   `--set` with a label absent from that tracker raises an error (it won't silently
+   no-op). `--set "DATE & TIME=..."` is **refused** — a bare field write would skip
+   the due-date recompute, which must run against the original date; move a date
+   with `--date` only.
+
+   Add `--dry-run` to preview: it prints the field diff (old → new) and the
+   stale-asset list without writing the docx; re-run without it to apply.
 
 3. **Upload it back:**
 

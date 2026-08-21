@@ -27,8 +27,7 @@ def title_exists(root, title):
     return any(key == e["title"].strip().lower() for e in tracker.list_events(root))
 
 
-def apply_local(path, fields, event_date):
-    root = office.read_document(path)
+def apply_local(path, fields, event_date, root):
     tracker.add_event(root, fields, event_date)
     office.save_document(path, root, path)
 
@@ -63,7 +62,7 @@ def main():
     if a.dry_run:
         print("[dry-run] would clone the example section and stamp dates; no write.")
         return
-    apply_local(a.docx, fields, event_date)
+    apply_local(a.docx, fields, event_date, root=root)
     print("Done. New event section added to %s and due-dates stamped." % a.docx)
 
 

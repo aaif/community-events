@@ -50,6 +50,26 @@ class TestApplyChanges(unittest.TestCase):
         with self.assertRaises(ValueError):
             update_event.apply_changes(self.root, "Agentic AI Night", ["SPEAKER(S)"], None)
 
+    def test_set_venue_flags_stale(self):
+        stale = update_event.apply_changes(
+            self.root, "Agentic AI Night", ["VENUE=The Foundry, 2nd floor"], None)
+        ev = tracker.read_event(self.root, "Agentic AI Night")
+        self.assertEqual(ev["details"]["VENUE"], "The Foundry, 2nd floor")
+        self.assertIn("announcement post", stale)
+        self.assertIn("attendee reminder", stale)
+
+    def test_set_date_field_is_refused(self):
+        # a bare DATE & TIME write would silently skip the due-date recompute —
+        # it must abort and point at --date instead.
+        with self.assertRaises(ValueError) as ctx:
+            update_event.apply_changes(
+                self.root, "Agentic AI Night",
+                ["DATE & TIME=Wed · July 8, 2026 · 17:30 — late"], None)
+        self.assertIn("--date", str(ctx.exception))
+        # nothing was written
+        ev = tracker.read_event(self.root, "Agentic AI Night")
+        self.assertNotIn("July 8", ev["details"]["DATE & TIME"])
+
 
 if __name__ == "__main__":
     unittest.main()
