@@ -120,6 +120,10 @@ def rebrand_part(part_name, data, name, upper, newslug):
         xml = _process_paragraphs(xml, "w:p", "w:t", tx)
     elif part_name == "xl/sharedStrings.xml":
         xml = _process_paragraphs(xml, "si", "t", tx)
+    elif re.match(r"xl/worksheets/sheet\d+\.xml$", part_name):
+        # Cells can hold inline strings (<is><t>...</t></is>) instead of a
+        # sharedStrings.xml reference — e.g. the CRM's "Guide" sheet title.
+        xml = _process_paragraphs(xml, "is", "t", tx)
     elif part_name in ("docProps/core.xml", "docProps/app.xml"):
         # metadata: labelled "AAIF SF" -> "AAIF <UPPER>"
         xml = xml.replace("AAIF SF", "AAIF " + upper)
@@ -134,37 +138,54 @@ def rebrand_part(part_name, data, name, upper, newslug):
         return data
     return xml.encode("utf-8")
 
-def rebrand_file(path, name, upper, newslug):
-    """Rewrite an .pptx/.docx/.xlsx in place. Returns number of parts changed."""
+def _rewrite_zip(path, transform):
+    """Rewrite an OOXML zip in place, mapping each member's bytes through
+    transform(name, data) -> bytes while preserving its ZipInfo, then validating
+    the repackaged zip with testzip(). Returns the number of members whose bytes
+    changed. On a bad repack, removes the temp file and raises (original intact)."""
     tmp = path + ".new"
-    zin = zipfile.ZipFile(path, "r")
-    zout = zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED)
     changed = 0
-    for it in zin.infolist():
-        data = zin.read(it.filename)
-        new = rebrand_part(it.filename, data, name, upper, newslug)
-        if new != data:
-            changed += 1
-        zi = zipfile.ZipInfo(it.filename, date_time=it.date_time)
-        zi.compress_type = it.compress_type
-        zi.external_attr = it.external_attr
-        zout.writestr(zi, new)
-    zin.close(); zout.close()
-    if zipfile.ZipFile(tmp).testzip() is not None:
-        os.remove(tmp); raise RuntimeError("repackaged zip failed validation: " + path)
-    os.replace(tmp, path)
+    try:
+        with zipfile.ZipFile(path) as zin, \
+                zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for it in zin.infolist():
+                data = zin.read(it.filename)
+                new = transform(it.filename, data)
+                if new != data:
+                    changed += 1
+                zi = zipfile.ZipInfo(it.filename, date_time=it.date_time)
+                zi.compress_type = it.compress_type
+                zi.external_attr = it.external_attr
+                zout.writestr(zi, new)
+        with zipfile.ZipFile(tmp) as zt:   # close the handle before os.replace
+            if zt.testzip() is not None:
+                raise RuntimeError("repackaged zip failed validation: " + path)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):   # cleared on success by os.replace; else a leftover
+            os.remove(tmp)
     return changed
 
+def rebrand_file(path, name, upper, newslug):
+    """Rewrite an .pptx/.docx/.xlsx in place. Returns number of parts changed."""
+    return _rewrite_zip(path, lambda n, d: rebrand_part(n, d, name, upper, newslug))
+
 def residual_tokens(path):
-    """List any stale San Francisco / SF / aaif-sf tokens still present."""
-    z = zipfile.ZipFile(path); hits = []
-    for n in z.namelist():
-        if not n.endswith((".xml", ".rels")):
-            continue
-        d = z.read(n)
-        for pat in (rb"San Francisco", rb"SAN FRANCISCO", rb"aaif-sf(?![a-z])", rb"\bSF\b"):
-            if re.search(pat, d, re.I):
-                hits.append((n.split("/")[-1], pat.decode("latin1")))
+    """List any stale San Francisco / SF / aaif-sf tokens still present. The city
+    name and slug are matched case-insensitively; the bare "SF" abbreviation is
+    matched case-SENSITIVELY (uppercase only) — theme/font XML legitimately holds
+    lowercase "sf" tokens that are not stale brand text."""
+    hits = []
+    with zipfile.ZipFile(path) as z:
+        for n in z.namelist():
+            if not n.endswith((".xml", ".rels")):
+                continue
+            d = z.read(n)
+            for pat, flags in ((rb"San Francisco", re.I),
+                               (rb"aaif-sf(?![a-z])", re.I),
+                               (rb"\bSF\b", 0)):
+                if re.search(pat, d, flags):
+                    hits.append((n.split("/")[-1], pat.decode("latin1")))
     return hits
 
 # ----------------------------------------------------------------------------
@@ -251,31 +272,51 @@ def luma_status(slug):
         return "unknown"
 
 # ----------------------------------------------------------------------------
-def clone_and_rebrand(folder_id, parent, name, ctx, indent=""):
-    """Recursively copy `folder_id` into `parent` as `name`, rebranding files."""
-    new_id = create_folder(name, parent)
-    print("%s+ %s/" % (indent, name))
+def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None):
+    """Recursively copy `folder_id` into `parent` as `name`, rebranding files.
+
+    Under --resume, `existing_id` is an already-created target folder: it is
+    entered instead of recreated, its children are listed by (rebranded) name,
+    name-matching children are skipped, and only missing items are cloned — so
+    resuming into a fully-cloned folder is a no-op."""
+    if existing_id:
+        new_id = existing_id
+        print("%s= %s/ (exists, resumed)" % (indent, name))
+    else:
+        new_id = create_folder(name, parent)
+        print("%s+ %s/" % (indent, name))
+    have = {c["name"]: c for c in list_children(new_id)} if existing_id else {}
     for child in list_children(folder_id):
         cname, cid, mime = child["name"], child["id"], child["mimeType"]
+        # Names (not just file content) can carry the source city, e.g. "San
+        # Francisco CRM.xlsx" -> "Reading Group CRM.xlsx" — same transform as content.
+        new_cname = transform_text(cname, ctx["name"], ctx["upper"], ctx["slug"])
+        hit = have.get(new_cname)
         if mime == FOLDER:
-            clone_and_rebrand(cid, new_id, cname, ctx, indent + "  ")
+            clone_and_rebrand(cid, new_id, new_cname, ctx, indent + "  ",
+                              existing_id=hit["id"] if hit and hit["mimeType"] == FOLDER else None)
+        elif hit:
+            print("%s  - %s (exists, skipped)" % (indent, new_cname))
         else:
-            copy_id = copy_file(cid, cname, new_id)
+            copy_id = copy_file(cid, new_cname, new_id)
             ext = os.path.splitext(cname)[1].lower()
             if ext in MIME_BY_EXT:
                 tmp = os.path.join(ctx["tmp"], "f" + copy_id + ext)
-                gws_download(copy_id, tmp)
-                n = rebrand_file(tmp, ctx["name"], ctx["upper"], ctx["slug"])
-                if n:
-                    gws_upload(copy_id, tmp, MIME_BY_EXT[ext])
-                left = residual_tokens(tmp)
-                if left:
-                    ctx["residuals"].append((cname, left))
-                flag = "  !! residual %s" % left if left else ""
-                print("%s  - %s (%d parts)%s" % (indent, cname, n, flag))
-                os.remove(tmp)
+                try:
+                    gws_download(copy_id, tmp)
+                    n = rebrand_file(tmp, ctx["name"], ctx["upper"], ctx["slug"])
+                    if n:
+                        gws_upload(copy_id, tmp, MIME_BY_EXT[ext])
+                    left = residual_tokens(tmp)
+                    if left:
+                        ctx["residuals"].append((new_cname, left))
+                    flag = "  !! residual %s" % left if left else ""
+                    print("%s  - %s (%d parts)%s" % (indent, new_cname, n, flag))
+                finally:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
             else:
-                print("%s  - %s (copied)" % (indent, cname))
+                print("%s  - %s (copied)" % (indent, new_cname))
     return new_id
 
 def main():
@@ -283,6 +324,10 @@ def main():
     ap.add_argument("--series", required=True, help='Series display name, e.g. "Reading Group" or "Online Reading Group"')
     ap.add_argument("--slug", help="Luma slug override (default: series, lowercased, no spaces)")
     ap.add_argument("--dry-run", action="store_true", help="Plan only; create nothing")
+    ap.add_argument("--resume", action="store_true",
+                    help="Enter an existing target folder instead of aborting: skip "
+                         "name-matching children and clone only what's missing "
+                         "(recovery for a failed/partial run)")
     ap.add_argument("--rebrand-local", metavar="DIR",
                     help="Rebrand .pptx/.docx/.xlsx in a local dir (no Drive); for testing")
     a = ap.parse_args()
@@ -318,11 +363,23 @@ def main():
 
     existing = [c for c in list_children(ONLINE_PARENT)
                 if c["name"].lower() == name.lower() and c["mimeType"] == FOLDER]
+    resume_id = None
     if existing:
-        sys.exit("ABORT: an Online series folder named %r already exists (%s)" % (name, existing[0]["id"]))
+        if a.resume:
+            resume_id = existing[0]["id"]
+            print("Resume: entering existing folder %s — children already present "
+                  "are skipped; only missing items are cloned." % resume_id)
+        else:
+            sys.exit("ABORT: an Online series folder named %r already exists (%s). "
+                     "To fill in missing items from a failed/partial run, re-run "
+                     "with --resume." % (name, existing[0]["id"]))
 
     if a.dry_run:
-        print("\n[dry-run] Would clone TemplateSeries -> %r under Online and rebrand all files." % name)
+        if resume_id:
+            print("\n[dry-run] Would resume into the existing %r folder under Online "
+                  "and clone only the missing items." % name)
+        else:
+            print("\n[dry-run] Would clone TemplateSeries -> %r under Online and rebrand all files." % name)
         if status == "absent":
             print("[dry-run] WARNING: Luma page aaif-%s is not live yet." % slug)
         elif status == "unknown":
@@ -333,7 +390,8 @@ def main():
            "tmp": os.path.join(os.environ.get("TMPDIR", "/tmp"), "aaif_series")}
     os.makedirs(ctx["tmp"], exist_ok=True)
     print()
-    new_id = clone_and_rebrand(TEMPLATE_FOLDER, ONLINE_PARENT, name, ctx)
+    new_id = clone_and_rebrand(TEMPLATE_FOLDER, ONLINE_PARENT, name, ctx,
+                               existing_id=resume_id)
     print("\nDone. New series folder id: %s" % new_id)
     print("https://drive.google.com/drive/folders/%s" % new_id)
     print("REMINDER: fill the [bracketed] series blurb in Event Tracker.docx (the template ships a placeholder).")

@@ -1,7 +1,7 @@
 ---
 name: aaif-create-chapter
 description: Create a new AAIF city chapter in the "Chapters" Google Drive by cloning TemplateCity and rebranding all assets. Use when asked to add/launch/set up a new AAIF city, chapter, or location.
-argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>]'
+argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>] [--resume]'
 ---
 
 # Create AAIF Chapter
@@ -44,6 +44,7 @@ not touch it.
 | `San Francisco` / `SAN FRANCISCO` | new city, case-matched | contiguous in the clean template |
 | `SF` abbreviation (`AAIF · SF`, `SF CHAPTER`, `About the AAIF SF Chapter`, `AAIF SF — Attendee CRM`, doc metadata) | full city name | **UPPER** in all-caps contexts, **Title case** in prose |
 | `aaif-sanfrancisco` / `AAIF-SANFRANCISCO` (Luma slug, incl. hyperlink targets) | `aaif-<slug>` / `AAIF-<SLUG>` | see slug rules below |
+| File/folder **names** carrying any of the above (e.g. `San Francisco CRM.xlsx`) | renamed with the same transform | not just file contents; unit-tested |
 
 Beyond text, the script also **repositions the green "you-are-here" dot and its
 `<CITY> · TONIGHT` label** on slide 5 ("THE NETWORK") of `Event Template/Slides.pptx`
@@ -120,6 +121,20 @@ Two consequences of dropping the override table:
    downloads, rebrands, and re-uploads each `.pptx/.docx/.xlsx` in place. It
    prints a tree and flags any file with `!! residual` tokens.
 
+   **Recovering a failed or partial run — `--resume`.** If a run dies midway
+   (a `gws` 403, template drift raising in the rebrand engine, network loss),
+   the half-created chapter folder is already in Drive and a plain re-run aborts
+   on the name collision. Don't trash the folder — re-run with `--resume`:
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York" --resume
+   ```
+   It enters the existing folder, skips every child whose (rebranded) name is
+   already present (logged `exists, skipped`), and clones/rebrands only what's
+   missing — so resuming a fully-cloned chapter is a no-op. The same flag is the
+   backfill path when a chapter is missing part of the template (e.g. Luxembourg,
+   whose 6 design assets were never cloned). Note it matches by **name only**: a
+   present-but-corrupt file is skipped, not repaired.
+
 4. **Verify.** Confirm the run printed no `!! residual` flags and report the new
    folder URL to the user. If the Luma page wasn't live, remind them to create it.
    Open slide 5 ("THE NETWORK") of `Event Template/Slides.pptx` and confirm the
@@ -158,6 +173,8 @@ bounds, and the 2-shapes-or-raise guard.
 To validate the engine after any edit, rebrand a throwaway copy of the template
 and diff it against an existing chapter (the canonical end-state):
 ```bash
+# --rebrand-local requires --lat/--lon: local mode is fully offline and refuses
+# to geocode, so the coordinates must be passed explicitly.
 python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
     --city "Los Angeles" --lat 34.05 --lon -118.24 --rebrand-local /path/to/template-copy
 # then compare paragraph text against the real Los Angeles chapter, and open

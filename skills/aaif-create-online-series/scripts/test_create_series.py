@@ -1,0 +1,266 @@
+"""Unit tests for the rebrand engine + resume logic in create_series.py.
+
+The engine is a deliberate copy of aaif-create-chapter's (see the comment in
+create_series.py) — these tests keep the copy honest, covering the pieces that
+once drifted: the worksheets inline-string branch, child-name rebranding, the
+residual-token check, and the hardened zip rewrite. All offline, synthetic data
+only.
+
+Run: python3 skills/aaif-create-online-series/scripts/test_create_series.py
+"""
+import os
+import sys
+import tempfile
+import unittest
+import zipfile
+from unittest import mock
+
+sys.path.insert(0, os.path.dirname(__file__))
+import create_series as cs  # noqa: E402
+
+
+def make_zip(path, members):
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in members.items():
+            z.writestr(name, data)
+
+
+class TestTransformText(unittest.TestCase):
+    """transform_text() on filename-shaped strings — child NAMES are rebranded
+    with the same transform as content (a template file named "SF …" must clone
+    renamed)."""
+
+    def test_full_name_in_filename(self):
+        self.assertEqual(
+            cs.transform_text("San Francisco CRM.xlsx", "Reading Group", "READING GROUP", "readinggroup"),
+            "Reading Group CRM.xlsx")
+
+    def test_bare_sf_abbreviation_in_filename(self):
+        self.assertEqual(
+            cs.transform_text("SF Kickoff Deck.pptx", "Reading Group", "READING GROUP", "readinggroup"),
+            "Reading Group Kickoff Deck.pptx")
+
+    def test_luma_slug_in_filename(self):
+        self.assertEqual(
+            cs.transform_text("aaif-sanfrancisco-banner.png", "Reading Group", "READING GROUP", "readinggroup"),
+            "aaif-readinggroup-banner.png")
+
+    def test_filename_with_no_source_tokens_is_unchanged(self):
+        self.assertEqual(
+            cs.transform_text("About.docx", "Reading Group", "READING GROUP", "readinggroup"),
+            "About.docx")
+
+
+class TestRebrandWorksheetInlineStrings(unittest.TestCase):
+    """Regression test for the xl/worksheets/sheetN.xml branch of rebrand_part:
+    cells can hold an inline string (<is><t>...</t></is>) instead of a
+    sharedStrings.xml reference, e.g. the CRM's "Guide" sheet title — the stale
+    fork of this engine left those untouched."""
+
+    SHEET_XML = (
+        '<worksheet><sheetData><row r="2">'
+        '<c r="B2" t="inlineStr"><is><t>AAIF SF — Attendee CRM</t></is></c>'
+        '</row></sheetData></worksheet>'
+    )
+
+    def test_inline_string_cell_is_rebranded(self):
+        out = cs.rebrand_part("xl/worksheets/sheet2.xml", self.SHEET_XML.encode("utf-8"),
+                              "Reading Group", "READING GROUP", "readinggroup")
+        text = out.decode("utf-8")
+        self.assertIn("AAIF Reading Group — Attendee CRM", text)
+        self.assertNotIn(">AAIF SF", text)
+
+    def test_unrelated_part_type_is_left_untouched(self):
+        out = cs.rebrand_part("xl/drawings/drawing1.xml",
+                              self.SHEET_XML.encode("utf-8"),
+                              "Reading Group", "READING GROUP", "readinggroup")
+        self.assertEqual(out, self.SHEET_XML.encode("utf-8"))
+
+
+class TestResidualTokens(unittest.TestCase):
+    def check(self, content, expect_hit):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.xlsx")
+            make_zip(p, {"xl/theme/theme1.xml": content})
+            hits = cs.residual_tokens(p)
+            if expect_hit:
+                self.assertTrue(hits, "expected a residual hit for %r" % content)
+            else:
+                self.assertEqual(hits, [], "false positive for %r" % content)
+
+    def test_city_name_is_case_insensitive(self):
+        self.check(b"visit san francisco soon", True)
+        self.check(b"SAN FRANCISCO tonight", True)
+
+    def test_slug_is_case_insensitive(self):
+        self.check(b"https://luma.com/aaif-SF", True)
+
+    def test_uppercase_sf_hits(self):
+        self.check(b"AAIF SF CHAPTER", True)
+
+    def test_lowercase_sf_token_does_not_false_positive(self):
+        # theme/font XML holds lowercase "sf" tokens that are not brand text
+        self.check(b'<a:latin typeface="sf pro display"/>', False)
+
+    def test_duplicate_city_pattern_removed(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.xlsx")
+            make_zip(p, {"xl/theme/theme1.xml": b"San Francisco SAN FRANCISCO"})
+            # one hit for the (case-insensitive) city pattern, not two duplicates
+            self.assertEqual(len(cs.residual_tokens(p)), 1)
+
+
+class TestRewriteZip(unittest.TestCase):
+    def test_success_replaces_in_place_and_counts(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.xlsx")
+            make_zip(p, {"a.xml": b"old", "b.xml": b"keep"})
+            n = cs._rewrite_zip(p, lambda name, data: b"new" if name == "a.xml" else data)
+            self.assertEqual(n, 1)
+            self.assertFalse(os.path.exists(p + ".new"))
+            with zipfile.ZipFile(p) as z:
+                self.assertEqual(z.read("a.xml"), b"new")
+                self.assertEqual(z.read("b.xml"), b"keep")
+
+    def test_mid_loop_failure_cleans_temp_and_keeps_original(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.xlsx")
+            make_zip(p, {"a.xml": b"one", "b.xml": b"two"})
+
+            def boom(name, data):
+                if name == "b.xml":
+                    raise RuntimeError("transform failed")
+                return data
+            with self.assertRaises(RuntimeError):
+                cs._rewrite_zip(p, boom)
+            self.assertFalse(os.path.exists(p + ".new"))   # no leftover temp
+            with zipfile.ZipFile(p) as z:                  # original intact
+                self.assertEqual(z.read("a.xml"), b"one")
+
+
+class FakeDrive:
+    """In-memory Drive: {folder_id: [child dicts]}. Records creates/copies."""
+
+    def __init__(self, folders):
+        self.folders = {k: list(v) for k, v in folders.items()}
+        self.created, self.copied, self.next = [], [], 0
+
+    def list_children(self, fid):
+        return list(self.folders.get(fid, []))
+
+    def create_folder(self, name, parent):
+        self.next += 1
+        fid = "fld%d" % self.next
+        self.folders.setdefault(parent, []).append(
+            {"id": fid, "name": name, "mimeType": cs.FOLDER})
+        self.folders[fid] = []
+        self.created.append(name)
+        return fid
+
+    def copy_file(self, src, name, parent):
+        self.next += 1
+        fid = "cp%d" % self.next
+        self.folders.setdefault(parent, []).append(
+            {"id": fid, "name": name, "mimeType": "application/x-copied"})
+        self.copied.append(name)
+        return fid
+
+
+def fake_download(_file_id, out):
+    """Every downloaded Office file is a minimal xlsx whose sharedStrings carries
+    the source name — the real rebrand engine then runs on it, offline."""
+    make_zip(out, {"xl/sharedStrings.xml":
+                   "<sst><si><t>San Francisco</t></si></sst>"})
+
+
+TEMPLATE = {
+    "tpl": [
+        {"id": "f1", "name": "San Francisco CRM.xlsx", "mimeType": "application/x"},
+        {"id": "f2", "name": "About.txt", "mimeType": "application/x"},
+        {"id": "sub", "name": "Event Template", "mimeType": cs.FOLDER},
+    ],
+    "sub": [
+        {"id": "f3", "name": "notes.txt", "mimeType": "application/x"},
+    ],
+}
+
+
+class TestCloneResume(unittest.TestCase):
+    """clone_and_rebrand with the Drive layer faked — covers the --resume
+    skip-by-name decision (network paths excluded by design)."""
+
+    def run_clone(self, drive, existing_id=None):
+        ctx = {"name": "Reading Group", "upper": "READING GROUP",
+               "slug": "readinggroup", "residuals": [], "latlon": None}
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(cs, "list_children", drive.list_children), \
+                mock.patch.object(cs, "create_folder", drive.create_folder), \
+                mock.patch.object(cs, "copy_file", drive.copy_file), \
+                mock.patch.object(cs, "gws_download", fake_download), \
+                mock.patch.object(cs, "gws_upload", lambda *a, **k: None):
+            ctx["tmp"] = d
+            return cs.clone_and_rebrand("tpl", "parent", "Reading Group", ctx,
+                                        existing_id=existing_id), ctx
+
+    def test_fresh_clone_renames_children(self):
+        drive = FakeDrive(TEMPLATE)
+        self.run_clone(drive)
+        self.assertEqual(sorted(drive.copied),
+                         ["About.txt", "Reading Group CRM.xlsx", "notes.txt"])
+        self.assertEqual(sorted(drive.created), ["Event Template", "Reading Group"])
+
+    def test_resume_skips_existing_and_clones_missing(self):
+        drive = FakeDrive(dict(TEMPLATE, **{
+            "ex": [{"id": "e1", "name": "Reading Group CRM.xlsx",
+                    "mimeType": "application/x-copied"}],
+        }))
+        self.run_clone(drive, existing_id="ex")
+        # the already-present (rebranded-name) file is skipped; the rest cloned
+        self.assertEqual(sorted(drive.copied), ["About.txt", "notes.txt"])
+        self.assertEqual(drive.created, ["Event Template"])
+
+    def test_resume_into_fully_cloned_folder_is_a_noop(self):
+        drive = FakeDrive(dict(TEMPLATE, **{
+            "ex": [
+                {"id": "e1", "name": "Reading Group CRM.xlsx", "mimeType": "application/x-copied"},
+                {"id": "e2", "name": "About.txt", "mimeType": "application/x-copied"},
+                {"id": "esub", "name": "Event Template", "mimeType": cs.FOLDER},
+            ],
+            "esub": [{"id": "e3", "name": "notes.txt", "mimeType": "application/x-copied"}],
+        }))
+        new_id, _ = self.run_clone(drive, existing_id="ex")
+        self.assertEqual(new_id, "ex")
+        self.assertEqual(drive.copied, [])
+        self.assertEqual(drive.created, [])
+
+    def test_resume_recurses_into_partial_subfolder(self):
+        # subfolder exists but is empty -> re-entered, its missing child cloned
+        drive = FakeDrive(dict(TEMPLATE, **{
+            "ex": [
+                {"id": "e1", "name": "Reading Group CRM.xlsx", "mimeType": "application/x-copied"},
+                {"id": "e2", "name": "About.txt", "mimeType": "application/x-copied"},
+                {"id": "esub", "name": "Event Template", "mimeType": cs.FOLDER},
+            ],
+            "esub": [],
+        }))
+        self.run_clone(drive, existing_id="ex")
+        self.assertEqual(drive.copied, ["notes.txt"])
+        self.assertEqual(drive.created, [])
+
+
+class TestRebrandFileCleansTemp(unittest.TestCase):
+    def test_rebrand_file_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.xlsx")
+            make_zip(p, {"xl/sharedStrings.xml":
+                         "<sst><si><t>San Francisco</t></si></sst>"})
+            n = cs.rebrand_file(p, "Reading Group", "READING GROUP", "readinggroup")
+            self.assertEqual(n, 1)
+            self.assertEqual(cs.residual_tokens(p), [])
+            with zipfile.ZipFile(p) as z:
+                self.assertIn("Reading Group",
+                              z.read("xl/sharedStrings.xml").decode("utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()
