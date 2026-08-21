@@ -348,9 +348,10 @@ from the intake and carries each person's survey interest across.
 **Who syncs — the self-serve organizer policy (2026-08).**
 
 - `Accepted` and `Existing (from MLOps)` people always sync, all three role tabs.
-- **Hosts and speakers still in the pipeline** (`New` / blank / `In progress` /
-  `Tentative` / `Interviewing`) sync too, so a chapter sees its candidate venues
-  and talks without waiting on central triage.
+- **Hosts and speakers still in the pipeline** (`Prospect` — including its
+  legacy spelling `New`, retired 2026-08-22 by `migrate_status_prospect.py` — /
+  blank / `In progress` / `Tentative` / `Interviewing`) sync too, so a chapter
+  sees its candidate venues and talks without waiting on central triage.
 - **Organizers still in the pipeline** sync **only into a self-serve chapter** —
   one with **4+ accepted organizers** (`SELF_SERVE_MIN`), not counting AAIF ops
   people (`AAIF_OPS_NAMES`: Rahul, Demetrios, Ijeoma). Those chapters run their
@@ -468,7 +469,8 @@ used instead of inventing one.
   corrected spellings, hand-written notes and manually added companies all
   survive every re-run. Only genuinely blank cells are filled.
 - **`Status` is the one exception**: it is upgraded when it still holds a value
-  the automation itself wrote (`New`, `Prospect`, `Organizer`, `Speaker`,
+  the automation itself wrote (`Prospect` — or its legacy spelling `New` —
+  `Organizer`, `Speaker`,
   `Host`). That is how a person's role is corrected after re-triage — while a
   human's `Attended`, `Regular`, `Volunteer` or `Declined` is never undone.
 - **Fixture rows are cleared, and only fixture rows.** A row is wiped **only** if
@@ -492,7 +494,10 @@ used instead of inventing one.
   value for a venue host, so hosts had nowhere honest to land. Every workbook the
   script opens is patched — including **TemplateCity**, or every chapter cloned
   from it would re-inherit the gap. Both quote encodings are handled (the
-  template writes `"…"`, older workbooks write `&quot;…&quot;`). A workbook with
+  template writes `"…"`, older workbooks write `&quot;…&quot;`), and so are the
+  post-migration lists without the legacy `New` (removed by
+  `migrate_status_prospect.py`; the unrelated `New` on the **Signal** list is
+  untouched by that migration). A workbook with
   no Status list at all is reported, not guessed at.
 - **TemplateCity never receives people** — only the dropdown patch.
 - **Rows are skipped, and reported, when**: `Status` is neither a decided-yes

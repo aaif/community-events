@@ -19,7 +19,7 @@ sheet's structure.
 ## Status model (drives the queue and the sheet's cell colors)
 
 The Status values (dropdown on column A, matched exactly by the sheet's
-whole-row colors): `New` (blue) → `In progress` (orange) → `Tentative` (teal) →
+whole-row colors): `Prospect` (blue) → `In progress` (orange) → `Tentative` (teal) →
 `Interviewing` (indigo) → `Accepted` (green) / `Denied` (maroon); `Inactive` (gray);
 `Duplicate` (brown); and `Existing (from MLOps)`
 (**violet**) for a prior organizer imported from the MLOps community. `Tentative` is a
@@ -34,10 +34,15 @@ rather than denied (a `Denied` row reads as a decision about the person, which t
 is not). It is not a sync status: nothing carries a `Duplicate` row to the chapters
 feed, a CRM or a Drive grant. Rows are only ever marked by hand — the form can't
 know it has seen someone before, so no automation sets this value. A
-**blank** Status cell is treated as `New`. Two overrides beat the status color: a **data error** (missing/invalid email
-or broken LinkedIn) paints the row bright red, and an **SLA breach** — a `New`/blank
+**blank** Status cell is treated as `Prospect`, and so is the **legacy value `New`** —
+the pre-2026-08-22 name for the same state, renamed because `New` misread as
+"new organizer" while `Prospect` matches the term the CRM sync already writes.
+`migrate_status_prospect.py` (in `aaif-sync-chapters`) rewrites the dropdowns and
+cells; until it has run everywhere, tooling treats `New` and `Prospect` as one
+status. Two overrides beat the status color: a **data error** (missing/invalid email
+or broken LinkedIn) paints the row bright red, and an **SLA breach** — a `Prospect`/blank
 row older than 1 week (of a 2-week response SLA) — paints it pink. Acting on a row
-(moving it off `New`) clears the pink. Each role tab also has `Reviewed by`,
+(moving it off `Prospect`) clears the pink. Each role tab also has `Reviewed by`,
 `Reviewed at`, `Decision notes`, and a `Chapter` assignment.
 
 **City provenance colors** (on the two city columns, below the error rule; installed by
@@ -56,7 +61,7 @@ MLOps veterans convert straight through; everyone else is accepted only **after 
 interview** (existing-city candidates also get an intro to the chapter champs):
 
 ```
-Form submission ─→ New
+Form submission ─→ Prospect
    └ Review LinkedIn: credible organizer?  ── no ─→ Denied
         │ yes
         ▼  Tentative (vetted, not yet accepted)
@@ -71,7 +76,8 @@ The same flow (and colors) is documented on the sheet's **"How to use"** tab.
 
 ## Procedure
 
-1. **Pull the queue.** Rows needing attention = Status blank / `New` / `In progress`:
+1. **Pull the queue.** Rows needing attention = Status blank / `Prospect`
+   (incl. legacy `New`) / `In progress`:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/intake.py
    ```

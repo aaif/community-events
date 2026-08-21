@@ -9,7 +9,7 @@ Usage:
     intake.py                 # text digest of rows needing attention
     intake.py --json          # same selection as JSON (for the digest routine)
     intake.py --all           # every row, regardless of status
-    intake.py --status New "In progress"   # custom status filter
+    intake.py --status Prospect "In progress"   # custom status filter
 """
 import argparse, json, subprocess, sys
 
@@ -28,18 +28,30 @@ TABS = {
                    "Talk title", "Ships in production?", "Past talks / portfolio"],
 }
 
-# Rows in these Status states are "awaiting review". A blank Status IS "New"
-# (the form writes none) and is normalized to it in collect(), so filters match
-# on "New" alone — a custom --status list never needs to know about blanks.
-DEFAULT_NEEDS_REVIEW = {"New", "In progress"}
+# Rows in these Status states are "awaiting review". A blank Status IS
+# "Prospect" (the form writes none), and so is the legacy value "New" — the
+# pre-2026-08-22 name for the same state ("New" misread as new-organizer;
+# "Prospect" matches what sync_crm already writes). Both are normalized in
+# collect() via normalize_status(), so filters match on "Prospect" alone — a
+# custom --status list never needs to know about blanks or legacy cells.
+DEFAULT_NEEDS_REVIEW = {"Prospect", "In progress"}
+
+
+def normalize_status(value):
+    """One normalization for Status cells AND --status filter values: blank and
+    the legacy "New" are both "Prospect". Cells still saying "New" exist until
+    migrate_status_prospect.py has rewritten every sheet; a row holding it must
+    behave identically to one holding "Prospect"."""
+    v = (value or "").strip()
+    return "Prospect" if v in ("", "New") else v
 
 
 def normalize_filter(values):
     """Normalize a --status list the same way collect() normalizes cells: a
-    requested blank means the blank-status rows — which the rows themselves
-    report as "New" by then, so an un-normalized --status "" would silently
-    select zero rows."""
-    return {(v.strip() or "New") for v in values}
+    requested blank (or legacy "New") means the blank/"New"-status rows — which
+    the rows themselves report as "Prospect" by then, so an un-normalized
+    --status "" or --status New would silently select zero rows."""
+    return {normalize_status(v) for v in values}
 
 # The City columns were renamed to City (Existing)/City (New). They only carry
 # those headers after `aaif-clean-data install-colors` has run; until then the
@@ -104,9 +116,10 @@ def collect(status_filter, show_all):
         for rn, row in enumerate(rows, start=2):  # row 2 = first data row
             if not (row[ti] or "").strip():
                 continue  # skip empty trailing rows (no Timestamp)
-            # Blank IS "New" — normalized once here, so the filter below and the
-            # reported status can never disagree about what a blank cell means.
-            status = (row[si].strip() if si is not None else "") or "New"
+            # Blank IS "Prospect" (and legacy "New" is too) — normalized once
+            # here, so the filter below and the reported status can never
+            # disagree about what a blank or legacy cell means.
+            status = normalize_status(row[si] if si is not None else "")
             if not show_all and status not in status_filter:
                 continue
             rec = {"row": rn, "status": status}
@@ -153,8 +166,8 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--status", nargs="*", default=None,
-                    help="Status values to include (default: New/In progress; "
-                         "blank counts as New)")
+                    help="Status values to include (default: Prospect/In progress; "
+                         "blank counts as Prospect)")
     args = ap.parse_args()
     sf = normalize_filter(args.status) if args.status is not None else DEFAULT_NEEDS_REVIEW
     data = collect(sf, args.all)

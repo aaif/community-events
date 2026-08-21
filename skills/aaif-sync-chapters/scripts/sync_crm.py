@@ -85,16 +85,22 @@ CRM_HEADERS = ("Full name", "Signal", "Trusted/Regular", "Status", "Notes (CRM)"
 SYNC_STATUSES = ("Accepted", "Existing (from MLOps)")
 
 # The "still in flight" statuses ("" is a blank cell, which triage treats as
-# New — and the "" entry must STAY: read_role_tab checks membership on the RAW
-# cell value, before the `status or "New"` normalization, so removing the
-# "redundant" empty string would reject every untriaged row).
+# Prospect — and the "" entry must STAY: read_role_tab checks membership on the
+# RAW cell value, before the `status or "Prospect"` normalization, so removing
+# the "redundant" empty string would reject every untriaged row).
+# "New" is the LEGACY spelling of "Prospect" (renamed 2026-08-22: "New" misread
+# as new-organizer, and "Prospect" is the term this engine already writes into
+# the CRMs). migrate_status_prospect.py rewrites the intake dropdown and cells;
+# keep "New" here until that migration has run everywhere and the dropdowns no
+# longer offer it — then it can be dropped.
 # Pipeline hosts/speakers sync unconditionally; pipeline organizers sync
 # only into a self-serve chapter (see gate_pipeline_organizers). Both lists are
 # ALLOWLISTS on purpose: a status added to the intake dropdown tomorrow —
 # including a new rejected-ish one — syncs nobody until it is placed here, which
 # is the fail-closed direction. Denied / Inactive / Duplicate are excluded by
 # not appearing. See aaif-triage-intake/SKILL.md for the current dropdown.
-PIPELINE_STATUSES = ("", "New", "In progress", "Tentative", "Interviewing")
+PIPELINE_STATUSES = ("", "New", "Prospect", "In progress", "Tentative",
+                     "Interviewing")
 
 # A chapter with this many accepted organizers (SYNC_STATUSES, minus AAIF ops
 # people) runs its own organizer interviews: its pipeline organizers sync into
@@ -117,8 +123,9 @@ ROLE_TABS = ("Organizers", "Speakers", "Hosts")   # also the merge priority orde
 CRM_STATUS = {"Organizers": "Organizer", "Speakers": "Speaker", "Hosts": "Host"}
 
 # Status values this script is allowed to overwrite — everything the automation
-# itself writes, plus the sheet's own default and the "Prospect" an earlier,
-# wider-scoped run could have left behind. A human who moved someone to
+# itself writes, plus the sheet's own defaults: "Prospect", and its legacy
+# spelling "New" (pre-2026-08-22 rows and un-migrated dropdowns still hold it,
+# and it must keep upgrading identically). A human who moved someone to
 # "Attended", "Regular", "Volunteer" or "Declined" has said something the intake
 # does not know; a later triage decision must not silently undo it.
 AUTO_STATUS = frozenset(("", "New", "Prospect", "Organizer", "Speaker", "Host"))
@@ -140,6 +147,12 @@ DUMMY_DOMAINS = ("example.com", "example.org", "example.net", "example.edu")
 # nowhere honest to land. Patched in place on every workbook we open.
 DV_STATUS_OLD = "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined"
 DV_STATUS_NEW = "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"
+# The same two lists after migrate_status_prospect.py has removed the legacy
+# "New" (Prospect is the surviving spelling). The Host patch must recognise a
+# migrated workbook, or every migrated CRM would be reported as having no
+# Status list at all.
+DV_STATUS_OLD_MIGRATED = DV_STATUS_OLD.replace("New,", "", 1)
+DV_STATUS_NEW_MIGRATED = DV_STATUS_NEW.replace("New,", "", 1)
 
 # Per-role source columns on the intake role tabs, resolved by header name and
 # taken in order (first non-empty wins). Organizers have no company or title
@@ -543,7 +556,7 @@ def patch_status_dropdown(parts, part_name):
     """Add "Host" to the Status column's data-validation list.
 
     Returns "patched" (the part changed), "already" (Host is offered), or
-    "absent" (no list matching either spelling — reported, never guessed at).
+    "absent" (no list matching any known spelling — reported, never guessed at).
 
     A bytes-level swap of the one formula string: the validation lives outside
     <sheetData>, nothing else in the file mentions it, and re-serializing the
@@ -551,16 +564,24 @@ def patch_status_dropdown(parts, part_name):
     unrelated markup. Both quote encodings are handled — the template writes
     `"…"` and the older workbooks write `&quot;…&quot;`, and matching only the
     first silently left every legacy CRM un-patched while reporting success.
+    Both the legacy list (leading "New") and the migrated list (Prospect only,
+    after migrate_status_prospect.py) are recognised — every "already" check
+    runs before any patch, so the pass a workbook actually matches decides.
     """
     raw = parts[part_name]
+    variants = ((DV_STATUS_OLD, DV_STATUS_NEW),
+                (DV_STATUS_OLD_MIGRATED, DV_STATUS_NEW_MIGRATED))
     for q in (b'"', b"&quot;"):
-        new = b"<formula1>" + q + DV_STATUS_NEW.encode() + q + b"</formula1>"
-        if new in raw:
-            return "already"
-        old = b"<formula1>" + q + DV_STATUS_OLD.encode() + q + b"</formula1>"
-        if old in raw:
-            parts[part_name] = raw.replace(old, new)
-            return "patched"
+        for _old, new in variants:
+            if b"<formula1>" + q + new.encode() + q + b"</formula1>" in raw:
+                return "already"
+    for q in (b'"', b"&quot;"):
+        for old, new in variants:
+            old_b = b"<formula1>" + q + old.encode() + q + b"</formula1>"
+            if old_b in raw:
+                parts[part_name] = raw.replace(
+                    old_b, b"<formula1>" + q + new.encode() + q + b"</formula1>")
+                return "patched"
     return "absent"
 
 
@@ -653,7 +674,8 @@ def read_role_tab(tab, interests, include_pipeline=False):
         if not accepted:
             if not include_pipeline:
                 rejected.append({"row": rownum, "tab": tab, "name": name,
-                                 "why": "status %r — not accepted yet" % (status or "New")})
+                                 "why": "status %r — not accepted yet"
+                                        % (status or "Prospect")})
                 continue
             if status not in PIPELINE_STATUSES:
                 # Denied / Inactive / Duplicate, or a dropdown value this script
@@ -699,7 +721,7 @@ def read_role_tab(tab, interests, include_pipeline=False):
             fallbacks.append(rownum)
         interest = joined or DEFAULT_INTEREST[tab]
         people.append({
-            "row": rownum, "tab": tab, "status": status or "New",
+            "row": rownum, "tab": tab, "status": status or "Prospect",
             "name": clean_text(name) or clean_text(email),
             "email": clean_text(email), "city": clean_text(city),
             "linkedin": clean_text(first_of(row, headers, ("LinkedIn",))),
