@@ -95,7 +95,13 @@ HANDLES_COLUMN = "Organizer Handles"
 #: `#austin-area` joined 2026-08-21: `#austin` is squatted by an invisible
 #: private room the Pro plan gives no way to reclaim, so Austin's real room
 #: (76 members) keeps its historical name instead of waiting forever.
-KEPT_NON_CONVENTIONAL = ("bay-area", "austin-area")
+#: 2026-08-22 (user-decided): squatted city names resolve to a QUALIFIED slug
+#: instead of waiting on the squatter — `<city>-<state>` for US cities
+#: (austin-tx, charlotte-nc, dallas-tx) — and #munchen keeps its native name
+#: (the #españa / #deutschland precedent). The squatted originals are recorded
+#: in the sheet's `Erstwhile Channels` column; never re-plan them.
+KEPT_NON_CONVENTIONAL = ("bay-area", "austin-tx", "charlotte-nc", "dallas-tx",
+                         "munchen")
 
 #: Country -> the channel that serves it, where that channel is not named after
 #: the country in ASCII English. Without this the engine plans a brand-new

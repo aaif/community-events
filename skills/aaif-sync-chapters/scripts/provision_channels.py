@@ -154,7 +154,14 @@ CHANNEL_RENAMES = {
     # barcelona-organizers: its "squatter" turned out to be the REAL organizer
     # room — 2024, 16 members — so the freshly provisioned 3-member room merges
     # into it instead; see CHANNEL_MERGES.)
-    "meetup-seattle-organizers": "seattle-organizers",
+    # 2026-08-22 (user-decided): squat-affected organizer rooms take the
+    # QUALIFIED convention `<city>-<state|countrycode>-organizers` instead of
+    # waiting on their invisible squatters — the suffix stays, only the city
+    # slug gains a code, mirroring the austin-tx / charlotte-nc / dallas-tx
+    # city rooms. Applied same day for Seattle, Portland and Austin, and for
+    # the seven rooms that had briefly carried the reversed organizers-<city>
+    # names (Toronto/Melbourne/Milan/Oslo/Seoul/Sydney/Vancouver).
+    "meetup-seattle-organizers": "seattle-wa-organizers",
     "washington-dc-the-capital": "washington-dc",
     # Austin RESOLVED 2026-08-21 (user-decided): #austin stays squatted by an
     # invisible private room with no path to free it on the Pro plan, so the
@@ -164,7 +171,7 @@ CHANNEL_RENAMES = {
     # and the 2026-08-18 junk room was renamed to #austin-area-junk and
     # re-archived to free the name. A deliberate keep like #bay-area — do NOT
     # re-plan #austin even if the squatter is someday cleared.
-    "portland-oregon-organizers": "portland-organizers",
+    "portland-oregon-organizers": "portland-or-organizers",
     # 2026-08-19 (user-decided, revised same day): country-named chapters
     # become capital-city chapters — but #switzerland (80) and #scotland (71)
     # STAY as country rooms; fresh #bern and #edinburgh city rooms are created
@@ -187,12 +194,12 @@ CHANNEL_RENAMES = {
     # folk in it, to be left alone under its own name. #sydney (2022, 57
     # members) stays the city room; #sydney-organizers is planned from the
     # sheet and currently blocked by an invisible private squatter.
-    # 2026-08-17 (user-decided): the last local-language keep falls too —
-    # English/ASCII wins for the same typability reason as medellin. The
-    # organizer room was deprecated by hand in the admin UI
-    # (#munchen-organizers-deprecated, 4 members to invite into the fresh
-    # #munich-organizers the sheet now plans).
-    "munchen": "munich",
+    # munchen -> munich DROPPED 2026-08-22 (user-decided): #munich is squatted
+    # by an invisible private room, so #munchen (107 members) keeps its native
+    # name — the #españa / #deutschland precedent. The sheet's Slack Channel
+    # cell says `munchen` and KEPT_NON_CONVENTIONAL carries it; do NOT re-plan
+    # #munich even if the squatter is someday cleared. (The organizer room is
+    # unaffected: #munich-organizers was adopted 2026-08-17 and is live.)
 }
 
 #: Merges: the room is retired and its chapter moves to another room. Distinct
