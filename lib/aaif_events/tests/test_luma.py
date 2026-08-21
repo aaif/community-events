@@ -99,6 +99,15 @@ class TestCall(unittest.TestCase):
             self.assertEqual(uo.call_count, 1)
             self.assertEqual(cm.exception.status, 404)
 
+    def test_a_200_html_body_is_a_lumaerror_not_a_bare_jsondecodeerror(self):
+        r = mock.MagicMock()
+        r.__enter__.return_value = r
+        r.read.return_value = b"<html>maintenance</html>"
+        with mock.patch("urllib.request.urlopen", return_value=r):
+            with self.assertRaises(luma.LumaError) as cm:
+                luma.call("GET", "/v1/x")
+            self.assertIn("not JSON", str(cm.exception))
+
     def test_get_network_error_retries_then_raises_without_status(self):
         with mock.patch("urllib.request.urlopen",
                         side_effect=urllib.error.URLError("down")) as uo:

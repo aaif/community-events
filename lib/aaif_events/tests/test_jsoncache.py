@@ -105,6 +105,18 @@ def test_a_cache_from_another_workspace_is_refused(tmp_path):
     assert jsoncache.read(p, team_id="T_OTHER") is None
 
 
+def test_an_unstamped_cache_is_refused_when_a_workspace_is_expected(tmp_path):
+    """An unstamped file cannot prove it matches the caller's workspace — and
+    the discard must be announced, not silent."""
+    p = str(tmp_path / "c.json")
+    jsoncache.write(p, {"chans": 1})           # no team_id stamp
+    said = []
+    assert jsoncache.read(p, team_id="T_AAIF", note=said.append) is None
+    assert said and "no workspace stamp" in said[0]
+    # ...while a caller with no expectation still gets the payload.
+    assert jsoncache.read(p) == {"chans": 1}
+
+
 def test_discarding_a_cache_is_announced(tmp_path):
     """Throwing away a 20-minute pull in silence is what this repo refuses to do."""
     p = tmp_path / "c.json"

@@ -113,6 +113,40 @@ def test_a_path_outside_any_repo_is_allowed(tmp_path, monkeypatch):
     rs.assert_git_ignored(str(outside) + os.sep, str(outside / "r.html"))
 
 
+def test_a_git_failure_that_is_not_outside_a_repo_aborts(monkeypatch, tmp_path):
+    """Exit 128 for e.g. dubious ownership must not read as "outside any repo"
+    and silently disengage the guard."""
+    fake = subprocess.CompletedProcess(
+        ["git"], 128, stdout="",
+        stderr="fatal: detected dubious ownership in repository at '/x'")
+    monkeypatch.setattr(rs.subprocess, "run", lambda *a, **kw: fake)
+    with pytest.raises(SystemExit) as exc:
+        rs._repo_root(str(tmp_path / "r.html"))
+    assert "REFUSING TO RUN" in str(exc.value)
+    assert "dubious ownership" in str(exc.value)
+
+
+def test_not_a_git_repository_still_means_outside_a_repo(monkeypatch, tmp_path):
+    fake = subprocess.CompletedProcess(
+        ["git"], 128, stdout="",
+        stderr="fatal: not a git repository (or any of the parent directories): .git")
+    monkeypatch.setattr(rs.subprocess, "run", lambda *a, **kw: fake)
+    assert rs._repo_root(str(tmp_path / "r.html")) is None
+
+
+def test_a_relative_path_is_judged_from_the_cwd_not_the_repo_root(tmp_path, monkeypatch):
+    """From a repo subdirectory, a relative --out must be checked as the file
+    it actually names, not as root/<name>."""
+    root = _repo(tmp_path)
+    (root / ".gitignore").write_text("sub/report.html\n", encoding="utf-8")
+    sub = root / "sub"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    rs.assert_git_ignored("report.html")       # sub/report.html is ignored
+    with pytest.raises(SystemExit):
+        rs.assert_git_ignored("leaky.html")    # sub/leaky.html is not
+
+
 def test_the_check_follows_the_path_not_the_cwd(tmp_path, monkeypatch):
     """Running from a non-repo directory must not disable the control for an
     absolute path pointing into a repo."""
@@ -122,3 +156,17 @@ def test_the_check_follows_the_path_not_the_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(elsewhere)
     with pytest.raises(SystemExit):
         rs.assert_git_ignored(str(root / "leaky.html"))
+
+
+def test_write_private_is_0600_and_tightens_existing(tmp_path):
+    import os
+    from aaif_events import report_style as rs
+    p = tmp_path / "report.html"
+    rs.write_private(str(p), "névé — ok")
+    assert oct(os.stat(p).st_mode & 0o777) == "0o600"
+    assert p.read_text(encoding="utf-8") == "névé — ok"
+    # A pre-existing looser file is tightened, not left world-readable.
+    os.chmod(p, 0o644)
+    rs.write_private(str(p), "second")
+    assert oct(os.stat(p).st_mode & 0o777) == "0o600"
+    assert p.read_text(encoding="utf-8") == "second"

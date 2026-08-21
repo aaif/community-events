@@ -53,6 +53,22 @@ def _gws_json(*args, params=None, body=None):
         raise RuntimeError("gws returned non-JSON output for %s: %s" % (" ".join(args), s[:200]))
 
 
+def _download(url, out_path, timeout=30):
+    """Fetch `url` to `out_path` with a bounded timeout. Any failure — network,
+    timeout, or the too-small sanity check — deletes the partial file, so a
+    truncated PNG can never be mistaken for a finished render."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r, \
+                open(out_path, "wb") as fh:
+            fh.write(r.read())
+        if os.path.getsize(out_path) < 1000:
+            raise RuntimeError("rendered thumbnail suspiciously small (%s)" % out_path)
+    except BaseException:
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        raise
+
+
 def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000_PX"):
     """Export slide `slide_index` (0-based) of the Drive pptx `file_id` to a PNG
     at `out_path`. Makes a throwaway Google Slides copy to render from (Slides
@@ -73,9 +89,7 @@ def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000
                            params={"presentationId": presentation_id, "pageObjectId": page_object_id,
                                    "thumbnailProperties.thumbnailSize": thumbnail_size})
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        urllib.request.urlretrieve(thumb["contentUrl"], out_path)
-        if os.path.getsize(out_path) < 1000:
-            raise RuntimeError("rendered thumbnail suspiciously small (%s)" % out_path)
+        _download(thumb["contentUrl"], out_path)
         return out_path
     finally:
         # The throwaway copy has no `parents` set, so it lands in the SAME

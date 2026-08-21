@@ -316,6 +316,20 @@ def find_chrome():
     return None
 
 
+def write_private(path, text):
+    """Write a PII-carrying report file 0600 from the first byte.
+
+    jsoncache's rule, restated for the report side: a chmod *after* the write
+    leaves the page world-readable for its duration — permanently, if the run
+    is killed in between. The fchmod tightens a pre-existing looser file while
+    it is still truncated-empty.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 def to_pdf(html_path, pdf_path, timeout_s=180):
     """Print a local HTML file to PDF with headless Chrome, and verify it worked.
 
@@ -390,6 +404,11 @@ def _repo_root(path):
 
     Resolved from the path's own directory, not the process cwd — running the
     script from elsewhere must not decide whether the *output* is protected.
+
+    Only git's own "not a git repository" answer means outside-a-repo. Any
+    other failure (dubious ownership, a corrupt .git, …) aborts: mapping it to
+    None would silently disengage the PII guard for a path that may well sit
+    inside this public repo.
     """
     probe_dir = os.path.dirname(os.path.abspath(path)) or os.sep
     while not os.path.isdir(probe_dir) and probe_dir != os.sep:
@@ -403,7 +422,17 @@ def _repo_root(path):
             "%s is ignored. These files hold Slack member names, email addresses "
             "and 2FA/admin flags; install git or point --cache/--out outside any "
             "repository." % path)
-    return proc.stdout.strip() if proc.returncode == 0 else None
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    stderr = (proc.stderr or "").strip()
+    if "not a git repository" in stderr.lower():
+        return None
+    raise SystemExit(
+        "REFUSING TO RUN: `git rev-parse` failed in %s (exit %d: %s), so this "
+        "cannot verify that %s is ignored. Fix the git error, or point "
+        "--cache/--out outside any repository."
+        % (probe_dir, proc.returncode,
+           stderr.splitlines()[-1] if stderr else "no stderr", path))
 
 
 def assert_git_ignored(*paths):
@@ -426,16 +455,20 @@ def assert_git_ignored(*paths):
         root = _repo_root(path)
         if root is None:
             continue                      # outside any repo — nothing to leak into
+        # Absolute before probing: check-ignore/ls-files run with `-C root`, so
+        # a --out relative to a repo *sub*directory would otherwise be judged
+        # against the wrong file.
+        abs_path = os.path.abspath(path)
         # A directory is probed through a child: `check-ignore` answers
         # differently for a bare directory name, and this works before the
         # directory exists.
-        probe = os.path.join(path, "probe") if path.endswith(os.sep) else path
+        probe = os.path.join(abs_path, "probe") if path.endswith(os.sep) else abs_path
         ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", probe],
                                  capture_output=True).returncode == 0
         # .gitignore has no effect on an already-tracked file, so a report
         # committed before these rules landed would still ride along on `git
         # add -A` while check-ignore reports it as ignored.
-        tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", path],
+        tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", abs_path],
                                  capture_output=True).returncode == 0
         if tracked:
             offenders.append("%s (already TRACKED — git rm --cached it)" % path)

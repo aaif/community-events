@@ -52,6 +52,9 @@ def write(path, payload, team_id=None):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(envelope, fh)
+            fh.flush()
+            os.fsync(fh.fileno())  # data on disk before the rename is; power
+            #                        loss must not leave an empty renamed cache
         os.replace(tmp, path)      # atomic; the 0600 mode travels with the file
     except BaseException:
         if os.path.exists(tmp):
@@ -96,8 +99,14 @@ def read(path, refresh=False, team_id=None, note=None):
         return discard("not a cache envelope")
     if envelope.get("format") != FORMAT:
         return discard("format %r, expected %d" % (envelope.get("format"), FORMAT))
-    if team_id and envelope.get("team_id") and envelope["team_id"] != team_id:
-        return discard("workspace %s, expected %s" % (envelope["team_id"], team_id))
+    stamped = envelope.get("team_id")
+    if team_id and stamped and stamped != team_id:
+        return discard("workspace %s, expected %s" % (stamped, team_id))
+    if team_id and not stamped:
+        # The caller knows which workspace it is auditing; an unstamped cache
+        # cannot prove it matches, and a wrong-tenant join reads as a coherent,
+        # entirely wrong report.
+        return discard("no workspace stamp, expected %s" % team_id)
     payload = envelope.get("payload", _MISS)
     return None if payload is _MISS else payload
 
