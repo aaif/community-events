@@ -35,15 +35,15 @@ then the fields, slide for slide, then paste into the template.
 - Host : `[HOST VENUE]`   Members: `[MEMBER LOGOS]`
 - Speakers : `[FOR EACH: NAME | ROLE | TALK or DEMO | "QUOTE"]`
 - Agenda : `[RUN-OF-SHOW: TIME | BLOCK | NOTE]`
-- Next : `[NEXT EVENT + DATE]`   Links: `[LUMA / DISCORD / NEWSLETTER]`
+- Next : `[NEXT EVENT + DATE]`   Links: `[LUMA / SLACK / NEWSLETTER]`
 
 ## Slides (in order)
 ```
- 1 Cover            6 Tonight's theme    11 Demo lineup
- 2 Welcome          7 Run-of-show        12 Thank you
- 3 About AAIF[FIXED]8 On mic (speakers)  13 Join the chapter
- 4 Local chapter    9 Talk one           14 Networking
- 5 Network [FIXED] 10 Demos              15 Next up
+ 1 Cover                  6 Tonight's theme      11 Demo lineup
+ 2 Welcome                7 Run-of-show          12 Thank you
+ 3 About AAIF [FIXED]     8 On mic (speakers)    13 Join the chapter
+ 4 Local chapter          9 Talk one             14 Networking
+ 5 Network [FIXED]       10 Demos                15 Next up
 ```
 
 ## Example (tested — match this format and voice; abbreviated)
@@ -51,7 +51,7 @@ Agentic AI Night:
 
 > **Slide 1 — Cover:**
 >   Kicker: THE AAIF COMMUNITY · Title: Agentic AI Night. · Sub: Launch Series —
->   San Francisco · Date: TUE — JUNE 24, 2026 — 17:30 — LATE · Hosted by: Host
+>   San Francisco · Date: WED — JUNE 24, 2026 — 17:30 — LATE · Hosted by: Host
 >   Venue Co. · With: [member logos]
 >
 > **Slide 6 — Tonight's theme:**

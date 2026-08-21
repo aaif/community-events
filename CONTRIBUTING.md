@@ -57,8 +57,23 @@ pre-commit run --all-files     # run them now against the whole repo
 ```
 
 The hooks cover JSON/YAML/whitespace hygiene, Ruff (bug-focused lint of the
-helper scripts), codespell, gitleaks secret scanning, and a SKILL.md
-frontmatter check.
+helper scripts), codespell, gitleaks secret scanning, a SKILL.md
+frontmatter check, and a tooling-banner drift check. On the last one: the
+tooling-rule banner is deliberately copied into every ops `SKILL.md` (skills
+ship downstream without the repo docs), and `scripts/check_tooling_banner.py`
+fails when the copies drift — **edit all of them together**, never just one.
+
+Then run the tests. Ruff is pyflakes-only and does not resolve imports, so
+pytest is what actually catches a broken import or a stale module name:
+
+```bash
+PYTHONPATH=lib python -m pytest lib/aaif_events/tests -q    # shared library
+python skills/aaif-sync-chapters/scripts/test_sync_crm.py   # per-skill tests:
+                                                            # plain scripts, exit 1 on failure
+```
+
+Skill scripts are not a package, so each skill's `scripts/test_*.py` runs as a
+plain Python script rather than through pytest.
 
 Then validate the manifests. The repo root is both the marketplace and the
 single plugin (marketplace `source: "./"`), so one call validates the

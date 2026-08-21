@@ -73,7 +73,8 @@ Pure writing skills. They take the event details you give them and produce copy.
 > Running your own chapter? Swap these URLs in each skill's `SKILL.md`.
 
 ### 🛠️ Ops skills — need Google Workspace access
-These drive Google Drive / Sheets through the `gws` CLI (see below).
+These drive Google Drive / Sheets through the `gws` CLI (see below); a few also
+talk to Slack or Luma.
 
 | Skill | What it does | Touches |
 |---|---|---|
@@ -82,6 +83,11 @@ These drive Google Drive / Sheets through the `gws` CLI (see below).
 | `aaif-triage-intake` | Summarize who's awaiting review in the Community Intake sheet + draft outreach | Google Sheets |
 | `aaif-clean-data` | Normalize/flag data quality in the Intake sheet (LinkedIn, casing, City=Other…) | Google Sheets |
 | `aaif-backup` | Versioned local snapshots of critical data (Intake sheet by default, or any file) before risky edits | Google Drive |
+| `aaif-create-event` | Add an event to a chapter/series Event Tracker (due-dates stamped from the event date), optionally creating the live Luma page on approval | Google Drive, Luma |
+| `aaif-update-event` | Edit an event's details or move its date (recomputing all task due-dates), flag stale assets, optionally sync the change to Luma | Google Drive, Luma |
+| `aaif-event-status` | Report overdue / due-soon event tasks by owner, plus read-only Luma registration stats | Google Drive, Luma |
+| `aaif-sync-chapters` | Push intake decisions to the Chapters List, About docs, chapter CRMs, per-chapter Drive access and the resource map (report/propose by default) | Google Sheets/Drive/Docs, Slack |
+| `aaif-audit-slack` | Audit the community Slack workspace — chapter/organizer channel coverage and member/channel health — as self-contained HTML + PDF reports | Slack, Google Sheets |
 
 > **Heads up — these ship with AAIF's own IDs.** The ops skills reference AAIF's
 > Google resources (the Chapters Drive, the Intake Ops spreadsheet ID, Luma slug
@@ -128,15 +134,17 @@ On your Google Cloud project, enable the **Sheets**, **Docs**, **Slides**,
 **OAuth scopes.** Grant **read-write** scopes for anything you write to —
 read-only access passes the verify step below but then fails on the first write
 (form responses are read-only by nature, hence the `.readonly` scope). The
-bundled scripts use only the Sheets and Drive scopes; the Docs, Slides, and Forms
-scopes are for operating on those assets directly — the chapter/series source docs
-and decks, and the intake form:
+bundled scripts use the Sheets, Drive, and Slides scopes (the shared
+`aaif_events.slides_export` helper renders deck previews through the Slides
+API); the Docs and Forms scopes are for operating on those assets directly —
+the chapter/series source docs and the intake form:
 
 - `https://www.googleapis.com/auth/spreadsheets` — read/write the intake sheet *(scripts)*
 - `https://www.googleapis.com/auth/drive` — copy, create, and update Drive files,
   incl. chapter/series asset clones *(scripts)*
 - `https://www.googleapis.com/auth/documents` — read/edit chapter/series Docs
-- `https://www.googleapis.com/auth/presentations` — read/edit day-of / series Slides
+- `https://www.googleapis.com/auth/presentations` — read/edit day-of / series
+  Slides, and render slide previews *(scripts)*
 - `https://www.googleapis.com/auth/forms.body` — read/edit the intake form
 - `https://www.googleapis.com/auth/forms.responses.readonly` — read form responses
 
@@ -155,7 +163,11 @@ Code *plugin*:
 
 - **Claude Code** — install as the plugin above (native).
 - **claude.ai / Claude Agent SDK** — zip a skill folder (the dir containing
-  `SKILL.md`) and upload it as a Skill.
+  `SKILL.md`) and upload it as a Skill. **Caveat:** skills whose scripts import
+  the shared `lib/aaif_events` package — `aaif-audit-slack`,
+  `aaif-sync-chapters`, `aaif-create-event`, `aaif-update-event`,
+  `aaif-event-status` — do **not** work zipped standalone; they need the full
+  checkout (or plugin install), since the zip won't contain `lib/`.
 - **Cursor** — Cursor uses its own `.cursor/rules/*.mdc` format and does **not**
   consume Claude Code plugins. You can copy a `SKILL.md`'s instructions into a
   Cursor rule, but it won't run the bundled scripts the same way.
@@ -175,10 +187,13 @@ events/
 ├── .claude-plugin/
 │   ├── marketplace.json          # one-plugin marketplace ("aaif")
 │   └── plugin.json               # plugin manifest (aaif-events)
+├── lib/
+│   └── aaif_events/              # shared stdlib-only modules + their tests
+├── scripts/                      # repo tooling (e.g. the banner-drift check)
 ├── skills/
 │   ├── aaif-announcement-post/SKILL.md
 │   ├── aaif-create-chapter/{SKILL.md, scripts/}
-│   └── …  (17 skills total)
+│   └── …  (18 skills total)
 └── README.md
 ```
 

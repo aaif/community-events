@@ -29,7 +29,11 @@ line. **Slide 1 hooks, slide 6 is the CTA.**
 builder-to-builder. Signal, not numbers.
 
 **Workflow:** update the LinkedIn Carousel deck (`Event Template/LinkedIn Carousel.pptx`
-in the chapter's Drive folder) with this copy, export it as a PDF, then post the PDF.
+in the chapter's Drive folder) with this copy, then export the PDF:
+`gws drive files copy` the `.pptx`, converting it to a Google Slides file →
+`gws drive files export` that copy to PDF → trash the copy. (The conversion can
+substitute fonts; when fidelity matters, render each slide to PNG via
+`aaif_events.slides_export` instead.) Post the PDF.
 
 ## Input (from the event tracker)
 - Event : `[EVENT TITLE] ([SERIES]) — [THEME]`
@@ -45,5 +49,5 @@ Agentic AI Night:
 | 2 | Tool calling at 10M/day. | Maya Chen on what broke, and the fixes. |
 | 3 | Three live demos. | AGENTS.md at monorepo scale. Sandboxing goose. |
 | 4 | Builder-first, always. | Vendor-neutral. No pitches. People who ship. |
-| 5 | Tue June 24 — 17:30. | SoMa, San Francisco. Doors at 5:30. |
+| 5 | Wed June 24 — 17:30. | SoMa, San Francisco. Doors at 5:30. |
 | 6 | Grab a seat. | Curated + limited. RSVP at lu.ma/aaif-sanfrancisco |

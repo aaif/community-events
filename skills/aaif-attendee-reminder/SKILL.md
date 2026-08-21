@@ -12,7 +12,7 @@ by asking them to update their RSVP if plans change** so the seat can be release
 
 **House voice:** warm, concrete, builder-to-builder. Signal, not numbers.
 
-**Standard footer (always include).** After the RSVP line, append one quiet line
+**Standard footer (always include).** After the closing update-your-RSVP sentence, append one quiet line
 with the two standing AAIF attendee links (defaults on every reminder), e.g.
 *"Reminder: our Code of Conduct
 (events.linuxfoundation.org/about/code-of-conduct) and Privacy Policy
@@ -26,7 +26,7 @@ body count.
 ## Example (tested — match this format and voice)
 Agentic AI Night:
 
-> You're set for Agentic AI Night this Tuesday, June 24 — doors 17:30 in SoMa, San
+> You're set for Agentic AI Night this Wednesday, June 24 — doors 17:30 in SoMa, San
 > Francisco (exact address and door code land in your inbox the morning of). Maya
 > Chen opens with tool calling at 10M requests a day, then three quick community
 > demos. If your plans change, please update your RSVP so we can pass your seat to

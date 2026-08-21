@@ -13,6 +13,11 @@ not promotional, **one emoji max**.
 
 **House voice:** share the practice, never sell the product. Signal, not numbers.
 
+**Standard footer (always include).** Below the next-event line, add one quiet
+line with the two standing AAIF attendee links (defaults on every recap):
+Code of Conduct (https://events.linuxfoundation.org/about/code-of-conduct) and
+Privacy Policy (https://www.linuxfoundation.org/legal/privacy-policy).
+
 ## Input (from the event tracker)
 - Event/speaker : `[EVENT TITLE] — [SPEAKER + TOPIC]`
 - Thank : `[VENUE / HOST]`
@@ -34,3 +39,6 @@ Agentic AI Night:
 > this vendor-neutral.
 >
 > Next: "AI in Finance," July 22 → lu.ma/aaif-sanfrancisco
+>
+> Code of Conduct: https://events.linuxfoundation.org/about/code-of-conduct ·
+> Privacy: https://www.linuxfoundation.org/legal/privacy-policy
