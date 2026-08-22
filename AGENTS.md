@@ -106,6 +106,8 @@ PYTHONPATH=lib python -m pytest lib/aaif_events/tests/test_luma.py -q   # one fi
 python skills/aaif-sync-chapters/scripts/test_sync_crm.py      # one skill test: plain script, exit 1 on failure
 pre-commit run --all-files                                     # ruff, codespell, gitleaks, frontmatter, banner
 python scripts/check_no_secret_args.py  # no --token/--key style CLI flags
+python scripts/check_workflows.py       # workflows can't leak secrets/PII (needs pyyaml)
+python scripts/test_check_workflows.py  # the linter's own tests
 claude plugin validate .                                       # marketplace.json + plugin.json
 ```
 
