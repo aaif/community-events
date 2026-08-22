@@ -385,8 +385,9 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     _ok = _main_reaches_plan(["--i-have-approval"])
 check("a lone --i-have-approval still reaches plan (no error)", _ok, True)
-check("...and one stderr line says it was inert",
-      ("inert" in _err.getvalue(), _err.getvalue().count("\n")), (True, 1))
+# Count only the inert line: under CI=true, main() also prints "redaction ON".
+check("...and exactly one stderr line says it was inert",
+      sum("inert" in ln for ln in _err.getvalue().splitlines()), 1)
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     _main_reaches_plan(["--write", "--notify", "--i-have-approval"])
