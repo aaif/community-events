@@ -15,7 +15,14 @@ Phase A — the Intake Ops role tabs (Organizers / Speakers / Hosts):
     RAW values write to the exact A-column cells. Status is the ONE hand-edited
     literal column on those tabs; columns B+ are ARRAYFORMULA mirrors and a
     literal written into them #REF!s the whole tab, so this script refuses to
-    run against a tab whose Status column is not column A.
+    run against a tab whose Status column is not column A;
+  * the hand-made conditional-format rules that TEST the Status literal are
+    renamed with it: the blue whole-row color (`=$A2="New"`) and the arm of the
+    pink SLA-breach rule (`OR($A2="",$A2="New")`). Renaming only the cells
+    unpaints every Prospect row and — the real damage — stops the 1-week SLA
+    breach from ever firing again. These rules are hand-made on the sheet;
+    clean.py owns only the red error rule and the city/violet rules, so nothing
+    else would ever repair them.
 
 Phase B — every chapter CRM workbook (the ~80 "<City> CRM.xlsx" under the
 Chapters Drive folder, plus the TemplateCity and TemplateSeries templates):
@@ -44,7 +51,9 @@ Usage:
   python3 migrate_status_prospect.py --write    # apply, then verify
 """
 import argparse
+import copy
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -93,6 +102,40 @@ def migrate_list(values):
     if NEW in values:
         return [v for v in values if v != OLD]
     return [NEW if v == OLD else v for v in values]
+
+
+# The Status-literal test inside a conditional-format formula. Column A is the
+# Status column (intake_status_guard requires it), so the exact `$A2="New"`
+# token is the whole match surface: every other mention of the word on these
+# tabs — the `City (New)` header, the CRMs' unrelated Signal list — is not a
+# column-A equality test and must not be touched.
+CF_TOKEN_OLD = '$A2="%s"' % OLD
+CF_TOKEN_NEW = '$A2="%s"' % NEW
+# A column-A test for "New" written some other way (spacing, EXACT(), $A$2).
+# Not migrated silently: reported, so a human fixes it rather than the rule
+# quietly going dead the way `=$A2="New"` just did.
+CF_SUSPECT = re.compile(r'\$A\$?\d+\s*=\s*"%s"|EXACT\s*\(\s*\$A' % OLD)
+
+
+def migrate_cf_formula(formula):
+    """The rule formula with its Status test renamed, or None when it has none.
+
+    A plain textual swap of the exact token — the rest of the formula (the SLA
+    rule's date arithmetic, its blank-status arm) is someone else's logic and
+    is preserved verbatim.
+    """
+    f = formula or ""
+    return f.replace(CF_TOKEN_OLD, CF_TOKEN_NEW) if CF_TOKEN_OLD in f else None
+
+
+def cf_refusal(formula):
+    """Why a rule this script did not migrate still looks like it tests the old
+    Status, or None. Catches the near-misses of `migrate_cf_formula`."""
+    f = formula or ""
+    if CF_TOKEN_OLD in f or not CF_SUSPECT.search(f):
+        return None
+    return ("tests the Status column for %r in a shape this script does not "
+            "rewrite (%s) — migrate it by hand" % (OLD, f))
 
 
 def intake_status_guard(headers):
@@ -308,6 +351,51 @@ def intake_grid_rule(tab):
     return gid, rule, covered[0], covered[-1] + 1
 
 
+def intake_cf_plans(tab):
+    """(sheetId, [(index, old_formula, new_rule)], [refusals]) for one tab.
+
+    Rules are addressed by their INDEX within the tab — what
+    updateConditionalFormatRule takes — and each is re-sent WHOLE (ranges,
+    colors, the untouched parts of the formula). A partial rule would drop the
+    format it paints: gws drops empty request objects, and the API replaces the
+    rule outright rather than merging it.
+    """
+    res = gws_json("sheets", "spreadsheets", "get", params={
+        "spreadsheetId": INTAKE_ID,
+        "fields": "sheets(properties(sheetId,title),conditionalFormats)"})
+    sheet = next((sh for sh in res["sheets"]
+                  if sh["properties"]["title"] == tab), None)
+    if sheet is None:
+        return None, [], ["no %r tab on the intake" % tab]
+    plans, refusals = [], []
+    for i, cf in enumerate(sheet.get("conditionalFormats") or []):
+        cond = (cf.get("booleanRule") or {}).get("condition") or {}
+        if cond.get("type") != "CUSTOM_FORMULA":
+            continue
+        vals = cond.get("values") or []
+        old = vals[0].get("userEnteredValue", "") if vals else ""
+        new = migrate_cf_formula(old)
+        if new is None:
+            why = cf_refusal(old)
+            if why:
+                refusals.append("conditional-format rule %d %s" % (i, why))
+            continue
+        rule = copy.deepcopy(cf)
+        rule["booleanRule"]["condition"]["values"][0]["userEnteredValue"] = new
+        plans.append((i, old, rule))
+    return sheet["properties"]["sheetId"], plans, refusals
+
+
+def apply_intake_cf(gid, plans):
+    """Replace each planned rule in place, in ONE batch (indices are positional,
+    and a rule replaced in place never shifts the ones after it)."""
+    gws_json("sheets", "spreadsheets", "batchUpdate",
+             params={"spreadsheetId": INTAKE_ID},
+             body={"requests": [{"updateConditionalFormatRule": {
+                 "sheetId": gid, "index": i, "rule": rule}}
+                 for i, _old, rule in plans]})
+
+
 def plan_intake_tab(tab):
     """One tab's plan: {tab, guard, cell_rows, gid, rule, r0, r1, new_list}."""
     col_a = [r[0] if r else "" for r in
@@ -315,9 +403,11 @@ def plan_intake_tab(tab):
     headers = get_values(INTAKE_ID, "'%s'!1:1" % tab)
     guard = intake_status_guard(headers[0] if headers else [])
     plan = {"tab": tab, "guard": guard, "cell_rows": [], "gid": None,
-            "rule": None, "r0": 0, "r1": 0, "new_list": None}
+            "rule": None, "r0": 0, "r1": 0, "new_list": None,
+            "cf_gid": None, "cf_plans": [], "cf_refusals": []}
     if guard:
         return plan
+    plan["cf_gid"], plan["cf_plans"], plan["cf_refusals"] = intake_cf_plans(tab)
     plan["cell_rows"] = plan_intake_cells(col_a)
     gid, rule, r0, r1 = intake_grid_rule(tab)
     plan["gid"] = gid
@@ -348,6 +438,8 @@ def apply_intake_tab(plan):
                                "endRowIndex": plan["r1"],
                                "startColumnIndex": 0, "endColumnIndex": 1},
                      "rule": rule}}]})
+    if plan["cf_plans"]:
+        apply_intake_cf(plan["cf_gid"], plan["cf_plans"])
     if plan["cell_rows"]:
         data = [{"range": "'%s'!A%d:A%d" % (tab, a, b),
                  "values": [[NEW]] * (b - a + 1)}
@@ -367,6 +459,10 @@ def verify_intake_tab(tab):
     _gid, rule, _r0, _r1 = intake_grid_rule(tab)
     if rule is not None:
         return "%s: the Status dropdown still offers %r" % (tab, OLD)
+    _cfgid, cf_plans, cf_refusals = intake_cf_plans(tab)
+    if cf_plans or cf_refusals:
+        return ("%s: %d conditional-format rule(s) still test %r"
+                % (tab, len(cf_plans) + len(cf_refusals), OLD))
     return None
 
 
@@ -461,14 +557,21 @@ def _run(args, workdir):
             failures.append("%s: %s" % (tab, plan["guard"]))
             print("  %-10s REFUSED — %s" % (tab, plan["guard"]))
             continue
+        for r in plan["cf_refusals"]:
+            failures.append("%s: %s" % (tab, r))
+            print("  %-10s REFUSED — %s" % (tab, r))
         bits = []
         if plan["cell_rows"]:
             bits.append("%d Status cell(s) %r -> %r (column A only)"
                         % (len(plan["cell_rows"]), OLD, NEW))
         if plan["new_list"]:
             bits.append("dropdown list %r -> %r" % (OLD, NEW))
+        if plan["cf_plans"]:
+            bits.append("%d conditional-format rule(s) %s -> %s"
+                        % (len(plan["cf_plans"]), CF_TOKEN_OLD, CF_TOKEN_NEW))
         print("  %-10s %s" % (tab, "; ".join(bits) or "in sync"))
-        proposed += len(plan["cell_rows"]) + (1 if plan["new_list"] else 0)
+        proposed += (len(plan["cell_rows"]) + (1 if plan["new_list"] else 0)
+                     + len(plan["cf_plans"]))
 
     print("\nPhase B — chapter CRMs:")
     backup_dir = os.path.join(workdir, "before")
@@ -502,20 +605,23 @@ def _run(args, workdir):
             for f in failures:
                 print("  %s" % f)
             return 1
-        print("\nNothing to do — %r is gone from every dropdown and cell." % OLD)
+        print("\nNothing to do — %r is gone from every dropdown, cell and "
+              "color rule." % OLD)
         return 0
 
     if not args.write:
         print("\n%d change(s) proposed across %d tab(s) and %d workbook(s). "
               "Re-run with --write to apply."
               % (proposed, sum(1 for p in tab_plans
-                               if p["cell_rows"] or p["new_list"]),
+                               if p["cell_rows"] or p["new_list"]
+                               or p["cf_plans"]),
                  len(crm_plans)))
         return 1 if failures else 2
 
     print("\nApplying...")
     for plan in tab_plans:
-        if plan["guard"] or not (plan["cell_rows"] or plan["new_list"]):
+        if plan["guard"] or not (plan["cell_rows"] or plan["new_list"]
+                                 or plan["cf_plans"]):
             continue
         try:
             apply_intake_tab(plan)
@@ -537,7 +643,8 @@ def _run(args, workdir):
 
     print("\nRe-verifying the intake tabs...")
     for plan in tab_plans:
-        if plan["guard"] or not (plan["cell_rows"] or plan["new_list"]):
+        if plan["guard"] or not (plan["cell_rows"] or plan["new_list"]
+                                 or plan["cf_plans"]):
             continue
         bad = verify_intake_tab(plan["tab"])
         if bad:

@@ -22,10 +22,10 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import migrate_status_prospect as mig
-from migrate_status_prospect import (CrmStatusSheet, dv_list,
-                                     intake_status_guard, migrate_list,
-                                     plan_crm, plan_intake_cells, runs_of,
-                                     sqref_cols)
+from migrate_status_prospect import (CF_TOKEN_NEW, CF_TOKEN_OLD, CrmStatusSheet,
+                                     cf_refusal, dv_list, intake_status_guard,
+                                     migrate_cf_formula, migrate_list, plan_crm,
+                                     plan_intake_cells, runs_of, sqref_cols)
 from sync_crm import cell_ref, load_parts, save_parts, sheet_part
 
 fails = 0
@@ -78,6 +78,32 @@ check("sqref_cols reads a plain range", sqref_cols("D2:D1000"), {3})
 check("sqref_cols reads multiple refs and spans",
       sqref_cols("B2:C10 F3"), {1, 2, 5})
 check("dv_list strips the quotes", dv_list('"A,B,C"'), ["A", "B", "C"])
+
+# The two live rule shapes on the intake role tabs: the whole-row status color
+# and the pink 1-week SLA breach (which ORs blank with the old literal).
+SLA = '=AND($C2<>"",OR($A2="",$A2="New"),TODAY()-INT($C2)>=7)'
+check("the status color rule is renamed",
+      migrate_cf_formula('=$A2="New"'), '=$A2="Prospect"')
+check("the SLA rule keeps its date logic and its blank arm",
+      migrate_cf_formula(SLA),
+      '=AND($C2<>"",OR($A2="",$A2="Prospect"),TODAY()-INT($C2)>=7)')
+check("a rule testing another status is left alone",
+      migrate_cf_formula('=$A2="Existing (from MLOps)"'), None)
+check("the City (New) header is not a Status test",
+      migrate_cf_formula('=$J2="City (New)"'), None)
+check("an already-migrated rule is in sync (idempotent)",
+      migrate_cf_formula('=$A2="Prospect"'), None)
+check("the tokens are the column-A Status test",
+      (CF_TOKEN_OLD, CF_TOKEN_NEW), ('$A2="New"', '$A2="Prospect"'))
+
+check("a migrated rule is not also reported as a refusal",
+      cf_refusal('=$A2="New"'), None)
+check("an unrecognised column-A test for New is reported, never guessed at",
+      "migrate it by hand" in (cf_refusal('=$A$2 = "New"') or ""), True)
+check("EXACT() against column A is reported too",
+      "migrate it by hand" in (cf_refusal('=EXACT($A2,"New")') or ""), True)
+check("a rule with no Status test is not a refusal",
+      cf_refusal('=$K2<>""'), None)
 check("dv_list refuses a non-literal formula", dv_list("=Lists!A1:A9"), None)
 
 
@@ -272,9 +298,15 @@ def _fake_gws_json(*args, params=None, body=None):
 _saved = mig.gws_json
 mig.gws_json = _fake_gws_json
 try:
+    _cf_rule = {"ranges": [{"sheetId": 99, "startRowIndex": 1}],
+                "booleanRule": {"condition": {
+                    "type": "CUSTOM_FORMULA",
+                    "values": [{"userEnteredValue": '=$A2="Prospect"'}]},
+                    "format": {"backgroundColor": {"blue": 1}}}}
     mig.apply_intake_tab({
         "tab": "Organizers", "guard": None, "cell_rows": [5, 6, 7, 12],
-        "gid": 99, "r0": 1, "r1": 1000,
+        "gid": 99, "r0": 1, "r1": 1000, "cf_gid": 99,
+        "cf_plans": [(4, '=$A2="New"', _cf_rule)], "cf_refusals": [],
         "rule": {"condition": {"type": "ONE_OF_LIST",
                                "values": [{"userEnteredValue": v}
                                           for v in INTAKE_LIST]},
@@ -283,10 +315,18 @@ try:
 finally:
     mig.gws_json = _saved
 
-check("apply issues the dropdown batchUpdate then the cell writes",
+check("apply issues the dropdown, then the color rules, then the cell writes",
       [a[:4] for a, _p, _b in _calls],
       [("sheets", "spreadsheets", "batchUpdate"),
+       ("sheets", "spreadsheets", "batchUpdate"),
        ("sheets", "spreadsheets", "values", "batchUpdate")])
+_cf_req = _calls[1][2]["requests"][0]["updateConditionalFormatRule"]
+check("the color rule is replaced at its own index",
+      (_cf_req["sheetId"], _cf_req["index"]), (99, 4))
+check("the rule is re-sent WHOLE — its ranges and color survive",
+      (_cf_req["rule"]["ranges"], _cf_req["rule"]["booleanRule"]["format"]),
+      ([{"sheetId": 99, "startRowIndex": 1}],
+       {"backgroundColor": {"blue": 1}}))
 _dv_req = _calls[0][2]["requests"][0]["setDataValidation"]
 check("the dropdown rule targets column A only",
       (_dv_req["range"]["startColumnIndex"], _dv_req["range"]["endColumnIndex"]),
@@ -296,7 +336,7 @@ check("the rule is EXPLICIT and full (gws drops empty request objects)",
       migrate_list(INTAKE_LIST))
 check("showCustomUi is restated explicitly",
       _dv_req["rule"]["showCustomUi"], True)
-_cell_body = _calls[1][2]
+_cell_body = _calls[2][2]
 check("cell writes are RAW", _cell_body["valueInputOption"], "RAW")
 check("every cell write targets column A, never B+",
       all(re.fullmatch(r"'Organizers'!A\d+:A\d+", d["range"])
