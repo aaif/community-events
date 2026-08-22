@@ -13,6 +13,7 @@ and builder-first.**
 
 **House voice:** share the practice, never sell the product. Specific over grand,
 builder-to-builder. Signal, not numbers.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 **Standard footer (always include).** Close with the two standing AAIF attendee
 links — these are defaults on every event page:

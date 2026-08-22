@@ -40,5 +40,37 @@ class TestFindEventId(unittest.TestCase):
                 luma_sync.find_event_id(view("https://luma.com/gone"), None)
 
 
+class TestUpdateBody(unittest.TestCase):
+    def test_notifications_suppressed_by_default(self):
+        self.assertEqual(luma_sync.update_body("evt-1"),
+                         {"event_id": "evt-1", "suppress_notifications": True})
+
+    def test_notify_guests_is_opt_in(self):
+        self.assertEqual(luma_sync.update_body("evt-1", notify_guests=True),
+                         {"event_id": "evt-1"})
+
+
+class TestMainNotifyGuests(unittest.TestCase):
+    def test_notify_guests_flag_reaches_update_body(self):
+        # Everything outside the parser is faked: the point is that the CLI
+        # flag is wired through to update_body (and hence to the request body).
+        L = luma_sync.luma
+        with mock.patch.object(sys, "argv", ["x", "t.docx", "next", "--timezone", "UTC",
+                                             "--event-id", "evt-1", "--apply",
+                                             "--notify-guests"]), \
+                mock.patch.object(luma_sync.office, "read_document", return_value=None), \
+                mock.patch.object(luma_sync.tracker, "read_event", return_value=view("")), \
+                mock.patch.object(L, "event_payload", return_value={"name": "B"}), \
+                mock.patch.object(L, "available", return_value=True), \
+                mock.patch.object(L, "get_event", return_value={"name": "A", "url": "u"}), \
+                mock.patch.object(L, "diff_payload", side_effect=[{"name": ("A", "B")}, {}]), \
+                mock.patch.object(L, "update_event") as upd, \
+                mock.patch.object(luma_sync, "update_body", wraps=luma_sync.update_body) as ub, \
+                mock.patch("sys.stdout"):
+            luma_sync.main()
+        ub.assert_called_once_with("evt-1", True)
+        self.assertEqual(upd.call_args[0][0], {"event_id": "evt-1", "name": "B"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,18 +38,22 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
    `gws drive files list` queries):
 
    ```
-   gws drive files get --params '{"fileId":"<DOC_ID>","alt":"media"}' --output tracker.docx
+   WORK=$(mktemp -d)
+   gws drive files get --params '{"fileId":"<DOC_ID>","alt":"media"}' --output $WORK/tracker.docx
    ```
+   These downloads hold organizer, speaker, and venue details — keep them in the
+   temp dir and **never commit them** (or any `tracker.docx` / `luma.md` /
+   `banner.png` / `new.*`) to the repo.
 
 2. **Apply the change (deterministic, local):**
 
    ```
    # add/replace a speaker
-   python3 ${CLAUDE_SKILL_DIR}/scripts/update_event.py tracker.docx "Agentic AI Night" \
+   python3 ${CLAUDE_SKILL_DIR}/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
      --set "SPEAKER(S)=Jane Doe (Agent Infra)"
 
    # move the date (recomputes all due-dates from the original date)
-   python3 ${CLAUDE_SKILL_DIR}/scripts/update_event.py tracker.docx "Agentic AI Night" \
+   python3 ${CLAUDE_SKILL_DIR}/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
      --date "Wed · July 8, 2026 · 17:30 — late"
    ```
    The event argument matches an **exact** (case-insensitive) title first, then a
@@ -74,7 +78,7 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
 3. **Upload it back:**
 
    ```
-   gws drive files update --params '{"fileId":"<DOC_ID>"}' --upload tracker.docx \
+   gws drive files update --params '{"fileId":"<DOC_ID>"}' --upload $WORK/tracker.docx \
      --upload-content-type application/vnd.openxmlformats-officedocument.wordprocessingml.document
    ```
 
@@ -90,22 +94,25 @@ connected (that calendar's API key in `LUMA_API_KEY` or keychain item
 `luma-api-key`; see `aaif-create-event` for setup):
 
 - **Connected** → show the user the printed diff; on their explicit approval
-  (and ONLY then — Luma is live, and it emails guests about changes unless
-  `--quiet`) re-run with `--apply`.
+  (and ONLY then — Luma is live) re-run with `--apply`. Guest notifications are
+  **suppressed by default**; the dry-run line says `Guests will NOT be notified
+  (pass --notify-guests)`. Only add `--notify-guests` when the user explicitly
+  wants every registered guest emailed about this change (a moved date, a new
+  venue) — never for copy tweaks or an iterative sync.
 - **Not connected** → the script prints the desired values as a manual
   checklist; pass it to the user to apply on the Luma page by hand.
 
 ```
 # diff only (default, sends nothing) — show this to the user
-python3 ${CLAUDE_SKILL_DIR}/scripts/luma_sync.py tracker.docx "Agentic AI Night" \
+python3 ${CLAUDE_SKILL_DIR}/scripts/luma_sync.py $WORK/tracker.docx "Agentic AI Night" \
   --timezone Europe/Berlin
 
-# push, only after the user says yes; add --quiet to skip guest notifications
-python3 ${CLAUDE_SKILL_DIR}/scripts/luma_sync.py tracker.docx "Agentic AI Night" \
-  --timezone Europe/Berlin --apply
+# push, only after the user says yes; guests are NOT emailed unless you add --notify-guests
+python3 ${CLAUDE_SKILL_DIR}/scripts/luma_sync.py $WORK/tracker.docx "Agentic AI Night" \
+  --timezone Europe/Berlin --apply [--notify-guests]
 ```
 
-Add `--description-file new.md` / `--cover new.png` only when replacing those —
+Add `--description-file $WORK/new.md` / `--cover $WORK/new.png` only when replacing those —
 omitted means left alone. After `--apply` it re-fetches the event and verifies
 the diff is clean. **Event cancellation is deliberately not automated** (it's
 irreversible and refunds/notifies everyone) — if the user asks to cancel, point

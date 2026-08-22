@@ -10,7 +10,8 @@ which account/calendar the API key belongs to. No live writes are sent (when
 connected, the dry-run still makes read-only calls: the LUMA URL entity lookup
 and get_calendar).
 
-With --create: uploads the cover (if given), creates the event, adds hosts,
+With --create: uploads the cover (if given), creates the event (private unless
+--visibility public — flip it public on Luma after review), adds hosts,
 writes the event URL into the tracker's LUMA URL field (local file — re-upload
 it to Drive afterwards), and prints the live URL.
 """
@@ -60,7 +61,10 @@ def already_pushed(view, *, connected=False):
 
 
 def show_proposal(payload, hosts, cover, key_ok):
-    print("Proposed Luma event (events/create):")
+    print("Proposed Luma event (events/create) — visibility: %s%s"
+          % (payload.get("visibility", "private"),
+             "" if payload.get("visibility") == "public"
+             else " (flip to public on Luma after review)"))
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     if cover:
         print("Cover : %s (uploaded to the Luma CDN on --create)" % cover)
@@ -77,7 +81,7 @@ def show_proposal(payload, hosts, cover, key_ok):
         print("Target: Luma NOT connected — no API key for this calendar.")
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(description="Push a tracker event to Luma (propose, then --create)")
     ap.add_argument("docx", help="tracker.docx already downloaded via gws")
     ap.add_argument("event", help="event title (case-insensitive substring), or 'next'/'latest'")
@@ -89,19 +93,27 @@ def main():
                     "(write it with the aaif-luma-description skill)")
     ap.add_argument("--cover", help="local cover image (export the event banner to PNG)")
     ap.add_argument("--slug", help="optional event URL slug")
+    ap.add_argument("--visibility", choices=("public", "private"), default="private",
+                    help="page visibility on create (default private: review the page "
+                         "on Luma, then flip it public)")
     ap.add_argument("--host", action="append", default=[], metavar="EMAIL[:LEVEL][:NAME]",
                     help="host to add (repeatable); LEVEL = manager (default) or check-in")
     ap.add_argument("--create", action="store_true",
                     help="LIVE WRITE: create the event on Luma (only after user approval)")
     ap.add_argument("--force", action="store_true",
                     help="create even though the tracker already has an event URL")
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    a = build_parser().parse_args()
 
     root = office.read_document(a.docx)
     view = tracker.read_event(root, a.event)
     description = open(a.description_file, encoding="utf-8").read() if a.description_file else None
     payload = luma.event_payload(view, a.timezone, a.duration_hours,
-                                 description_md=description, slug=a.slug)
+                                 description_md=description, slug=a.slug,
+                                 visibility=a.visibility)
     hosts = [parse_host(h) for h in a.host]
 
     key_ok = luma.available()

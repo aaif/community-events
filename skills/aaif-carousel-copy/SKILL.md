@@ -27,6 +27,7 @@ line. **Slide 1 hooks, slide 6 is the CTA.**
 
 **House voice:** share the practice, never sell the product. Specific over grand,
 builder-to-builder. Signal, not numbers.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 **Workflow:** update the LinkedIn Carousel deck (`Event Template/LinkedIn Carousel.pptx`
 in the chapter's Drive folder) with this copy, then export the PDF:

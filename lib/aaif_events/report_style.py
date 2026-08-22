@@ -13,13 +13,57 @@ defined only inside a `[data-theme]` block would never apply to them. The media
 block is additionally scoped to `:root:not([data-theme="light"])` so an explicit
 light choice still wins on a dark OS — do not simplify that selector to a bare
 `:root`, which silently breaks light-on-dark-OS with nothing to signal it.
+
+Output files are written 0600 through a `<name>.<random>.partial` sibling that
+is `os.replace`d into place (`write_private`). A run killed between the two
+steps can orphan such a `.partial` beside the report; it is 0600 and holds
+the same content as the report would have, so delete it rather than publish
+it.
 """
 
+import errno
 import html
 import os
 import pathlib
+import re
 import shutil
 import subprocess
+import sys
+import tempfile
+
+from aaif_events.slack import scrubbed_env
+
+#: Credential shapes that a child process can echo back in its stderr: Google
+#: access/refresh tokens, OAuth client secrets and API keys, Slack bot/user/app
+#: tokens (including the rotating `xoxe.xoxp-…` form), GitHub, OpenAI-style and
+#: Anthropic-style keys, bearer headers, and the repo's own `NAME=value` env
+#: lines as a crashing child would dump them. The `access_token`/`refresh_token`
+#: rule matches only a token-*looking* value (20+ token characters), so
+#: diagnostics such as `access_token: missing` stay readable.
+_SECRET_RE = re.compile(
+    r"ya29\.[\w-]+"
+    r"|(?:xoxe\.)?xox[a-z]-[\w-]+"
+    r"|xapp-[\w-]+"
+    r"|GOCSPX-[\w-]+"
+    r"|1//0[\w-]{20,}"
+    r"|AIza[\w-]{30,}"
+    r"|ghp_\w{30,}|github_pat_\w+"
+    r"|sk-[\w-]{20,}"
+    r"|secret-[\w-]{20,}"
+    r"|Bearer\s+[\w.-]{20,}"
+    r"|(?:LUMA_API_KEY|AAIF_SLACK_\w*_TOKEN|GOOGLE_WORKSPACE_CLI_\w+)\s*=\s*\S+"
+    r'|"?(?:access|refresh)_token"?\s*[:=]\s*"?[A-Za-z0-9._/-]{20,}')
+
+
+def redact(text, limit=400):
+    """`text` with anything credential-shaped replaced, bounded to `limit`.
+
+    For subprocess output that is about to land in an exception message: `gws`
+    and Chrome both print their environment or a request dump on some
+    failures, and exceptions end up in terminals, logs and bug reports.
+    Redact first, then truncate, so a token straddling the cut cannot survive.
+    """
+    return _SECRET_RE.sub("<redacted>", text or "")[:limit]
 
 CHROME_PATHS = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -321,13 +365,58 @@ def write_private(path, text):
 
     jsoncache's rule, restated for the report side: a chmod *after* the write
     leaves the page world-readable for its duration — permanently, if the run
-    is killed in between. The fchmod tightens a pre-existing looser file while
-    it is still truncated-empty.
+    is killed in between.
+
+    Written the way jsoncache.write is: into a 0600 temp file beside the
+    target, then `os.replace`d, so the report is either the previous complete
+    one or the new one. `os.replace` is also what defeats a symlink planted at
+    `path`: it swaps the *link entry* for the new file rather than writing
+    through it, and the explicit check below refuses such a path outright so
+    the link is left alone rather than silently replaced. The `O_NOFOLLOW`
+    open only tightens a pre-existing regular file's mode before the swap —
+    it is not what protects against the symlink.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    directory = os.path.dirname(os.path.abspath(path))
+    tmp = None
+    pre_existed = os.path.lexists(path)
+    try:
+        try:
+            fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".",
+                                       suffix=".partial")
+        except OSError as exc:
+            raise SystemExit("Cannot write %s: %s (does the directory exist?)"
+                             % (path, exc.strerror or exc))
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if os.path.islink(path):
+            raise SystemExit("Refusing to write %s: it is a symlink." % path)
+        # O_NOFOLLOW re-checks at the kernel, closing the race above; the open
+        # also tightens a pre-existing looser file before it is replaced.
+        try:
+            existing = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise SystemExit("Refusing to write %s: it is a symlink." % path)
+            raise
+        try:
+            os.fchmod(existing, 0o600)
+        finally:
+            os.close(existing)
+        try:
+            os.replace(tmp, path)      # atomic; the 0600 mode travels with the file
+        except OSError:
+            # The O_CREAT above made an empty 0600 file that nothing will
+            # ever fill; do not leave it masquerading as a report.
+            if not pre_existed and os.path.isfile(path) and os.path.getsize(path) == 0:
+                os.remove(path)
+            raise
+    except BaseException:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def to_pdf(html_path, pdf_path, timeout_s=180):
@@ -356,48 +445,63 @@ def to_pdf(html_path, pdf_path, timeout_s=180):
     if not os.path.isfile(html_path):
         raise SystemExit("Cannot render %s to PDF — the HTML does not exist." % html_path)
 
-    # Remove any earlier render first: if Chrome fails without writing, a stale
-    # file left in place is indistinguishable from a fresh one.
+    # Remove any earlier render first, so a failed run does not leave an
+    # outdated report at the final path — it would be indistinguishable from
+    # a fresh one.
     if os.path.exists(pdf_path):
         os.remove(pdf_path)
 
     # as_uri(), not "file://" + path: a '#' or '?' in the output name would
     # otherwise start a URL fragment/query and silently render a different file.
     url = pathlib.Path(html_path).absolute().as_uri()
+    # Chrome creates the PDF with default (world-readable) permissions, and it
+    # carries the same PII as the 0600 HTML it was rendered from. Render into a
+    # private (0700) scratch directory, tighten, then move into place — so
+    # there is no window in which the final path is readable by others.
+    scratch = tempfile.mkdtemp(prefix="aaif-pdf-",
+                               dir=os.path.dirname(os.path.abspath(pdf_path)))
+    tmp_pdf = os.path.join(scratch, "render.pdf")
     try:
-        proc = subprocess.run(
-            [chrome, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-             "--print-to-pdf=" + str(pdf_path), url],
-            capture_output=True, text=True, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        raise SystemExit(
-            "Chrome hung for %ds rendering %s — usually another Chrome instance "
-            "holding the profile lock. Quit Chrome and retry, or pass --no-pdf "
-            "and print %s by hand." % (timeout_s, pdf_path, html_path))
+        try:
+            proc = subprocess.run(
+                [chrome, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+                 "--print-to-pdf=" + tmp_pdf, url],
+                capture_output=True, text=True, timeout=timeout_s,
+                env=scrubbed_env(strict=True))   # Chrome needs no credentials
+        except subprocess.TimeoutExpired:
+            raise SystemExit(
+                "Chrome hung for %ds rendering %s — usually another Chrome instance "
+                "holding the profile lock. Quit Chrome and retry, or pass --no-pdf "
+                "and print %s by hand." % (timeout_s, pdf_path, html_path))
 
-    stderr = (proc.stderr or "").strip()[:800]
-    if proc.returncode != 0:
-        raise SystemExit(
-            "Chrome failed to render %s (exit %d).\n%s\nThe HTML is intact at %s "
-            "— open it and print to PDF by hand. Do not use LibreOffice."
-            % (pdf_path, proc.returncode, stderr, html_path))
+        stderr = redact(proc.stderr, 800)
+        if proc.returncode != 0:
+            raise SystemExit(
+                "Chrome failed to render %s (exit %d).\n%s\nThe HTML is intact at %s "
+                "— open it and print to PDF by hand. Do not use LibreOffice."
+                % (pdf_path, proc.returncode, stderr, html_path))
 
-    if not os.path.exists(pdf_path):
-        raise SystemExit(
-            "Chrome exited 0 but wrote no PDF at %s. This is usually another "
-            "Chrome instance holding the profile lock — quit Chrome and retry, "
-            "or pass --no-pdf and print %s by hand.\n%s"
-            % (pdf_path, html_path, stderr))
-    with open(pdf_path, "rb") as fh:
-        head = fh.read(5)
-    if head != b"%PDF-" or os.path.getsize(pdf_path) < 1024:
-        raise SystemExit(
-            "Chrome exited 0 but produced no usable PDF at %s (%d bytes). Quit "
-            "any running Chrome and retry, or pass --no-pdf and print %s by "
-            "hand.\n%s" % (pdf_path, os.path.getsize(pdf_path), html_path, stderr))
-    # Chrome creates the PDF with default (world-readable) permissions; it
-    # carries the same PII as the 0600 HTML it was rendered from.
-    os.chmod(pdf_path, 0o600)
+        if not os.path.exists(tmp_pdf):
+            raise SystemExit(
+                "Chrome exited 0 but wrote no PDF at %s. This is usually another "
+                "Chrome instance holding the profile lock — quit Chrome and retry, "
+                "or pass --no-pdf and print %s by hand.\n%s"
+                % (pdf_path, html_path, stderr))
+        with open(tmp_pdf, "rb") as fh:
+            head = fh.read(5)
+        if head != b"%PDF-" or os.path.getsize(tmp_pdf) < 1024:
+            raise SystemExit(
+                "Chrome exited 0 but produced no usable PDF at %s (%d bytes). Quit "
+                "any running Chrome and retry, or pass --no-pdf and print %s by "
+                "hand.\n%s" % (pdf_path, os.path.getsize(tmp_pdf), html_path, stderr))
+        os.chmod(tmp_pdf, 0o600)
+        os.replace(tmp_pdf, pdf_path)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+        if os.path.exists(scratch):
+            print("WARNING: could not remove scratch directory %s — it may still "
+                  "hold the rendered report; delete it by hand." % scratch,
+                  file=sys.stderr)
     return pdf_path
 
 
@@ -421,7 +525,7 @@ def _repo_root(path):
         # legitimate outside-repo runs instead of returning None.
         proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
                               capture_output=True, text=True,
-                              env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+                              env={**scrubbed_env(strict=True), "LC_ALL": "C", "LANG": "C"})
     except FileNotFoundError:
         raise SystemExit(
             "REFUSING TO RUN: git is not installed, so this cannot verify that "
@@ -470,12 +574,12 @@ def assert_git_ignored(*paths):
         # directory exists.
         probe = os.path.join(abs_path, "probe") if path.endswith(os.sep) else abs_path
         ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", probe],
-                                 capture_output=True).returncode == 0
+                                 capture_output=True, env=scrubbed_env(strict=True)).returncode == 0
         # .gitignore has no effect on an already-tracked file, so a report
         # committed before these rules landed would still ride along on `git
         # add -A` while check-ignore reports it as ignored.
         tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", abs_path],
-                                 capture_output=True).returncode == 0
+                                 capture_output=True, env=scrubbed_env(strict=True)).returncode == 0
         if tracked:
             offenders.append("%s (already TRACKED — git rm --cached it)" % path)
         elif not ignored:

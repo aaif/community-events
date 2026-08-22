@@ -125,7 +125,10 @@ Install `gws` (a Google Workspace command‑line tool), then authenticate with o
 
 - **Interactive OAuth:** `gws auth login`
 - **Credentials file:** set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/path/to/oauth_credentials.json`
-- **Pre‑obtained token:** set `GOOGLE_WORKSPACE_CLI_TOKEN=<access_token>`
+- **Pre‑obtained token:** set `GOOGLE_WORKSPACE_CLI_TOKEN` — in `.env`
+  (gitignored) or via `read -s GOOGLE_WORKSPACE_CLI_TOKEN && export GOOGLE_WORKSPACE_CLI_TOKEN`,
+  never as an inline `export TOKEN=...` (shell history keeps it) and never as a
+  script argument (argv shows in `ps` and logs)
 - **Client app:** set `GOOGLE_WORKSPACE_CLI_CLIENT_ID` and `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET`, then `gws auth login`
 
 On your Google Cloud project, enable the **Sheets**, **Docs**, **Slides**,
@@ -201,6 +204,38 @@ Bundled scripts are referenced from `SKILL.md` via `${CLAUDE_SKILL_DIR}/scripts/
 so they resolve correctly once installed.
 
 ---
+
+## Running skills from GitHub Actions
+
+This repository is public, so a workflow log is a public document. Two workflows:
+
+- **`validate.yml`** — lint + synthetic tests on every PR. Holds no credential.
+- **`run-skill.yml.disabled`** — parked until the credentials exist (GitHub ignores
+  the `.disabled` suffix; rename it back as the last step below). The only
+  workflow with secrets. `workflow_dispatch` only;
+  picks an engine (nightly sync, the three Slack audits); `write` is a checkbox
+  and `access` grants still stay report-only. Output never leaves the runner.
+
+Before the first dispatch, an admin configures the repo once (Settings →):
+
+1. **Environments → `ops`**: add *Required reviewers* (≥1 other maintainer) and
+   *Deployment branches → Selected → `main`*. Put the secrets **here**, not at
+   repo level: `AAIF_SLACK_READ_TOKEN` (read scopes only), `AAIF_SLACK_WRITE_TOKEN`,
+   `GOOGLE_WORKSPACE_CLI_TOKEN` (an access token for a dedicated service identity
+   that has only the Drive/Sheets access the engines need — note `gws` access
+   tokens expire in about an hour, so refresh the secret before each dispatch).
+2. **Actions → General**: *Fork pull request workflows → Require approval for
+   all outside collaborators*; *Workflow permissions → Read repository contents*
+   (and untick "Allow GitHub Actions to create and approve pull requests").
+3. **Branches → `main`**: require a PR, ≥1 review, and the `validate` checks.
+   Without this, anyone with push can edit `run-skill.yml` and the environment
+   rule is the only thing left.
+4. Delete repo-level secrets that no workflow references.
+5. Rename `run-skill.yml.disabled` → `run-skill.yml` and merge that. Until then
+   nothing can be dispatched.
+
+`scripts/check_workflows.py` enforces the workflow side of this in CI; the
+settings side is yours to keep.
 
 ## Contributing
 

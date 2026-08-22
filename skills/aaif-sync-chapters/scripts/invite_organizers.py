@@ -58,6 +58,36 @@ from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa:
 import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks names as a first initial
+# in every printed line. Each standalone script carries its own copy of this
+# flag and these helpers.
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask names (first initial) on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
+
 #: Inviting to a PRIVATE channel needs the groups scope; the public one is here
 #: because a chapter may have put its organizer room in a public channel and the
 #: run should not half-fail on the first one it meets.
@@ -155,13 +185,13 @@ def report(rows, unresolved, no_channel):
         print("  %-18s #%-28s %d to add, %d already in"
               % (r["city"], r["channel"], len(r["missing"]), len(r["present"])))
         for name, uid in r["missing"]:
-            print("      + %s (%s)" % (name, uid))
+            print("      + %s (%s)" % (redact_name(name), uid))
 
     if unresolved:
         print("\nAccepted organizers with no Slack account (%d) — cannot be "
               "invited:" % len(unresolved))
         for city, name in unresolved:
-            print("  %-18s %s" % (city, name))
+            print("  %-18s %s" % (city, redact_name(name)))
 
     if no_channel:
         print("\nChapters skipped (%d):" % len(no_channel))
@@ -220,7 +250,9 @@ def main():
                     help="required alongside --write; an invitation is a "
                          "notification to a real person and cannot be unsent")
     ap.add_argument("--city", help="limit to one chapter")
+    add_redact_flag(ap)
     a = ap.parse_args()
+    set_redaction(a.redact)
 
     rows, unresolved, no_channel = collect(a.city)
     total = report(rows, unresolved, no_channel)

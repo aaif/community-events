@@ -350,21 +350,21 @@ def _fake_urlopen_seq(responses):
     return opener, calls
 
 
-_saved_urlopen, _saved_sleep = prov.urllib.request.urlopen, prov.time.sleep
+_saved_urlopen, _saved_sleep = prov.slackmod._urlopen, prov.time.sleep
 try:
     _sleeps = []
     prov.time.sleep = _sleeps.append
     _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "ratelimited",
                                         "retry_after": 2},
                                        {"ok": True}])
-    prov.urllib.request.urlopen = _open
+    prov.slackmod._urlopen = _open
     check("ratelimited retries and honours retry_after",
           (prov.call_write("t", "conversations.rename", channel="C1",
                            name="n"), len(_calls), _sleeps),
           ({"ok": True}, 2, [2]))
 
     _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "name_taken"}])
-    prov.urllib.request.urlopen = _open
+    prov.slackmod._urlopen = _open
     check("any other error returns to the caller without a retry",
           (prov.call_write("t", "conversations.rename", channel="C1",
                            name="n"), len(_calls)),
@@ -372,15 +372,63 @@ try:
 
     _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "ratelimited",
                                         "retry_after": 1}])
-    prov.urllib.request.urlopen = _open
+    prov.slackmod._urlopen = _open
     check("a permanent rate limit gives up after five attempts",
           (prov.call_write("t", "conversations.rename", channel="C1",
                            name="n").get("error"), len(_calls)),
           ("ratelimited", 5))
+
+    # The WRITE token rides in the Authorization header; a redirect must
+    # surface as an error and never be followed to whatever host it names.
+    _seen = []
+    def _redirecting(req, timeout=None):
+        _seen.append(req)
+        raise prov.urllib.error.HTTPError(req.full_url, 302, "Found",
+                                          {"Location": "https://evil.example/"}, None)
+    prov.slackmod._urlopen = _redirecting
+    check("a 302 is an error, not a retry, and no second request is made",
+          (prov.call_write("t", "conversations.rename", channel="C1", name="n"),
+           len(_seen)),
+          ({"ok": False, "error": "http_302"}, 1))
+    # ...and the real opener is the lib's no-redirect one, not urllib's default.
+    _src = open(prov.__file__, encoding="utf-8").read()
+    check("call_write goes through slackmod._urlopen",
+          ("slackmod._urlopen(" in _src, "urllib.request.urlopen(" in _src), (True, False))
+    check("the lib opener refuses redirects",
+          prov.slackmod._NoRedirect().redirect_request(None, None, 302, "", {}, "u"), None)
 finally:
-    prov.urllib.request.urlopen = _saved_urlopen
+    prov.slackmod._urlopen = _saved_urlopen
     prov.time.sleep = _saved_sleep
 
+
+# --- --redact: stdout masking (default on under CI) ----------------------------
+inv.REDACT = False
+check("redaction off: name passes through", inv.redact_name("Ada Lovelace"), "Ada Lovelace")
+inv.REDACT = True
+try:
+    check("redacted name is a first initial", inv.redact_name("ada lovelace"), "A.")
+    check("empty values survive", inv.redact_name(""), "")
+    check("no redact_email here: nothing in this report prints an address",
+          hasattr(inv, "redact_email"), False)
+finally:
+    inv.REDACT = False
+
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", inv.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    inv.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    inv.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", inv.REDACT, False)
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

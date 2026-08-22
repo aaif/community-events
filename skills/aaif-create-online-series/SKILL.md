@@ -1,7 +1,7 @@
 ---
 name: aaif-create-online-series
 description: Create a new AAIF online event series in the "Online" Google Drive folder by cloning TemplateSeries and rebranding all assets. Use when asked to add/launch/set up a new AAIF online series (reading group, paper club, webinar, online discussion) — not a city chapter.
-argument-hint: '<Series Name> [--slug <lumaslug>] [--resume]'
+argument-hint: '<Series Name> [--slug <lumaslug>] [--write] [--resume] [--repair-existing]'
 ---
 
 # Create AAIF Online Series
@@ -66,19 +66,22 @@ placeholder the organizer fills in).
    name (e.g. "Reading Group", or "Online Reading Group" if they want the word
    Online in the title) and the Luma slug if one exists.
 
-2. **Dry run first** to surface the slug, Luma status, and any name collision:
+2. **Plan first** (the default — nothing is created without `--write`) to surface
+   the slug, Luma status, and any name collision:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
-       --series "Reading Group" --dry-run
+       --series "Reading Group"
    ```
+   (`--dry-run` is still accepted as a no-op alias.) The slug must match
+   `^[a-z0-9-]+$`; anything else aborts before the luma.com URL is built.
    - If it aborts with "already exists", stop — the series is already there.
    - If Luma shows NOT LIVE, tell the user the page needs creating at
      `luma.com/aaif-<slug>` (or that the slug differs — re-run with `--slug`).
 
-3. **Create the series:**
+3. **Create the series** — only after the user confirms the plan:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
-       --series "Reading Group"        # add --slug <x> if overriding
+       --series "Reading Group" --write   # add --slug <x> if overriding
    ```
    The script clones TemplateSeries → a new `<Series>` folder under Online, then
    downloads, rebrands, and re-uploads each `.pptx/.docx/.xlsx` in place. It prints
@@ -87,9 +90,10 @@ placeholder the organizer fills in).
    **Recovering a failed or partial run — `--resume`.** If a run dies midway
    (a `gws` 403, template drift raising in the rebrand engine, network loss),
    the half-created series folder is already in Drive and a plain re-run aborts
-   on the name collision. Don't trash the folder — re-run with `--resume`:
+   on the name collision. Don't trash the folder — re-run with `--resume`
+   (which, like any mutation, requires `--write`):
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py --series "Reading Group" --resume
+   python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py --series "Reading Group" --write --resume
    ```
    It enters the existing folder and clones/rebrands only what's missing — so
    resuming a fully-cloned series is a no-op. It is also the backfill path when
@@ -102,13 +106,23 @@ placeholder the organizer fills in).
      new`) and treated as present — never re-cloned as a duplicate.
    - Every skipped Office file is **residual-checked**, because the likeliest
      crash state is copied-but-never-rebranded. A clean file logs `exists,
-     skipped — residual-checked clean`; a dirty one is repaired in place
-     (downloaded, rebranded, re-uploaded) and logged as repaired. Only a
-     residual that survives the repair is flagged `!! residual (skipped)` and
-     fails the run, same as on a fresh clone.
+     skipped — residual-checked clean`. A dirty one is **reported, not
+     rewritten**: it logs `!! residual in existing file <name>` and fails the
+     run. Files already in Drive are never modified on faith — to have the
+     script repair them in place (download, rebrand, re-upload), add the
+     explicit `--repair-existing` flag. Even then, **`*CRM.xlsx` and
+     `*Tracker.docx` are never rewritten** — they hold member data once a
+     series is live — and are always reported for a hand fix.
 
    A present file whose *content* is corrupt but token-clean is still skipped,
-   not repaired.
+   not repaired. For a Luxembourg-style backfill (design assets missing, CRM and
+   tracker already in use): `--write --resume` clones the missing items; read
+   the `!! residual in existing file` lines (the run ends with exit 2 and
+   "N existing file(s) still carry source tokens"); re-run with
+   `--write --resume --repair-existing` only if the flagged files are design
+   assets; anything under `*CRM.xlsx` / `*Tracker.docx` is fixed by hand in
+   Drive. A residual in a *freshly cloned* file is a different failure (exit 1):
+   the template or the rebrand engine is broken — fix that, don't resume.
 
 4. **Verify & hand off.** Confirm the run printed no `!! residual` flags and report
    the new folder URL. Remind the user to (a) fill the `[bracketed]` About-the-

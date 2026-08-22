@@ -11,6 +11,7 @@ Sent to RSVPs ~1 week out and the morning of. Short, logistics-first (~70 words)
 by asking them to update their RSVP if plans change** so the seat can be released.
 
 **House voice:** warm, concrete, builder-to-builder. Signal, not numbers.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 **Standard footer (always include).** After the closing update-your-RSVP sentence, append one quiet line
 with the two standing AAIF attendee links (defaults on every reminder), e.g.

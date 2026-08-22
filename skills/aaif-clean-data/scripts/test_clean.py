@@ -730,6 +730,24 @@ class TestApplyEndToEnd(unittest.TestCase):
     def _payload(call):
         return json.loads(call[call.index("--json") + 1])
 
+    def test_apply_accepts_an_in_memory_change_list(self):
+        """`cities --write` hands its list straight to apply_changes() — no
+        staging file in $TMPDIR holding names — and the result must match the
+        `apply <file>` path."""
+        wanted = [{"row": 2, "header": "Extracted City", "value": "Zurich"}]
+        rows = [["t", "n", "", ""]]
+        via_file, _ = self._apply(wanted, rows)
+        calls = []
+        orig_gws, orig_read = clean.gws, clean.read_tab
+        clean.gws = lambda args: calls.append(args) or {}
+        clean.read_tab = lambda tab: (self.HDR, [list(r) for r in rows])
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                clean.apply_changes(wanted)
+        finally:
+            clean.gws, clean.read_tab = orig_gws, orig_read
+        self.assertEqual(calls, via_file)
+
     def test_the_note_carries_the_new_value(self):
         calls, _ = self._apply([{"row": 2, "header": "Extracted City", "value": "Zurich"}],
                                [["t", "n", "", ""]])

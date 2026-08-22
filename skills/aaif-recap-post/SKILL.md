@@ -12,6 +12,7 @@ words). **Thank the speaker and venue by name**, share **1-2 concrete takeaways*
 not promotional, **one emoji max**.
 
 **House voice:** share the practice, never sell the product. Signal, not numbers.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 **Standard footer (always include).** Below the next-event line, add one quiet
 line with the two standing AAIF attendee links (defaults on every recap):

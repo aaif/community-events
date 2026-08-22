@@ -314,6 +314,113 @@ check("--phase pin with --pins is refused too — one spelling per consent",
 check("--pins without --write is refused, not silently inert",
       _main_with(["--pins"]), True)
 
+# --notify / --mail-if-required make Drive email real people: the same
+# --i-have-approval consent the Slack write steps require, refused at parse
+# time so plan() never runs without it.
+check("--notify without --i-have-approval is refused",
+      _main_with(["--write", "--notify"]), True)
+check("--mail-if-required without --i-have-approval is refused",
+      _main_with(["--write", "--mail-if-required"]), True)
+check("--notify in report mode is refused too (the flag records consent, "
+      "and a report never needs it)", _main_with(["--notify"]), True)
+
+
+def _main_reaches_plan(argv):
+    """True when parse succeeded and plan() was reached (the mock raises)."""
+    with mock.patch.object(sync_access, "plan",
+                           side_effect=RuntimeError("reached plan")), \
+         mock.patch.object(sys, "argv", ["sync_access.py"] + argv):
+        try:
+            sync_access.main()
+        except RuntimeError as e:
+            return "reached plan" in str(e)
+        except SystemExit:
+            return False
+    return False
+
+
+check("--notify with --i-have-approval parses and proceeds",
+      _main_reaches_plan(["--write", "--notify", "--i-have-approval"]), True)
+check("--mail-if-required with --i-have-approval parses and proceeds",
+      _main_reaches_plan(["--write", "--mail-if-required", "--i-have-approval"]), True)
+
+
+# ---------------------------------------------------------------------------
+# --redact: stdout masking (default on under CI)
+# ---------------------------------------------------------------------------
+sync_access.REDACT = False
+check("redaction off: email passes through", sync_access.redact_email("ada@x.com"), "ada@x.com")
+check("redaction off: name passes through", sync_access.redact_name("Ada Lovelace"), "Ada Lovelace")
+sync_access.REDACT = True
+try:
+    check("redacted email keeps one char + TLD only", sync_access.redact_email("ada@x.com"), "a***@***.com")
+    check("redacted name is a first initial", sync_access.redact_name("ada lovelace"), "A.")
+    check("a non-email is left alone", sync_access.redact_email("Boston"), "Boston")
+    check("the domain is hidden, not just the local part",
+          "x.com" in sync_access.redact_email("ada@x.com"), False)
+    check("a dotless domain shows nothing", sync_access.redact_email("ada@localhost"), "a***@***.***")
+    check("empty values survive", (sync_access.redact_email(""), sync_access.redact_name("")), ("", ""))
+finally:
+    sync_access.REDACT = False
+
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", sync_access.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_access.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_access.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", sync_access.REDACT, False)
+
+# --- --i-have-approval without --notify/--mail-if-required is inert, and says so --
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    _ok = _main_reaches_plan(["--i-have-approval"])
+check("a lone --i-have-approval still reaches plan (no error)", _ok, True)
+# Count only the inert line: under CI=true, main() also prints "redaction ON".
+check("...and exactly one stderr line says it was inert",
+      sum("inert" in ln for ln in _err.getvalue().splitlines()), 1)
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    _main_reaches_plan(["--write", "--notify", "--i-have-approval"])
+check("with --notify the flag is not called inert", "inert" in _err.getvalue(), False)
+
+# --- the remediation hints name the consent flag, not just the mail flag ------
+_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sync_access.py"),
+            encoding="utf-8").read()
+check("both remediation hints name the consent flag",
+      (_src.count("(or --mail-if-required) \"\n                               \"--i-have-approval\""),
+       _src.count("(or pass --mail-if-required \"\n                     \"--i-have-approval)")), (1, 1))
+
+# --- redaction through the whole report: no fixture email or full name survives --
+_plan = {"pins": [], "already_pinned": [], "no_banner": [], "already_granted": [],
+         "grants": [{"chapter": "Boston", "email": "ada@x.com",
+                     "name": "Ada Lovelace", "role": "writer"}],
+         "public": [], "near": [],
+         "parent": [{"type": "user", "role": "writer", "emailAddress": "grace@x.com"}],
+         "orphans": [{"city": "Pune", "people": [{"name": "Grace Hopper"}]}],
+         "stale": [("Berlin", "ada@x.com", "writer")]}
+_out = _io.StringIO()
+sync_access.REDACT = True
+try:
+    with _ctx.redirect_stdout(_out):
+        sync_access.report(_plan, "writer")
+finally:
+    sync_access.REDACT = False
+_text = _out.getvalue()
+check("redacted report carries no fixture email",
+      [w for w in ("ada@x.com", "grace@x.com", "x.com") if w in _text], [])
+check("redacted report carries no full name",
+      [w for w in ("Ada Lovelace", "Lovelace", "Grace Hopper", "Hopper") if w in _text], [])
+check("the redacted report still names the chapter", "Boston" in _text, True)
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

@@ -6,8 +6,9 @@ printed diff). Reads a tracker.docx the agent already downloaded via gws.
 The Luma event is found from the tracker's LUMA URL field (the event page URL
 that aaif-create-event's luma_push wrote back), or --event-id. The diff shows
 every field that would change, live -> desired; --apply pushes exactly those
-fields via events/update and re-verifies. Luma notifies guests of changes
-unless --quiet (suppress_notifications) is passed. Cancellation is deliberately
+fields via events/update and re-verifies. Guest notifications are suppressed
+(suppress_notifications=True) unless --notify-guests is passed — an accidental
+or iterative sync must not email every guest. Cancellation is deliberately
 NOT implemented here — it is irreversible and stays a manual Luma action.
 """
 import argparse
@@ -38,6 +39,14 @@ def find_event_id(view, override):
                  "--event-id." % (cell, e))
 
 
+def update_body(event_id, notify_guests=False):
+    """events/update body skeleton: guest notifications are opt-in."""
+    body = {"event_id": event_id}
+    if not notify_guests:
+        body["suppress_notifications"] = True
+    return body
+
+
 def fmt(v):
     return json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else repr(v)
 
@@ -53,8 +62,8 @@ def main():
     ap.add_argument("--description-file",
                     help="markdown file to REPLACE the page copy (omit to leave it alone)")
     ap.add_argument("--cover", help="new cover image to upload and set (omit to leave it alone)")
-    ap.add_argument("--quiet", action="store_true",
-                    help="suppress Luma's guest notifications for this update")
+    ap.add_argument("--notify-guests", action="store_true",
+                    help="let Luma email guests about this update (default: suppressed)")
     ap.add_argument("--apply", action="store_true",
                     help="LIVE WRITE: push the diff to Luma (only after user approval)")
     a = ap.parse_args()
@@ -93,15 +102,15 @@ def main():
         print("  %-18s %s\n  %18s -> %s" % (k + ":", fmt(have), "", fmt(want)))
     if not a.apply:
         print("\n[dry-run] Nothing sent. Review with the user; re-run with --apply "
-              "ONLY after they explicitly approve this diff. Guests %s notified."
-              % ("will NOT be" if a.quiet else "WILL be"))
+              "ONLY after they explicitly approve this diff. %s"
+              % ("Guests WILL be notified (--notify-guests)." if a.notify_guests
+                 else "Guests will NOT be notified (pass --notify-guests)."))
         return
 
     print("\nLIVE: updating the event on Luma%s..."
-          % (" (notifications suppressed)" if a.quiet else ""))
-    body = {"event_id": event_id}
-    if a.quiet:
-        body["suppress_notifications"] = True
+          % (" (guests will be notified)" if a.notify_guests
+             else " (notifications suppressed)"))
+    body = update_body(event_id, a.notify_guests)
     for k, (_, want) in changes.items():
         body[k] = luma.upload_image(a.cover) if k == "cover_url" and a.cover else want
     luma.update_event(body)

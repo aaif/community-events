@@ -80,7 +80,7 @@ def drive(log_text, write_mode, code=0):
     with tempfile.TemporaryDirectory() as td, \
          mock.patch.object(nightly.subprocess, "run", fake_run):
         outcome, got_code, _secs = nightly.run_engine(
-            "sync_chapters.py", os.path.join(td, "x.log"), write_mode)
+            "chapters", "sync_chapters.py", os.path.join(td, "x.log"), write_mode)
     return outcome, got_code
 
 
@@ -95,6 +95,75 @@ check("a PARTIAL: line is seen even after a blank line",
 check("accented engine output does not crash the log re-read",
       drive("españa Montréal Logroño\nVerified: ok\n", True),
       (nightly.WROTE, 0))
+
+# --- access never runs with --write from the nightly ----------------------------
+# Its grants hand Drive access to form-supplied addresses (and may email them);
+# that is a human's call every time, so the runner strips --write for it and
+# turns a pending grant into an explicit needs-a-human line + exit 2.
+check("access is the report-only engine", nightly.REPORT_ONLY, frozenset({"access"}))
+cmd, wm = nightly.engine_cmd("access", "sync_access.py", write_mode=True)
+check("access never receives --write, even under nightly --write",
+      ("--write" in cmd, wm), (False, False))
+cmd, wm = nightly.engine_cmd("crm", "sync_crm.py", write_mode=True)
+check("the other engines still get --write",
+      ("--write" in cmd, wm), (True, True))
+# The logs are 0600 files in a 0700 gitignored dir and the NEEDS-A-HUMAN step
+# needs real addresses, so the runner turns the engines' CI default OFF.
+for _n, _s in nightly.ENGINES:
+    _cmd, _ = nightly.engine_cmd(_n, _s, write_mode=False)
+    check("%s runs with --no-redact (logs are private, never CI output)" % _n,
+          "--no-redact" in _cmd, _n in nightly.REDACTING)
+check("every engine is in the redacting set", {n for n, _ in nightly.ENGINES}, nightly.REDACTING)
+for _n, _s in nightly.ENGINES:
+    _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), _s),
+                encoding="utf-8").read()
+    check("%s actually accepts --no-redact" % _s, "add_redact_flag(ap)" in _src, True)
+
+
+def access_drive(log_text, code):
+    """run_engine for access under --write, capturing the argv actually used."""
+    seen = {}
+
+    class _Res:
+        returncode = code
+
+    def fake_run(cmd, stdout, stderr):
+        seen["cmd"] = cmd
+        stdout.write(log_text)
+        return _Res()
+
+    with tempfile.TemporaryDirectory() as td, \
+         mock.patch.object(nightly.subprocess, "run", fake_run):
+        log = os.path.join(td, "access.log")
+        outcome, _c, _s = nightly.run_engine("access", "sync_access.py", log, True)
+        mode = os.stat(log).st_mode & 0o777
+    return outcome, seen["cmd"], mode
+
+
+outcome, cmd, mode = access_drive("PHASE 2 — 3 new grant(s)\n", code=2)
+check("pending grants under nightly --write classify as DRIFT (report mode)",
+      outcome, nightly.DRIFT)
+check("...and the subprocess argv carried no --write", "--write" in cmd, False)
+check("engine logs are created 0o600", mode, 0o600)
+outcome, _cmd, _m = access_drive("Verified: x\n", code=0)
+check("a stray Verified: from access never reads as a write",
+      outcome, nightly.IN_SYNC)
+
+notes = nightly.summary_notes({"crm": nightly.WROTE, "access": nightly.DRIFT}, True)
+check("pending access grants are named as needing a human in the summary",
+      "NEEDS A HUMAN" in notes[0] and "sync_access.py --write" in notes[0], True)
+check("...and that run exits 2",
+      nightly.exit_code({"crm": nightly.WROTE, "access": nightly.DRIFT}), 2)
+check("access drift alone is not reported as generic drift",
+      "drift" in nightly.summary_notes({"access": nightly.DRIFT}, True)[0], False)
+check("all in sync exits 0 with the in-sync line",
+      (nightly.exit_code({"crm": nightly.IN_SYNC, "access": nightly.IN_SYNC}),
+       nightly.summary_notes({"crm": nightly.IN_SYNC}, True)),
+      (0, ["RESULT: everything in sync."]))
+check("a failure anywhere exits 1",
+      nightly.exit_code({"crm": nightly.FAILED, "access": nightly.DRIFT}), 1)
+check("summary lines never carry engine output (fixed strings only)",
+      any(c in " ".join(notes) for c in "@<>"), False)
 
 # --- the marker strings must actually appear in the engine sources -------------
 # The contract is two magic prefixes spelled in several files; this is the check

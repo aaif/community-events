@@ -63,6 +63,36 @@ from provision_channels import call_write, write_token  # noqa: E402
 import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks names as a first initial
+# in every printed line. Each standalone script carries its own copy of this
+# flag and these helpers.
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask names (first initial) on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
+
 KEEPLIST_TAB = "Organizer Keeplist"
 # `channels:write` is the USER-token scope for conversations.kick on public
 # channels; `channels:manage` is its bot-token sibling and never appears on a
@@ -193,9 +223,9 @@ def report(rows, had_keeplist, skipped):
               % (r["city"], r["channel"], len(r["organizers"]), len(r["kept"]),
                  len(r["review"]), len(r["remove"]), note))
         for real, handle, _uid, why in r["review"]:
-            print("      ? %-26s @%-20s %s" % (real[:26], handle[:20], why))
+            print("      ? %-26s @%-20s %s" % (redact_name(real)[:26], handle[:20], why))
         for real, handle, _uid in r["remove"]:
-            print("      - %-26s @%s" % (real[:26], handle))
+            print("      - %-26s @%s" % (redact_name(real)[:26], handle))
 
     if skipped:
         print("\nChapters whose Organizer Channel is not visible in Slack (%d) — "
@@ -249,7 +279,9 @@ def main():
                     help="required alongside --write; this removes real people "
                          "from channels they are currently in")
     ap.add_argument("--city", help="limit to one chapter")
+    add_redact_flag(ap)
     a = ap.parse_args()
+    set_redaction(a.redact)
 
     rows, had, skipped = classify(a.city)
     total = report(rows, had, skipped)

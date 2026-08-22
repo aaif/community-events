@@ -38,7 +38,8 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   event URL back into the tracker's LUMA URL field. Aborts if already pushed.
 - `aaif-update-event` → `scripts/luma_sync.py`: field-by-field diff of the
   tracker vs the live event; `--apply` pushes only the changed fields
-  (`--quiet` suppresses Luma's guest notifications) and re-verifies.
+  (Luma's guest notifications are suppressed unless `--notify-guests` is
+  passed) and re-verifies.
   Cancellation deliberately not automated.
 - `aaif-event-status` → `scripts/luma_stats.py`: read-only guest counts
   (going / pending / waitlist / invited / declined / checked-in) and

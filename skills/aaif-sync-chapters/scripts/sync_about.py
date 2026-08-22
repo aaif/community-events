@@ -38,6 +38,45 @@ from sync_chapters import (INTAKE_ID, INTAKE_TAB, SYNC_STATUSES, cell,
                            fresh_if_unchanged, get_values, gws_json,
                            header_index, read_intake, resolve_city, upload)
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag and these helpers.
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld) and names (first initial) "
+                         "on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
+
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"
 TEMPLATE_FOLDER = "TemplateCity"
 ABOUT_NAME = "about.docx"
@@ -391,8 +430,8 @@ def print_report(docs, counts, orphans, near):
         print("\nProposed Organizers rewrites:")
         for d in sorted(edits, key=lambda d: d.folder["name"]):
             print("  %s" % d.folder["name"])
-            print("      - %s" % ("; ".join(d.current) or "(empty)"))
-            print("      + %s" % "; ".join(d.names))
+            print("      - %s" % ("; ".join(map(redact_name, d.current)) or "(empty)"))
+            print("      + %s" % "; ".join(map(redact_name, d.names)))
     if noop:
         print("\nAlready correct (%d): %s"
               % (len(noop), ", ".join(sorted(d.folder["name"] for d in noop))))
@@ -407,23 +446,24 @@ def print_report(docs, counts, orphans, near):
     if leaks:
         print("\nNon-accepted applicants named in a shared doc — REMOVED by this run:")
         for d in sorted(leaks, key=lambda d: d.folder["name"]):
-            print("  %s: %s" % (d.folder["name"], "; ".join(d.applicants)))
+            print("  %s: %s" % (d.folder["name"], "; ".join(map(redact_name, d.applicants))))
     odd = [d for d in edits if d.unknown]
     if odd:
         print("\nLines the intake cannot account for — also removed. Check these are "
               "sub-headings and not a real organizer who never went through intake:")
         for d in sorted(odd, key=lambda d: d.folder["name"]):
-            print("  %s: %s" % (d.folder["name"], "; ".join(d.unknown)))
+            print("  %s: %s" % (d.folder["name"], "; ".join(map(redact_name, d.unknown))))
     if near:
         print("\nNear-miss cities (NOT written — fix the intake city, or create the folder):")
         for m in near:
             print("  intake %r (%s) ~ folder %s"
-                  % (m["city"], "; ".join(m["names"]), ", ".join(map(repr, m["candidates"]))))
+                  % (m["city"], "; ".join(map(redact_name, m["names"])),
+                     ", ".join(map(repr, m["candidates"]))))
     if orphans:
         print("\nAccepted organizers whose city has no chapter folder "
               "(run aaif-create-chapter):")
         for m in orphans:
-            print("  %s: %s" % (m["city"], "; ".join(m["names"])))
+            print("  %s: %s" % (m["city"], "; ".join(map(redact_name, m["names"]))))
 
     blank = [d for d in edits if d.names == [PLACEHOLDER]]
     if blank:
@@ -512,7 +552,9 @@ def main():
     ap.add_argument("--write", action="store_true",
                     help="apply the proposed rewrites (default: report only)")
     ap.add_argument("--city", help="limit to one chapter folder")
+    add_redact_flag(ap)
     args = ap.parse_args()
+    set_redaction(args.redact)
 
     with tempfile.TemporaryDirectory(prefix="aaif-about-") as workdir:
         # --write recomputes from a fresh read here — a stale proposal is never applied.

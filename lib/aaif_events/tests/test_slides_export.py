@@ -43,6 +43,24 @@ class TestGws(unittest.TestCase):
             self.assertIn("slides presentations get", str(cm.exception))
 
 
+    def test_failure_output_is_redacted_and_bounded(self):
+        noise = "x" * 1000 + ' {"access_token": "ya29.leak-me"} tail'
+        with mock.patch("subprocess.run", return_value=self._result(1, stderr=noise)):
+            with self.assertRaises(RuntimeError) as cm:
+                se._gws(["gws", "x"])
+        text = str(cm.exception)
+        self.assertNotIn("ya29.leak-me", text)
+        self.assertLess(len(text), 700)
+
+    def test_gws_runs_with_the_secrets_scrubbed(self):
+        with mock.patch.dict("os.environ", {"AAIF_SLACK_WRITE_TOKEN": "xoxb-w", "KEEP": "1"}), \
+                mock.patch("subprocess.run", return_value=self._result(0, stdout="ok")) as run:
+            se._gws(["gws", "x"])
+        env = run.call_args.kwargs["env"]
+        self.assertNotIn("AAIF_SLACK_WRITE_TOKEN", env)
+        self.assertEqual(env["KEEP"], "1")
+
+
 class TestGwsJson(unittest.TestCase):
     def test_empty_output_raises(self):
         with mock.patch.object(se, "_gws", return_value="   \n  "):

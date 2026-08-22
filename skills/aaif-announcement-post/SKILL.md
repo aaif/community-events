@@ -14,6 +14,7 @@ The launch post for when RSVPs open. Structure: **one-line hook**, the
 builder-to-builder. Signal, not numbers. The RSVP line MUST link the event's RSVP
 page — Luma for chapter events; some online events use Gradual.AI. Edit the draft
 before it ships.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 **Standard footer (always include).** Below the RSVP/hashtag block, add one quiet
 line with the two standing AAIF attendee links (defaults on every announcement):

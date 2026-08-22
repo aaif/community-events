@@ -14,6 +14,9 @@ import sys
 import time
 import urllib.request
 
+from aaif_events.report_style import redact
+from aaif_events.slack import scrubbed_env
+
 _SLIDES_MIME = "application/vnd.google-apps.presentation"
 
 # Mirrors skills/aaif-create-chapter/scripts/create_chapter.py's _gws/gws_json —
@@ -26,15 +29,17 @@ _TRANSIENT = ("timed out", "internalError", "HTTP request failed",
 
 def _gws(cmd, retries=5):
     for i in range(retries):
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, env=scrubbed_env())
         if r.returncode == 0:
             return r.stdout
         msg = (r.stderr or "") + (r.stdout or "")
         if i < retries - 1 and any(k in msg for k in _TRANSIENT):
             time.sleep(2 * (i + 1))
             continue
+        # Bounded and redacted: gws has printed its auth state on failure, and
+        # this message ends up in terminals and bug reports.
         raise RuntimeError("gws failed (%s) for %s: %s"
-                          % (r.returncode, " ".join(cmd)[:200], msg.strip()[:400]))
+                          % (r.returncode, " ".join(cmd)[:200], redact(msg.strip())))
 
 
 def _gws_json(*args, params=None, body=None):
@@ -50,7 +55,8 @@ def _gws_json(*args, params=None, body=None):
     try:
         return json.loads(s)
     except json.JSONDecodeError:
-        raise RuntimeError("gws returned non-JSON output for %s: %s" % (" ".join(args), s[:200]))
+        raise RuntimeError("gws returned non-JSON output for %s: %s"
+                           % (" ".join(args), redact(s, 200)))
 
 
 def _download(url, out_path, timeout=30):

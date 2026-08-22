@@ -51,7 +51,7 @@ Usage:
   python3 sync_crm.py --verbose          # also list every intake row NOT synced
   python3 sync_crm.py --write            # apply, then re-read and verify
 """
-import argparse, datetime, io, os, re, shutil, sys, tempfile, zipfile
+import argparse, datetime, io, os, re, shutil, subprocess, sys, tempfile, zipfile
 from collections import Counter, namedtuple
 from xml.etree import ElementTree as ET
 
@@ -63,6 +63,152 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sync_chapters import (INTAKE_ID, bad_public_text, gws_json, get_values,
                            download, upload, fold, fold_city, fresh_if_unchanged,
                            city_tokens, cell, header_index, resolve_city)
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "..", ".."))
+
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag and these helpers.
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld) and names (first initial) "
+                         "on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
+
+#: Columns whose values are categorical, not personal — the only ones a
+#: redacted report still shows. Everything else (survey answers, company,
+#: phone, LinkedIn…) could identify someone, so it prints as `…`.
+SHOWN_UNDER_REDACT = ("Role", "Status", "Signal", "Trusted/Regular")
+
+
+def redact_sets(sets):
+    """The per-op cell dict: under REDACT every value is masked except the
+    role/status-like columns, so the report still shows WHICH columns change."""
+    if not REDACT:
+        return sets
+    return {k: (v if any(tag in k for tag in SHOWN_UNDER_REDACT) else "…")
+            for k, v in sets.items()}
+
+
+def backup_root(kind):
+    """A fresh, gitignored, repo-local directory for pre-edit workbook bytes.
+
+    `<repo>/backups/<kind>-<UTC stamp>/` — `**/backups/*` is gitignored, and
+    the guard below proves it for THIS checkout before anything lands there:
+    the copies hold every synced person's name and email, and this repo is
+    public. Living under the repo (not $TMPDIR) keeps the recovery copy where
+    an operator will find it and where a reboot does not sweep it.
+
+    Three outcomes, ported from migrate_status_prospect.assert_git_safe (the
+    scripts stay standalone): git missing -> abort, since nothing can prove
+    the path is safe; REPO is not a git checkout (a plugin install, a zip) ->
+    allowed, with a printed note, because there is no repo to leak into; any
+    other git failure (dubious ownership, a corrupt .git) -> abort quoting
+    git, because mapping it to "safe" would disengage the PII guard.
+    """
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    path = os.path.join(REPO, "backups", "%s-%s" % (kind, stamp))
+    try:
+        probe = subprocess.run(["git", "-C", REPO, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True,
+                               env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that %s is "
+                 "gitignored. The pre-edit copies hold every organizer's name "
+                 "and email." % path)
+    if probe.returncode != 0:
+        stderr = (probe.stderr or "").strip()
+        if "not a git repository" not in stderr.lower():
+            sys.exit("ABORT: `git rev-parse` failed in %s (exit %d: %s), so this "
+                     "cannot verify that %s is gitignored. The pre-edit copies "
+                     "hold every organizer's name and email."
+                     % (REPO, probe.returncode, stderr[:200], path))
+        print("note: %s is not a git checkout (plugin install?) — writing the "
+              "pre-edit copies under %s; nothing can commit them from here."
+              % (REPO, path), file=sys.stderr)
+    else:
+        r = subprocess.run(["git", "-C", REPO, "check-ignore", "-q",
+                            os.path.join(path, "probe")], capture_output=True)
+        if r.returncode != 0:
+            sys.exit("ABORT: %s is not gitignored in this checkout — refusing to "
+                     "write member data there (is `**/backups/*` still in "
+                     ".gitignore?)." % path)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return path
+
+
+def cleanup_workdir(workdir, keep_backups):
+    """Delete the working copies; keep only the pre-edit backups if asked.
+
+    Returns True when something could NOT be removed, so run() can turn a
+    stranded member-data file into a non-zero exit.
+
+    What lands in workdir is a downloaded working copy per chapter,
+    reread.xlsx, and the whole verify/ subtree re-downloaded after each
+    upload — several full copies of every CRM, i.e. the names and emails of
+    the entire organizer base. Only before/ has recovery value, so at most
+    before/ survives, and a failed delete is REPORTED rather than swallowed:
+    silence would leave member data on disk with nobody aware.
+    (Ported from migrate_status_prospect.py; the scripts stay standalone.)
+    """
+    left = []
+    for name in sorted(os.listdir(workdir)):
+        if keep_backups and name == "before":
+            continue
+        target = os.path.join(workdir, name)
+        shutil.rmtree(target, ignore_errors=True) if os.path.isdir(target) \
+            else _unlink_quietly(target)
+        if os.path.exists(target):
+            left.append(target)
+    if not keep_backups and not left:
+        shutil.rmtree(workdir, ignore_errors=True)
+        if not os.path.exists(workdir):
+            return False
+        left.append(workdir)
+    if left:
+        print("WARNING: could not delete %d path(s) holding member data — "
+              "remove by hand: %s" % (len(left), ", ".join(left[:5])),
+              file=sys.stderr)
+    return bool(left)
+
+
+def _unlink_quietly(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "TemplateCity"                        # cloned per city; never gets people
@@ -1206,15 +1352,17 @@ def write_workbooks(touched, workdir, backup_dir):
 
 def run(args):
     # Every opened workbook — real names, emails and survey answers — lands in
-    # this temp dir. A report-only run must not strand ~80 of them there
-    # forever, so the directory is removed on the way out; --write keeps it,
-    # because its before/ backups are the recovery path (the output says where).
+    # this temp dir. Neither mode may strand ~80 of them there: the workdir is
+    # always removed on the way out. The only copy that survives a --write is
+    # the pre-edit set, which lives under backup_root(), not here.
     workdir = tempfile.mkdtemp(prefix="aaif-crm-")
     try:
-        return _run(args, workdir)
+        code = _run(args, workdir)
     finally:
-        if not args.write:
-            shutil.rmtree(workdir, ignore_errors=True)
+        stranded = cleanup_workdir(workdir, keep_backups=False)
+    # A stranded working copy is member data on disk with nobody told; the
+    # WARNING above is not enough for a wrapper (nightly.py) reading codes.
+    return 1 if stranded else code
 
 
 def _run(args, workdir):
@@ -1313,9 +1461,10 @@ def _run(args, workdir):
             mark = {"clear": "-", "add": "+", "fill": "~"}[o["kind"]]
             detail = ("dummy row wiped" if o["kind"] == "clear" else
                       ", ".join("%s=%r" % (k, v if len(v) < 60 else v[:57] + "…")
-                                for k, v in o["sets"].items()))
+                                for k, v in redact_sets(o["sets"]).items()))
             print("      %s row %-4d %s <%s> — %s"
-                  % (mark, o["rownum"], o["name"], o["email"], detail))
+                  % (mark, o["rownum"], redact_name(o["name"]),
+                     redact_email(o["email"]), detail))
         touched.append({"book": book, "ops": ops, "dv": dv})
 
     if near_misses:
@@ -1328,14 +1477,15 @@ def _run(args, workdir):
         for o in sorted(orphans, key=lambda x: -len(x["people"])):
             print("  %-28s %d person/people: %s"
                   % (o["city"], len(o["people"]),
-                     ", ".join(p["name"] for p in o["people"][:4])
+                     ", ".join(redact_name(p["name"]) for p in o["people"][:4])
                      + (", …" if len(o["people"]) > 4 else "")))
     if keepers:
         print("\nAlready in a CRM and NOT touched (real-looking address — clear by hand "
               "if it's fixture data):")
         for name, rows in keepers:
             for r in rows:
-                print("  %-18s row %-4d %s <%s>" % (name, r["row"], r["name"], r["email"]))
+                print("  %-18s row %-4d %s <%s>"
+                      % (name, r["row"], redact_name(r["name"]), redact_email(r["email"])))
     if skipped:
         # Recapped at the end, not just inline: across every chapter the inline
         # line scrolls away, and a skipped chapter means people silently did not
@@ -1357,7 +1507,8 @@ def _run(args, workdir):
     if rejected and args.verbose:
         print("\nIntake rows not synced:")
         for r in rejected:
-            print("  %s row %d: %s — %s" % (r["tab"], r["row"], r["name"] or "(no name)", r["why"]))
+            print("  %s row %d: %s — %s" % (r["tab"], r["row"],
+                                            redact_name(r["name"]) or "(no name)", r["why"]))
     elif rejected:
         print("\n%d intake row(s) not synced (not yet accepted, or no email/city) "
               "— --verbose lists them." % len(rejected))
@@ -1379,10 +1530,10 @@ def _run(args, workdir):
         return 2
 
     print("\nWriting %d workbook(s)..." % len(touched))
-    backup_dir = os.path.join(workdir, "before")
-    os.makedirs(backup_dir, exist_ok=True)
+    backup_dir = backup_root("crm-before")
     written, changed, failed = write_workbooks(touched, workdir, backup_dir)
-    print("Wrote %d workbook(s); pre-edit copies kept in %s" % (len(written), backup_dir))
+    print("Wrote %d workbook(s); pre-edit copies kept in %s (gitignored; delete "
+          "once the write is confirmed good)" % (len(written), backup_dir))
     if changed:
         print("\n%d workbook(s) changed since the plan was built and were NOT "
               "written — re-run to sync them:\n  %s"
@@ -1423,7 +1574,10 @@ def main():
     ap.add_argument("--city", help="limit to one chapter folder")
     ap.add_argument("--verbose", action="store_true",
                     help="list every intake row that was not synced")
-    sys.exit(run(ap.parse_args()))
+    add_redact_flag(ap)
+    args = ap.parse_args()
+    set_redaction(args.redact)
+    sys.exit(run(args))
 
 
 if __name__ == "__main__":

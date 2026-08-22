@@ -19,6 +19,58 @@ applies it atomically, then re-reads and verifies the diff is empty.
 import argparse, json, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.request
 from collections import namedtuple
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag and these helpers.
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld) and names (first initial) "
+                         "on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
+
+def redact_text(v):
+    """Free-form form text (and the repr of a malformed cell) may quote a
+    person wholesale, so under REDACT it is replaced, not trimmed."""
+    return "[redacted]" if REDACT and v else v
+
+
+def redact_names_cell(cell):
+    """The Organizers cell is a '; '-joined list of names; mask each."""
+    if not REDACT or not cell:
+        return cell
+    return "; ".join(redact_name(x.strip()) for x in cell.split(";"))
+
+
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 INTAKE_TAB = "Organizers"
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
@@ -95,11 +147,19 @@ _TRANSIENT_STATUS = re.compile(r"(?<![0-9])(?:429|500|502|503|504)(?![0-9])")
 def _transient(msg):
     return any(k in msg for k in _TRANSIENT) or bool(_TRANSIENT_STATUS.search(msg))
 
+def _scrubbed_env():
+    """os.environ minus the Slack/Luma secrets, for every gws subprocess: gws
+    needs none of them, and a crash dump or plugin log must not leak one.
+    Local copy — this script stays standalone."""
+    return {k: v for k, v in os.environ.items()
+            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN")) and k != "LUMA_API_KEY"}
+
 def _gws(cmd, retries=5, cwd=None):
     # cwd: gws rejects --output/--upload paths outside its working directory, so
     # the shared download()/upload() below run it from the file's own directory.
     for i in range(max(1, retries)):   # retries<=0 must raise below, not return None
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
+                           env=_scrubbed_env())
         if r.returncode == 0:
             return r.stdout
         msg = (r.stderr or "") + (r.stdout or "")
@@ -472,8 +532,8 @@ def print_report(st):
     if adds:
         print("\nProposed adds to existing rows:")
         for a in adds:
-            print("  %s (row %d): + %s" % (a["city"], a["row"], "; ".join(a["names"])))
-            print("      %s%d -> %r" % (org_col, a["row"], a["new_value"]))
+            print("  %s (row %d): + %s" % (a["city"], a["row"], "; ".join(map(redact_name, a["names"]))))
+            print("      %s%d -> %r" % (org_col, a["row"], redact_names_cell(a["new_value"])))
     if new_rows:
         print("\nProposed NEW city rows (appended after row %d):" % last_row)
         # Derived from the header row, not from EDITORIAL_COLUMNS: a twelfth feed
@@ -497,19 +557,20 @@ def print_report(st):
                     "absent": "Luma page NOT LIVE yet — create it manually; run aaif-create-chapter for the assets",
                     "unknown": "could not verify the Luma page — check it manually"}[status]
             print("  row %d: %s — %s — https://luma.com/aaif-%s (%s)"
-                  % (n["row"], n["city"], "; ".join(n["names"]), n["slug"], note))
+                  % (n["row"], n["city"], "; ".join(map(redact_name, n["names"])), n["slug"], note))
     if near_misses:
         print("\nNear-miss cities (NOT written — confirm the right row, or fix the intake city):")
         for m in near_misses:
             cand = ", ".join("%r (row %d)" % c for c in m["candidates"])
-            print("  intake %r (%s) ~ chapter %s" % (m["city"], "; ".join(m["names"]), cand))
+            print("  intake %r (%s) ~ chapter %s" % (m["city"], "; ".join(map(redact_name, m["names"])), cand))
     if unresolved:
         print("\nUnresolved city — needs a human, never written:")
         for u in unresolved:
             print("  intake row %d: %s (%s) — City (Existing)=%r, City (New)=%r"
-                  % (u["row"], u["name"] or "(no name)", u["status"], u["g"], u["h"]))
-            print("      Run events before?: %r" % u["events"])
-            print("      Why organize / ties: %r" % u["why"])
+                  % (u["row"], redact_name(u["name"]) or "(no name)", u["status"],
+                     redact_text(u["g"]), redact_text(u["h"])))
+            print("      Run events before?: %r" % redact_text(u["events"]))
+            print("      Why organize / ties: %r" % redact_text(u["why"]))
             if u["inferred"]:
                 print("      -> free text names %s; fill City (New) on the intake row to sync."
                       % ", ".join(map(repr, u["inferred"])))
@@ -519,7 +580,7 @@ def print_report(st):
     if dupes:
         print("\nDuplicate intake rows (deduped, first occurrence wins):")
         for d in dupes:
-            print("  intake row %d: %s / %s" % (d["row"], d["name"], d["city"]))
+            print("  intake row %d: %s / %s" % (d["row"], redact_name(d["name"]), d["city"]))
     if st.malformed:
         # Excluded, loudly: everything else still syncs, but a row listed here
         # reaches nothing until the intake text is fixed — the values are
@@ -527,7 +588,8 @@ def print_report(st):
         print("\nMalformed public-form text — EXCLUDED from every write until the "
               "intake row is fixed:")
         for m in st.malformed:
-            print("  intake row %d (city %r): %s" % (m["row"], m["city"], m["why"]))
+            print("  intake row %d (city %r): %s"
+                  % (m["row"], redact_text(m["city"]), redact_text(m["why"])))
 
     # The chapters side has its own duplicate problem, and only the intake side
     # was ever reported. chap_by_fold is last-wins, so an earlier duplicate row
@@ -656,7 +718,9 @@ def main():
     ap.add_argument("--allow-missing-luma", action="store_true",
                     help="write new rows even if their Luma page isn't live yet "
                          "(their CTA will point at a 404 until it is created)")
+    add_redact_flag(ap)
     a = ap.parse_args()
+    set_redaction(a.redact)
 
     # --write recomputes from a fresh read here — a stale proposal is never applied.
     state = compute()
@@ -727,9 +791,9 @@ def main():
     if after.adds or leftover_rows:
         print("VERIFY FAILED — still out of sync after write:")
         for x in after.adds:
-            print("  row %d %s: + %s" % (x["row"], x["city"], "; ".join(x["names"])))
+            print("  row %d %s: + %s" % (x["row"], x["city"], "; ".join(map(redact_name, x["names"]))))
         for x in leftover_rows:
-            print("  new row %s: %s" % (x["city"], "; ".join(x["names"])))
+            print("  new row %s: %s" % (x["city"], "; ".join(map(redact_name, x["names"]))))
         sys.exit(1)
     if held:
         # Exit 2, the shared drift code: the held rows are still pending work,

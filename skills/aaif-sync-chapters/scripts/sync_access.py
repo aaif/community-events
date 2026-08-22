@@ -42,10 +42,11 @@ Usage:
   python3 sync_access.py --write --pins     # also run the pin phase first
   python3 sync_access.py --write --phase grant
   python3 sync_access.py --role reader      # grant something other than writer
-  python3 sync_access.py --write --mail-if-required   # email only the addresses
-                                            # with no Google account, which Drive
-                                            # refuses to share with otherwise
-  python3 sync_access.py --write --notify   # email EVERY grantee
+  python3 sync_access.py --write --mail-if-required --i-have-approval
+                                            # email only the addresses with no
+                                            # Google account, which Drive refuses
+                                            # to share with otherwise
+  python3 sync_access.py --write --notify --i-have-approval   # email EVERY grantee
   python3 sync_access.py --write --lock-anyway        # lock even though some
                                             # organizers could not be granted
 """
@@ -59,6 +60,45 @@ from sync_chapters import (CHAPTERS_ID, CHAPTERS_TAB, INTAKE_ID, gws_json, get_v
 from sync_crm import (CHAPTERS_PARENT, SYNC_STATUSES, TEMPLATE_FOLDER,
                       fold_email, list_chapter_folders, match_chapters, merge_people,
                       read_role_tab)
+
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag and these helpers.
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld) and names (first initial) "
+                         "on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
 
 # Kept deliberately: this is the Linux Foundation's own staff access, not public
 # reach, and removing it is a separate decision from de-publicising the folder.
@@ -265,7 +305,7 @@ def report(p, role):
     for g in p["grants"]:
         by_ch.setdefault(g["chapter"], []).append(g["email"])
     for ch in sorted(by_ch)[:6]:
-        print("     %-20s %s" % (ch, ", ".join(by_ch[ch])))
+        print("     %-20s %s" % (ch, ", ".join(map(redact_email, by_ch[ch]))))
     if len(by_ch) > 6:
         print("     … and %d more chapter(s)" % (len(by_ch) - 6))
 
@@ -278,14 +318,14 @@ def report(p, role):
     for x in p["parent"]:
         if x["type"] == "anyone":
             continue
-        who = x.get("emailAddress") or x.get("domain") or ""
+        who = redact_email(x.get("emailAddress") or "") or x.get("domain") or ""
         print("     %-10s %-10s %s%s" % (x["type"], x["role"], who,
                                          "   <- LF staff, kept by design"
                                          if who == KEEP_DOMAIN else ""))
     if p["orphans"] or p["near"]:
         print("\nAccepted organizers with no matching chapter folder (they get NO grant):")
         for o in p["orphans"]:
-            print("     %-24s %s" % (o["city"], ", ".join(x["name"] for x in o["people"])))
+            print("     %-24s %s" % (o["city"], ", ".join(redact_name(x["name"]) for x in o["people"])))
         for m in p["near"]:
             print("     %-24s ~ %s" % (m["city"], ", ".join(m["candidates"])))
 
@@ -296,7 +336,7 @@ def report(p, role):
         print("\nDirect grants held by people the intake does not know about "
               "(NOT touched; they survive the lock — audit these):")
         for ch, em, r in sorted(p["stale"]):
-            print("     %-18s %-42s %s" % (ch, em, r))
+            print("     %-18s %-42s %s" % (ch, redact_email(em), r))
     print("\nNet effect: %d chapter-folder grant(s) at %r for accepted organizers, and "
           "the CRMs stop being readable by anyone with the link."
           % (len(p["grants"]) + len(p["already_granted"]), role))
@@ -414,7 +454,7 @@ def apply_grants(p, notify, allow_mail=False):
             # Notifications off by default: one share-mail per organizer, all
             # arriving unannounced at once, reads as a phishing wave.
             create(g, bool(notify))
-            print("  granted %s -> %s (%s)" % (g["email"], g["chapter"], g["role"]))
+            print("  granted %s -> %s (%s)" % (redact_email(g["email"]), g["chapter"], g["role"]))
             continue
         except Exception as e:
             msg = str(e)
@@ -425,33 +465,34 @@ def apply_grants(p, notify, allow_mail=False):
             if not allow_mail:
                 failed.append((g["chapter"], g["name"], g["email"],
                                "no Google account — Drive requires emailing them; "
-                               "re-run with --notify (or --mail-if-required)"))
+                               "re-run with --notify (or --mail-if-required) "
+                               "--i-have-approval"))
                 print("  SKIPPED %s -> %s: needs a notification email"
-                      % (g["email"], g["chapter"]), file=sys.stderr)
+                      % (redact_email(g["email"]), g["chapter"]), file=sys.stderr)
                 continue
             try:
                 create(g, True)
                 mailed.append((g["chapter"], g["email"]))
                 print("  granted %s -> %s (%s, notification sent — no Google account)"
-                      % (g["email"], g["chapter"], g["role"]))
+                      % (redact_email(g["email"]), g["chapter"], g["role"]))
                 continue
             except Exception as e:
                 msg = str(e)
         hint = ("Drive rejected the address — check it for a typo on the intake row"
                 if "problem with this email" in msg else msg[:160])
         failed.append((g["chapter"], g["name"], g["email"], hint))
-        print("  FAILED %s -> %s: %s" % (g["email"], g["chapter"], hint), file=sys.stderr)
+        print("  FAILED %s -> %s: %s" % (redact_email(g["email"]), g["chapter"], hint), file=sys.stderr)
 
     if mailed:
         print("\n  %d grant(s) sent a Drive notification email (unavoidable — no "
               "Google account on the address):" % len(mailed))
         for ch, em in mailed:
-            print("     %-18s %s" % (ch, em))
+            print("     %-18s %s" % (ch, redact_email(em)))
     if failed:
         print("\n  %d grant(s) could not be applied — fix the intake row and re-run:"
               % len(failed))
         for ch, name, em, why in failed:
-            print("     %-18s %-26s %s\n        %s" % (ch, name, em, why))
+            print("     %-18s %-26s %s\n        %s" % (ch, redact_name(name), redact_email(em), why))
     return len(p["grants"]) - len(failed), failed
 
 
@@ -554,7 +595,21 @@ def main():
     ap.add_argument("--mail-if-required", action="store_true",
                     help="email only the organizers whose address has no Google "
                          "account, where Drive refuses to share without it")
+    ap.add_argument("--i-have-approval", action="store_true",
+                    help="required alongside --notify or --mail-if-required: "
+                         "both make Drive email real people, which cannot be unsent")
+    add_redact_flag(ap)
     a = ap.parse_args()
+    set_redaction(a.redact)
+    # Emailing a real person is the line the Slack write steps already draw
+    # with --i-have-approval; the same consent is required here, at parse
+    # time, before plan() touches the network.
+    if (a.notify or a.mail_if_required) and not a.i_have_approval:
+        ap.error("--notify / --mail-if-required make Drive email real people; "
+                 "add --i-have-approval to confirm a human signed off on that.")
+    if a.i_have_approval and not (a.notify or a.mail_if_required):
+        print("NOTE: --i-have-approval is inert without --notify or "
+              "--mail-if-required; nothing will be emailed.", file=sys.stderr)
     # Refuse, never reinterpret: both flags speak for the pin phase, and each
     # combination below used to be silently inert — the worst behaviour for a
     # flag whose whole job is recording explicit human consent.
@@ -604,7 +659,8 @@ def main():
         if name == "lock" and grant_failures and not a.lock_anyway:
             sys.exit("ABORT before lock: %d organizer(s) have no grant (listed above). "
                      "Removing the public share now would leave them with NO access at "
-                     "all.\nFix the intake rows (or pass --mail-if-required), then "
+                     "all.\nFix the intake rows (or pass --mail-if-required "
+                     "--i-have-approval), then "
                      "re-run — or pass --lock-anyway to accept locking them out."
                      % len(grant_failures))
         print("\nApplying phase %r..." % name)

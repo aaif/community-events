@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
-from aaif_events.slack import Slack, channels, lookup_emails, members  # noqa: E402
+from aaif_events.slack import Slack, channels, lookup_emails, members, scrubbed_env  # noqa: E402
 
 read_cache, write_cache, cache_age = jsoncache.read, jsoncache.write, jsoncache.age
 
@@ -93,7 +93,8 @@ def gws_values(sheet_id, rng, retries=5):
     cmd = ["gws", "sheets", "spreadsheets", "values", "batchGet",
            "--params", json.dumps({"spreadsheetId": sheet_id, "ranges": [rng]})]
     for attempt in range(retries):
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        # gws never needs the Slack/Luma tokens; don't let a child inherit them.
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=scrubbed_env())
         if proc.returncode == 0:
             break
         msg = (proc.stderr or "") + (proc.stdout or "")
