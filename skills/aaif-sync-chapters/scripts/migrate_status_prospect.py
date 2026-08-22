@@ -67,6 +67,7 @@ Usage:
 """
 import argparse
 import copy
+import datetime
 import os
 import re
 import shutil
@@ -86,6 +87,8 @@ from sync_crm import (CRM_SHEET, ROLE_TABS, X, XLSX, cell_ref,  # noqa: E402
                       _XML_DECL)
 
 OLD, NEW = "New", "Prospect"
+REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "..", ".."))
 
 # The template workbooks must migrate too, or every future chapter/series is
 # born with the legacy dropdown. Ids as declared by their own creation scripts
@@ -746,10 +749,18 @@ def intake_tab_drifted(plan):
     return None
 
 
-def apply_intake_tab(plan):
-    """Apply one tab's plan: the dropdown rule, the color rules, then the cell
-    rewrites. Caller must have cleared intake_tab_drifted() first."""
-    tab = plan["tab"]
+def intake_tab_requests(plan):
+    """The ONE batchUpdate body for a tab: dropdown rule, color rules, then
+    the Status cell rewrites as updateCells (RAW strings).
+
+    A single spreadsheets.batchUpdate is atomic on the sheet: no row can be
+    inserted between the rule swap and the cell stamp, which is what the old
+    three-call sequence (two batchUpdates + a values.batchUpdate) left open —
+    intake_tab_drifted() had been checked minutes before the third call, and
+    a row inserted in that window would shift every absolute row number and
+    stamp Prospect over a human's Accepted. Pure: returns the request list.
+    """
+    reqs = []
     if plan["new_list"]:
         # An EXPLICIT full rule, over the CONTIGUOUS RUNS that actually carry
         # the legacy list — never the min..max hull, which would blanket the
@@ -762,22 +773,38 @@ def apply_intake_tab(plan):
                              "values": [{"userEnteredValue": v}
                                         for v in plan["new_list"]]}
         rule.setdefault("showCustomUi", True)
+        reqs += [{"setDataValidation": {
+            "range": {"sheetId": plan["gid"],
+                      "startRowIndex": r0, "endRowIndex": r1 + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+            "rule": rule}} for r0, r1 in plan["dv_runs"]]
+    # Rules are replaced in place, by positional index — a rule replaced in
+    # place never shifts the ones after it.
+    reqs += [{"updateConditionalFormatRule": {
+        "sheetId": plan["cf_gid"], "index": i, "rule": rule}}
+        for i, _old, rule in plan["cf_plans"]]
+    # updateCells with `fields: userEnteredValue` is the RAW-string write:
+    # no formula parsing, and formatting/validation on the cell untouched.
+    # Column A only (startColumnIndex 0..1) — B+ are ARRAYFORMULA mirrors.
+    reqs += [{"updateCells": {
+        "range": {"sheetId": plan["gid"],
+                  "startRowIndex": a - 1, "endRowIndex": b,
+                  "startColumnIndex": 0, "endColumnIndex": 1},
+        "rows": [{"values": [{"userEnteredValue": {"stringValue": NEW}}]}]
+                * (b - a + 1),
+        "fields": "userEnteredValue"}}
+        for a, b in runs_of(plan["cell_rows"])]
+    return reqs
+
+
+def apply_intake_tab(plan):
+    """Apply one tab's plan in ONE spreadsheets.batchUpdate (see
+    intake_tab_requests). Caller must have cleared intake_tab_drifted() first."""
+    reqs = intake_tab_requests(plan)
+    if reqs:
         gws_json("sheets", "spreadsheets", "batchUpdate",
                  params={"spreadsheetId": INTAKE_ID},
-                 body={"requests": [{"setDataValidation": {
-                     "range": {"sheetId": plan["gid"],
-                               "startRowIndex": r0, "endRowIndex": r1 + 1,
-                               "startColumnIndex": 0, "endColumnIndex": 1},
-                     "rule": rule}} for r0, r1 in plan["dv_runs"]]})
-    if plan["cf_plans"]:
-        apply_intake_cf(plan["cf_gid"], plan["cf_plans"])
-    if plan["cell_rows"]:
-        data = [{"range": "'%s'!A%d:A%d" % (tab, a, b),
-                 "values": [[NEW]] * (b - a + 1)}
-                for a, b in runs_of(plan["cell_rows"])]
-        gws_json("sheets", "spreadsheets", "values", "batchUpdate",
-                 params={"spreadsheetId": INTAKE_ID},
-                 body={"valueInputOption": "RAW", "data": data})
+                 body={"requests": reqs})
 
 
 def verify_intake_tab(plan):
@@ -943,7 +970,22 @@ def run(args):
     try:
         return _run(args, workdir)
     finally:
-        cleanup_workdir(workdir, keep_backups=args.write)
+        # before/ lives under backup_root(), not here — the workdir itself
+        # never survives, in either mode.
+        cleanup_workdir(workdir, keep_backups=False)
+
+
+def backup_root():
+    """`<repo>/backups/crm-status-before-<UTC stamp>/` — gitignored by
+    `**/backups/*`, and assert_git_safe proves it for this checkout before
+    a single workbook of member data lands there. Repo-local rather than
+    $TMPDIR so the recovery copy is where an operator looks and survives a
+    reboot; the operator deletes it once the write is confirmed good."""
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    path = os.path.join(REPO, "backups", "crm-status-before-%s" % stamp)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    assert_git_safe(path)
+    return path
 
 
 def cleanup_workdir(workdir, keep_backups):
@@ -1027,8 +1069,9 @@ def _run(args, workdir):
     proposed += len(howto_plans)
 
     print("\nPhase B — chapter CRMs:")
-    backup_dir = os.path.join(workdir, "before")
-    os.makedirs(backup_dir, exist_ok=True)
+    backup_dir = (os.path.join(backup_root(), "before") if args.write
+                  else os.path.join(workdir, "before"))
+    os.makedirs(backup_dir, mode=0o700, exist_ok=True)
     crm_plans = []
     for folder in crm_folders(args.city):
         book, why = open_crm_sheet(folder, workdir)
@@ -1125,7 +1168,8 @@ def _run(args, workdir):
             print("  FAILED %s — %s" % (folder["name"], why), file=sys.stderr)
         else:
             print("  wrote %s" % folder["name"])
-    print("Pre-edit workbook copies kept in %s" % backup_dir)
+    print("Pre-edit workbook copies kept in %s (gitignored; delete once the "
+          "write is confirmed good)" % backup_dir)
 
     print("\nRe-verifying the intake tabs...")
     for plan in written_tabs:

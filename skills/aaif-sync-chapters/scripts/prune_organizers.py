@@ -63,6 +63,27 @@ from provision_channels import call_write, write_token  # noqa: E402
 import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@domain and
+# names as initials in every printed line. Each standalone script carries its
+# own copy of this flag and these two helpers.
+REDACT = False
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    return "%s***@%s" % (local[:1], domain)
+
+
+def redact_name(n):
+    if not REDACT or not n:
+        return n
+    return " ".join(w[0].upper() + "." for w in n.split() if w)
+
+
 KEEPLIST_TAB = "Organizer Keeplist"
 # `channels:write` is the USER-token scope for conversations.kick on public
 # channels; `channels:manage` is its bot-token sibling and never appears on a
@@ -193,9 +214,9 @@ def report(rows, had_keeplist, skipped):
               % (r["city"], r["channel"], len(r["organizers"]), len(r["kept"]),
                  len(r["review"]), len(r["remove"]), note))
         for real, handle, _uid, why in r["review"]:
-            print("      ? %-26s @%-20s %s" % (real[:26], handle[:20], why))
+            print("      ? %-26s @%-20s %s" % (redact_name(real)[:26], handle[:20], why))
         for real, handle, _uid in r["remove"]:
-            print("      - %-26s @%s" % (real[:26], handle))
+            print("      - %-26s @%s" % (redact_name(real)[:26], handle))
 
     if skipped:
         print("\nChapters whose Organizer Channel is not visible in Slack (%d) — "
@@ -249,7 +270,13 @@ def main():
                     help="required alongside --write; this removes real people "
                          "from channels they are currently in")
     ap.add_argument("--city", help="limit to one chapter")
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=bool(os.environ.get("CI")),
+                    help="mask emails (a***@domain) and names (initials) on "
+                         "stdout; default on when CI is set")
     a = ap.parse_args()
+    global REDACT
+    REDACT = a.redact
 
     rows, had, skipped = classify(a.city)
     total = report(rows, had, skipped)

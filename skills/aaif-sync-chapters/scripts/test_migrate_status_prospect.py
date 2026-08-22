@@ -16,7 +16,6 @@ contains "New". The load-bearing cases:
 """
 import io
 import os
-import re
 import sys
 import zipfile
 
@@ -617,12 +616,16 @@ try:
 finally:
     mig.gws_json = _saved
 
-check("apply issues the dropdown, then the color rules, then the cell writes",
+check("apply is ONE spreadsheets.batchUpdate — dropdown, color rules and cell "
+      "writes together, so no row insert can land between them",
       [a[:4] for a, _p, _b in _calls],
-      [("sheets", "spreadsheets", "batchUpdate"),
-       ("sheets", "spreadsheets", "batchUpdate"),
-       ("sheets", "spreadsheets", "values", "batchUpdate")])
-_dv_reqs = [r["setDataValidation"] for r in _calls[0][2]["requests"]]
+      [("sheets", "spreadsheets", "batchUpdate")])
+_reqs = _calls[0][2]["requests"]
+check("request order: dropdown rule(s), color rule(s), then updateCells",
+      [next(iter(r)) for r in _reqs],
+      ["setDataValidation", "setDataValidation",
+       "updateConditionalFormatRule", "updateCells", "updateCells"])
+_dv_reqs = [r["setDataValidation"] for r in _reqs if "setDataValidation" in r]
 check("the dropdown is written per contiguous RUN, never over the hull "
       "(the gap rows carry a different validation, or none)",
       [(r["range"]["startRowIndex"], r["range"]["endRowIndex"]) for r in _dv_reqs],
@@ -633,24 +636,31 @@ check("every dropdown write targets column A only",
 check("the rule is EXPLICIT and full (gws drops empty request objects)",
       [v["userEnteredValue"] for v in _dv_reqs[0]["rule"]["condition"]["values"]],
       migrate_list(INTAKE_LIST))
-_cf_req = _calls[1][2]["requests"][0]["updateConditionalFormatRule"]
+_cf_req = [r for r in _reqs if "updateConditionalFormatRule" in r][0]["updateConditionalFormatRule"]
 check("the color rule is replaced at its own index",
       (_cf_req["sheetId"], _cf_req["index"]), (99, 4))
 check("the rule is re-sent WHOLE — its ranges and color survive",
       (_cf_req["rule"]["ranges"], _cf_req["rule"]["booleanRule"]["format"]),
       ([{"sheetId": 99, "startRowIndex": 1}], {"backgroundColor": {"blue": 1}}))
-_cell_body = _calls[2][2]
-check("cell writes are RAW", _cell_body["valueInputOption"], "RAW")
+_cells = [r["updateCells"] for r in _reqs if "updateCells" in r]
+check("cell writes are RAW strings (userEnteredValue.stringValue, no parsing)",
+      ({c["fields"] for c in _cells},
+       {v["userEnteredValue"].get("stringValue") for c in _cells
+        for row in c["rows"] for v in row["values"]}),
+      ({"userEnteredValue"}, {"Prospect"}))
 check("every cell write targets column A, never B+",
-      all(re.fullmatch(r"'Organizers'!A\d+:A\d+", d["range"])
-          for d in _cell_body["data"]), True)
-check("contiguous rows are grouped into runs",
-      [d["range"] for d in _cell_body["data"]],
-      ["'Organizers'!A5:A7", "'Organizers'!A12:A12"])
-check("run lengths match their value payloads",
-      [len(d["values"]) for d in _cell_body["data"]], [3, 1])
-check("the written literal is Prospect",
-      {v[0] for d in _cell_body["data"] for v in d["values"]}, {"Prospect"})
+      {(c["range"]["startColumnIndex"], c["range"]["endColumnIndex"]) for c in _cells},
+      {(0, 1)})
+check("contiguous rows are grouped into runs (0-based, end exclusive)",
+      [(c["range"]["sheetId"], c["range"]["startRowIndex"], c["range"]["endRowIndex"])
+       for c in _cells], [(99, 4, 7), (99, 11, 12)])
+check("run lengths match their row payloads",
+      [len(c["rows"]) for c in _cells], [3, 1])
+check("an empty plan issues no request at all",
+      mig.intake_tab_requests({"tab": "Organizers", "guard": None, "cell_rows": [],
+                               "gid": 1, "cf_gid": 1, "dv_runs": [], "cf_plans": [],
+                               "cf_refusals": [], "dv_refusals": [], "rule": None,
+                               "new_list": None}), [])
 
 # showCustomUi: the fixture above already carries it, so asserting on that run
 # proves nothing. Sheets OMITS the key when the chip is off — pin what the
@@ -759,6 +769,17 @@ check("inside a repo but NOT ignored aborts",
       True)
 check("an ignored-but-TRACKED path aborts (.gitignore does not un-track)",
       "TRACKED" in (_git_safe_with([(0, "/repo", ""), (0,), (0,)]) or ""), True)
+
+# --- before/ lives under <repo>/backups (gitignored), the workdir never survives --
+_root = mig.backup_root()
+try:
+    check("backup_root lands under <repo>/backups/ with the status-migration prefix",
+          (os.path.dirname(_root),
+           os.path.basename(_root).startswith("crm-status-before-")),
+          (os.path.join(mig.REPO, "backups"), True))
+    check("backup_root is private to the operator", os.stat(_root).st_mode & 0o777, 0o700)
+finally:
+    os.rmdir(_root)
 
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")

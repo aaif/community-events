@@ -11,6 +11,10 @@ flag in the calling script.
 
 The payload builders (`event_times`, `event_payload`, `diff_payload`,
 `slug_of_url`) are pure and unit-tested without network.
+
+Transport never follows a redirect (the key would be re-sent to the new host),
+and a LumaError carries the status plus the API's own `message` — never the
+raw response body.
 """
 import datetime as dt
 import json
@@ -35,6 +39,39 @@ _IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 
 class LumaError(RuntimeError):
     status = None   # HTTP status when the API answered; None for network failures
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so a 3xx surfaces as an HTTPError instead of the
+    x-luma-api-key header being re-sent to whatever host `Location` names."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect())
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+
+
+def _urlopen(req, timeout):
+    """The one authenticated transport call; tests replace it."""
+    return _OPENER.open(req, timeout=timeout)
+
+
+def _api_message(body):
+    """The API's own `message`/`error` field out of an error body, or "".
+
+    Never the raw body: Luma's error pages have been seen to echo request
+    headers back, and the body of a proxy's interstitial is not ours to log.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    msg = parsed.get("message") or parsed.get("error") or ""
+    return str(msg)[:300] if isinstance(msg, (str, int, float)) else ""
 
 
 class NotAnEventUrl(LumaError):
@@ -66,7 +103,9 @@ def api_key():
     raise LumaError(
         "No Luma API key found. Create one in the calendar's settings (Luma Plus, "
         "keys are per-calendar), then either export LUMA_API_KEY or store it with:\n"
-        "  security add-generic-password -s %s -a aaif -w THE_KEY%s"
+        "  security add-generic-password -s %s -a aaif -w\n"
+        "(a bare -w prompts for the key; never paste it into the command, where "
+        "shell history and process listings keep it)%s"
         % (KEYCHAIN_SERVICE, hint))
 
 
@@ -98,7 +137,7 @@ def call(method, path, params=None, body=None, retries=4):
     for i in range(retries):
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with _urlopen(req, timeout=30) as r:
                 text = r.read().decode("utf-8") or "{}"
             try:
                 return json.loads(text)
@@ -107,9 +146,16 @@ def call(method, path, params=None, body=None, retries=4):
                 # JSONDecodeError mid-run names neither the request nor the fact
                 # that the body was the problem.
                 raise LumaError("%s %s answered 200 but the body was not JSON "
-                                "(starts %r)" % (method, path, text[:120]))
+                                "(Content-Type: %s)"
+                                % (method, path, r.headers.get("content-type") or "unset"))
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")[:300]
+            if e.code in _REDIRECT_CODES:
+                err = LumaError("%s %s -> HTTP %d: redirect refused — the API key "
+                                "is never re-sent to another host"
+                                % (method, path, e.code))
+                err.status = e.code
+                raise err
+            detail = _api_message(e.read().decode("utf-8", errors="replace"))
             retryable = e.code == 429 or (method == "GET" and e.code in _TRANSIENT_HTTP)
             if retryable and i < retries - 1:
                 print("luma: HTTP %d on %s %s — retry %d/%d in %ds"
@@ -117,8 +163,8 @@ def call(method, path, params=None, body=None, retries=4):
                       file=sys.stderr)
                 time.sleep(2 * (i + 1))
                 continue
-            err = LumaError("%s %s -> HTTP %d: %s%s"
-                            % (method, path, e.code, detail,
+            err = LumaError("%s %s -> HTTP %d%s%s"
+                            % (method, path, e.code, ": " + detail if detail else "",
                                write_hint if e.code in _TRANSIENT_HTTP and e.code != 429
                                else ""))
             err.status = e.code
@@ -264,11 +310,13 @@ def _capacity_of(text):
 
 
 def event_payload(view, tz_name, duration_hours=3.0, description_md=None,
-                  cover_url=None, slug=None):
+                  cover_url=None, slug=None, visibility="private"):
     """Build the events/create payload from a tracker event view (read_event/
     view_event dict). In-person trackers map VENUE + LOCATION / CITY to a manual
     address; series trackers map STREAM / JOIN LINK to meeting_url. Placeholder
     text flows through as-is — the proposal is reviewed by a human before create.
+    Events default to ``visibility="private"`` so a page is reviewed on Luma
+    before it is flipped public; pass "public" to publish on create.
 
     Consumes only view["details"], reading these labels: EVENT TITLE,
     DATE & TIME, VENUE, LOCATION / CITY, STREAM / JOIN LINK, CAPACITY / RSVPS.
@@ -279,7 +327,7 @@ def event_payload(view, tz_name, duration_hours=3.0, description_md=None,
         raise ValueError("tracker event has no EVENT TITLE")
     start, end = event_times(det.get("DATE & TIME", ""), tz_name, duration_hours)
     payload = {"name": name, "start_at": iso_utc(start), "end_at": iso_utc(end),
-               "timezone": tz_name, "visibility": "public"}
+               "timezone": tz_name, "visibility": visibility}
     venue = (det.get("VENUE") or "").strip()
     city = (det.get("LOCATION / CITY") or "").strip()
     if venue or city:

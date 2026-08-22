@@ -21,23 +21,24 @@ The TemplateSeries master is already series-shaped (no "Chapter" wording; the
 identity blurb is a [bracketed] placeholder for the organizer to fill).
 
 Usage:
-  # Dry run - show what would happen, create nothing:
-  python create_series.py --series "Reading Group" --dry-run
-
-  # Create the series in Drive:
+  # Plan (default) - show what would happen, create nothing:
   python create_series.py --series "Reading Group"
 
+  # Create the series in Drive:
+  python create_series.py --series "Reading Group" --write
+
   # Override the Luma slug:
-  python create_series.py --series "Reading Group" --slug readinggroup
+  python create_series.py --series "Reading Group" --slug readinggroup --write
 
   # Test the text engine on a local folder of .pptx/.docx/.xlsx (no Drive):
   python create_series.py --series "Reading Group" --rebrand-local ./somedir
 """
-import argparse, html, json, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.request, zipfile
+import argparse, fnmatch, html, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata, urllib.error, urllib.request, zipfile
 
 ONLINE_PARENT   = "1g2vHrqDHfh9wBkDJryJIl8wqXA4J-d4i"   # the top-level "Online" Drive folder
 TEMPLATE_FOLDER = "1M15wzKvQqd_jQz5cG16NO_YcbWU3EH1j"   # the "TemplateSeries" folder
 SOURCE_NAME, SOURCE_UPPER = "San Francisco", "SAN FRANCISCO"
+SLUG_RE = re.compile(r"^[a-z0-9-]+$")
 
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -276,6 +277,14 @@ def luma_status(slug):
     except Exception:
         return "unknown"
 
+# Files that hold member data once a chapter/series is live. A --resume never
+# rewrites these in place, even with --repair-existing: a rebrand pass over a CRM
+# or tracker that organizers have already filled could touch real attendee rows.
+MEMBER_DATA_GLOBS = ("*CRM.xlsx", "*Tracker.docx")
+
+def is_member_data(name):
+    return any(fnmatch.fnmatch(name, g) for g in MEMBER_DATA_GLOBS)
+
 # ----------------------------------------------------------------------------
 def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None):
     """Recursively copy `folder_id` into `parent` as `name`, rebranding files.
@@ -285,9 +294,10 @@ def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None)
     are skipped, and only missing items are cloned — so resuming into a
     fully-cloned folder is a no-op. Matching is by rebranded OR original template
     name (a survivor of the pre-rename engine is renamed in place, never
-    re-cloned as a duplicate), and every skipped Office file is residual-checked:
-    one that was copied but never rebranded — the likeliest crash state — is
-    repaired in place rather than trusted."""
+    re-cloned as a duplicate), and every skipped Office file is residual-checked.
+    A dirty one (copied but never rebranded — the likeliest crash state) is
+    REPORTED and skipped by default; it is repaired in place only when
+    ctx["repair_existing"] is set, and never when it matches MEMBER_DATA_GLOBS."""
     if existing_id:
         new_id = existing_id
         print("%s= %s/ (exists, resumed)" % (indent, name))
@@ -318,13 +328,23 @@ def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None)
             if ext in MIME_BY_EXT:
                 # Never trust a skip on faith: the likeliest partial-run state is
                 # copied-under-the-new-name but never rebranded (crash between
-                # copy_file and gws_upload). Residual-check the EXISTING file, and
-                # repair a dirty one in place (download -> rebrand -> upload).
+                # copy_file and gws_upload). Residual-check the EXISTING file; a
+                # dirty one is reported, or repaired in place (download ->
+                # rebrand -> upload) only under --repair-existing.
                 tmp = os.path.join(ctx["tmp"], "f" + hit["id"] + ext)
                 try:
                     gws_download(hit["id"], tmp)
                     left = residual_tokens(tmp)
-                    if left:
+                    if left and (is_member_data(new_cname) or not ctx.get("repair_existing")):
+                        # Never rewrite an existing file on faith: report it and
+                        # move on. The operator opts in with --repair-existing,
+                        # and member-data files are reported no matter what.
+                        ctx["residuals"].append((new_cname, left))
+                        why = ("holds member data; fix by hand" if is_member_data(new_cname)
+                               else "pass --repair-existing to rebrand it in place")
+                        print("%s  - %s (exists, not rebranded)  !! residual in existing "
+                              "file %s — %s: %s" % (indent, new_cname, new_cname, why, left))
+                    elif left:
                         n = rebrand_file(tmp, ctx["name"], ctx["upper"], ctx["slug"])
                         if n:
                             gws_upload(hit["id"], tmp, MIME_BY_EXT[ext])
@@ -371,18 +391,33 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True, help='Series display name, e.g. "Reading Group" or "Online Reading Group"')
     ap.add_argument("--slug", help="Luma slug override (default: series, lowercased, no spaces)")
-    ap.add_argument("--dry-run", action="store_true", help="Plan only; create nothing")
+    ap.add_argument("--write", action="store_true",
+                    help="LIVE WRITE: create in Drive. Without it the script only plans")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="(default behaviour; kept as a no-op alias for compatibility)")
     ap.add_argument("--resume", action="store_true",
                     help="Enter an existing target folder instead of aborting: skip "
                          "name-matching children and clone only what's missing "
-                         "(recovery for a failed/partial run)")
+                         "(recovery for a failed/partial run). Requires --write")
+    ap.add_argument("--repair-existing", action="store_true",
+                    help="Under --resume, rebrand in place an existing file that still "
+                         "carries source tokens (default: report and skip). Never "
+                         "touches *CRM.xlsx / *Tracker.docx")
     ap.add_argument("--rebrand-local", metavar="DIR",
                     help="Rebrand .pptx/.docx/.xlsx in a local dir (no Drive); for testing")
     a = ap.parse_args()
 
     name = a.series.strip()
     upper = name.upper()
-    slug = a.slug.strip().lower() if a.slug else slugify(name)
+    slug = a.slug.strip().lower() if a.slug is not None else slugify(name)
+    if not SLUG_RE.match(slug):
+        sys.exit("ABORT: invalid slug %r — must match %s (lowercase letters, digits, "
+                 "hyphens) before it is used in a luma.com URL." % (slug, SLUG_RE.pattern))
+    if a.resume and not a.write:
+        sys.exit("ABORT: --resume enters and modifies an existing Drive folder; it "
+                 "requires --write.")
+    if a.repair_existing and not a.resume:
+        sys.exit("ABORT: --repair-existing only applies together with --resume.")
     print("Series: %s" % name)
     print("Upper : %s" % upper)
     print("Slug  : aaif-%s  ->  https://luma.com/aaif-%s" % (slug, slug))
@@ -422,7 +457,7 @@ def main():
                      "To fill in missing items from a failed/partial run, re-run "
                      "with --resume." % (name, existing[0]["id"]))
 
-    if a.dry_run:
+    if not a.write:
         if resume_id:
             print("\n[dry-run] Would resume into the existing %r folder under Online "
                   "and clone only the missing items." % name)
@@ -432,14 +467,18 @@ def main():
             print("[dry-run] WARNING: Luma page aaif-%s is not live yet." % slug)
         elif status == "unknown":
             print("[dry-run] NOTE: could not verify the Luma page aaif-%s; check it manually." % slug)
+        print("[dry-run] Nothing created. Re-run with --write to create it.")
         return
 
     ctx = {"name": name, "upper": upper, "slug": slug, "residuals": [],
-           "tmp": os.path.join(os.environ.get("TMPDIR", "/tmp"), "aaif_series")}
-    os.makedirs(ctx["tmp"], exist_ok=True)
+           "repair_existing": a.repair_existing,
+           "tmp": tempfile.mkdtemp(prefix="aaif-series-")}
     print()
-    new_id = clone_and_rebrand(TEMPLATE_FOLDER, ONLINE_PARENT, name, ctx,
-                               existing_id=resume_id)
+    try:
+        new_id = clone_and_rebrand(TEMPLATE_FOLDER, ONLINE_PARENT, name, ctx,
+                                   existing_id=resume_id)
+    finally:
+        shutil.rmtree(ctx["tmp"], ignore_errors=True)
     print("\nDone. New series folder id: %s" % new_id)
     print("https://drive.google.com/drive/folders/%s" % new_id)
     print("REMINDER: fill the [bracketed] series blurb in Event Tracker.docx (the template ships a placeholder).")
@@ -448,7 +487,9 @@ def main():
     elif status == "unknown":
         print("REMINDER: could not verify the Luma page aaif-%s; check it manually at luma.com." % slug)
     if ctx["residuals"]:
-        print("\nWARNING: %d file(s) still contain source tokens after rebrand:" % len(ctx["residuals"]))
+        print("\nWARNING: %d file(s) still contain source tokens (existing files are "
+              "reported, not rewritten — see --repair-existing; *CRM.xlsx / "
+              "*Tracker.docx are never rewritten):" % len(ctx["residuals"]))
         for fn, toks in ctx["residuals"]:
             print("  - %s: %s" % (fn, toks))
         sys.exit("The new folder is NOT clean - fix the template or rebrand engine and re-run.")

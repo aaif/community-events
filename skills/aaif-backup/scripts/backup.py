@@ -46,7 +46,7 @@ def gws_json(args):
     """Run a gws command expecting JSON on stdout (skips the keyring banner line)."""
     out = subprocess.run(["gws"] + args, capture_output=True, text=True)
     if out.returncode != 0:
-        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()}")
+        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
     txt = out.stdout
     i = txt.find("{")
     if i < 0:
@@ -61,7 +61,7 @@ def gws_download(args, out_path):
     error, so verify the snapshot is non-empty before we ever report success."""
     out = subprocess.run(["gws"] + args, capture_output=True, text=True)
     if out.returncode != 0:
-        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()}")
+        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
     if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
         sys.exit(f"ABORT: backup wrote no data to {out_path} — the source may exceed "
                  f"the export limit or the transfer failed. Snapshot NOT trustworthy.")
@@ -131,18 +131,42 @@ def assert_dest_git_safe(dest_root):
                              capture_output=True).returncode == 0
     # .gitignore has no effect on already-tracked files, so a snapshot committed
     # before the rules landed would still ride along on `git add -A` while
-    # check-ignore reports the folder as ignored.
-    tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch",
-                              dest_root], capture_output=True).returncode == 0
-    if tracked:
+    # check-ignore reports the folder as ignored. The one tracked file that is
+    # fine is the dest's own README.md (the repo ships backups/README.md to
+    # explain the folder); anything else under the dest is a leaked snapshot.
+    ls = subprocess.run(["git", "-C", root, "ls-files", "-z", "--", dest_root],
+                        capture_output=True, text=True)
+    tracked = [f for f in ls.stdout.split("\0") if f]
+    # realpath on both sides: git reports a resolved toplevel, and on macOS
+    # /var and /tmp are symlinks, so abspath alone would never match.
+    rel_dest = os.path.relpath(os.path.realpath(dest_root), os.path.realpath(root))
+    allowed = os.path.normpath(os.path.join(rel_dest, "README.md"))
+    offenders = [f for f in tracked if os.path.normpath(f) != allowed]
+    if offenders:
         sys.exit(f"REFUSING TO RUN: {dest_root} already holds files TRACKED by "
-                 f"the repo at {root} — git rm --cached them first. Snapshots "
-                 "hold every applicant's name and email.")
+                 f"the repo at {root} ({offenders[0]}) — git rm --cached them "
+                 "first. Snapshots hold every applicant's name and email.")
     if not ignored:
         sys.exit(f"REFUSING TO RUN: {dest_root} is committable — not ignored in "
                  f"{root}. Snapshots hold every applicant's name and email. Add "
                  "the path to .gitignore, or pass --dest to a location outside "
                  "any git repository.")
+
+
+def assert_snapshot_git_ignored(path):
+    """Second gate on the *final* snapshot path, right before bytes land.
+
+    The dest-level probe above can pass while a nested rule (`!backups/foo/*`)
+    or a slug-specific pattern re-includes the real file, so the exact path is
+    checked too. Outside any repo there is nothing to leak into."""
+    root = _repo_root(os.path.dirname(path))
+    if root is None:
+        return
+    ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", path],
+                             capture_output=True).returncode == 0
+    if not ignored:
+        sys.exit(f"REFUSING TO WRITE: {path} is committable — not ignored in "
+                 f"{root}. Snapshots hold every applicant's name and email.")
 
 
 def slugify(name):
@@ -166,6 +190,7 @@ def snapshot_path(dest_root, slug, ext):
     while os.path.exists(p):
         p = os.path.join(d, f"{stamp}-{n}.{ext}")
         n += 1
+    assert_snapshot_git_ignored(p)
     return p
 
 

@@ -73,3 +73,13 @@ repos:
         language: python
         pass_filenames: false
         files: 'SKILL\.md$'
+
+  # --- Secrets never travel on argv (env vars only; see AGENTS.md) ----------
+  - repo: local
+    hooks:
+      - id: check-no-secret-args
+        name: no token/key/secret accepted as a CLI flag
+        entry: python3 scripts/check_no_secret_args.py
+        language: python
+        pass_filenames: false
+        files: '\.py$'

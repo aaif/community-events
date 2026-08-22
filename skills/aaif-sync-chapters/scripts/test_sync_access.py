@@ -314,6 +314,52 @@ check("--phase pin with --pins is refused too — one spelling per consent",
 check("--pins without --write is refused, not silently inert",
       _main_with(["--pins"]), True)
 
+# --notify / --mail-if-required make Drive email real people: the same
+# --i-have-approval consent the Slack write steps require, refused at parse
+# time so plan() never runs without it.
+check("--notify without --i-have-approval is refused",
+      _main_with(["--write", "--notify"]), True)
+check("--mail-if-required without --i-have-approval is refused",
+      _main_with(["--write", "--mail-if-required"]), True)
+check("--notify in report mode is refused too (the flag records consent, "
+      "and a report never needs it)", _main_with(["--notify"]), True)
+
+
+def _main_reaches_plan(argv):
+    """True when parse succeeded and plan() was reached (the mock raises)."""
+    with mock.patch.object(sync_access, "plan",
+                           side_effect=RuntimeError("reached plan")), \
+         mock.patch.object(sys, "argv", ["sync_access.py"] + argv):
+        try:
+            sync_access.main()
+        except RuntimeError as e:
+            return "reached plan" in str(e)
+        except SystemExit:
+            return False
+    return False
+
+
+check("--notify with --i-have-approval parses and proceeds",
+      _main_reaches_plan(["--write", "--notify", "--i-have-approval"]), True)
+check("--mail-if-required with --i-have-approval parses and proceeds",
+      _main_reaches_plan(["--write", "--mail-if-required", "--i-have-approval"]), True)
+
+
+# ---------------------------------------------------------------------------
+# --redact: stdout masking (default on under CI)
+# ---------------------------------------------------------------------------
+sync_access.REDACT = False
+check("redaction off: email passes through", sync_access.redact_email("ada@x.com"), "ada@x.com")
+check("redaction off: name passes through", sync_access.redact_name("Ada Lovelace"), "Ada Lovelace")
+sync_access.REDACT = True
+try:
+    check("redacted email keeps one char + domain", sync_access.redact_email("ada@x.com"), "a***@x.com")
+    check("redacted name is initials", sync_access.redact_name("ada lovelace"), "A. L.")
+    check("a non-email is left alone", sync_access.redact_email("Boston"), "Boston")
+    check("empty values survive", (sync_access.redact_email(""), sync_access.redact_name("")), ("", ""))
+finally:
+    sync_access.REDACT = False
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

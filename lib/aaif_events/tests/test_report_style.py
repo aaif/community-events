@@ -141,21 +141,74 @@ def test_repo_root_pins_git_to_the_c_locale(monkeypatch, tmp_path):
     assert seen["env"]["LANG"] == "C"
 
 
+def _chrome_target(cmd):
+    return next(a for a in cmd if a.startswith("--print-to-pdf=")).split("=", 1)[1]
+
+
 def test_to_pdf_makes_the_pdf_0600(monkeypatch, tmp_path):
-    """Chrome writes the PDF twin of the 0600 HTML with default (world-readable)
-    permissions; to_pdf must tighten it after a successful render."""
+    """Chrome writes its PDF with default (world-readable) permissions; to_pdf
+    must render into a private scratch directory, tighten, then move into
+    place — the final path is never readable by others, even briefly."""
     html = tmp_path / "r.html"
     html.write_text("<p>x</p>", encoding="utf-8")
     pdf = tmp_path / "r.pdf"
+    seen = {}
 
     def fake_run(cmd, **kw):
-        pdf.write_bytes(b"%PDF-" + b"x" * 2000)   # written 0644-ish by umask
+        target = _chrome_target(cmd)
+        seen["dir_mode"] = os.stat(os.path.dirname(target)).st_mode & 0o777
+        seen["target"] = target
+        seen["env"] = kw.get("env")
+        with open(target, "wb") as fh:        # written 0644-ish by umask
+            fh.write(b"%PDF-" + b"x" * 2000)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
+    monkeypatch.setenv("AAIF_SLACK_WRITE_TOKEN", "xoxb-w")
     monkeypatch.setattr(rs, "find_chrome", lambda: "/fake/chrome")
     monkeypatch.setattr(rs.subprocess, "run", fake_run)
     assert rs.to_pdf(str(html), str(pdf)) == str(pdf)
     assert oct(os.stat(pdf).st_mode & 0o777) == "0o600"
+    assert seen["target"] != str(pdf)
+    assert oct(seen["dir_mode"]) == "0o700"
+    assert not os.path.exists(os.path.dirname(seen["target"]))   # scratch cleaned up
+    assert "AAIF_SLACK_WRITE_TOKEN" not in seen["env"]
+
+
+def test_to_pdf_redacts_chrome_stderr(monkeypatch, tmp_path):
+    html = tmp_path / "r.html"
+    html.write_text("<p>x</p>", encoding="utf-8")
+    monkeypatch.setattr(rs, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(rs.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, stdout="", stderr="boom access_token=ya29.abc-def end"))
+    with pytest.raises(SystemExit) as exc:
+        rs.to_pdf(str(html), str(tmp_path / "r.pdf"))
+    assert "ya29.abc-def" not in str(exc.value)
+    assert "<redacted>" in str(exc.value)
+
+
+@pytest.mark.parametrize("secret", [
+    "ya29.a0AfH6SMB-xyz_123",
+    "xoxb-123-abc",
+    "xoxp-1-2-3",
+    "xoxa-9",
+    '"access_token": "abc123"',
+    "refresh_token=1//0g-abc",
+    'access_token: "tok"',
+])
+def test_redact_covers_each_credential_shape(secret):
+    out = rs.redact("before " + secret + " after")
+    assert "<redacted>" in out
+    for piece in ("abc123", "ya29.a0", "xox", "1//0g", '"tok"'):
+        assert piece not in out or piece not in secret
+    assert out.startswith("before ")
+
+
+def test_redact_redacts_before_it_truncates():
+    """A token straddling the cut must not survive as a prefix."""
+    out = rs.redact("x" * 395 + " ya29.SECRETSECRET", limit=400)
+    assert len(out) <= 400
+    assert "ya29.S" not in out
+    assert rs.redact(None) == ""
 
 
 def test_not_a_git_repository_still_means_outside_a_repo(monkeypatch, tmp_path):
@@ -202,3 +255,37 @@ def test_write_private_is_0600_and_tightens_existing(tmp_path):
     rs.write_private(str(p), "second")
     assert oct(os.stat(p).st_mode & 0o777) == "0o600"
     assert p.read_text(encoding="utf-8") == "second"
+
+
+def test_write_private_refuses_a_symlink_and_keeps_the_target(tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("keep", encoding="utf-8")
+    link = tmp_path / "report.html"
+    os.symlink(victim, link)
+    with pytest.raises(SystemExit, match="symlink"):
+        rs.write_private(str(link), "payload")
+    assert victim.read_text(encoding="utf-8") == "keep"
+    assert os.path.islink(link)
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".partial")] == []
+
+
+def test_write_private_replaces_atomically_and_leaves_no_partial(tmp_path):
+    p = tmp_path / "report.html"
+    rs.write_private(str(p), "one")
+    rs.write_private(str(p), "two")
+    assert p.read_text(encoding="utf-8") == "two"
+    assert sorted(q.name for q in tmp_path.iterdir()) == ["report.html"]
+
+
+def test_repo_root_and_ignore_probes_scrub_secrets_from_git(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMA_API_KEY", "k")
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(kw.get("env"))
+        rc = 1 if "ls-files" in cmd else 0          # ignored, not tracked
+        return subprocess.CompletedProcess(cmd, rc, stdout=str(tmp_path), stderr="")
+
+    monkeypatch.setattr(rs.subprocess, "run", fake_run)
+    rs.assert_git_ignored(str(tmp_path / "r.html"))
+    assert len(seen) == 3 and all("LUMA_API_KEY" not in env for env in seen)

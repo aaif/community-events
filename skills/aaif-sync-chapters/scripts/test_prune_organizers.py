@@ -115,6 +115,20 @@ check("a named channel Slack doesn't show lands in skipped",
 check("blank and 'none' cells are not skips — nothing was recorded",
       [r["city"] for r in rows], ["Boston"])
 
+
+# --- --redact: stdout masking (default on under CI) ----------------------------
+pr.REDACT = False
+check("redaction off: email passes through", pr.redact_email("ada@x.com"), "ada@x.com")
+check("redaction off: name passes through", pr.redact_name("Ada Lovelace"), "Ada Lovelace")
+pr.REDACT = True
+try:
+    check("redacted email keeps one char + domain", pr.redact_email("ada@x.com"), "a***@x.com")
+    check("redacted name is initials", pr.redact_name("ada lovelace"), "A. L.")
+    check("a non-email is left alone", pr.redact_email("Boston"), "Boston")
+    check("empty values survive", (pr.redact_email(""), pr.redact_name("")), ("", ""))
+finally:
+    pr.REDACT = False
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

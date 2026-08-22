@@ -116,6 +116,51 @@ class TestAssertDestGitSafe(unittest.TestCase):
                 backup.assert_dest_git_safe(bk)
             self.assertIn("TRACKED", str(e.exception))
 
+    def test_default_dest_with_only_readme_tracked_is_allowed(self):
+        """Regression: the repo ships backups/README.md (tracked, re-included)
+        while `backups/*` is ignored. `ls-files --error-unmatch backups` matched
+        that README and refused the default dest on every run."""
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            bk = os.path.join(d, "backups")
+            os.makedirs(bk)
+            with open(os.path.join(bk, "README.md"), "w") as f:
+                f.write("why this folder exists\n")
+            with open(os.path.join(d, ".gitignore"), "w") as f:
+                f.write("backups/*\n!backups/README.md\n")
+            subprocess.run(["git", "-C", d, "add", "backups/README.md"],
+                           check=True, capture_output=True)
+            backup.assert_dest_git_safe(bk)  # must not raise
+            # and the final snapshot path is ignored too
+            p = backup.snapshot_path(bk, "intake", "xlsx")
+            self.assertTrue(p.startswith(bk))
+
+    def test_tracked_readme_in_a_subfolder_still_refuses(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            sub = os.path.join(d, "backups", "intake")
+            os.makedirs(sub)
+            with open(os.path.join(sub, "README.md"), "w") as f:
+                f.write("x")
+            subprocess.run(["git", "-C", d, "add", "backups/intake/README.md"],
+                           check=True, capture_output=True)
+            with open(os.path.join(d, ".gitignore"), "w") as f:
+                f.write("backups/*\n")
+            with self.assertRaises(SystemExit) as e:
+                backup.assert_dest_git_safe(os.path.join(d, "backups"))
+            self.assertIn("TRACKED", str(e.exception))
+
+    def test_snapshot_path_refuses_a_reincluded_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            bk = os.path.join(d, "backups")
+            with open(os.path.join(d, ".gitignore"), "w") as f:
+                f.write("backups/*\n!backups/intake/\n")
+            backup.assert_dest_git_safe(bk)  # folder-level probe passes
+            with self.assertRaises(SystemExit) as e:
+                backup.snapshot_path(bk, "intake", "xlsx")
+            self.assertIn("REFUSING TO WRITE", str(e.exception))
+
 
 class TestDriveIdDispatch(unittest.TestCase):
     def test_id_shape_matches_but_paths_do_not(self):

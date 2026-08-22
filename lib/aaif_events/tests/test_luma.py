@@ -1,7 +1,10 @@
 import datetime as dt
+import email.message
 import io
 import unittest
 import urllib.error
+import urllib.request
+import urllib.response
 from unittest import mock
 
 from aaif_events import luma
@@ -42,6 +45,16 @@ class TestAvailable(unittest.TestCase):
             self.assertIn("Keychain lookup failed", str(cm.exception))
             self.assertFalse(luma.available())   # still degrades, never raises
 
+    def test_the_keychain_hint_prompts_instead_of_taking_the_key_inline(self):
+        with mock.patch.dict("os.environ", {"LUMA_API_KEY": ""}), \
+                mock.patch("subprocess.run", side_effect=OSError):
+            with self.assertRaises(luma.LumaError) as cm:
+                luma.api_key()
+        text = str(cm.exception)
+        self.assertIn("-a aaif -w\n", text)
+        self.assertNotIn("THE_KEY", text)
+        self.assertIn("never paste", text)
+
     def test_missing_security_binary_means_not_connected_not_raising(self):
         # non-macOS: the `security` CLI doesn't exist at all
         with mock.patch.dict("os.environ", {"LUMA_API_KEY": ""}), \
@@ -71,13 +84,13 @@ class TestCall(unittest.TestCase):
         return r
 
     def test_get_retries_transient_then_succeeds(self):
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("aaif_events.luma._urlopen",
                         side_effect=[self._http_error(503), self._ok()]) as uo:
             self.assertEqual(luma.call("GET", "/v1/x"), {"ok": True})
             self.assertEqual(uo.call_count, 2)
 
     def test_post_transient_error_is_not_retried(self):
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("aaif_events.luma._urlopen",
                         side_effect=self._http_error(503)) as uo:
             with self.assertRaises(luma.LumaError) as cm:
                 luma.call("POST", "/v1/events/create", body={})
@@ -86,13 +99,13 @@ class TestCall(unittest.TestCase):
             self.assertEqual(cm.exception.status, 503)
 
     def test_post_429_is_retried(self):
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("aaif_events.luma._urlopen",
                         side_effect=[self._http_error(429), self._ok()]) as uo:
             self.assertEqual(luma.call("POST", "/v1/events/create", body={}), {"ok": True})
             self.assertEqual(uo.call_count, 2)
 
     def test_get_4xx_fails_immediately_with_status(self):
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("aaif_events.luma._urlopen",
                         side_effect=self._http_error(404)) as uo:
             with self.assertRaises(luma.LumaError) as cm:
                 luma.call("GET", "/v1/x")
@@ -103,13 +116,53 @@ class TestCall(unittest.TestCase):
         r = mock.MagicMock()
         r.__enter__.return_value = r
         r.read.return_value = b"<html>maintenance</html>"
-        with mock.patch("urllib.request.urlopen", return_value=r):
+        with mock.patch("aaif_events.luma._urlopen", return_value=r):
             with self.assertRaises(luma.LumaError) as cm:
                 luma.call("GET", "/v1/x")
             self.assertIn("not JSON", str(cm.exception))
 
+    def test_an_error_body_is_not_embedded_only_its_message_field(self):
+        body = io.BytesIO(b'{"message": "calendar not found", "request_headers": {"x-luma-api-key": "k"}}')
+        err = urllib.error.HTTPError("https://x", 404, "err", None, body)
+        with mock.patch("aaif_events.luma._urlopen", side_effect=err):
+            with self.assertRaises(luma.LumaError) as cm:
+                luma.call("GET", "/v1/x")
+        text = str(cm.exception)
+        self.assertIn("HTTP 404: calendar not found", text)
+        self.assertNotIn("request_headers", text)
+        self.assertNotIn('"k"', text)
+
+    def test_a_non_json_error_body_contributes_nothing(self):
+        with mock.patch("aaif_events.luma._urlopen", side_effect=self._http_error(404)):
+            with self.assertRaises(luma.LumaError) as cm:
+                luma.call("GET", "/v1/x")
+        self.assertEqual(str(cm.exception), "GET /v1/x -> HTTP 404")
+
+    def test_a_redirect_is_refused_and_never_followed(self):
+        """A 302 raises through the real opener chain; the request that would
+        carry x-luma-api-key to the new host is never made."""
+        class Answer(urllib.request.BaseHandler):
+            handler_order = 100
+            urls = []
+
+            def https_open(self, req):
+                self.urls.append(req.full_url)
+                msg = email.message.Message()
+                msg["Location"] = "https://elsewhere.example/v1/x"
+                resp = urllib.response.addinfourl(io.BytesIO(b""), msg, req.full_url, 302)
+                resp.msg = "Found"
+                return resp
+
+        opener = urllib.request.build_opener(luma._NoRedirect(), Answer())
+        with mock.patch("aaif_events.luma._OPENER", opener):
+            with self.assertRaises(luma.LumaError) as cm:
+                luma.call("GET", "/v1/x")
+        self.assertEqual(cm.exception.status, 302)
+        self.assertIn("redirect refused", str(cm.exception))
+        self.assertEqual(Answer.urls, [luma.BASE + "/v1/x"])
+
     def test_get_network_error_retries_then_raises_without_status(self):
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("aaif_events.luma._urlopen",
                         side_effect=urllib.error.URLError("down")) as uo:
             with self.assertRaises(luma.LumaError) as cm:
                 luma.call("GET", "/v1/x", retries=2)
@@ -194,7 +247,7 @@ class TestEventPayload(unittest.TestCase):
         self.assertEqual(p["geo_address_json"],
                          {"type": "manual", "address": "Github HQ, San Francisco"})
         self.assertEqual(p["max_capacity"], 120)
-        self.assertEqual(p["visibility"], "public")
+        self.assertEqual(p["visibility"], "private")   # reviewed before going public
         self.assertEqual(p["description_md"], "# Agenda")
         self.assertEqual(p["slug"], "aaif-sf-evalnight")
         self.assertNotIn("meeting_url", p)
@@ -207,6 +260,11 @@ class TestEventPayload(unittest.TestCase):
         self.assertEqual(p["meeting_url"], "https://lu.ma/ia70fwmm")
         self.assertNotIn("geo_address_json", p)
         self.assertNotIn("max_capacity", p)
+
+    def test_visibility_defaults_private_and_is_overridable(self):
+        self.assertEqual(luma.event_payload(view(**IRL), "UTC")["visibility"], "private")
+        self.assertEqual(luma.event_payload(view(**IRL), "UTC", visibility="public")["visibility"],
+                         "public")
 
     def test_placeholder_capacity_and_no_title(self):
         self.assertIsNone(luma._capacity_of("TBD"))

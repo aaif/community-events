@@ -42,16 +42,19 @@ deterministic parsing of a local file.** Prereq: `gws` installed and authenticat
    If not found under Chapters, try the Online parent. (Mode is implicit: whichever
    folder it lived in.)
 
-2. **Download it** to a temp path:
+2. **Download it** into a temp dir:
 
    ```
-   gws drive files get --params '{"fileId":"<DOC_ID>","alt":"media"}' --output tracker.docx
+   WORK=$(mktemp -d)
+   gws drive files get --params '{"fileId":"<DOC_ID>","alt":"media"}' --output $WORK/tracker.docx
    ```
+   The tracker holds organizer, speaker, and venue details — keep it in the temp
+   dir and **never commit it** to the repo.
 
 3. **Run the digest** (read-only, local):
 
    ```
-   python3 ${CLAUDE_SKILL_DIR}/scripts/event_status.py tracker.docx ["event"]
+   python3 ${CLAUDE_SKILL_DIR}/scripts/event_status.py $WORK/tracker.docx ["event"]
    ```
 
 Status is computed against today from each task's DUE cell; clock-time day-of tasks and
@@ -64,7 +67,7 @@ For events whose tracker LUMA URL holds their event page (written by
 waitlist, invited, declined, checked-in — plus registration state:
 
 ```
-python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py tracker.docx ["event"]
+python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py $WORK/tracker.docx ["event"]
 python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py --url https://luma.com/EVENT_SLUG
 ```
 

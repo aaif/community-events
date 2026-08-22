@@ -381,6 +381,20 @@ finally:
     prov.urllib.request.urlopen = _saved_urlopen
     prov.time.sleep = _saved_sleep
 
+
+# --- --redact: stdout masking (default on under CI) ----------------------------
+inv.REDACT = False
+check("redaction off: email passes through", inv.redact_email("ada@x.com"), "ada@x.com")
+check("redaction off: name passes through", inv.redact_name("Ada Lovelace"), "Ada Lovelace")
+inv.REDACT = True
+try:
+    check("redacted email keeps one char + domain", inv.redact_email("ada@x.com"), "a***@x.com")
+    check("redacted name is initials", inv.redact_name("ada lovelace"), "A. L.")
+    check("a non-email is left alone", inv.redact_email("Boston"), "Boston")
+    check("empty values survive", (inv.redact_email(""), inv.redact_name("")), ("", ""))
+finally:
+    inv.REDACT = False
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

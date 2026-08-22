@@ -412,7 +412,7 @@ check("blank cells are still filled", ops3[0]["sets"]["What brings you here?"],
 check("is_dummy catches the shipped sample", sync_crm.is_dummy("sam@example.com"), True)
 check("is_dummy is case-insensitive", sync_crm.is_dummy("Sam@Example.COM"), True)
 # The suffix match is anchored on "@" so look-alike domains are never caught.
-for real in ("ravi@vendor.co", "rahul@aihero.studio", "a@examples.com",
+for real in ("ravi@vendor.co", "a@vendor.studio", "a@examples.com",
              "a@notexample.com", "x@example.company", ""):
     check("is_dummy leaves %r alone" % real, sync_crm.is_dummy(real), False)
 
@@ -788,6 +788,66 @@ _, _, atta = book(sample_row=SAMPLE)
 atta.serialize()
 check("an aliased spreadsheetml prefix does not break serialization",
       atta.parts[atta.part_name].count(b"<worksheet"), 1)
+
+# ---------------------------------------------------------------------------
+# --redact: stdout masking (default on under CI)
+# ---------------------------------------------------------------------------
+sync_crm.REDACT = False
+check("redaction off: email passes through", sync_crm.redact_email("ada@x.com"), "ada@x.com")
+check("redaction off: name passes through", sync_crm.redact_name("Ada Lovelace"), "Ada Lovelace")
+sync_crm.REDACT = True
+try:
+    check("redacted email keeps one char + domain", sync_crm.redact_email("ada@x.com"), "a***@x.com")
+    check("redacted name is initials", sync_crm.redact_name("ada lovelace"), "A. L.")
+    check("a non-email is left alone", sync_crm.redact_email("Boston"), "Boston")
+    check("empty values survive", (sync_crm.redact_email(""), sync_crm.redact_name("")), ("", ""))
+finally:
+    sync_crm.REDACT = False
+
+sync_crm.REDACT = True
+try:
+    check("redact_sets masks only the identifying columns",
+          sync_crm.redact_sets({"Email": "ada@x.com", "Full name": "Ada Lovelace",
+                                "Company": "Acme"}),
+          {"Email": "a***@x.com", "Full name": "A. L.", "Company": "Acme"})
+finally:
+    sync_crm.REDACT = False
+
+# ---------------------------------------------------------------------------
+# --write leaves nothing behind but before/, and before/ is gitignored
+# ---------------------------------------------------------------------------
+# The workdir holds a downloaded copy of every CRM; after the write only the
+# pre-edit copies have any value and they live under <repo>/backups/.
+_wd = tempfile.mkdtemp(prefix="aaif-crm-test-")
+os.makedirs(os.path.join(_wd, "verify"))
+os.makedirs(os.path.join(_wd, "before"))
+for name in ("Boston.xlsx", "reread.xlsx", "verify/Boston.xlsx", "before/Boston.xlsx"):
+    open(os.path.join(_wd, name), "wb").write(b"x")
+sync_crm.cleanup_workdir(_wd, keep_backups=True)
+check("cleanup with keep_backups leaves exactly before/",
+      sorted(os.listdir(_wd)), ["before"])
+sync_crm.cleanup_workdir(_wd, keep_backups=False)
+check("cleanup without keep_backups removes the workdir itself",
+      os.path.exists(_wd), False)
+
+import subprocess  # noqa: E402
+_root = sync_crm.backup_root("crm-before-selftest")
+try:
+    check("backup_root lands under <repo>/backups/",
+          os.path.dirname(_root), os.path.join(sync_crm.REPO, "backups"))
+    check("backup_root is gitignored (check-ignore on a child path)",
+          subprocess.run(["git", "-C", sync_crm.REPO, "check-ignore", "-q",
+                          os.path.join(_root, "before", "x.xlsx")]).returncode, 0)
+    check("backup_root is private to the operator", os.stat(_root).st_mode & 0o777, 0o700)
+finally:
+    os.rmdir(_root)
+with mock.patch.object(sync_crm.subprocess, "run", return_value=mock.Mock(returncode=1)):
+    try:
+        sync_crm.backup_root("crm-before-selftest")
+        _aborted = False
+    except SystemExit:
+        _aborted = True
+check("a backup root git would pick up ABORTS", _aborted, True)
 
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")

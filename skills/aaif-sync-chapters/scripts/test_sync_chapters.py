@@ -361,5 +361,26 @@ check("--allow-missing-luma writes everything",
 check("--allow-missing-luma still renumbers from last_row",
       [n["row"] for n in _write], [82, 83, 84, 85])
 
+
+# --- --redact: stdout masking (default on under CI) ----------------------------
+sync_chapters.REDACT = False
+check("redaction off: email passes through", sync_chapters.redact_email("ada@x.com"), "ada@x.com")
+check("redaction off: name passes through", sync_chapters.redact_name("Ada Lovelace"), "Ada Lovelace")
+sync_chapters.REDACT = True
+try:
+    check("redacted email keeps one char + domain", sync_chapters.redact_email("ada@x.com"), "a***@x.com")
+    check("redacted name is initials", sync_chapters.redact_name("ada lovelace"), "A. L.")
+    check("a non-email is left alone", sync_chapters.redact_email("Boston"), "Boston")
+    check("empty values survive", (sync_chapters.redact_email(""), sync_chapters.redact_name("")), ("", ""))
+finally:
+    sync_chapters.REDACT = False
+
+sync_chapters.REDACT = True
+try:
+    check("the Organizers cell is masked name by name",
+          sync_chapters.redact_names_cell("Ada Lovelace; Grace Hopper"), "A. L.; G. H.")
+finally:
+    sync_chapters.REDACT = False
+
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)

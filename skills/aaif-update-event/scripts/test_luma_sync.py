@@ -40,5 +40,15 @@ class TestFindEventId(unittest.TestCase):
                 luma_sync.find_event_id(view("https://luma.com/gone"), None)
 
 
+class TestUpdateBody(unittest.TestCase):
+    def test_notifications_suppressed_by_default(self):
+        self.assertEqual(luma_sync.update_body("evt-1"),
+                         {"event_id": "evt-1", "suppress_notifications": True})
+
+    def test_notify_guests_is_opt_in(self):
+        self.assertEqual(luma_sync.update_body("evt-1", notify_guests=True),
+                         {"event_id": "evt-1"})
+
+
 if __name__ == "__main__":
     unittest.main()

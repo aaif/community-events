@@ -12,6 +12,7 @@ and an offer to flex on timing. **Builder-to-builder, no corporate tone.**
 
 **House voice:** share the practice, never sell the product. Specific over grand.
 Signal, not numbers.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 ## Input (from the event tracker)
 - Speaker : `[SPEAKER NAME]`   Chapter: `[CHAPTER]`

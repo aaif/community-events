@@ -1,7 +1,7 @@
 ---
 name: aaif-create-chapter
 description: Create a new AAIF city chapter in the "Chapters" Google Drive by cloning TemplateCity and rebranding all assets. Use when asked to add/launch/set up a new AAIF city, chapter, or location.
-argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>] [--resume]'
+argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>] [--write] [--resume] [--repair-existing]'
 ---
 
 # Create AAIF Chapter
@@ -103,19 +103,22 @@ Two consequences of dropping the override table:
    its slug is. If they don't know, the default slug is fine — the script will
    tell you if it's not live.
 
-2. **Dry run first** to surface the slug, Luma status, and any name collision:
+2. **Plan first** (the default — nothing is created without `--write`) to surface
+   the slug, Luma status, and any name collision:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
-       --city "New York" --dry-run
+       --city "New York"
    ```
+   (`--dry-run` is still accepted as a no-op alias.) The slug must match
+   `^[a-z0-9-]+$`; anything else aborts before the luma.com URL is built.
    - If it aborts with "already exists", stop — the chapter is already there.
    - If Luma shows NOT LIVE, tell the user the page needs creating at
      `luma.com/aaif-<slug>` (or that the slug differs — re-run with `--slug`).
 
-3. **Create the chapter:**
+3. **Create the chapter** — only after the user confirms the plan:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
-       --city "New York"            # add --slug <x> if overriding
+       --city "New York" --write    # add --slug <x> if overriding
    ```
    The script clones TemplateCity → a new `<City>` folder under Chapters, then
    downloads, rebrands, and re-uploads each `.pptx/.docx/.xlsx` in place. It
@@ -124,9 +127,10 @@ Two consequences of dropping the override table:
    **Recovering a failed or partial run — `--resume`.** If a run dies midway
    (a `gws` 403, template drift raising in the rebrand engine, network loss),
    the half-created chapter folder is already in Drive and a plain re-run aborts
-   on the name collision. Don't trash the folder — re-run with `--resume`:
+   on the name collision. Don't trash the folder — re-run with `--resume`
+   (which, like any mutation, requires `--write`):
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York" --resume
+   python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York" --write --resume
    ```
    It enters the existing folder and clones/rebrands only what's missing — so
    resuming a fully-cloned chapter is a no-op. The same flag is the backfill
@@ -139,13 +143,20 @@ Two consequences of dropping the override table:
      -> new`) and treated as present — never re-cloned as a duplicate.
    - Every skipped Office file is **residual-checked**, because the likeliest
      crash state is copied-but-never-rebranded. A clean file logs `exists,
-     skipped — residual-checked clean`; a dirty one is repaired in place
-     (downloaded, rebranded, re-uploaded, dot moved) and logged as repaired.
-     Only a residual that survives the repair is flagged `!! residual (skipped)`
-     and fails the run, same as on a fresh clone.
+     skipped — residual-checked clean`. A dirty one is **reported, not
+     rewritten**: it logs `!! residual in existing file <name>` and fails the
+     run. Files already in Drive are never modified on faith — to have the
+     script repair them in place (download, rebrand, re-upload, dot moved), add
+     the explicit `--repair-existing` flag. Even then, **`*CRM.xlsx` and
+     `*Tracker.docx` are never rewritten** — they hold member data once a
+     chapter is live — and are always reported for a hand fix.
 
    A present file whose *content* is corrupt but token-clean is still skipped,
-   not repaired.
+   not repaired. For a Luxembourg-style backfill (design assets missing, CRM and
+   tracker already in use), the sequence is: `--write --resume` to clone the
+   missing items; read the `!! residual in existing file` lines; re-run with
+   `--repair-existing` only if the flagged files are design assets; anything
+   flagged under `*CRM.xlsx` / `*Tracker.docx` is fixed by hand in Drive.
 
 4. **Verify.** Confirm the run printed no `!! residual` flags and report the new
    folder URL to the user. If the Luma page wasn't live, remind them to create it.

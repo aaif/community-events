@@ -58,6 +58,27 @@ from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa:
 import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@domain and
+# names as initials in every printed line. Each standalone script carries its
+# own copy of this flag and these two helpers.
+REDACT = False
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    return "%s***@%s" % (local[:1], domain)
+
+
+def redact_name(n):
+    if not REDACT or not n:
+        return n
+    return " ".join(w[0].upper() + "." for w in n.split() if w)
+
+
 #: Inviting to a PRIVATE channel needs the groups scope; the public one is here
 #: because a chapter may have put its organizer room in a public channel and the
 #: run should not half-fail on the first one it meets.
@@ -155,13 +176,13 @@ def report(rows, unresolved, no_channel):
         print("  %-18s #%-28s %d to add, %d already in"
               % (r["city"], r["channel"], len(r["missing"]), len(r["present"])))
         for name, uid in r["missing"]:
-            print("      + %s (%s)" % (name, uid))
+            print("      + %s (%s)" % (redact_name(name), uid))
 
     if unresolved:
         print("\nAccepted organizers with no Slack account (%d) — cannot be "
               "invited:" % len(unresolved))
         for city, name in unresolved:
-            print("  %-18s %s" % (city, name))
+            print("  %-18s %s" % (city, redact_name(name)))
 
     if no_channel:
         print("\nChapters skipped (%d):" % len(no_channel))
@@ -220,7 +241,13 @@ def main():
                     help="required alongside --write; an invitation is a "
                          "notification to a real person and cannot be unsent")
     ap.add_argument("--city", help="limit to one chapter")
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=bool(os.environ.get("CI")),
+                    help="mask emails (a***@domain) and names (initials) on "
+                         "stdout; default on when CI is set")
     a = ap.parse_args()
+    global REDACT
+    REDACT = a.redact
 
     rows, unresolved, no_channel = collect(a.city)
     total = report(rows, unresolved, no_channel)

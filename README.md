@@ -125,7 +125,10 @@ Install `gws` (a Google Workspace command‑line tool), then authenticate with o
 
 - **Interactive OAuth:** `gws auth login`
 - **Credentials file:** set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/path/to/oauth_credentials.json`
-- **Pre‑obtained token:** set `GOOGLE_WORKSPACE_CLI_TOKEN=<access_token>`
+- **Pre‑obtained token:** set `GOOGLE_WORKSPACE_CLI_TOKEN` — in `.env`
+  (gitignored) or via `read -s GOOGLE_WORKSPACE_CLI_TOKEN && export GOOGLE_WORKSPACE_CLI_TOKEN`,
+  never as an inline `export TOKEN=...` (shell history keeps it) and never as a
+  script argument (argv shows in `ps` and logs)
 - **Client app:** set `GOOGLE_WORKSPACE_CLI_CLIENT_ID` and `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET`, then `gws auth login`
 
 On your Google Cloud project, enable the **Sheets**, **Docs**, **Slides**,

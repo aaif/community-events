@@ -17,7 +17,7 @@ Subcommands:
 Nothing is written unless you run `apply`, `install-flags`, or `install-colors`.
 `scan` only reports.
 """
-import argparse, json, os, re, subprocess, sys, tempfile, unicodedata
+import argparse, json, os, re, subprocess, sys, unicodedata
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 SOURCE = "Form Responses"
@@ -59,7 +59,7 @@ DERIVED_COLUMNS = ("Resolved City",)
 def gws(args):
     out = subprocess.run(["gws"] + args, capture_output=True, text=True)
     if out.returncode != 0:
-        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()}")
+        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
     txt = out.stdout
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
     return json.loads(txt[i:]) if i >= 0 else {}
@@ -788,23 +788,23 @@ def cities(write=False):
                          "valueInputOption": "RAW"}),
              "--json", json.dumps({"values": [[H_EXTRACTED]]}), "--format", "json"])
         print("\nCreated the %r column at %s." % (H_EXTRACTED, col))
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-        json.dump(changes, fh)
-        path = fh.name
     # Reuse apply(): row bounds, RAW writes and the Autofixes provenance note are
-    # all already correct there, and a second implementation would drift.
-    # finally: apply() sys.exit()s on several guard paths, and this temp file
-    # holds names and cities — it must not outlive the run.
-    try:
-        apply(path)
-    finally:
-        os.unlink(path)
+    # all already correct there, and a second implementation would drift. The
+    # change list is handed over in memory — it holds names and cities, and a
+    # staging file in $TMPDIR would be a PII copy outside the repo's guards.
+    apply(changes)
 
 
 # ---------- apply ----------
-def apply(path):
-    with open(path) as fh:
-        wanted = json.load(fh)
+def apply(changes):
+    """Write a change list to the sheet. `changes` is either a path to a JSON
+    file (the `apply <file>` CLI) or the already-loaded list of
+    {row, header, value} dicts (`cities --write`)."""
+    if isinstance(changes, (str, os.PathLike)):
+        with open(changes) as fh:
+            wanted = json.load(fh)
+    else:
+        wanted = changes
     hdr, rows = read_tab(SOURCE)
     ai = idx(hdr, AUTOFIX_COL)
     if ai is None:  # create the Autofixes column at the end of the source headers

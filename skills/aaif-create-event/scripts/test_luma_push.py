@@ -69,5 +69,35 @@ class TestAlreadyPushed(unittest.TestCase):
                                          connected=True)
 
 
+class TestVisibility(unittest.TestCase):
+    """luma_push creates PRIVATE pages by default; the header says which."""
+
+    def _parse(self, argv):
+        # mirror main()'s parser without running it
+        import argparse
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--visibility", choices=("public", "private"), default="private")
+        return ap.parse_args(argv)
+
+    def test_default_private_and_choices(self):
+        self.assertEqual(self._parse([]).visibility, "private")
+        self.assertEqual(self._parse(["--visibility", "public"]).visibility, "public")
+
+    def test_payload_carries_visibility(self):
+        v = {"details": {"EVENT TITLE": "Eval Night", "DATE & TIME": "July 8, 2026 · 18:00"}}
+        self.assertEqual(luma_push.luma.event_payload(v, "UTC")["visibility"], "private")
+        self.assertEqual(luma_push.luma.event_payload(v, "UTC", visibility="public")["visibility"],
+                         "public")
+
+    def test_proposal_header_prints_visibility(self):
+        import io
+        from contextlib import redirect_stdout
+        for vis in ("private", "public"):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                luma_push.show_proposal({"name": "x", "visibility": vis}, [], None, False)
+            self.assertIn("visibility: %s" % vis, buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,13 @@ reason this runner passes ONLY --write and must never pass sync_access's
 the engine leaves it pending (and visible in its report) until someone runs
 `sync_access.py --write --pins` by hand.
 
+The `access` engine goes further: it NEVER receives --write from this runner,
+even under `nightly.py --write`. Its grants hand standing Drive access to
+addresses typed into a public form, and a notification email can go out as a
+side effect — that needs a human reading the report, so `access` runs in
+report mode every night and any pending grant makes the runner exit 2 with
+an explicit "needs a human" line.
+
 Usage:
     python3 nightly.py                 # report-only run of all five engines
     python3 nightly.py --write         # apply each engine's proposal unattended
@@ -61,6 +68,11 @@ ENGINES = (
 IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL = (
     "in sync", "DRIFT", "wrote+verified", "FAILED", "PARTIAL")
 
+#: Engines that stay in REPORT mode even under --write: their writes grant
+#: real people access on the strength of form-supplied addresses, which needs
+#: a human reading the report (see the module docstring).
+REPORT_ONLY = frozenset({"access"})
+
 
 def classify(code, wrote_marker, write_mode, partial_marker=False):
     """Map an engine's exit code (+ two log markers) onto one of five outcomes.
@@ -84,11 +96,22 @@ def classify(code, wrote_marker, write_mode, partial_marker=False):
     return DRIFT
 
 
-def run_engine(script, log_path, write_mode):
-    cmd = [sys.executable, os.path.join(HERE, script)] + (
-        ["--write"] if write_mode else [])
+def engine_cmd(name, script, write_mode):
+    """The argv for one engine. --write passes through EXCEPT to the engines
+    in REPORT_ONLY, which never get it no matter what the runner was told."""
+    if name in REPORT_ONLY:
+        write_mode = False
+    return ([sys.executable, os.path.join(HERE, script)]
+            + (["--write"] if write_mode else [])), write_mode
+
+
+def run_engine(name, script, log_path, write_mode):
+    cmd, write_mode = engine_cmd(name, script, write_mode)
     t0 = time.monotonic()
-    with open(log_path, "w") as log:
+    # 0o600: the log holds names and emails; no other local user gets to read
+    # it just because the CI checkout happens to be world-readable.
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as log:
         log.write("$ %s\n\n" % " ".join(cmd))
         log.flush()
         # stderr merges into the log too: the engines print progress and gws
@@ -140,43 +163,65 @@ def main():
                      "logs hold names and emails and this repo is public. Add "
                      "it to .gitignore (nightly-reports/ already is) or point "
                      "--report-dir elsewhere." % probe)
-    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(run_dir, mode=0o700, exist_ok=True)
+    os.chmod(run_dir, 0o700)   # makedirs' mode is umask-masked; be explicit
 
     print("aaif-sync-chapters nightly — %s mode — %d engine(s)"
           % ("write" if a.write else "report", len(picked)))
     print("full reports (contain names/emails — NOT for public logs): %s\n" % run_dir)
 
-    results = []
+    by_name = {}
     for name, script in picked:
         outcome, code, secs = run_engine(
-            script, os.path.join(run_dir, name + ".log"), a.write)
-        results.append(outcome)
-        print("  %-10s %-15s exit %d  %4.0fs  %s.log"
-              % (name, outcome, code, secs, name))
+            name, script, os.path.join(run_dir, name + ".log"), a.write)
+        by_name[name] = outcome
+        print("  %-10s %-15s exit %d  %4.0fs  %s.log%s"
+              % (name, outcome, code, secs, name,
+                 "  (report mode — never written unattended)"
+                 if a.write and name in REPORT_ONLY else ""))
 
     print()
+    for line in summary_notes(by_name, a.write):
+        print(line)
+    return exit_code(by_name)
+
+
+def summary_notes(by_name, write_mode):
+    """The PII-free RESULT lines for a run; pure so the test can pin them."""
+    results = list(by_name.values())
     if FAILED in results:
-        print("RESULT: failure — read the log(s) above. Later engines still ran; "
-              "the pipeline's report modes are read-only and independent.")
-        return 1
+        return ["RESULT: failure — read the log(s) above. Later engines still "
+                "ran; the pipeline's report modes are read-only and independent."]
     notes = []
     # WROTE and DRIFT are separate notes: a write run can exit 2 without having
     # written anything (every proposal held back), and "changes were applied"
     # for that night would mask a chapter stuck behind a missing Luma page.
     if WROTE in results:
         notes.append("changes were applied and verified")
-    if DRIFT in results:
+    pending_access = by_name.get("access") == DRIFT
+    other_drift = any(o == DRIFT for n, o in by_name.items() if n != "access")
+    if other_drift:
         notes.append("drift remains — an engine held back or re-proposed "
-                     "changes; read its log" if a.write
+                     "changes; read its log" if write_mode
                      else "drift — run the flagged engine(s) with --write after review")
+    if pending_access:
+        notes.append("access has pending Drive grants/lock — NEEDS A HUMAN: "
+                     "read access.log, then run sync_access.py --write by hand "
+                     "(the nightly never grants access unattended)")
     if PARTIAL in results:
         notes.append("PARTIAL coverage — Slack was unavailable, the channel "
                      "columns went unchecked; fix Slack auth")
     if notes:
-        print("RESULT: " + "; ".join(notes) + ".")
-        return 2
-    print("RESULT: everything in sync.")
-    return 0
+        return ["RESULT: " + "; ".join(notes) + "."]
+    return ["RESULT: everything in sync."]
+
+
+def exit_code(by_name):
+    """0 all in sync; 2 drift/writes/partial/pending access; 1 any failure."""
+    results = list(by_name.values())
+    if FAILED in results:
+        return 1
+    return 2 if any(o in (WROTE, DRIFT, PARTIAL) for o in results) else 0
 
 
 if __name__ == "__main__":

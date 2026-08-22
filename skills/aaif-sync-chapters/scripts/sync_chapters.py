@@ -19,6 +19,34 @@ applies it atomically, then re-reads and verifies the diff is empty.
 import argparse, json, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.request
 from collections import namedtuple
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@domain and
+# names as initials in every printed line. Each standalone script carries its
+# own copy of this flag and these two helpers.
+REDACT = False
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    return "%s***@%s" % (local[:1], domain)
+
+
+def redact_name(n):
+    if not REDACT or not n:
+        return n
+    return " ".join(w[0].upper() + "." for w in n.split() if w)
+
+
+def redact_names_cell(cell):
+    """The Organizers cell is a '; '-joined list of names; mask each."""
+    if not REDACT or not cell:
+        return cell
+    return "; ".join(redact_name(x.strip()) for x in cell.split(";"))
+
+
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 INTAKE_TAB = "Organizers"
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
@@ -472,8 +500,8 @@ def print_report(st):
     if adds:
         print("\nProposed adds to existing rows:")
         for a in adds:
-            print("  %s (row %d): + %s" % (a["city"], a["row"], "; ".join(a["names"])))
-            print("      %s%d -> %r" % (org_col, a["row"], a["new_value"]))
+            print("  %s (row %d): + %s" % (a["city"], a["row"], "; ".join(map(redact_name, a["names"]))))
+            print("      %s%d -> %r" % (org_col, a["row"], redact_names_cell(a["new_value"])))
     if new_rows:
         print("\nProposed NEW city rows (appended after row %d):" % last_row)
         # Derived from the header row, not from EDITORIAL_COLUMNS: a twelfth feed
@@ -497,17 +525,17 @@ def print_report(st):
                     "absent": "Luma page NOT LIVE yet — create it manually; run aaif-create-chapter for the assets",
                     "unknown": "could not verify the Luma page — check it manually"}[status]
             print("  row %d: %s — %s — https://luma.com/aaif-%s (%s)"
-                  % (n["row"], n["city"], "; ".join(n["names"]), n["slug"], note))
+                  % (n["row"], n["city"], "; ".join(map(redact_name, n["names"])), n["slug"], note))
     if near_misses:
         print("\nNear-miss cities (NOT written — confirm the right row, or fix the intake city):")
         for m in near_misses:
             cand = ", ".join("%r (row %d)" % c for c in m["candidates"])
-            print("  intake %r (%s) ~ chapter %s" % (m["city"], "; ".join(m["names"]), cand))
+            print("  intake %r (%s) ~ chapter %s" % (m["city"], "; ".join(map(redact_name, m["names"])), cand))
     if unresolved:
         print("\nUnresolved city — needs a human, never written:")
         for u in unresolved:
             print("  intake row %d: %s (%s) — City (Existing)=%r, City (New)=%r"
-                  % (u["row"], u["name"] or "(no name)", u["status"], u["g"], u["h"]))
+                  % (u["row"], redact_name(u["name"]) or "(no name)", u["status"], u["g"], u["h"]))
             print("      Run events before?: %r" % u["events"])
             print("      Why organize / ties: %r" % u["why"])
             if u["inferred"]:
@@ -519,7 +547,7 @@ def print_report(st):
     if dupes:
         print("\nDuplicate intake rows (deduped, first occurrence wins):")
         for d in dupes:
-            print("  intake row %d: %s / %s" % (d["row"], d["name"], d["city"]))
+            print("  intake row %d: %s / %s" % (d["row"], redact_name(d["name"]), d["city"]))
     if st.malformed:
         # Excluded, loudly: everything else still syncs, but a row listed here
         # reaches nothing until the intake text is fixed — the values are
@@ -656,7 +684,13 @@ def main():
     ap.add_argument("--allow-missing-luma", action="store_true",
                     help="write new rows even if their Luma page isn't live yet "
                          "(their CTA will point at a 404 until it is created)")
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=bool(os.environ.get("CI")),
+                    help="mask emails (a***@domain) and names (initials) on "
+                         "stdout; default on when CI is set")
     a = ap.parse_args()
+    global REDACT
+    REDACT = a.redact
 
     # --write recomputes from a fresh read here — a stale proposal is never applied.
     state = compute()

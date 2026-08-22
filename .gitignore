@@ -26,3 +26,17 @@ slack-*-audit.*
 # the per-engine logs hold the full reports — names, emails, per-person diffs —
 # and must never be committed. Only the runner's stdout summary is PII-free.
 nightly-reports/
+
+# Skills download working copies into the cwd — event trackers (.docx/.xlsx),
+# decks (.pptx), banners (.png), the Luma page copy and drafts (luma.md, new.md),
+# and the clean-data change list (changes.json). All of it is chapter/applicant
+# data; only the synthetic library fixtures and the repo's own assets are kept.
+*.docx
+*.xlsx
+*.pptx
+*.png
+changes.json
+luma.md
+new.md
+!lib/aaif_events/tests/fixtures/*
+!assets/*

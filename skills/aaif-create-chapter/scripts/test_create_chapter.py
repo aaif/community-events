@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 import create_chapter as cc  # noqa: E402
@@ -484,10 +485,11 @@ class TestCloneResume(unittest.TestCase):
     """clone_and_rebrand with the Drive layer faked — covers the --resume
     skip-by-name decision (network paths excluded by design)."""
 
-    def run_clone(self, drive, existing_id=None, download=fake_download):
+    def run_clone(self, drive, existing_id=None, download=fake_download, repair=False):
         from unittest import mock
         ctx = {"name": "New York", "upper": "NEW YORK", "slug": "newyork",
-               "residuals": [], "latlon": None}
+               "residuals": [], "latlon": None,
+               "repair_existing": repair}
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(cc, "list_children", drive.list_children), \
                 mock.patch.object(cc, "create_folder", drive.create_folder), \
@@ -547,19 +549,49 @@ class TestCloneResume(unittest.TestCase):
         self.assertEqual(drive.copied, ["notes.txt"])
         self.assertEqual(drive.created, [])
 
-    def test_resume_repairs_a_skipped_but_unrebranded_file(self):
+    def test_resume_reports_a_skipped_but_unrebranded_file_and_does_not_touch_it(self):
         # The likeliest partial-run state: copied under the rebranded name, crash
         # before the rebrand's upload. The skip must residual-check the existing
-        # file and repair it in place — not report "exists, skipped" on
-        # wrong-city content.
-        drive = FakeDrive(dict(CLONE_TEMPLATE, **{
-            "ex": [{"id": "e1", "name": "New York CRM.xlsx",
+        # file and REPORT it — never rewrite a file that is already in Drive
+        # unless the operator opts in with --repair-existing.
+        drive = FakeDrive({
+            "tpl": [{"id": "f1", "name": "SF Notes.xlsx", "mimeType": "application/x"}],
+            "ex": [{"id": "e1", "name": "New York Notes.xlsx",
                     "mimeType": "application/x-copied"}],
-        }))
+        })
         _, ctx = self.run_clone(drive, existing_id="ex")  # fake_download = SF content
-        self.assertNotIn("New York CRM.xlsx", drive.copied)   # still a skip, no dupe
+        self.assertEqual(drive.copied, [])                    # still a skip, no dupe
+        self.assertEqual(drive.uploaded, [])                  # NOT repaired
+        self.assertEqual([fn for fn, _ in ctx["residuals"]], ["New York Notes.xlsx"])
+
+    def test_repair_existing_rebrands_a_non_member_data_file_in_place(self):
+        drive = FakeDrive({
+            "tpl": [{"id": "f1", "name": "SF Notes.xlsx", "mimeType": "application/x"}],
+            "ex": [{"id": "e1", "name": "New York Notes.xlsx",
+                    "mimeType": "application/x-copied"}],
+        })
+        _, ctx = self.run_clone(drive, existing_id="ex", repair=True)
+        self.assertEqual(drive.copied, [])
         self.assertIn("e1", drive.uploaded)                   # repaired in place
         self.assertEqual(ctx["residuals"], [])                # flag cleared by repair
+
+    def test_member_data_files_are_never_repaired_even_with_repair_existing(self):
+        drive = FakeDrive({
+            "tpl": [{"id": "f1", "name": "San Francisco CRM.xlsx", "mimeType": "application/x"},
+                    {"id": "f2", "name": "Event Tracker.docx", "mimeType": "application/x"}],
+            "ex": [{"id": "e1", "name": "New York CRM.xlsx", "mimeType": "application/x-copied"},
+                   {"id": "e2", "name": "Event Tracker.docx", "mimeType": "application/x-copied"}],
+        })
+        _, ctx = self.run_clone(drive, existing_id="ex", repair=True)
+        self.assertEqual(drive.uploaded, [])
+        self.assertEqual(sorted(fn for fn, _ in ctx["residuals"]),
+                         ["Event Tracker.docx", "New York CRM.xlsx"])
+
+    def test_is_member_data_globs(self):
+        self.assertTrue(cc.is_member_data("New York CRM.xlsx"))
+        self.assertTrue(cc.is_member_data("Event Tracker.docx"))
+        self.assertFalse(cc.is_member_data("Slides.pptx"))
+        self.assertFalse(cc.is_member_data("notes.txt"))
 
     def test_resume_flags_a_skip_the_repair_cannot_clean(self):
         # A residual the rebrand engine can't rewrite must survive as a flag and
@@ -582,8 +614,9 @@ class TestCloneResume(unittest.TestCase):
         _, ctx = self.run_clone(drive, existing_id="ex")
         self.assertEqual(sorted(drive.copied), ["About.txt", "notes.txt"])
         self.assertEqual(drive.renamed, [("e1", "New York CRM.xlsx")])
-        self.assertIn("e1", drive.uploaded)     # and residual-checked -> repaired
-        self.assertEqual(ctx["residuals"], [])
+        # residual-checked, but a CRM is member data: reported, never rewritten
+        self.assertEqual(drive.uploaded, [])
+        self.assertEqual([fn for fn, _ in ctx["residuals"]], ["New York CRM.xlsx"])
 
     def test_resume_matches_original_name_subfolder_and_renames(self):
         drive = FakeDrive({
@@ -597,6 +630,60 @@ class TestCloneResume(unittest.TestCase):
         self.assertEqual(drive.copied, [])        # recursed into the renamed hit
         self.assertEqual(drive.created, [])
         self.assertEqual(drive.renamed, [("esub", "New York Assets")])
+
+
+class TestMainGuards(unittest.TestCase):
+    """Argument checks in main() that run before any network or Drive call,
+    and the plan-by-default / tempdir contract of a --write run."""
+
+    def run_main(self, argv, clone=None):
+        clone = clone or (lambda *a, **k: self.fail("clone_and_rebrand must not run"))
+        with mock.patch.object(sys, "argv", ["x"] + argv), \
+                mock.patch.object(cc, "luma_status", lambda slug: "live"), \
+                mock.patch.object(cc, "list_children", lambda fid: []), \
+                    mock.patch.object(cc, "resolve_latlon", lambda *a: (1.0, 2.0)), \
+                mock.patch.object(cc, "clone_and_rebrand", clone):
+            cc.main()
+
+    def test_slug_must_match_safe_charset(self):
+        for bad in ("a b", "x/../y", "ÄBC", "a?b=c", ""):
+            with self.assertRaises(SystemExit) as cm:
+                self.run_main(["--city", "Zed", "--slug", bad])
+            self.assertIn("invalid slug", str(cm.exception))
+
+    def test_resume_requires_write(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--resume"])
+        self.assertIn("--write", str(cm.exception))
+
+    def test_repair_existing_requires_resume(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--write", "--repair-existing"])
+        self.assertIn("--resume", str(cm.exception))
+
+    def test_default_invocation_plans_only(self):
+        self.run_main(["--city", "Zed"])
+        self.run_main(["--city", "Zed", "--dry-run"])   # no-op alias, still plans
+
+    def test_write_clones_into_a_fresh_tempdir_that_is_removed(self):
+        seen = {}
+        def fake_clone(_tpl, _parent, _name, ctx, existing_id=None):
+            seen["tmp"] = ctx["tmp"]
+            self.assertTrue(os.path.isdir(ctx["tmp"]))
+            self.assertTrue(os.path.basename(ctx["tmp"]).startswith("aaif-chapter-"))
+            self.assertFalse(ctx["repair_existing"])
+            return "new"
+        self.run_main(["--city", "Zed", "--write"], clone=fake_clone)
+        self.assertFalse(os.path.exists(seen["tmp"]))
+
+    def test_tempdir_is_removed_when_clone_raises(self):
+        seen = {}
+        def boom(_tpl, _parent, _name, ctx, existing_id=None):
+            seen["tmp"] = ctx["tmp"]
+            raise RuntimeError("gws failed")
+        with self.assertRaises(RuntimeError):
+            self.run_main(["--city", "Zed", "--write"], clone=boom)
+        self.assertFalse(os.path.exists(seen["tmp"]))
 
 
 if __name__ == "__main__":

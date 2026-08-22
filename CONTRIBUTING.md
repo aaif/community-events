@@ -34,6 +34,10 @@ Guidelines:
   hardcoded `.claude/skills/...` path — the variable resolves wherever the skill
   is installed.
 - Keep the `description` action-oriented; it's what triggers auto-activation.
+- **Secrets are never command-line parameters.** argv is visible in `ps` and
+  gets echoed in logs/console, so no `--token`/`--key` style flags — scripts read
+  tokens and API keys from environment variables (or `.env` / keychain) only.
+  `scripts/check_no_secret_args.py` enforces this in CI.
 - **Quote `argument-hint` values fully.** A value like `"<City>" [--slug <x>]`
   (a quoted scalar followed by bare text) is *invalid YAML* — the whole
   frontmatter then fails to parse and the skill loads with empty metadata

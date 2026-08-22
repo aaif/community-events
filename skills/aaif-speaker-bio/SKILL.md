@@ -13,6 +13,7 @@ Produce TWO versions of a speaker bio for an AAIF in-person event:
 **House voice:** share the practice, never sell the product. Warm, concrete,
 builder-to-builder. No hype or superlatives. Signal, not numbers. The draft gets
 you ~90% there — edit before it ships.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 ## Input (from the event tracker)
 - Name : `[SPEAKER NAME]`

@@ -28,6 +28,7 @@ deck (`Event Template/Slides.pptx`). Fill the per-event slides from the tracker 
 
 Keep it **terse and label-driven** (the deck voice). Output as `Slide N — <name>:`
 then the fields, slide for slide, then paste into the template.
+Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
 
 ## Input (from the event tracker)
 - Event : `[EVENT TITLE]`   Series: `[SERIES]`   Theme: `[THEME + ONE-LINER]`

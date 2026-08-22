@@ -1,11 +1,18 @@
 """Read-only Slack Web API client for the workspace audits.
 
-Auth resolution, in order: the `AAIF_SLACK_WRITE_TOKEN` app token from the
-environment, then from a `.env` file in the current directory, then the Slack
-CLI's own credentials (`slack auth login`). The app token is the standing way
-the audits run — it is strictly more capable than the CLI credential, which has
-expired. No token is ever stored in this repo or passed on a command line, and
-the token is never printed — callers get data, not credentials.
+Auth resolution, in order: `AAIF_SLACK_READ_TOKEN`, then
+`AAIF_SLACK_WRITE_TOKEN` — each from the environment, then from the `.env` at
+the repo root (never the cwd, so running a script from elsewhere cannot pick up
+a stranger's file) — then the Slack CLI's own credentials (`slack auth login`).
+A read token is preferred because this client only ever reads; the write token
+is accepted because it is the one that exists today. The app tokens are the
+standing way the audits run — strictly more capable than the CLI credential,
+which has expired. No token is ever stored in this repo or passed on a command
+line, and the token is never printed — `load_token()` names its *source* on
+stderr, never the value, and callers get data, not credentials.
+
+Transport never follows a redirect: a 3xx from slack.com raises rather than
+re-sending the Authorization header to whatever host `Location` names.
 
 **This client is read-only.** `call()` refuses any method outside
 `ALLOWED_METHODS`; the audits inspect a community workspace, and a typo must not
@@ -43,14 +50,56 @@ import http.client
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 CRED_PATH = os.path.expanduser("~/.slack/credentials.json")
+READ_TOKEN_VAR = "AAIF_SLACK_READ_TOKEN"
 ENV_TOKEN_VAR = "AAIF_SLACK_WRITE_TOKEN"
+#: Preference order; the first one found anywhere wins.
+TOKEN_VARS = (READ_TOKEN_VAR, ENV_TOKEN_VAR)
+#: `.env` lives at the repo root, not wherever the process happens to run.
+DOTENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), ".env")
+#: Secrets stripped from any child process environment — see scrubbed_env().
+_SECRET_ENV = re.compile(r"^(AAIF_SLACK_\w*_TOKEN|LUMA_API_KEY)$")
 API = "https://slack.com/api/"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so a 3xx surfaces as an HTTPError.
+
+    The default handler would re-send the request — Authorization header and
+    all — to whatever host `Location` names. Slack never redirects an API
+    call, so a redirect is either an outage page or an interception; neither
+    deserves the token.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect())
+REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+
+
+def _urlopen(request, timeout):
+    """The one transport call this module makes; tests replace it."""
+    return _OPENER.open(request, timeout=timeout)
+
+
+def scrubbed_env():
+    """A copy of os.environ without the Slack and Luma secrets.
+
+    Pass as `env=` to every subprocess the lib spawns: `gws`, Chrome, git.
+    None of them needs the tokens, and a child that crashes with an
+    environment dump (or a plugin that logs its env) must not be able to leak
+    one.
+    """
+    return {k: v for k, v in os.environ.items() if not _SECRET_ENV.match(k)}
 
 #: The exact set of methods this repo calls. This is deliberately *not* "every
 #: read-only method" — narrowing it to actual callers is a stronger, self-
@@ -140,8 +189,8 @@ def _find_token(obj):
     return found[0] if found else None
 
 
-def _dotenv_token(env_path=".env"):
-    """`AAIF_SLACK_WRITE_TOKEN` out of a KEY=VALUE `.env` file, or None.
+def _dotenv_token(env_path=DOTENV_PATH, key=ENV_TOKEN_VAR):
+    """`key` out of a KEY=VALUE `.env` file, or None.
 
     Deliberately not a dotenv loader: only this one key is read, nothing is
     exported into the environment, and the value never appears in any output.
@@ -158,7 +207,7 @@ def _dotenv_token(env_path=".env"):
             name = name.strip()
             if name.startswith("export "):
                 name = name[len("export "):].strip()
-            if not sep or name != ENV_TOKEN_VAR:
+            if not sep or name != key:
                 continue
             value = value.strip()
             if value[:1] in ("'", '"'):
@@ -178,26 +227,40 @@ def _dotenv_token(env_path=".env"):
     return None
 
 
-def load_token(path=CRED_PATH):
+def load_token(path=CRED_PATH, env_path=DOTENV_PATH, log=None):
     """Return a Slack token, preferring the app token over the CLI credential.
 
-    Resolution order: `AAIF_SLACK_WRITE_TOKEN` in the environment, the same key
-    in a `./.env` file, then the Slack CLI credentials at `path`. The app token
-    is checked first because it is strictly more capable than the CLI one and
-    is how the audits run since the CLI credential expired.
+    Resolution order: `AAIF_SLACK_READ_TOKEN`, then `AAIF_SLACK_WRITE_TOKEN`,
+    each looked up in the environment and then in the repo-root `.env`; then
+    the Slack CLI credentials at `path`. A read token is preferred because this
+    client is read-only; the app tokens come first because they are strictly
+    more capable than the CLI one, which has expired.
+
+    Exactly one line goes to stderr naming where the token came from —
+    `env:AAIF_SLACK_READ_TOKEN`, `.env:<path>` or `slack-cli` — so an operator
+    can tell which credential a run used without the value ever being shown.
     """
-    token = os.environ.get(ENV_TOKEN_VAR, "").strip() or _dotenv_token()
-    if token:
-        return token
+    log = log or (lambda src: print("slack: token from %s" % src, file=sys.stderr))
+    for var in TOKEN_VARS:
+        token = os.environ.get(var, "").strip()
+        if token:
+            log("env:%s" % var)
+            return token
+    for var in TOKEN_VARS:
+        token = _dotenv_token(env_path, var)
+        if token:
+            log(".env:%s" % env_path)
+            return token
     if not os.path.exists(path):
         raise SystemExit(
-            "No Slack token: %s is not set (environment or ./.env) and there "
-            "are no Slack CLI credentials at %s — set the app token or run "
-            "`slack auth login`." % (ENV_TOKEN_VAR, path))
+            "No Slack token: neither %s nor %s is set (environment or %s) and "
+            "there are no Slack CLI credentials at %s — set the app token or run "
+            "`slack auth login`." % (READ_TOKEN_VAR, ENV_TOKEN_VAR, env_path, path))
     with open(path, encoding="utf-8") as fh:
         token = _find_token(json.load(fh))
     if not token:
         raise SystemExit("No Slack token found in %s." % path)
+    log("slack-cli")
     return token
 
 
@@ -233,8 +296,7 @@ class Slack:
         last = "unknown"
         for attempt in range(MAX_ATTEMPTS):
             try:
-                with urllib.request.urlopen(self._request(method, body),
-                                            timeout=TIMEOUT_S) as response:
+                with _urlopen(self._request(method, body), TIMEOUT_S) as response:
                     headers = response.headers
                     raw = response.read()
             except urllib.error.HTTPError as exc:
@@ -242,6 +304,11 @@ class Slack:
                     last = "http_429"
                     self._sleep(_retry_secs(exc.headers.get("Retry-After")))
                     continue
+                if exc.code in REDIRECT_CODES:
+                    raise SlackError(
+                        method, "http_%d" % exc.code,
+                        "redirect refused — the token is never re-sent to "
+                        "another host; %s is probably intercepted or down" % API)
                 raise SlackError(method, "http_%d" % exc.code, exc.reason or "")
             except (http.client.HTTPException, urllib.error.URLError,
                     ConnectionError, TimeoutError) as exc:
@@ -260,7 +327,8 @@ class Slack:
             except json.JSONDecodeError:
                 raise SlackError(method, "not_json",
                                  "HTTP 200 but the body was not JSON "
-                                 "(starts %r)" % raw[:80])
+                                 "(Content-Type: %s)"
+                                 % (headers.get("Content-Type") or "unset"))
             if not payload.get("ok") and payload.get("error") == "ratelimited":
                 last = "ratelimited"
                 if attempt == MAX_ATTEMPTS - 1:
@@ -312,9 +380,9 @@ class Slack:
             # and a "missing scopes" message that sends the operator hunting
             # through the app config for a problem that is really the token.
             raise SlackError("auth.test", body.get("error", "unknown"),
-                             "the token is not usable; set %s (environment or "
-                             "./.env), or as a last resort run `slack auth "
-                             "login`" % ENV_TOKEN_VAR)
+                             "the token is not usable; set %s or %s (environment "
+                             "or the repo-root .env), or as a last resort run "
+                             "`slack auth login`" % (READ_TOKEN_VAR, ENV_TOKEN_VAR))
         raw = headers.get("x-oauth-scopes") or ""
         return {s.strip() for s in raw.split(",") if s.strip()}
 
