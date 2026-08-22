@@ -123,9 +123,12 @@ ROLE_TABS = ("Organizers", "Speakers", "Hosts")   # also the merge priority orde
 CRM_STATUS = {"Organizers": "Organizer", "Speakers": "Speaker", "Hosts": "Host"}
 
 # Status values this script is allowed to overwrite — everything the automation
-# itself writes, plus the sheet's own defaults: "Prospect", and its legacy
-# spelling "New" (pre-2026-08-22 rows and un-migrated dropdowns still hold it,
-# and it must keep upgrading identically). A human who moved someone to
+# itself writes, plus the sheet's own defaults: a BLANK cell (""), "Prospect",
+# and its legacy spelling "New" (pre-2026-08-22 rows and un-migrated dropdowns
+# still hold it, and it must keep upgrading identically). The "" is load-
+# bearing for the same reason it is in PIPELINE_STATUSES above: a hand-added
+# CRM row starts blank, and dropping the "redundant" empty string would freeze
+# every such row out of its role upgrade. A human who moved someone to
 # "Attended", "Regular", "Volunteer" or "Declined" has said something the intake
 # does not know; a later triage decision must not silently undo it.
 AUTO_STATUS = frozenset(("", "New", "Prospect", "Organizer", "Speaker", "Host"))
@@ -145,14 +148,33 @@ DUMMY_DOMAINS = ("example.com", "example.org", "example.net", "example.edu")
 
 # The Status dropdown shipped without a value for a venue host, so hosts had
 # nowhere honest to land. Patched in place on every workbook we open.
-DV_STATUS_OLD = "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined"
-DV_STATUS_NEW = "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"
-# The same two lists after migrate_status_prospect.py has removed the legacy
-# "New" (Prospect is the surviving spelling). The Host patch must recognise a
-# migrated workbook, or every migrated CRM would be reported as having no
+#
+# ONE source of truth for what the dropdown holds — the four literals below are
+# derived, never typed twice. Hand-maintained copies would drift the day a
+# value is added: all four would miss, every workbook would report "absent",
+# and the Host patch would quietly stop working across the whole fleet.
+# LEGACY carries "New"; the MIGRATED pair is the same list after
+# migrate_status_prospect.py retired it (Prospect is the surviving spelling) —
+# the patch must recognise both, or every migrated CRM reads as having no
 # Status list at all.
-DV_STATUS_OLD_MIGRATED = DV_STATUS_OLD.replace("New,", "", 1)
-DV_STATUS_NEW_MIGRATED = DV_STATUS_NEW.replace("New,", "", 1)
+DV_STATUS_VALUES = ("New", "Prospect", "Attended", "Regular", "Speaker",
+                    "Organizer", "Volunteer", "Declined")
+_DV_HOST_AFTER = "Volunteer"          # Host slots in just before Declined
+
+
+def dv_status_list(values, with_host):
+    """The comma-joined dropdown list, optionally with "Host" inserted."""
+    out = list(values)
+    if with_host:
+        out.insert(out.index(_DV_HOST_AFTER) + 1, "Host")
+    return ",".join(out)
+
+
+DV_STATUS_OLD = dv_status_list(DV_STATUS_VALUES, False)
+DV_STATUS_NEW = dv_status_list(DV_STATUS_VALUES, True)
+_DV_MIGRATED = tuple(v for v in DV_STATUS_VALUES if v != "New")
+DV_STATUS_OLD_MIGRATED = dv_status_list(_DV_MIGRATED, False)
+DV_STATUS_NEW_MIGRATED = dv_status_list(_DV_MIGRATED, True)
 
 # Per-role source columns on the intake role tabs, resolved by header name and
 # taken in order (first non-empty wins). Organizers have no company or title
@@ -1029,22 +1051,41 @@ def finalize(book, ops, expected_dv=None):
 # ----------------------------------------------------------------------------
 # Drive
 # ----------------------------------------------------------------------------
+def drive_list(q, fields):
+    """Every file matching `q`, following nextPageToken to the end.
+
+    Drive may return fewer items than pageSize AND still hand back a token, so
+    a single call is not proof of a complete listing. Stopping at page one
+    would silently drop chapters from every sweep that walks this list — and a
+    one-shot migration would then report "nothing to do" for a chapter it never
+    saw.
+    """
+    out, token = [], None
+    while True:
+        params = {"q": q, "fields": "nextPageToken,files(%s)" % fields,
+                  "pageSize": 1000, "supportsAllDrives": True,
+                  "includeItemsFromAllDrives": True}
+        if token:
+            params["pageToken"] = token
+        res = gws_json("drive", "files", "list", params=params)
+        out.extend(res.get("files", []))
+        token = res.get("nextPageToken")
+        if not token:
+            return out
+
+
 def list_chapter_folders():
-    res = gws_json("drive", "files", "list", params={
-        "q": "'%s' in parents and mimeType='application/vnd.google-apps.folder' "
-             "and trashed=false" % CHAPTERS_PARENT,
-        "fields": "files(id,name)", "pageSize": 1000,
-        "supportsAllDrives": True, "includeItemsFromAllDrives": True})
-    return sorted(res.get("files", []), key=lambda f: f["name"])
+    files = drive_list(
+        "'%s' in parents and mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false" % CHAPTERS_PARENT, "id,name")
+    return sorted(files, key=lambda f: f["name"])
 
 
 def find_crm(folder_id):
     """The one "* CRM.xlsx" in a chapter folder, or (None, why)."""
-    res = gws_json("drive", "files", "list", params={
-        "q": "'%s' in parents and trashed=false" % folder_id,
-        "fields": "files(id,name,mimeType)", "pageSize": 1000,
-        "supportsAllDrives": True, "includeItemsFromAllDrives": True})
-    crms = [f for f in res.get("files", [])
+    files = drive_list("'%s' in parents and trashed=false" % folder_id,
+                       "id,name,mimeType")
+    crms = [f for f in files
             if f["name"].lower().endswith("crm.xlsx") and f["mimeType"] == XLSX]
     if not crms:
         return None, "no '<City> CRM.xlsx' in the folder"

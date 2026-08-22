@@ -40,6 +40,12 @@ Chapters Drive folder, plus the TemplateCity and TemplateSeries templates):
   Attendees sheet part is re-serialized; every other part is repacked
   byte-identically. Pre-edit bytes are kept in a mkdtemp backup dir.
 
+NOT in scope: the CRMs' free-text "Notes (CRM)" cells. Every row synced before
+the rename carries an audit note reading "Intake: Organizer - New - <date>",
+and those stay: the note records what the status WAS when the row was written,
+sync_crm never overwrites a non-blank note, and rewriting history in a
+human-editable column to match today's vocabulary is not this script's job.
+
 House rules: report is the default and writes nothing; --write applies, then
 re-downloads / re-reads and verifies, printing a Verified line. No member names
 or emails on stdout — counts, tab names and file names only.
@@ -47,11 +53,17 @@ or emails on stdout — counts, tab names and file names only.
 Exit codes: 0 everything already in sync; 2 changes proposed (or applied);
 1 failure (including a failed verify or a skipped workbook).
 
+A REFUSAL ("shaped in a way I will not rewrite": a range-backed list, an x14
+validation, an EXACT() color rule) is reported as needs-a-human and is NEVER
+folded into a verify verdict — it is still true after a perfectly successful
+write, so counting it would pin every later run to a permanent failure.
+
 Usage:
   python3 migrate_status_prospect.py            # report only, zero writes
   python3 migrate_status_prospect.py --city Boston   # scope Phase B to one CRM
-                                                    # (Phase A still runs whole)
   python3 migrate_status_prospect.py --write    # apply, then verify
+  # --city scopes Phase B ONLY; Phase A is the whole spreadsheet, so with
+  # --city it is reported but not written unless --include-intake is passed.
 """
 import argparse
 import copy
@@ -61,19 +73,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sync_chapters import (INTAKE_ID, download, fold_city, fresh_if_unchanged,  # noqa: E402
                            get_values, gws_json, upload)
-from sync_crm import (CRM_SHEET, X, XLSX, cell_ref, cell_text, col_of,  # noqa: E402
-                      find_crm,
+from sync_crm import (CRM_SHEET, ROLE_TABS, X, XLSX, cell_ref,  # noqa: E402
+                      cell_text, col_of, find_crm,
                       list_chapter_folders, load_parts, register_namespaces,
                       save_parts, set_cell, shared_strings, sheet_part,
                       _XML_DECL)
 
 OLD, NEW = "New", "Prospect"
-ROLE_TABS = ("Organizers", "Speakers", "Hosts")
 
 # The template workbooks must migrate too, or every future chapter/series is
 # born with the legacy dropdown. Ids as declared by their own creation scripts
@@ -84,6 +96,13 @@ TEMPLATE_FOLDERS = (
     {"id": "1PHvEgqnHo0RrsFyA47O9iRJGaKehC8Eg", "name": "TemplateCity"},
     {"id": "1M15wzKvQqd_jQz5cG16NO_YcbWU3EH1j", "name": "TemplateSeries"},
 )
+
+# Excel stores some validations (lists over 255 chars, cross-sheet refs) in an
+# extension block under a DIFFERENT namespace, invisible to a scan of the main
+# one. Not migrated — but never skipped silently either: a Status-covering
+# extension validation is refused so a human sees it.
+X14 = "{http://schemas.microsoft.com/office/spreadsheetml/2009/9/main}"
+XM = "{http://schemas.microsoft.com/office/excel/2006/main}"
 
 # How far down column A the dropdown is probed. The rule ships on roughly
 # A2:A1000; probing past it just reads empty rows.
@@ -115,10 +134,11 @@ def migrate_list(values):
 # column-A equality test and must not be touched.
 CF_TOKEN_OLD = '$A2="%s"' % OLD
 CF_TOKEN_NEW = '$A2="%s"' % NEW
-# A column-A test for "New" written some other way (spacing, EXACT(), $A$2).
+# A column-A test for "New" written some other way: extra spacing, an absolute
+# $A$2, a negated <> test ("highlight everything not yet triaged"), or EXACT().
 # Not migrated silently: reported, so a human fixes it rather than the rule
 # quietly going dead the way `=$A2="New"` just did.
-CF_SUSPECT = re.compile(r'\$A\$?\d+\s*=\s*"%s"|EXACT\s*\(\s*\$A' % OLD)
+CF_SUSPECT = re.compile(r'\$A\$?\d+\s*(?:=|<>)\s*"%s"|EXACT\s*\(\s*\$A' % OLD)
 
 
 def migrate_cf_formula(formula):
@@ -169,32 +189,62 @@ HOWTO_TEXTS = (
 
 
 def howto_new_text(old):
-    """The migrated text of one How-to-use sentence: the FIRST "New" only."""
+    """The migrated text of one How-to-use sentence: the FIRST "New" only.
+
+    Raises on a sentence that does not contain it: returning the text unchanged
+    would make plan_howto plan a self-write that can never converge, and the
+    post-write verify would report "not migrated" forever without saying why.
+    """
+    if OLD not in old:
+        raise ValueError("How-to-use sentence does not contain %r: %r"
+                         % (OLD, old[:60]))
     return old.replace(OLD, NEW, 1)
 
 
 def plan_howto(rows):
-    """([(a1, old, new)], [refusals]) for the How-to-use tab's status prose.
+    """([(a1, raw_old, new)], [refusals]) for the How-to-use tab's status prose.
 
     `rows` is the tab as returned by get_values (ragged rows of strings). Each
     sentence is located by its text, not by a fixed A1 — the tab gets rows
     inserted as it is edited, and a coordinate would silently rewrite the wrong
     cell after that.
+
+    Matching is on the STRIPPED text but the rewrite is applied to the cell's
+    RAW text, so a sentence carrying leading whitespace keeps it: one of these
+    lines is the head of an indented ASCII flow diagram, and writing back the
+    flush-left canonical form would silently misalign it.
+
+    A sentence found more than once is refused rather than half-migrated: the
+    write would fix one copy per run, and the run would report failure on a
+    tab that is arguably fine.
     """
     where = {}
     for i, row in enumerate(rows, start=1):
         for j, cell in enumerate(row):
-            where.setdefault((cell or "").strip(), cell_ref(j, i))
+            where.setdefault((cell or "").strip(), []).append(
+                (cell_ref(j, i), cell))
     plans, refusals = [], []
     for old in HOWTO_TEXTS:
         new = howto_new_text(old)
-        if old in where:
-            plans.append((where[old], old, new))
+        hits = where.get(old, [])
+        if len(hits) > 1:
+            refusals.append("the sentence %r appears %d times on the tab — "
+                            "migrate the duplicates by hand"
+                            % (_ellipsis(old), len(hits)))
+            continue
+        if hits:
+            a1, raw = hits[0]
+            plans.append((a1, raw, howto_new_text(raw)))
         elif new not in where:
             refusals.append("the sentence %r is on the tab in neither "
-                            "spelling \u2014 it was reworded; migrate it by hand"
-                            % (old[:48] + ("..." if len(old) > 48 else "")))
+                            "spelling — it was reworded; migrate it by hand"
+                            % _ellipsis(old))
     return plans, refusals
+
+
+def _ellipsis(text, width=48):
+    """Shorten a sentence for a refusal line."""
+    return text[:width] + ("..." if len(text) > width else "")
 
 
 def intake_status_guard(headers):
@@ -238,9 +288,15 @@ def runs_of(rownums):
 
 
 def sqref_cols(sqref):
-    """0-based column indices covered by an sqref like 'D2:D1000 F3'."""
+    """0-based column indices covered by an sqref like 'D2:D1000 F3'.
+
+    Absolute refs are normalised first: col_of stops at the first non-alpha
+    character, so a leading "$" made it return -1 and the Status validation
+    silently unmatchable — the workbook then reported "in sync" while keeping
+    the legacy value in its dropdown forever.
+    """
     cols = set()
-    for ref in (sqref or "").split():
+    for ref in (sqref or "").replace("$", "").split():
         parts = ref.split(":")
         a = col_of(parts[0])
         b = col_of(parts[-1])
@@ -303,6 +359,20 @@ class CrmStatusSheet:
                     break
         return hit
 
+    def signal_dv_text(self):
+        """The Signal column's validation list as raw text, or None.
+
+        Read before and after a write so "Signal's unrelated New survives" is
+        an assertion the production run makes, not just one the tests make.
+        """
+        if self.signal_col is None:
+            return None
+        for dv in self.root.iter(X + "dataValidation"):
+            if sqref_cols(dv.get("sqref")) == {self.signal_col}:
+                f1 = dv.find(X + "formula1")
+                return f1.text if f1 is not None else None
+        return None
+
     def plan_validations(self):
         """([(dv_element, old_list, new_list)], [refusal_reason]).
 
@@ -313,11 +383,12 @@ class CrmStatusSheet:
         Signal column's own validation is never matched at all: the match is
         the header-located column, not the list's contents.
         """
-        plans, refusals = [], []
+        plans, refusals, saw = [], [], False
         for dv in self.root.iter(X + "dataValidation"):
             cols = sqref_cols(dv.get("sqref"))
             if self.status_col not in cols:
                 continue
+            saw = True
             extra = cols - {self.status_col}
             if extra:
                 refusals.append(
@@ -325,16 +396,62 @@ class CrmStatusSheet:
                     "column(s) — refusing to edit it" % dv.get("sqref"))
                 continue
             f1 = dv.find(X + "formula1")
-            values = dv_list(f1.text if f1 is not None else None)
+            text = f1.text if f1 is not None else None
+            values = dv_list(text)
             if values is None:
+                # A list backed by a range or a defined name (=Lists!$A$1:$A$9),
+                # or no formula1 at all. Skipping it silently would report the
+                # workbook "in sync" while its dropdown still offers the legacy
+                # value — and the post-write verify, which re-runs THIS
+                # function, would agree. Reported, never guessed at.
+                refusals.append(
+                    "the Status validation (sqref %r) is not a literal list "
+                    "(formula1=%r) — migrate it by hand"
+                    % (dv.get("sqref"), text))
                 continue
             new = migrate_list(values)
             if new is not None:
                 plans.append((dv, values, new))
+        x14 = self.x14_refusals()
+        if not saw and not x14:
+            # sync_crm's Host patch reports this state as "absent" rather than
+            # guessing at it; the same discipline applies here, or a workbook
+            # with no Status list reads as a migrated one.
+            refusals.append("no data validation covers the Status column "
+                            "(header column %d) — reported, not guessed at"
+                            % self.status_col)
+        refusals.extend(x14)
         return plans, refusals
 
+    def x14_refusals(self):
+        """Refusals for Status validations hidden in the x14 extension block.
+
+        This script does not rewrite them — the point is that they are SEEN.
+        Matched by the same rule as the main-namespace ones: the sqref covers
+        the header-located Status column.
+        """
+        out = []
+        for dv in self.root.iter(X14 + "dataValidation"):
+            ref = dv.find(XM + "sqref")
+            text = ref.text if ref is not None else None
+            if self.status_col in sqref_cols(text):
+                out.append("an x14 extension validation covers the Status "
+                           "column (sqref %r) — this script does not rewrite "
+                           "those; migrate it by hand" % text)
+        return out
+
     def apply(self, cell_rows, dv_plans):
-        """Rewrite the planned cells and lists, re-serialize this ONE part."""
+        """Rewrite the planned cells and lists, re-serialize this ONE part.
+
+        The plan must have come from THIS instance: dv_plans hold live Element
+        handles into self.root, so a plan from another workbook would edit a
+        detached tree — no error, no effect, and the run would print "wrote".
+        """
+        unknown = [r for r in cell_rows if r not in self.rows]
+        if unknown:
+            raise ValueError("%s: plan names row(s) %s that are not in this "
+                             "sheet — plan/instance mismatch"
+                             % (self.part_name, unknown[:5]))
         for rownum in cell_rows:
             set_cell(self.rows[rownum], self.status_col, NEW)
         for dv, _old, new in dv_plans:
@@ -358,32 +475,115 @@ def assert_git_safe(path):
     """Refuse a backup/work path git would ever pick up (this repo is public).
 
     mkdtemp lands outside any checkout, so the common case is the cheap one; a
-    path inside a git work tree must be ignored there. Inlined (like
-    aaif-backup's copy) rather than imported from lib/, so this skill keeps
-    working without the library checkout.
+    path inside a git work tree must be ignored there AND untracked. Inlined
+    (like aaif-backup's assert_dest_git_safe, whose three checks this mirrors)
+    rather than imported from lib/, so this skill keeps working without the
+    library checkout.
+
+    Only git's own "not a git repository" answer means outside-a-repo. Any
+    other failure — dubious ownership (exit 128), a corrupt .git, git missing
+    from PATH — ABORTS: mapping it to "safe" would silently disengage the PII
+    guard on a directory about to hold ~84 workbooks of real names and emails.
     """
-    probe = subprocess.run(
-        ["git", "-C", path, "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True)
+    try:
+        probe = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True,
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that %s "
+                 "is outside the repo. The working copies hold every "
+                 "organizer's name and email." % path)
     if probe.returncode != 0:
-        return  # not inside any git work tree — safe
-    chk = subprocess.run(["git", "-C", path, "check-ignore", "-q", path],
-                         capture_output=True)
-    if chk.returncode != 0:
+        stderr = (probe.stderr or "").strip()
+        if "not a git repository" in stderr.lower():
+            return                       # outside any repo — nothing to leak into
+        sys.exit("ABORT: `git rev-parse` failed in %s (exit %d: %s), so this "
+                 "cannot verify the path is safe. The working copies hold "
+                 "every organizer's name and email."
+                 % (path, probe.returncode, stderr[:200]))
+    root = probe.stdout.strip()
+    # Probe through a CHILD: check-ignore answers differently for a bare
+    # directory name, and this works before the child exists.
+    ignored = subprocess.run(
+        ["git", "-C", root, "check-ignore", "-q", os.path.join(path, "probe")],
+        capture_output=True).returncode == 0
+    # .gitignore has no effect on already-tracked files, so a path committed
+    # before the rules landed still rides along on `git add -A` while
+    # check-ignore reports it ignored.
+    tracked = subprocess.run(
+        ["git", "-C", root, "ls-files", "--error-unmatch", path],
+        capture_output=True).returncode == 0
+    if tracked:
+        sys.exit("ABORT: %s already holds files TRACKED by the repo at %s — "
+                 "git rm --cached them first. The working copies hold every "
+                 "organizer's name and email." % (path, root))
+    if not ignored:
         sys.exit("ABORT: %s is inside the git work tree %s and not gitignored "
-                 "— refusing to write member data there."
-                 % (path, probe.stdout.strip()))
+                 "— refusing to write member data there." % (path, root))
 
 
 # ----------------------------------------------------------------------------
 # Phase A — the intake role tabs
 # ----------------------------------------------------------------------------
-def intake_grid_rule(tab):
-    """(sheetId, rule, start_row, end_row) for the Status dropdown on `tab`.
+def grid_rule_plan(rows, start, probe_rows):
+    """Pure planner for the Status dropdown: (rule, runs, refusals).
 
-    `rule` is the full dataValidation of the first covered cell; rows are
-    0-based [start_row, end_row). (None, None, 0, 0) when column A carries no
-    ONE_OF_LIST containing "New" — already migrated, or never had one.
+    `rows` is the probed rowData for column A (each entry a dict, possibly
+    empty). `runs` are 0-based [first, last+1] spans of the rows that actually
+    carry a ONE_OF_LIST offering the legacy value — CONTIGUOUS RUNS, never the
+    min..max hull: the rows between two covered blocks may carry a different
+    validation, or deliberately none, and blanketing the hull would overwrite
+    them with the Status rule.
+
+    Refusals cover the three ways this read can be lying:
+      * a covered row sits at the last probed row — the rule very likely runs
+        past the window, and every verify re-reads through the SAME window, so
+        the leftover would never be seen;
+      * the covered rows carry more than one distinct list — one of them would
+        silently win for all of them;
+      * column A carries no ONE_OF_LIST at all, which is NOT the same fact as
+        "already migrated": a deleted Status dropdown must not read as success.
+    """
+    covered, lists, rule = [], [], None
+    saw_list = False
+    for i, rd in enumerate(rows):
+        vals = rd.get("values") or [{}]
+        dv = vals[0].get("dataValidation") or {}
+        cond = dv.get("condition") or {}
+        if cond.get("type") != "ONE_OF_LIST":
+            continue
+        saw_list = True
+        listed = [v.get("userEnteredValue", "") for v in cond.get("values", [])]
+        if OLD in listed:
+            covered.append(start + i)
+            if listed not in lists:
+                lists.append(listed)
+            rule = rule or dv
+    refusals = []
+    if not saw_list:
+        refusals.append("column A carries no ONE_OF_LIST validation at all in "
+                        "the first %d rows — the Status dropdown is missing, "
+                        "not migrated" % probe_rows)
+    if len(lists) > 1:
+        refusals.append("the Status dropdown offers %d DIFFERENT lists across "
+                        "the covered rows — refusing to flatten them to one"
+                        % len(lists))
+    if covered and covered[-1] >= start + probe_rows - 1:
+        refusals.append("the Status dropdown still offers %r at the last "
+                        "probed row (%d) — it very likely runs past the probe "
+                        "window, which every verify also reads through"
+                        % (OLD, covered[-1] + 1))
+    return rule, runs_of(covered), refusals
+
+
+def intake_grid_rule(tab):
+    """(sheetId, rule, runs, refusals) for the Status dropdown on `tab`.
+
+    `rule` is the full dataValidation of the first covered cell; `runs` are
+    0-based contiguous [first, last] row spans. `rule` is None (and `runs`
+    empty) when no covered row was found — see grid_rule_plan for why that
+    alone is not proof of a migrated tab. The sheetId is ALWAYS returned.
     """
     res = gws_json("sheets", "spreadsheets", "get", params={
         "spreadsheetId": INTAKE_ID,
@@ -391,23 +591,10 @@ def intake_grid_rule(tab):
         "fields": "sheets(properties(sheetId,title),"
                   "data(startRow,rowData(values(dataValidation))))"})
     sheet = res["sheets"][0]
-    gid = sheet["properties"]["sheetId"]
     data = (sheet.get("data") or [{}])[0]
-    start = data.get("startRow", 0)
-    covered, rule = [], None
-    for i, rd in enumerate(data.get("rowData") or []):
-        vals = rd.get("values") or [{}]
-        dv = vals[0].get("dataValidation") or {}
-        cond = dv.get("condition") or {}
-        if cond.get("type") != "ONE_OF_LIST":
-            continue
-        listed = [v.get("userEnteredValue", "") for v in cond.get("values", [])]
-        if OLD in listed:
-            covered.append(start + i)
-            rule = rule or dv
-    if not covered:
-        return gid, None, 0, 0
-    return gid, rule, covered[0], covered[-1] + 1
+    rule, runs, refusals = grid_rule_plan(data.get("rowData") or [],
+                                          data.get("startRow", 0), PROBE_ROWS)
+    return sheet["properties"]["sheetId"], rule, runs, refusals
 
 
 def intake_cf_plans(tab):
@@ -429,7 +616,20 @@ def intake_cf_plans(tab):
     plans, refusals = [], []
     for i, cf in enumerate(sheet.get("conditionalFormats") or []):
         cond = (cf.get("booleanRule") or {}).get("condition") or {}
+        vals_any = [v.get("userEnteredValue", "") for v in
+                    (cond.get("values") or [])]
         if cond.get("type") != "CUSTOM_FORMULA":
+            # A TEXT_EQ "New" rule is the natural way to hand-make a status
+            # color in the Sheets UI and is indistinguishable from the
+            # custom-formula one on screen. This script only rewrites formulas,
+            # so such a rule is REPORTED rather than skipped: skipped, it would
+            # keep testing the retired value while verify (which re-runs this
+            # function) called the tab clean.
+            if OLD in vals_any:
+                refusals.append(
+                    "conditional-format rule %d is a %s condition on %r — this "
+                    "script only rewrites CUSTOM_FORMULA rules; migrate it by "
+                    "hand" % (i, cond.get("type"), OLD))
             continue
         vals = cond.get("values") or []
         old = vals[0].get("userEnteredValue", "") if vals else ""
@@ -475,36 +675,88 @@ def apply_howto(plans):
 
 
 def plan_intake_tab(tab):
-    """One tab's plan: {tab, guard, cell_rows, gid, rule, r0, r1, new_list,
-    cf_gid, cf_plans, cf_refusals}."""
+    """One tab's plan.
+
+    Keys: tab, guard, cell_rows, gid, rule, dv_runs, new_list, cf_gid,
+    cf_plans, cf_refusals, dv_refusals, col_a. `col_a` and the cf/dv plans are
+    the snapshot the drift gate re-compares against before any write.
+    Use tab_changes()/tab_actionable() rather than testing the keys by hand.
+    """
     col_a = [r[0] if r else "" for r in
              get_values(INTAKE_ID, "'%s'!A1:A" % tab)]
     headers = get_values(INTAKE_ID, "'%s'!1:1" % tab)
     guard = intake_status_guard(headers[0] if headers else [])
     plan = {"tab": tab, "guard": guard, "cell_rows": [], "gid": None,
-            "rule": None, "r0": 0, "r1": 0, "new_list": None,
-            "cf_gid": None, "cf_plans": [], "cf_refusals": []}
+            "rule": None, "dv_runs": [], "new_list": None, "cf_gid": None,
+            "cf_plans": [], "cf_refusals": [], "dv_refusals": [],
+            "col_a": col_a}
     if guard:
         return plan
     plan["cf_gid"], plan["cf_plans"], plan["cf_refusals"] = intake_cf_plans(tab)
     plan["cell_rows"] = plan_intake_cells(col_a)
-    gid, rule, r0, r1 = intake_grid_rule(tab)
+    gid, rule, runs, dv_refusals = intake_grid_rule(tab)
     plan["gid"] = gid
+    plan["dv_refusals"] = dv_refusals
     if rule is not None:
         listed = [v.get("userEnteredValue", "")
                   for v in rule["condition"].get("values", [])]
-        plan.update(rule=rule, r0=r0, r1=r1, new_list=migrate_list(listed))
+        plan.update(rule=rule, dv_runs=runs, new_list=migrate_list(listed))
     return plan
+
+
+def tab_changes(plan):
+    """How many changes this tab's plan would apply."""
+    return (len(plan["cell_rows"]) + (1 if plan["new_list"] else 0)
+            + len(plan["cf_plans"]))
+
+
+def tab_actionable(plan):
+    """Is there writable work here? ONE definition, used by the report count,
+    the apply gate and the re-verify gate alike — three hand-copied copies of
+    this expression would drift, and the one that drifts silently is the apply
+    gate: the change is reported, never written, and the run still says
+    "Verified"."""
+    return not plan["guard"] and tab_changes(plan) > 0
+
+
+def intake_tab_drifted(plan):
+    """Why this tab must not be written NOW, or None.
+
+    Phase A's plan is built before ~84 Drive round-trips, so minutes pass and a
+    human edit in that window is normal — the same reasoning that put
+    fresh_if_unchanged in front of every Phase B write. It matters more here,
+    not less: the cell writes address ABSOLUTE ROW NUMBERS on a tab whose B+
+    columns are ARRAYFORMULA mirrors, and the color rules address POSITIONAL
+    INDEXES. A row inserted meanwhile stamps Prospect over a human's Accepted,
+    and a rule added meanwhile makes updateConditionalFormatRule replace some
+    other rule wholesale — and verify, which only asks whether anything still
+    says "New", calls both clean.
+    """
+    tab = plan["tab"]
+    col_a = [r[0] if r else "" for r in
+             get_values(INTAKE_ID, "'%s'!A1:A" % tab)]
+    if col_a != plan["col_a"]:
+        return ("column A changed since the plan was built — NOT written, "
+                "re-run")
+    _gid, cf_now, _refusals = intake_cf_plans(tab)
+    if [(i, old) for i, old, _r in cf_now] != [(i, old) for i, old, _r
+                                               in plan["cf_plans"]]:
+        return ("the conditional-format rules changed since the plan was "
+                "built — NOT written, re-run")
+    return None
 
 
 def apply_intake_tab(plan):
     """Apply one tab's plan: the dropdown rule, the color rules, then the cell
-    rewrites."""
+    rewrites. Caller must have cleared intake_tab_drifted() first."""
     tab = plan["tab"]
     if plan["new_list"]:
-        # An EXPLICIT full rule over the rule's own observed row span. Never a
-        # partial/empty rule: gws drops empty request objects, so anything less
-        # than the complete replacement rule can silently no-op.
+        # An EXPLICIT full rule, over the CONTIGUOUS RUNS that actually carry
+        # the legacy list — never the min..max hull, which would blanket the
+        # Status rule over rows that deliberately carry a different validation
+        # or none. Never a partial/empty rule either: gws drops empty request
+        # objects, so anything less than the complete replacement can silently
+        # no-op.
         rule = dict(plan["rule"])
         rule["condition"] = {"type": "ONE_OF_LIST",
                              "values": [{"userEnteredValue": v}
@@ -514,10 +766,9 @@ def apply_intake_tab(plan):
                  params={"spreadsheetId": INTAKE_ID},
                  body={"requests": [{"setDataValidation": {
                      "range": {"sheetId": plan["gid"],
-                               "startRowIndex": plan["r0"],
-                               "endRowIndex": plan["r1"],
+                               "startRowIndex": r0, "endRowIndex": r1 + 1,
                                "startColumnIndex": 0, "endColumnIndex": 1},
-                     "rule": rule}}]})
+                     "rule": rule}} for r0, r1 in plan["dv_runs"]]})
     if plan["cf_plans"]:
         apply_intake_cf(plan["cf_gid"], plan["cf_plans"])
     if plan["cell_rows"]:
@@ -529,28 +780,73 @@ def apply_intake_tab(plan):
                  body={"valueInputOption": "RAW", "data": data})
 
 
-def verify_intake_tab(tab):
-    """Re-read; return a failure string or None."""
+def verify_intake_tab(plan):
+    """Re-read and prove the PLANNED work landed. Returns a failure or None.
+
+    Positive, not merely absence-of-OLD: every planned cell must now read
+    exactly NEW (a blanked or mis-addressed cell also stops saying "New"), and
+    the re-read dropdown must offer exactly new_list (a clobbered or vanished
+    validation also stops offering "New").
+
+    Refusals are deliberately NOT part of this verdict. A refusal is a
+    permanent won't-do — a rule shaped in a way this script never rewrites —
+    so counting it here would pin every future run to exit 1 with a message
+    claiming outstanding work that no run will ever do. They are reported at
+    plan time instead.
+    """
+    tab = plan["tab"]
     col_a = [r[0] if r else "" for r in
              get_values(INTAKE_ID, "'%s'!A1:A" % tab)]
+
+    def at(row):
+        return (col_a[row - 1] if row - 1 < len(col_a) else "").strip()
+
     left = plan_intake_cells(col_a)
     if left:
         return "%s: %d Status cell(s) still read %r" % (tab, len(left), OLD)
-    _gid, rule, _r0, _r1 = intake_grid_rule(tab)
+    missed = [r for r in plan["cell_rows"] if at(r) != NEW]
+    if missed:
+        return ("%s: %d planned cell(s) do not read %r after the write (rows "
+                "%s)" % (tab, len(missed), NEW, missed[:5]))
+    _gid, rule, _runs, _refusals = intake_grid_rule(tab)
     if rule is not None:
         return "%s: the Status dropdown still offers %r" % (tab, OLD)
-    _cfgid, cf_plans, cf_refusals = intake_cf_plans(tab)
-    if cf_plans or cf_refusals:
+    if plan["new_list"]:
+        got = intake_dropdown_values(tab)
+        if got != plan["new_list"]:
+            return ("%s: the Status dropdown reads %r after the write, not the "
+                    "migrated list" % (tab, got))
+    _cfgid, cf_plans, _cf_refusals = intake_cf_plans(tab)
+    if cf_plans:
         return ("%s: %d conditional-format rule(s) still test %r"
-                % (tab, len(cf_plans) + len(cf_refusals), OLD))
+                % (tab, len(cf_plans), OLD))
     return None
+
+
+def intake_dropdown_values(tab):
+    """The Status dropdown's list as it now reads, or None when it has none."""
+    res = gws_json("sheets", "spreadsheets", "get", params={
+        "spreadsheetId": INTAKE_ID,
+        "ranges": ["'%s'!A2:A2" % tab],
+        "fields": "sheets(data(rowData(values(dataValidation))))"})
+    rows = ((res["sheets"][0].get("data") or [{}])[0].get("rowData") or [{}])
+    dv = ((rows[0].get("values") or [{}])[0].get("dataValidation") or {})
+    cond = dv.get("condition") or {}
+    if cond.get("type") != "ONE_OF_LIST":
+        return None
+    return [v.get("userEnteredValue", "") for v in cond.get("values", [])]
 
 
 # ----------------------------------------------------------------------------
 # Phase B — the chapter CRMs
 # ----------------------------------------------------------------------------
 def crm_folders(city=None):
-    """Chapter folders plus the two template folders, deduped by id."""
+    """Chapter folders plus the two template folders, deduped by id.
+
+    `city` filters AFTER the templates are added, so --city drops TemplateCity
+    and TemplateSeries from the run too — scoping to one chapter means exactly
+    one workbook, templates included.
+    """
     folders = list(list_chapter_folders())
     seen = {f["id"] for f in folders}
     folders += [t for t in TEMPLATE_FOLDERS if t["id"] not in seen]
@@ -563,22 +859,36 @@ def crm_folders(city=None):
 
 
 def open_crm_sheet(folder, workdir):
-    """((crm_meta, names, parts, sheet, path), None) or (None, why)."""
+    """(book, None) or (None, why), where book is a dict with keys
+    crm/names/parts/sheet/path — named rather than a positional tuple, whose
+    members are only valid as a set and were being indexed as book[3] a hundred
+    lines from where they are built."""
     crm, why = find_crm(folder["id"])
     if crm is None:
         return None, why
-    path = os.path.join(workdir, "%s.xlsx"
-                        % "".join(ch if ch.isalnum() or ch in "._-" else "_"
-                                  for ch in folder["name"]))
+    # The Drive FILE ID is part of the basename: sanitizing the folder name
+    # alone collides ("Washington DC" and "Washington, DC" both fold to
+    # Washington_DC), and the second backup would overwrite the first
+    # workbook's only pre-edit copy — after that workbook had been mutated.
+    path = os.path.join(workdir, "%s-%s.xlsx"
+                        % ("".join(ch if ch.isalnum() or ch in "._-" else "_"
+                                   for ch in folder["name"]), crm["id"]))
     try:
         names, parts = load_parts(download(crm["id"], path))
         part = sheet_part(parts, CRM_SHEET)
         if part is None:
             return None, "%s has no %r sheet" % (crm["name"], CRM_SHEET)
         sheet = CrmStatusSheet(parts, part)
-    except Exception as e:   # BadZipFile / KeyError / ParseError / ValueError
+    except (zipfile.BadZipFile, KeyError, ET.ParseError, ValueError) as e:
+        # STRUCTURAL failures only — a workbook this script cannot read. A
+        # transport failure (the RuntimeError gws raises once its five retries
+        # are spent, OSError, ...) must PROPAGATE: reported here it would be
+        # indistinguishable from a corrupt workbook, when the right answer is
+        # "the write may have landed, re-run to confirm" — this migration is
+        # idempotent, so a re-run is always the correct remedy.
         return None, "%s: %s: %s" % (crm["name"], type(e).__name__, e)
-    return (crm, names, parts, sheet, path), None
+    return {"crm": crm, "names": names, "parts": parts, "sheet": sheet,
+            "path": path}, None
 
 
 def plan_crm(sheet):
@@ -589,7 +899,7 @@ def plan_crm(sheet):
 
 def write_crm(folder, book, plan, workdir, backup_dir):
     """Apply + upload one workbook. Returns a failure string or None."""
-    crm, names, parts, sheet, path = book
+    crm, path = book["crm"], book["path"]
     with open(path, "rb") as fh:
         planned = fh.read()
     fresh, drifted = fresh_if_unchanged(
@@ -599,16 +909,28 @@ def write_crm(folder, book, plan, workdir, backup_dir):
     if drifted:
         return ("%s changed since the plan was built — NOT written, re-run"
                 % crm["name"])
-    sheet.apply(plan["cells"], plan["dvs"])
-    upload(crm["id"], path, save_parts(names, parts), XLSX)
-    # Verify: a fresh download must propose nothing.
+    signal_before = book["sheet"].signal_dv_text()
+    book["sheet"].apply(plan["cells"], plan["dvs"])
+    upload(crm["id"], path, save_parts(book["names"], book["parts"]), XLSX)
+    # Verify: a fresh download must show the PLANNED work done. Refusals are
+    # excluded on purpose — a refusal is a permanent won't-do (a validation
+    # spanning extra columns is refused by design and is still there after a
+    # perfectly successful write), so counting it here would fail every future
+    # run with a message claiming work no run will ever do.
     book2, why = open_crm_sheet(folder, os.path.join(workdir, "verify"))
     if book2 is None:
         return "%s: could not re-open after write: %s" % (crm["name"], why)
-    plan2, refusals2 = plan_crm(book2[3])
-    if plan2["cells"] or plan2["dvs"] or refusals2:
+    plan2, _refusals2 = plan_crm(book2["sheet"])
+    if plan2["cells"] or plan2["dvs"]:
         return ("%s: %d cell(s) / %d validation(s) still pending after write"
                 % (crm["name"], len(plan2["cells"]), len(plan2["dvs"])))
+    # The Signal column's own "New" is unrelated and must survive. The class
+    # locates that column precisely so this can be PROVEN in production, not
+    # only asserted in the tests.
+    signal_after = book2["sheet"].signal_dv_text()
+    if signal_after != signal_before:
+        return ("%s: the Signal validation changed during the write (%r -> %r)"
+                % (crm["name"], signal_before, signal_after))
     return None
 
 
@@ -621,12 +943,54 @@ def run(args):
     try:
         return _run(args, workdir)
     finally:
-        if not args.write:   # --write keeps its before/ backups for recovery
-            shutil.rmtree(workdir, ignore_errors=True)
+        cleanup_workdir(workdir, keep_backups=args.write)
+
+
+def cleanup_workdir(workdir, keep_backups):
+    """Delete the working copies; keep only the pre-edit backups on --write.
+
+    What lands in workdir is not just before/: a downloaded working copy per
+    chapter, reread.xlsx, and the whole verify/ subtree re-downloaded after
+    each upload — three to four full copies of every CRM, i.e. the names and
+    emails of the entire organizer base. Only before/ has recovery value, so
+    only before/ survives, and a failed delete is REPORTED rather than
+    swallowed: silence would leave member data on disk with nobody aware.
+    """
+    left = []
+    for name in sorted(os.listdir(workdir)):
+        if keep_backups and name == "before":
+            continue
+        target = os.path.join(workdir, name)
+        shutil.rmtree(target, ignore_errors=True) if os.path.isdir(target) \
+            else _unlink_quietly(target)
+        if os.path.exists(target):
+            left.append(target)
+    if not keep_backups and not left:
+        shutil.rmtree(workdir, ignore_errors=True)
+        if not os.path.exists(workdir):
+            return
+        left.append(workdir)
+    if left:
+        print("WARNING: could not delete %d path(s) holding member data — "
+              "remove by hand: %s" % (len(left), ", ".join(left[:5])),
+              file=sys.stderr)
+
+
+def _unlink_quietly(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _run(args, workdir):
-    proposed, failures = 0, []
+    proposed, failures, refused = 0, [], []
+
+    def refuse(where, why, width):
+        """A won't-do: reported once, here, and never folded into a verify
+        verdict — it is still true after a perfectly successful write."""
+        refused.append("%s: %s" % (where, why))
+        print("  %-*s REFUSED — %s" % (width, where, why))
 
     print("Phase A — Intake Ops role tabs (%s):" % ", ".join(ROLE_TABS))
     tab_plans = []
@@ -637,29 +1001,28 @@ def _run(args, workdir):
             failures.append("%s: %s" % (tab, plan["guard"]))
             print("  %-10s REFUSED — %s" % (tab, plan["guard"]))
             continue
-        for r in plan["cf_refusals"]:
-            failures.append("%s: %s" % (tab, r))
-            print("  %-10s REFUSED — %s" % (tab, r))
+        for r in plan["cf_refusals"] + plan["dv_refusals"]:
+            refuse(tab, r, 10)
         bits = []
         if plan["cell_rows"]:
             bits.append("%d Status cell(s) %r -> %r (column A only)"
                         % (len(plan["cell_rows"]), OLD, NEW))
         if plan["new_list"]:
-            bits.append("dropdown list %r -> %r" % (OLD, NEW))
-        if plan["cf_plans"]:
-            bits.append("%d conditional-format rule(s) %s -> %s"
-                        % (len(plan["cf_plans"]), CF_TOKEN_OLD, CF_TOKEN_NEW))
+            bits.append("dropdown list %r -> %r over row run(s) %s"
+                        % (OLD, NEW, [[a + 1, b + 1] for a, b
+                                      in plan["dv_runs"]]))
+        for _i, old, _rule in plan["cf_plans"]:
+            bits.append("color rule %s" % old)
         print("  %-10s %s" % (tab, "; ".join(bits) or "in sync"))
-        proposed += (len(plan["cell_rows"]) + (1 if plan["new_list"] else 0)
-                     + len(plan["cf_plans"]))
+        proposed += tab_changes(plan)
 
     howto_plans, howto_refusals = intake_howto_plans()
     for r in howto_refusals:
-        failures.append("%s: %s" % (HOWTO_TAB, r))
-        print("  %-10s REFUSED — %s" % (HOWTO_TAB, r))
+        refuse(HOWTO_TAB, r, 10)
     print("  %-10s %s" % (HOWTO_TAB,
-                          ("%d status sentence(s) %r -> %r"
-                           % (len(howto_plans), OLD, NEW))
+                          ("%d status sentence(s) %r -> %r at %s"
+                           % (len(howto_plans), OLD, NEW,
+                              ", ".join(a1 for a1, _o, _n in howto_plans)))
                           if howto_plans else "in sync"))
     proposed += len(howto_plans)
 
@@ -673,10 +1036,9 @@ def _run(args, workdir):
             failures.append("%s: %s" % (folder["name"], why))
             print("  %-20s SKIPPED — %s" % (folder["name"], why))
             continue
-        plan, refusals = plan_crm(book[3])
+        plan, refusals = plan_crm(book["sheet"])
         for r in refusals:
-            failures.append("%s: %s" % (book[0]["name"], r))
-            print("  %-20s REFUSED — %s" % (folder["name"], r))
+            refuse(folder["name"], r, 20)
         n_cells, n_dvs = len(plan["cells"]), len(plan["dvs"])
         if not n_cells and not n_dvs:
             print("  %-20s in sync" % folder["name"])
@@ -685,41 +1047,68 @@ def _run(args, workdir):
                 if n_cells else []) \
             + ([('Status dropdown -%r' % OLD)] if n_dvs else [])
         print("  %-20s %s (%s)" % (folder["name"], ", ".join(bits),
-                                   book[0]["name"]))
+                                   book["crm"]["name"]))
         proposed += n_cells + n_dvs
         crm_plans.append((folder, book, plan))
 
+    # Phase A is the WHOLE intake spreadsheet, so --city (whose entire purpose
+    # is limiting blast radius) must not drag it along silently: with --city,
+    # Phase A is reported but written only on an explicit --include-intake.
+    write_intake = args.write and (not args.city or args.include_intake)
+    if args.write and args.city and not args.include_intake and (
+            howto_plans or any(tab_actionable(p) for p in tab_plans)):
+        print("\nNOTE: --city scopes Phase B only. The intake-wide Phase A "
+              "changes above are REPORTED, not written — re-run with "
+              "--include-intake to apply them.")
+
     if not proposed:
+        print()
+        for r in refused:
+            print("  needs a human: %s" % r)
         if failures:
-            print("\n%d tab(s)/workbook(s) could not be planned:" % len(failures))
+            print("%d tab(s)/workbook(s) could not be planned:" % len(failures))
             for f in failures:
                 print("  %s" % f)
             return 1
-        print("\nNothing to do — %r is gone from every dropdown, cell, color "
-              "rule and How-to-use sentence." % OLD)
-        return 0
+        print("Nothing to do — %r is gone from every dropdown, cell, color "
+              "rule and How-to-use sentence this script can read%s."
+              % (OLD, " (see the refusals above)" if refused else ""))
+        return 0 if not refused else 1
 
     if not args.write:
         print("\n%d change(s) proposed across %d tab(s) and %d workbook(s). "
               "Re-run with --write to apply."
-              % (proposed, sum(1 for p in tab_plans
-                               if p["cell_rows"] or p["new_list"]
-                               or p["cf_plans"]) + (1 if howto_plans else 0),
+              % (proposed,
+                 sum(1 for p in tab_plans if tab_actionable(p))
+                 + (1 if howto_plans else 0),
                  len(crm_plans)))
+        for r in refused:
+            print("  needs a human: %s" % r)
         return 1 if failures else 2
 
     print("\nApplying...")
+    written_tabs = []
     for plan in tab_plans:
-        if plan["guard"] or not (plan["cell_rows"] or plan["new_list"]
-                                 or plan["cf_plans"]):
+        if not (write_intake and tab_actionable(plan)):
             continue
         try:
+            drift = intake_tab_drifted(plan)
+            if drift:
+                failures.append("%s: %s" % (plan["tab"], drift))
+                print("  SKIPPED %s — %s" % (plan["tab"], drift),
+                      file=sys.stderr)
+                continue
             apply_intake_tab(plan)
-            print("  wrote %s" % plan["tab"])
+            written_tabs.append(plan)
+            left = [r for r in plan["cf_refusals"] + plan["dv_refusals"]]
+            print("  %s %s%s"
+                  % ("PARTIAL" if left else "wrote", plan["tab"],
+                     " — applied %d change(s), %d item(s) still need a human"
+                     % (tab_changes(plan), len(left)) if left else ""))
         except Exception as e:
             failures.append("%s: %s" % (plan["tab"], e))
             print("  FAILED %s — %s" % (plan["tab"], e), file=sys.stderr)
-    if howto_plans:
+    if howto_plans and write_intake:
         try:
             apply_howto(howto_plans)
             print("  wrote %s (%d sentence(s))" % (HOWTO_TAB, len(howto_plans)))
@@ -739,26 +1128,25 @@ def _run(args, workdir):
     print("Pre-edit workbook copies kept in %s" % backup_dir)
 
     print("\nRe-verifying the intake tabs...")
-    for plan in tab_plans:
-        if plan["guard"] or not (plan["cell_rows"] or plan["new_list"]
-                                 or plan["cf_plans"]):
-            continue
-        bad = verify_intake_tab(plan["tab"])
+    for plan in written_tabs:
+        bad = verify_intake_tab(plan)
         if bad:
             failures.append(bad)
-    if howto_plans:
-        left, still_refused = intake_howto_plans()
-        if left or still_refused:
+    if howto_plans and write_intake:
+        left, _still_refused = intake_howto_plans()
+        if left:
             failures.append("%s: %d status sentence(s) not migrated"
-                            % (HOWTO_TAB, len(left) + len(still_refused)))
+                            % (HOWTO_TAB, len(left)))
 
+    for r in refused:
+        print("  needs a human: %s" % r)
     if failures:
         print("VERIFY FAILED / INCOMPLETE:")
         for f in failures:
             print("  %s" % f)
         return 1
-    print("Verified: fresh reads of every written tab and workbook propose "
-          "zero changes.")
+    print("Verified: every planned change landed — fresh reads of each written "
+          "tab and workbook propose zero further changes.")
     return 2   # changes were proposed AND applied — the shared 0/2/1 contract
 
 
@@ -768,8 +1156,11 @@ def main():
     ap.add_argument("--write", action="store_true",
                     help="apply the proposed changes (default: report only)")
     ap.add_argument("--city",
-                    help="limit Phase B to one chapter folder — Phase A (the "
-                         "intake tabs) always runs in full")
+                    help="limit Phase B to one chapter folder; Phase A is then "
+                         "reported but not written (see --include-intake)")
+    ap.add_argument("--include-intake", action="store_true",
+                    help="with --city --write, also apply the intake-wide "
+                         "Phase A changes")
     sys.exit(run(ap.parse_args()))
 
 

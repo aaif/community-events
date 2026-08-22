@@ -172,7 +172,10 @@ class TestCollectAborts(CollectBase):
             self._collect(sheets)
         self.assertIn("Status", str(e.exception))
         got = self._collect(sheets, show_all=True)["Organizers"]
-        self.assertEqual(got[0]["status"], "Prospect")  # no column reads as Prospect
+        # --all still reports the rows, but a row whose tab has NO Status
+        # column reports "unknown" — a confident "Prospect" there would be read
+        # from nothing at all, and the digest would look authoritative.
+        self.assertEqual(got[0]["status"], intake.UNKNOWN_STATUS)
 
     def test_an_empty_tab_is_an_empty_queue_not_an_abort(self):
         self.assertEqual(self._collect({})["Organizers"], [])

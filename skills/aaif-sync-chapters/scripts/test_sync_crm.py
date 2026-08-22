@@ -602,6 +602,32 @@ names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_NEW_MIGRATED)
 check("a migrated, already-Host workbook is left alone",
       patch_status_dropdown(parts, sheet_part(parts, "Attendees")), "already")
 
+# The real post-migration fleet shape: a LEGACY workbook (&quot;-escaped) whose
+# Status list has been migrated. Every migrated-list case above uses the `"`
+# encoding, so this combination — the likeliest one in the estate — is the one
+# the restructured two-pass loop never exercised.
+names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_OLD_MIGRATED)
+part = sheet_part(parts, "Attendees")
+parts[part] = parts[part].replace(
+    ('"%s"' % sync_crm.DV_STATUS_OLD_MIGRATED).encode(),
+    ("&quot;%s&quot;" % sync_crm.DV_STATUS_OLD_MIGRATED).encode())
+check("a &quot;-escaped MIGRATED workbook is patched, not reported absent",
+      patch_status_dropdown(parts, part), "patched")
+check("...keeping the escaping and the migrated spelling",
+      ("&quot;%s&quot;" % sync_crm.DV_STATUS_NEW_MIGRATED).encode() in parts[part],
+      True)
+check("...and it stays idempotent", patch_status_dropdown(parts, part), "already")
+
+# The four dropdown literals are DERIVED from one tuple; pin what they derive to
+# so a future edit to DV_STATUS_VALUES cannot silently change the wire format.
+check("the derived literals are exactly the four the patcher matches",
+      (sync_crm.DV_STATUS_OLD, sync_crm.DV_STATUS_NEW,
+       sync_crm.DV_STATUS_OLD_MIGRATED, sync_crm.DV_STATUS_NEW_MIGRATED),
+      ("New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined",
+       "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined",
+       "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined",
+       "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"))
+
 # Regression: serialize() rewrites the sheet part from the element tree, so a
 # dropdown patch applied BEFORE it is silently discarded — the run reports the
 # patch as applied and the uploaded workbook still has the eight-value list.

@@ -36,14 +36,22 @@ TABS = {
 # custom --status list never needs to know about blanks or legacy cells.
 DEFAULT_NEEDS_REVIEW = {"Prospect", "In progress"}
 
+# What a row reports when the tab has no Status column at all — see collect().
+UNKNOWN_STATUS = "?"
+
 
 def normalize_status(value):
     """One normalization for Status cells AND --status filter values: blank and
     the legacy "New" are both "Prospect". Cells still saying "New" exist until
     migrate_status_prospect.py has rewritten every sheet; a row holding it must
-    behave identically to one holding "Prospect"."""
+    behave identically to one holding "Prospect".
+
+    The legacy alias is matched case-INSENSITIVELY. Now that the dropdown no
+    longer offers "New", the only way it can reach a cell is by hand or paste —
+    exactly the route that produces "new" or "NEW", and a row spelled that way
+    would silently drop out of the triage queue."""
     v = (value or "").strip()
-    return "Prospect" if v in ("", "New") else v
+    return "Prospect" if v == "" or v.lower() == "new" else v
 
 
 def normalize_filter(values):
@@ -118,8 +126,12 @@ def collect(status_filter, show_all):
                 continue  # skip empty trailing rows (no Timestamp)
             # Blank IS "Prospect" (and legacy "New" is too) — normalized once
             # here, so the filter below and the reported status can never
-            # disagree about what a blank or legacy cell means.
-            status = normalize_status(row[si] if si is not None else "")
+            # disagree about what a blank or legacy cell means. With no Status
+            # column at all (--all reaches here; the filtered path aborts
+            # above) the honest answer is "unknown" — reporting a confident
+            # "Prospect" read from nothing is worse than saying so.
+            status = (normalize_status(row[si]) if si is not None
+                      else UNKNOWN_STATUS)
             if not show_all and status not in status_filter:
                 continue
             rec = {"row": rn, "status": status}

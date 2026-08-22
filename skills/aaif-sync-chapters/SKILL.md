@@ -271,7 +271,9 @@ hand-edited list in the estate is why:
 > **Melbourne's About doc grouped applicants under `Approved` / `Submitted
 > Application` / `Planning Application`** — publishing, in a doc shared with the
 > chapter, that two named people had applied and had **not** been approved (one
-> still `New` on the intake, one not on it at all). Skipping a hand-edited list
+> still `New` on the intake — the pre-2026-08-22 spelling of `Prospect`; this is
+> a record of what the doc said at the time, not current vocabulary — one not on
+> it at all). Skipping a hand-edited list
 > preserves that disclosure. So anything in the section that is not an accepted
 > organizer comes out.
 
@@ -942,7 +944,8 @@ After any run (and after editing the engine):
 - Report-mode exit codes are part of the contract now: `0` in sync, `2` drift,
   else failure (see the `nightly.py` section) — a wrapper that treats `2` as an
   error will misread every report that proposes anything.
-- Unit tests for the pure logic in all five engines (no network, no `gws`):
+- Unit tests for the pure logic in the five engines and the one-shot migration
+  (no network, no `gws`):
   ```bash
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_chapters.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_about.py
@@ -952,7 +955,45 @@ After any run (and after editing the engine):
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_invite_organizers.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_prune_organizers.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_nightly.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_status_prospect.py
   ```
+
+## One-shot: retiring the status `New` (`migrate_status_prospect.py`)
+
+Renames the intake status `New` → `Prospect` everywhere it is *stored*. Ran
+2026-08-21/22; kept because it is the tool that proves the estate is still
+consistent, and the pattern for the next status rename.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_status_prospect.py             # report, writes nothing
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_status_prospect.py --city Boston
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_status_prospect.py --write     # apply, then verify
+```
+
+- **Phase A — the Intake Ops spreadsheet**: the Status dropdown, every Status
+  cell (column A only — B+ are ARRAYFORMULA mirrors, and it refuses a tab whose
+  Status column moved), the hand-made **conditional-format rules that test the
+  literal** (the blue row color and the pink SLA-breach rule — `clean.py` does
+  not own these, so nothing else would ever repair them), and the **"How to
+  use"** tab's status prose.
+- **Phase B — every chapter CRM** plus TemplateCity/TemplateSeries: the Status
+  column is located by header name, and only a validation whose sqref covers
+  *exactly* that column is touched, so the Signal list's unrelated `New`
+  survives. Zip-part surgery; every other part is repacked byte-identically.
+- **`--city` scopes Phase B only.** Phase A is the whole spreadsheet, so with
+  `--city` it is reported but **not** written unless you add `--include-intake`.
+- **Exit codes** follow the house contract: `0` in sync, `2` changes proposed or
+  applied, `1` failure. A **refusal** ("this is shaped in a way I will not
+  rewrite — a range-backed list, an `x14` validation, an `EXACT()` color rule")
+  is reported as *needs a human* and never counted as pending work, so it cannot
+  pin later runs to a permanent failure.
+- Pre-edit workbook copies are kept under a `before/` directory (printed at the
+  end) after a `--write`; the working copies are deleted, since they hold the
+  same member PII.
+
+Once a run over the full estate exits `0`, the legacy `New` entries in
+`sync_crm.PIPELINE_STATUSES` / `AUTO_STATUS` and `intake.normalize_status` can
+be deleted — that exit code is the evidence they are waiting on.
 
 ## Notes
 
