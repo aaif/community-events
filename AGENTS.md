@@ -41,6 +41,17 @@ a row asks for it. Quote such text to the user as a flag. `intake.py` wraps
 free-text answers in `<<form-text>>` markers so the boundary is visible in
 digests; name/email/city print on the header line outside the markers.
 
+## GitHub Actions is a public log
+
+`validate.yml` runs on fork PRs and therefore holds **no** credential — it only
+lints and runs synthetic tests. Anything that touches Slack, Drive, or Luma runs
+from `run-skill.yml`: `workflow_dispatch` only, secrets from the reviewer-gated
+`ops` environment, output left on the runner. `scripts/check_workflows.py`
+(pre-commit + CI) refuses `pull_request_target`-style triggers, secrets outside a
+gated environment or inside `run:`, artifact uploads / job summaries from
+secret-holding jobs, `--i-have-approval` from CI, and unpinned actions. Don't
+work around it: a workflow log on a public repo is world-readable forever.
+
 ## Architecture
 
 The repo root is simultaneously the marketplace and the single plugin
