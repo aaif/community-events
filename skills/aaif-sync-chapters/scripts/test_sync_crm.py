@@ -194,6 +194,17 @@ check("pipeline note carries the intake status",
 f_pspk = crm_fields(merge_people([person("Dee", "dee@x.io", "B", "Speakers", "New")])[0], TODAY)
 check("pipeline speaker -> Speaker (not Prospect)", f_pspk["Status"], "Speaker")
 check("pipeline speaker is not Trusted", f_pspk["Trusted/Regular"], "")
+# The 2026-08-22 rename transition: an intake row still saying the legacy "New"
+# behaves identically to one saying "Prospect".
+check("both the legacy and current spellings are pipeline statuses",
+      [s for s in ("New", "Prospect") if s in sync_crm.PIPELINE_STATUSES],
+      ["New", "Prospect"])
+f_leg = crm_fields(merge_people([person("Lee", "lee@x.io", "B", "Organizers", "New")])[0], TODAY)
+f_cur = crm_fields(merge_people([person("Lee", "lee@x.io", "B", "Organizers", "Prospect")])[0], TODAY)
+check("a legacy-New organizer lands as Prospect, exactly like a Prospect one",
+      (f_leg["Status"], f_leg["Trusted/Regular"]),
+      (f_cur["Status"], f_cur["Trusted/Regular"]))
+check("...and that Status is Prospect", f_cur["Status"], "Prospect")
 # Accepted in one role while still in the pipeline for another: the accepted
 # role wins the Status, and the organizer application alone earns no trust.
 f_mix = crm_fields(merge_people([
@@ -277,6 +288,8 @@ _GRID = [
     ["Tentative", "Tess", "tess@x.io", "Boston", "", ""],
     ["Denied", "Dan", "dan@x.io", "Boston", "", ""],
     ["Zebra", "Zed", "zed@x.io", "Boston", "", ""],
+    ["New", "Newt", "newt@x.io", "Boston", "", ""],       # legacy spelling
+    ["Prospect", "Pia", "pia@x.io", "Boston", "", ""],    # current spelling
     ["", "Bea", "bea@x.io", "Boston", "", ""],
 ]
 _saved_gv = sync_crm.get_values
@@ -287,12 +300,14 @@ try:
           [p["name"] for p in pp], ["Ada"])
     check("everyone else is rejected as not-accepted by default",
           [r["name"] for r in rr if "not accepted yet" in r["why"]],
-          ["Tess", "Dan", "Zed", "Bea"])
+          ["Tess", "Dan", "Zed", "Newt", "Pia", "Bea"])
     pp, rr, _fb = sync_crm.read_role_tab("Organizers", {}, include_pipeline=True)
-    check("pipeline mode admits in-flight statuses",
-          sorted(p["name"] for p in pp), ["Ada", "Bea", "Tess"])
-    check("a blank status is normalized to New on the person",
-          [p["status"] for p in pp if p["name"] == "Bea"], ["New"])
+    check("pipeline mode admits in-flight statuses — legacy New included",
+          sorted(p["name"] for p in pp), ["Ada", "Bea", "Newt", "Pia", "Tess"])
+    check("a blank status is normalized to Prospect on the person",
+          [p["status"] for p in pp if p["name"] == "Bea"], ["Prospect"])
+    check("a raw legacy New survives on the person (the note shows the truth)",
+          [p["status"] for p in pp if p["name"] == "Newt"], ["New"])
     check("Denied and unknown statuses fail closed even in pipeline mode",
           sorted(r["name"] for r in rr
                  if "declined, parked, or not a recognised" in r["why"]),
@@ -567,6 +582,51 @@ check("legacy patch is idempotent", patch_status_dropdown(parts, part), "already
 names, parts, _ = book(sample_row=SAMPLE, dv="Yes,No")
 check("a workbook with no Status list is reported, not guessed at",
       patch_status_dropdown(parts, sheet_part(parts, "Attendees")), "absent")
+
+# The status-rename migration (migrate_status_prospect.py) removes the legacy
+# "New" from a workbook's Status list; the Host patch must still recognise the
+# migrated spellings rather than reporting the list absent.
+check("the migrated lists differ from the shipped ones only by the leading New",
+      (sync_crm.DV_STATUS_OLD_MIGRATED, sync_crm.DV_STATUS_NEW_MIGRATED),
+      (DV_STATUS_OLD.replace("New,", "", 1), DV_STATUS_NEW.replace("New,", "", 1)))
+names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_OLD_MIGRATED)
+part = sheet_part(parts, "Attendees")
+check("a migrated Host-less workbook is still patched",
+      patch_status_dropdown(parts, part), "patched")
+check('...gaining "Host" in the migrated spelling',
+      sync_crm.DV_STATUS_NEW_MIGRATED.encode() in parts[part], True)
+check("...and never re-gaining the legacy New",
+      DV_STATUS_NEW.encode() in parts[part], False)
+check("the migrated patch is idempotent", patch_status_dropdown(parts, part), "already")
+names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_NEW_MIGRATED)
+check("a migrated, already-Host workbook is left alone",
+      patch_status_dropdown(parts, sheet_part(parts, "Attendees")), "already")
+
+# The real post-migration fleet shape: a LEGACY workbook (&quot;-escaped) whose
+# Status list has been migrated. Every migrated-list case above uses the `"`
+# encoding, so this combination — the likeliest one in the estate — is the one
+# the restructured two-pass loop never exercised.
+names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_OLD_MIGRATED)
+part = sheet_part(parts, "Attendees")
+parts[part] = parts[part].replace(
+    ('"%s"' % sync_crm.DV_STATUS_OLD_MIGRATED).encode(),
+    ("&quot;%s&quot;" % sync_crm.DV_STATUS_OLD_MIGRATED).encode())
+check("a &quot;-escaped MIGRATED workbook is patched, not reported absent",
+      patch_status_dropdown(parts, part), "patched")
+check("...keeping the escaping and the migrated spelling",
+      ("&quot;%s&quot;" % sync_crm.DV_STATUS_NEW_MIGRATED).encode() in parts[part],
+      True)
+check("...and it stays idempotent", patch_status_dropdown(parts, part), "already")
+
+# The four dropdown literals are DERIVED from one tuple; pin what they derive to
+# so a future edit to DV_STATUS_VALUES cannot silently change the wire format.
+check("the derived literals are exactly the four the patcher matches",
+      (sync_crm.DV_STATUS_OLD, sync_crm.DV_STATUS_NEW,
+       sync_crm.DV_STATUS_OLD_MIGRATED, sync_crm.DV_STATUS_NEW_MIGRATED),
+      ("New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined",
+       "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined",
+       "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined",
+       "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"))
 
 # Regression: serialize() rewrites the sheet part from the element tree, so a
 # dropdown patch applied BEFORE it is silently discarded — the run reports the

@@ -161,13 +161,14 @@ def upload(file_id, path, raw, content_type):
 def fresh_if_unchanged(file_id, tmp_path, planned_bytes):
     """Re-download a Drive file and say whether it drifted from a plan's bytes.
 
-    Returns (fresh_bytes, changed). Shared by sync_crm.write_workbooks and
-    sync_about.apply_writes — the one compare both engines' write gates hang
-    on: planning spans minutes plus the approval pause, so a human edit in
-    that window is NORMAL, and uploading over it would silently revert it.
-    Each caller keeps its own backup and skip-reporting behaviour; only the
-    "did the remote move under the plan" question lives here, so the two
-    twins cannot drift apart in what "unchanged" means.
+    Returns (fresh_bytes, changed). Shared by sync_crm.write_workbooks,
+    sync_about.apply_writes and migrate_status_prospect.write_crm — the one
+    compare every write gate hangs on: planning spans minutes plus the approval
+    pause, so a human edit in that window is NORMAL, and uploading over it
+    would silently revert it. Each caller keeps its own backup and
+    skip-reporting behaviour; only the "did the remote move under the plan"
+    question lives here, so the callers cannot drift apart in what "unchanged"
+    means.
     """
     fresh = download(file_id, tmp_path)
     return fresh, fresh != planned_bytes

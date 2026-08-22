@@ -16,7 +16,7 @@ def _digest_of(rec):
     return buf.getvalue()
 
 
-BASE = {"row": 2, "status": "New", "Full name": "Ada", "Email": "ada@x.com"}
+BASE = {"row": 2, "status": "Prospect", "Full name": "Ada", "Email": "ada@x.com"}
 
 
 class TestDigestCity(unittest.TestCase):
@@ -78,51 +78,67 @@ class CollectBase(unittest.TestCase):
 
 
 class TestCollectStatusFilter(CollectBase):
-    ROWS = [["t1", "", "Ada", "a@x.com"],            # blank status = New
-            ["t2", "New", "Grace", "g@x.com"],
+    ROWS = [["t1", "", "Ada", "a@x.com"],            # blank status = Prospect
+            ["t2", "New", "Grace", "g@x.com"],       # legacy spelling = Prospect
+            ["t2b", "Prospect", "Hedy", "h@x.com"],
             ["t3", "In progress", "Joan", "j@x.com"],
             ["t4", "Accepted", "Mary", "m@x.com"],
             ["", "New", "ghost", ""]]                # no Timestamp -> not a row
 
-    def test_default_filter_takes_blank_new_and_in_progress(self):
+    def test_default_filter_takes_blank_legacy_prospect_and_in_progress(self):
         got = self._collect(self._org(self.ROWS))["Organizers"]
-        self.assertEqual([r["Full name"] for r in got], ["Ada", "Grace", "Joan"])
+        self.assertEqual([r["Full name"] for r in got],
+                         ["Ada", "Grace", "Hedy", "Joan"])
 
-    def test_blank_status_is_normalized_to_new(self):
+    def test_blank_status_is_normalized_to_prospect(self):
         got = self._collect(self._org(self.ROWS))["Organizers"]
-        self.assertEqual(got[0]["status"], "New")
+        self.assertEqual(got[0]["status"], "Prospect")
 
-    def test_a_custom_new_filter_still_includes_blank_status_rows(self):
-        # The regression: filtering on "New" alone used to drop blank-status
-        # rows, even though a blank Status IS New per the skill's status model.
-        got = self._collect(self._org(self.ROWS), status_filter={"New"})["Organizers"]
-        self.assertEqual([r["Full name"] for r in got], ["Ada", "Grace"])
+    def test_legacy_new_behaves_identically_to_prospect(self):
+        # The 2026-08-22 rename transition: a row still saying "New" (not yet
+        # rewritten by migrate_status_prospect.py) reports as, and filters
+        # like, "Prospect".
+        got = self._collect(self._org(self.ROWS))["Organizers"]
+        self.assertEqual(got[1]["Full name"], "Grace")
+        self.assertEqual(got[1]["status"], "Prospect")
 
-    def test_a_custom_filter_without_new_excludes_blank_rows(self):
+    def test_a_custom_prospect_filter_includes_blank_and_legacy_rows(self):
+        got = self._collect(self._org(self.ROWS),
+                            status_filter={"Prospect"})["Organizers"]
+        self.assertEqual([r["Full name"] for r in got], ["Ada", "Grace", "Hedy"])
+
+    def test_a_status_new_filter_still_works_via_normalization(self):
+        # --status New keeps working: normalize_filter folds it to "Prospect",
+        # the same normalization the cells get.
+        got = self._collect(self._org(self.ROWS),
+                            status_filter=intake.normalize_filter(["New"]))["Organizers"]
+        self.assertEqual([r["Full name"] for r in got], ["Ada", "Grace", "Hedy"])
+
+    def test_a_custom_filter_without_prospect_excludes_blank_rows(self):
         got = self._collect(self._org(self.ROWS),
                             status_filter={"In progress"})["Organizers"]
         self.assertEqual([r["Full name"] for r in got], ["Joan"])
 
     def test_show_all_ignores_the_filter_but_not_the_timestamp_marker(self):
         got = self._collect(self._org(self.ROWS), show_all=True)["Organizers"]
-        self.assertEqual(len(got), 4)                  # ghost row still skipped
-        self.assertEqual(got[3]["status"], "Accepted")
+        self.assertEqual(len(got), 5)                  # ghost row still skipped
+        self.assertEqual(got[4]["status"], "Accepted")
 
     def test_explicit_blank_status_selects_blank_rows(self):
         # The regression: --status "" used to silently select zero rows, because
-        # blank cells normalize to "New" before the filter ever sees them. The
-        # filter must be normalized the same way.
+        # blank cells normalize to "Prospect" before the filter ever sees them.
+        # The filter must be normalized the same way.
         got = self._collect(self._org(self.ROWS),
                             status_filter=intake.normalize_filter([""]))["Organizers"]
-        self.assertEqual([r["Full name"] for r in got], ["Ada", "Grace"])
+        self.assertEqual([r["Full name"] for r in got], ["Ada", "Grace", "Hedy"])
 
-    def test_normalize_filter_maps_blank_to_new_and_keeps_the_rest(self):
-        self.assertEqual(intake.normalize_filter(["", "  ", "Accepted"]),
-                         {"New", "Accepted"})
+    def test_normalize_filter_maps_blank_and_legacy_new_to_prospect(self):
+        self.assertEqual(intake.normalize_filter(["", "  ", "New", "Accepted"]),
+                         {"Prospect", "Accepted"})
 
     def test_row_numbers_are_sheet_rows(self):
         got = self._collect(self._org(self.ROWS), status_filter={"Accepted"})["Organizers"]
-        self.assertEqual([r["row"] for r in got], [5])  # row 2 = first data row
+        self.assertEqual([r["row"] for r in got], [6])  # row 2 = first data row
 
 
 class TestCollectLegacyAliases(CollectBase):
@@ -156,7 +172,10 @@ class TestCollectAborts(CollectBase):
             self._collect(sheets)
         self.assertIn("Status", str(e.exception))
         got = self._collect(sheets, show_all=True)["Organizers"]
-        self.assertEqual(got[0]["status"], "New")      # no column reads as New
+        # --all still reports the rows, but a row whose tab has NO Status
+        # column reports "unknown" — a confident "Prospect" there would be read
+        # from nothing at all, and the digest would look authoritative.
+        self.assertEqual(got[0]["status"], intake.UNKNOWN_STATUS)
 
     def test_an_empty_tab_is_an_empty_queue_not_an_abort(self):
         self.assertEqual(self._collect({})["Organizers"], [])
