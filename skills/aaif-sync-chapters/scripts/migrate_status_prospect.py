@@ -50,6 +50,7 @@ Exit codes: 0 everything already in sync; 2 changes proposed (or applied);
 Usage:
   python3 migrate_status_prospect.py            # report only, zero writes
   python3 migrate_status_prospect.py --city Boston   # scope Phase B to one CRM
+                                                    # (Phase A still runs whole)
   python3 migrate_status_prospect.py --write    # apply, then verify
 """
 import argparse
@@ -766,7 +767,9 @@ def main():
         description='Retire the legacy intake status "New" in favor of "Prospect".')
     ap.add_argument("--write", action="store_true",
                     help="apply the proposed changes (default: report only)")
-    ap.add_argument("--city", help="limit Phase B to one chapter folder")
+    ap.add_argument("--city",
+                    help="limit Phase B to one chapter folder — Phase A (the "
+                         "intake tabs) always runs in full")
     sys.exit(run(ap.parse_args()))
 
 
