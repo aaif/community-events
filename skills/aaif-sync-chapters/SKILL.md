@@ -470,9 +470,9 @@ used instead of inventing one.
   survive every re-run. Only genuinely blank cells are filled.
 - **`Status` is the one exception**: it is upgraded when it still holds a value
   the automation itself wrote (`Prospect` — or its legacy spelling `New` —
-  `Organizer`, `Speaker`,
-  `Host`). That is how a person's role is corrected after re-triage — while a
-  human's `Attended`, `Regular`, `Volunteer` or `Declined` is never undone.
+  `Organizer`, `Speaker`, `Host`). That is how a person's role is corrected
+  after re-triage — while a human's `Attended`, `Regular`, `Volunteer` or
+  `Declined` is never undone.
 - **Fixture rows are cleared, and only fixture rows.** A row is wiped **only** if
   its `Email` is at a reserved example domain (`@example.com`, `.org`, `.net`,
   `.edu`) — that is the sole gate, deliberately narrow and anchored on the `@` so

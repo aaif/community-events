@@ -19,7 +19,8 @@ sheet's structure.
 ## Status model (drives the queue and the sheet's cell colors)
 
 The Status values (dropdown on column A, matched exactly by the sheet's
-whole-row colors): `Prospect` (blue) → `In progress` (orange) → `Tentative` (teal) →
+whole-row colors): `Prospect` (blue) → `In progress` (orange) →
+`Tentative` (teal) →
 `Interviewing` (indigo) → `Accepted` (green) / `Denied` (maroon); `Inactive` (gray);
 `Duplicate` (brown); and `Existing (from MLOps)`
 (**violet**) for a prior organizer imported from the MLOps community. `Tentative` is a
@@ -41,8 +42,9 @@ the pre-2026-08-22 name for the same state, renamed because `New` misread as
 the cells **and the conditional-format rules that test the Status literal**
 (the blue row color and the pink SLA rule below both key on `=$A2="…"`, are
 hand-made on the sheet, and are repaired by nothing else — renaming only the
-cells leaves every row unpainted and the SLA breach permanently un-fired);
-until it has run everywhere, tooling treats `New` and `Prospect` as one status. Two overrides beat the status color: a **data error** (missing/invalid email
+cells leaves every row unpainted and the SLA breach permanently un-fired) **and
+the "How to use" tab's own status prose**; until it has run everywhere, tooling
+treats `New` and `Prospect` as one status. Two overrides beat the status color: a **data error** (missing/invalid email
 or broken LinkedIn) paints the row bright red, and an **SLA breach** — a `Prospect`/blank
 row older than 1 week (of a 2-week response SLA) — paints it pink. Acting on a row
 (moving it off `Prospect`) clears the pink. Each role tab also has `Reviewed by`,

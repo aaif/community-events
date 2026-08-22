@@ -22,10 +22,12 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import migrate_status_prospect as mig
-from migrate_status_prospect import (CF_TOKEN_NEW, CF_TOKEN_OLD, CrmStatusSheet,
-                                     cf_refusal, dv_list, intake_status_guard,
+from migrate_status_prospect import (CF_TOKEN_NEW, CF_TOKEN_OLD, HOWTO_TEXTS,
+                                     CrmStatusSheet, cf_refusal, dv_list,
+                                     howto_new_text, intake_status_guard,
                                      migrate_cf_formula, migrate_list, plan_crm,
-                                     plan_intake_cells, runs_of, sqref_cols)
+                                     plan_howto, plan_intake_cells, runs_of,
+                                     sqref_cols)
 from sync_crm import cell_ref, load_parts, save_parts, sheet_part
 
 fails = 0
@@ -104,6 +106,58 @@ check("EXACT() against column A is reported too",
       "migrate it by hand" in (cf_refusal('=EXACT($A2,"New")') or ""), True)
 check("a rule with no Status test is not a refusal",
       cf_refusal('=$K2<>""'), None)
+
+# ---------------------------------------------------------------------------
+# The "How to use" tab's status prose
+# ---------------------------------------------------------------------------
+check("every curated sentence still says the old status",
+      [t for t in HOWTO_TEXTS if "New" not in t], [])
+check("the swap takes the FIRST New, which is the status one",
+      howto_new_text("Every new submission defaults to New. Then Tentative."),
+      "Every new submission defaults to Prospect. Then Tentative.")
+check("no curated sentence also mentions the City (New) header "
+      "(which the first-occurrence swap would eat)",
+      [t for t in HOWTO_TEXTS if "City (New)" in t], [])
+check("no curated sentence carries a second status New",
+      [t for t in HOWTO_TEXTS if t.count("New") != 1], [])
+
+# The tab as get_values returns it: ragged rows, prose in mixed columns, and
+# the mentions that must SURVIVE (a form note, the City (New) header, a flow
+# line about a new city).
+HOWTO_ROWS = [
+    ["STATUS"],
+    [],
+    ["Tab", "New submissions append here automatically."],
+    [HOWTO_TEXTS[0], HOWTO_TEXTS[1]],
+    ["\U0001f7e6  Blue", HOWTO_TEXTS[2]],
+    ["\U0001fa77  Pink", HOWTO_TEXTS[3]],
+    ["CITY COLORS  (on the City (Existing) / City (New) columns)"],
+    [HOWTO_TEXTS[4]],
+    ["        \u2514 New city / new chapter  \u2192  City (New)"],
+]
+_plans, _refusals = plan_howto(HOWTO_ROWS)
+check("every status sentence is located, and nothing else is",
+      [(a1, new) for a1, _o, new in _plans],
+      [("A4", "Prospect \u2192 In progress \u2192 Accepted / Denied"),
+       ("B4", howto_new_text(HOWTO_TEXTS[1])),
+       ("B5", "Prospect \u2014 untriaged."),
+       ("B6", howto_new_text(HOWTO_TEXTS[3])),
+       ("A8", "Form submission  \u2192  \U0001f7e6 Prospect")])
+check("a clean tab raises no refusals", _refusals, [])
+
+_migrated = [[howto_new_text(c) if c in HOWTO_TEXTS else c for c in row]
+             for row in HOWTO_ROWS]
+check("an already-migrated tab plans nothing (idempotent)",
+      plan_howto(_migrated), ([], []))
+
+_reworded = [[c for c in row if c not in (HOWTO_TEXTS[2],)] for row in HOWTO_ROWS]
+_p2, _r2 = plan_howto(_reworded)
+check("a reworded sentence is REFUSED, not guessed at", len(_r2), 1)
+check("the refusal names the sentence", "untriaged" in _r2[0], True)
+check("...and the other four are still planned", len(_p2), 4)
+
+check("sentences are located by TEXT, not by a fixed A1 (rows can shift)",
+      [a1 for a1, _o, _n in plan_howto([[], []] + HOWTO_ROWS)[0]][:1], ["A6"])
 check("dv_list refuses a non-literal formula", dv_list("=Lists!A1:A9"), None)
 
 

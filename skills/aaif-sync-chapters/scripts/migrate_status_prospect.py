@@ -22,7 +22,9 @@ Phase A — the Intake Ops role tabs (Organizers / Speakers / Hosts):
     unpaints every Prospect row and — the real damage — stops the 1-week SLA
     breach from ever firing again. These rules are hand-made on the sheet;
     clean.py owns only the red error rule and the city/violet rules, so nothing
-    else would ever repair them.
+    else would ever repair them;
+  * the "How to use" tab's status prose is migrated by exact whole-sentence
+    match — it is what an organizer reads before picking from the dropdown.
 
 Phase B — every chapter CRM workbook (the ~80 "<City> CRM.xlsx" under the
 Chapters Drive folder, plus the TemplateCity and TemplateSeries templates):
@@ -63,7 +65,8 @@ from xml.etree import ElementTree as ET
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sync_chapters import (INTAKE_ID, download, fold_city, fresh_if_unchanged,  # noqa: E402
                            get_values, gws_json, upload)
-from sync_crm import (CRM_SHEET, X, XLSX, cell_text, col_of, find_crm,  # noqa: E402
+from sync_crm import (CRM_SHEET, X, XLSX, cell_ref, cell_text, col_of,  # noqa: E402
+                      find_crm,
                       list_chapter_folders, load_parts, register_namespaces,
                       save_parts, set_cell, shared_strings, sheet_part,
                       _XML_DECL)
@@ -136,6 +139,61 @@ def cf_refusal(formula):
         return None
     return ("tests the Status column for %r in a shape this script does not "
             "rewrite (%s) — migrate it by hand" % (OLD, f))
+
+
+HOWTO_TAB = "How to use"
+# The tab organizers actually read before they touch a dropdown: it teaches the
+# status flow in prose, so a rename that skips it leaves the sheet documenting
+# a value the dropdown no longer offers.
+#
+# Migrated by EXACT WHOLE-CELL match — never a word swap over the tab. The same
+# tab legitimately says "New submissions", "New city" and "City (New)" (a
+# column header, not a status), and a regex for the word would have rewritten
+# all three. Pinning the entire sentence is also what makes the single
+# first-occurrence swap below unambiguous: in each of these five cells the
+# first capital-N "New" IS the status. A sentence present in neither spelling
+# means the tab was reworded — reported, never guessed at.
+HOWTO_TEXTS = (
+    "New \u2192 In progress \u2192 Accepted / Denied",
+    "Every new submission defaults to New. Pick from the dropdown as you work "
+    "each person: Tentative once their LinkedIn checks out, Interviewing while "
+    "the interview is scheduled or under way, then Accepted / Denied. Use "
+    "Inactive to park one without deciding, and Duplicate for a repeat "
+    "submission from someone already in the queue.",
+    "New \u2014 untriaged.",
+    "Overdue \u2014 still New after 1 week (of a 2-week response SLA). Act on "
+    "it to clear.",
+    "Form submission  \u2192  \U0001f7e6 New",
+)
+
+
+def howto_new_text(old):
+    """The migrated text of one How-to-use sentence: the FIRST "New" only."""
+    return old.replace(OLD, NEW, 1)
+
+
+def plan_howto(rows):
+    """([(a1, old, new)], [refusals]) for the How-to-use tab's status prose.
+
+    `rows` is the tab as returned by get_values (ragged rows of strings). Each
+    sentence is located by its text, not by a fixed A1 — the tab gets rows
+    inserted as it is edited, and a coordinate would silently rewrite the wrong
+    cell after that.
+    """
+    where = {}
+    for i, row in enumerate(rows, start=1):
+        for j, cell in enumerate(row):
+            where.setdefault((cell or "").strip(), cell_ref(j, i))
+    plans, refusals = [], []
+    for old in HOWTO_TEXTS:
+        new = howto_new_text(old)
+        if old in where:
+            plans.append((where[old], old, new))
+        elif new not in where:
+            refusals.append("the sentence %r is on the tab in neither "
+                            "spelling \u2014 it was reworded; migrate it by hand"
+                            % (old[:48] + ("..." if len(old) > 48 else "")))
+    return plans, refusals
 
 
 def intake_status_guard(headers):
@@ -375,10 +433,13 @@ def intake_cf_plans(tab):
         vals = cond.get("values") or []
         old = vals[0].get("userEnteredValue", "") if vals else ""
         new = migrate_cf_formula(old)
+        # Judged on what the rule WILL say: one holding both the exact token
+        # and an unrecognised shape is migrated AND reported, never quietly
+        # half-done.
+        why = cf_refusal(new if new is not None else old)
+        if why:
+            refusals.append("conditional-format rule %d %s" % (i, why))
         if new is None:
-            why = cf_refusal(old)
-            if why:
-                refusals.append("conditional-format rule %d %s" % (i, why))
             continue
         rule = copy.deepcopy(cf)
         rule["booleanRule"]["condition"]["values"][0]["userEnteredValue"] = new
@@ -396,8 +457,25 @@ def apply_intake_cf(gid, plans):
                  for i, _old, rule in plans]})
 
 
+def intake_howto_plans():
+    """plan_howto over the live tab. Z200 covers it with room to grow."""
+    return plan_howto(get_values(INTAKE_ID, "'%s'!A1:Z200" % HOWTO_TAB))
+
+
+def apply_howto(plans):
+    """RAW writes to the located cells. The affected cells carry no rich-text
+    runs, so a value write keeps their formatting intact."""
+    gws_json("sheets", "spreadsheets", "values", "batchUpdate",
+             params={"spreadsheetId": INTAKE_ID},
+             body={"valueInputOption": "RAW",
+                   "data": [{"range": "'%s'!%s" % (HOWTO_TAB, a1),
+                             "values": [[new]]}
+                            for a1, _old, new in plans]})
+
+
 def plan_intake_tab(tab):
-    """One tab's plan: {tab, guard, cell_rows, gid, rule, r0, r1, new_list}."""
+    """One tab's plan: {tab, guard, cell_rows, gid, rule, r0, r1, new_list,
+    cf_gid, cf_plans, cf_refusals}."""
     col_a = [r[0] if r else "" for r in
              get_values(INTAKE_ID, "'%s'!A1:A" % tab)]
     headers = get_values(INTAKE_ID, "'%s'!1:1" % tab)
@@ -419,7 +497,8 @@ def plan_intake_tab(tab):
 
 
 def apply_intake_tab(plan):
-    """Apply one tab's plan: the dropdown rule, then the cell rewrites."""
+    """Apply one tab's plan: the dropdown rule, the color rules, then the cell
+    rewrites."""
     tab = plan["tab"]
     if plan["new_list"]:
         # An EXPLICIT full rule over the rule's own observed row span. Never a
@@ -573,6 +652,16 @@ def _run(args, workdir):
         proposed += (len(plan["cell_rows"]) + (1 if plan["new_list"] else 0)
                      + len(plan["cf_plans"]))
 
+    howto_plans, howto_refusals = intake_howto_plans()
+    for r in howto_refusals:
+        failures.append("%s: %s" % (HOWTO_TAB, r))
+        print("  %-10s REFUSED — %s" % (HOWTO_TAB, r))
+    print("  %-10s %s" % (HOWTO_TAB,
+                          ("%d status sentence(s) %r -> %r"
+                           % (len(howto_plans), OLD, NEW))
+                          if howto_plans else "in sync"))
+    proposed += len(howto_plans)
+
     print("\nPhase B — chapter CRMs:")
     backup_dir = os.path.join(workdir, "before")
     os.makedirs(backup_dir, exist_ok=True)
@@ -605,8 +694,8 @@ def _run(args, workdir):
             for f in failures:
                 print("  %s" % f)
             return 1
-        print("\nNothing to do — %r is gone from every dropdown, cell and "
-              "color rule." % OLD)
+        print("\nNothing to do — %r is gone from every dropdown, cell, color "
+              "rule and How-to-use sentence." % OLD)
         return 0
 
     if not args.write:
@@ -614,7 +703,7 @@ def _run(args, workdir):
               "Re-run with --write to apply."
               % (proposed, sum(1 for p in tab_plans
                                if p["cell_rows"] or p["new_list"]
-                               or p["cf_plans"]),
+                               or p["cf_plans"]) + (1 if howto_plans else 0),
                  len(crm_plans)))
         return 1 if failures else 2
 
@@ -629,6 +718,13 @@ def _run(args, workdir):
         except Exception as e:
             failures.append("%s: %s" % (plan["tab"], e))
             print("  FAILED %s — %s" % (plan["tab"], e), file=sys.stderr)
+    if howto_plans:
+        try:
+            apply_howto(howto_plans)
+            print("  wrote %s (%d sentence(s))" % (HOWTO_TAB, len(howto_plans)))
+        except Exception as e:
+            failures.append("%s: %s" % (HOWTO_TAB, e))
+            print("  FAILED %s — %s" % (HOWTO_TAB, e), file=sys.stderr)
     for folder, book, plan in crm_plans:
         try:
             why = write_crm(folder, book, plan, workdir, backup_dir)
@@ -649,6 +745,11 @@ def _run(args, workdir):
         bad = verify_intake_tab(plan["tab"])
         if bad:
             failures.append(bad)
+    if howto_plans:
+        left, still_refused = intake_howto_plans()
+        if left or still_refused:
+            failures.append("%s: %d status sentence(s) not migrated"
+                            % (HOWTO_TAB, len(left) + len(still_refused)))
 
     if failures:
         print("VERIFY FAILED / INCOMPLETE:")
