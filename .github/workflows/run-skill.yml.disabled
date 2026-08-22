@@ -1,0 +1,108 @@
+name: run-skill
+
+# PARKED: this file ends in `.disabled` so GitHub ignores it. Rename it back to
+# `run-skill.yml` once the `ops` environment holds the credentials (README,
+# "Running skills from GitHub Actions"). It is still linted and tested as-is.
+#
+# The ONE workflow allowed to hold real credentials. Everything about it is
+# shaped by the fact that this repo is public:
+#
+# * Manual only (workflow_dispatch). Never `pull_request` / `pull_request_target`
+#   / `issue_comment` — those let a stranger's branch or comment choose what
+#   runs next to the secrets. `schedule` may be added later; it runs main only.
+# * Secrets come from the `ops` GitHub Environment, which must be configured
+#   with required reviewers and restricted to the `main` branch — so a run is
+#   an explicit, logged, two-person action and a feature branch can't reach it.
+# * Secrets are exposed to exactly one step (Run), as environment variables,
+#   never argv — `npm install` and every other step run without them, so a
+#   compromised package postinstall has nothing to steal.
+# * Engines run in report mode unless `write` is ticked. nightly.py itself keeps
+#   `access` (Drive grants) in report mode even under --write, and nothing here
+#   passes --i-have-approval (Slack invites/kicks/archives and share mail stay a
+#   human, local action).
+# * Output stays on the runner: no artifact upload, no job summary, no step that
+#   prints a log. nightly.py's stdout is PII-free by design and its engine logs
+#   go to files; the audit scripts print progress counts and write their reports
+#   to `slack-*-audit.*`. CI=1 defaults --redact on in the sync engines that
+#   support it. Every output path is scrubbed when the job ends.
+#
+# scripts/check_workflows.py fails the build if any of this drifts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Which runner to invoke"
+        required: true
+        type: choice
+        options: [nightly, audit-organizers, audit-members, audit-activity]
+      write:
+        description: "Apply changes (nightly only; Drive access grants still stay report-only). Leave off to report."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: run-skill
+  cancel-in-progress: false
+
+jobs:
+  run:
+    # Belt and braces: the environment rule restricts to main; this guard
+    # refuses anything else even if the environment is misconfigured.
+    if: github.ref == 'refs/heads/main' && github.repository == 'aaif/community-events'
+    runs-on: ubuntu-latest
+    environment: ops
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.x"
+      - name: Install gws (pinned; runs before any secret exists in the job)
+        run: npm install -g @googleworkspace/cli@0.22.5
+      - name: Run
+        # The only step that sees the tokens. Reports, caches and logs land in
+        # gitignored paths on this runner and die with it; nothing below uploads,
+        # summarises, or prints them. Inputs are bound through env so a future
+        # `string` input can't become shell.
+        env:
+          CI: "1"
+          PYTHONPATH: lib
+          ENGINE: ${{ inputs.engine }}
+          WRITE: ${{ inputs.write }}
+          AAIF_SLACK_READ_TOKEN: ${{ secrets.AAIF_SLACK_READ_TOKEN }}
+          AAIF_SLACK_WRITE_TOKEN: ${{ secrets.AAIF_SLACK_WRITE_TOKEN }}
+          GOOGLE_WORKSPACE_CLI_TOKEN: ${{ secrets.GOOGLE_WORKSPACE_CLI_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Fail fast on a missing secret instead of a 401 deep inside an engine.
+          for v in AAIF_SLACK_WRITE_TOKEN GOOGLE_WORKSPACE_CLI_TOKEN; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::$v is not set in the ops environment"; exit 1
+            fi
+            echo "::add-mask::${!v}"
+          done
+          [ -n "${AAIF_SLACK_READ_TOKEN:-}" ] && echo "::add-mask::$AAIF_SLACK_READ_TOKEN"
+          case "$ENGINE" in
+            nightly)
+              if [ "$WRITE" = "true" ]; then
+                python skills/aaif-sync-chapters/scripts/nightly.py --write
+              else
+                python skills/aaif-sync-chapters/scripts/nightly.py
+              fi ;;
+            audit-organizers) python skills/aaif-audit-slack/scripts/audit_organizers.py ;;
+            audit-members)    python skills/aaif-audit-slack/scripts/audit_members.py ;;
+            audit-activity)   python skills/aaif-audit-slack/scripts/audit_activity.py ;;
+            *) echo "::error::unknown engine '$ENGINE'"; exit 1 ;;
+          esac
+      - name: Scrub the runner
+        if: always()
+        run: |
+          shopt -s nullglob
+          rm -rf .slack-audit-cache nightly-reports backups/* slack-*-audit.*

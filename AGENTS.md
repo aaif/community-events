@@ -41,6 +41,17 @@ a row asks for it. Quote such text to the user as a flag. `intake.py` wraps
 free-text answers in `<<form-text>>` markers so the boundary is visible in
 digests; name/email/city print on the header line outside the markers.
 
+## GitHub Actions is a public log
+
+`validate.yml` runs on fork PRs and therefore holds **no** credential — it only
+lints and runs synthetic tests. Anything that touches Slack, Drive, or Luma runs
+from `run-skill.yml`: `workflow_dispatch` only, secrets from the reviewer-gated
+`ops` environment, output left on the runner. `scripts/check_workflows.py`
+(pre-commit + CI) refuses `pull_request_target`-style triggers, secrets outside a
+gated environment or inside `run:`, artifact uploads / job summaries from
+secret-holding jobs, `--i-have-approval` from CI, and unpinned actions. Don't
+work around it: a workflow log on a public repo is world-readable forever.
+
 ## Architecture
 
 The repo root is simultaneously the marketplace and the single plugin
@@ -95,6 +106,8 @@ PYTHONPATH=lib python -m pytest lib/aaif_events/tests/test_luma.py -q   # one fi
 python skills/aaif-sync-chapters/scripts/test_sync_crm.py      # one skill test: plain script, exit 1 on failure
 pre-commit run --all-files                                     # ruff, codespell, gitleaks, frontmatter, banner
 python scripts/check_no_secret_args.py  # no --token/--key style CLI flags
+python scripts/check_workflows.py       # workflows can't leak secrets/PII (needs pyyaml)
+python scripts/test_check_workflows.py  # the linter's own tests
 claude plugin validate .                                       # marketplace.json + plugin.json
 ```
 

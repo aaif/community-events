@@ -83,3 +83,13 @@ repos:
         language: python
         pass_filenames: false
         files: '\.py$'
+  # --- Workflows must not leak secrets/PII (public repo) ----------------------
+  - repo: local
+    hooks:
+      - id: check-workflows
+        name: workflows pass the public-repo secret/PII rules
+        entry: python3 scripts/check_workflows.py
+        language: python
+        additional_dependencies: [pyyaml]
+        pass_filenames: false
+        files: '^(\.github/workflows/.*\.ya?ml(\.disabled)?|scripts/check_workflows\.py)$'
