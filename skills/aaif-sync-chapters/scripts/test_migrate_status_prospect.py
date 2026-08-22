@@ -781,6 +781,45 @@ try:
 finally:
     os.rmdir(_root)
 
+
+# --- a stranded working copy makes the exit non-zero -------------------------
+import tempfile as _tf  # noqa: E402
+from unittest import mock as _mock  # noqa: E402
+_wd = _tf.mkdtemp(prefix="aaif-status-test-")
+open(os.path.join(_wd, "Boston.xlsx"), "wb").write(b"x")
+check("cleanup returns False when everything went", mig.cleanup_workdir(_wd, keep_backups=False), False)
+with _mock.patch.object(mig.shutil, "rmtree", lambda *a, **k: None), \
+     _mock.patch.object(mig, "_unlink_quietly", lambda p: None):
+    _wd = _tf.mkdtemp(prefix="aaif-status-test-")
+    open(os.path.join(_wd, "Boston.xlsx"), "wb").write(b"x")
+    check("cleanup returns True when a file would not delete",
+          mig.cleanup_workdir(_wd, keep_backups=False), True)
+    with _mock.patch.object(mig, "_run", return_value=0), \
+         _mock.patch.object(mig, "assert_git_safe", lambda p: None), \
+         _mock.patch.object(mig.tempfile, "mkdtemp", return_value=_wd):
+        check("run() exits 1 when member data was stranded", mig.run(_mock.Mock()), 1)
+import shutil as _sh  # noqa: E402
+_sh.rmtree(_wd)
+
+# --- git subprocesses never inherit the Slack/Luma secrets --------------------
+with _mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "xoxb-secret",
+                                   "LUMA_API_KEY": "luma-secret", "KEEP_ME": "1"}):
+    _env = mig._scrubbed_env(LC_ALL="C")
+    check("_scrubbed_env drops the secrets, keeps the rest, applies extras",
+          ("AAIF_SLACK_WRITE_TOKEN" in _env, "LUMA_API_KEY" in _env,
+           _env.get("KEEP_ME"), _env.get("LC_ALL")), (False, False, "1", "C"))
+    _envs = []
+    def _fake_run(argv, **kw):
+        _envs.append(kw.get("env"))
+        return _mock.Mock(returncode=0, stdout="/repo\n", stderr="")
+    with _mock.patch.object(mig.subprocess, "run", _fake_run):
+        try:
+            mig.assert_git_safe("/repo/backups/x")
+        except SystemExit:
+            pass
+    check("every git probe runs with the scrubbed env",
+          all(e is not None and "AAIF_SLACK_WRITE_TOKEN" not in e for e in _envs)
+          and len(_envs) >= 1, True)
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

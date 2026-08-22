@@ -364,12 +364,6 @@ check("local-language names, none, blanks and legacy names all pass",
               org="frankfurt_main-organizers")]),
       [])
 
-if FAILS:
-    print("\nFAIL (%d)" % len(FAILS))
-    for f in FAILS:
-        print("  - %s" % f)
-    sys.exit(1)
-print("\nsync_resources: all checks passed")
 
 # --- the none sentinel is case-insensitive in the malformed scan ---------------
 # A human typing "None" must mean the sentinel, not a channel literally named
@@ -384,3 +378,35 @@ with mock.patch.object(sr, "fold_city", sr.fold_city):
     pass  # (import sanity; propose_handles needs live deps, tested via guard below)
 check("the handles guard constant matches the shared sentinel",
       sync_chapters.NO_RESOURCE, "none")
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", sr.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sr.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sr.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", sr.REDACT, False)
+
+# --- --redact: the unresolved-organizer list is the one place names print -----
+sr.REDACT = True
+try:
+    check("redacted name is a first initial", sr.redact_name("ada lovelace"), "A.")
+    check("redacted email keeps one char + TLD only", sr.redact_email("ada@x.com"), "a***@***.com")
+finally:
+    sr.REDACT = False
+check("redaction off passes a name through", sr.redact_name("Ada Lovelace"), "Ada Lovelace")
+
+if FAILS:
+    print("\nFAIL (%d)" % len(FAILS))
+    for f in FAILS:
+        print("  - %s" % f)
+    sys.exit(1)
+print("\nsync_resources: all checks passed")

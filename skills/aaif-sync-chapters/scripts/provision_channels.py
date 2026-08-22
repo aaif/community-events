@@ -379,7 +379,9 @@ def call_write(token, method, **params):
             headers={"Authorization": "Bearer " + token,
                      "Content-Type": "application/x-www-form-urlencoded"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            # The lib's opener refuses redirects: the default one would re-send
+            # this request — WRITE token and all — to whatever host a 3xx names.
+            with slackmod._urlopen(req, 30) as response:
                 payload = json.loads(response.read())
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < 4:
@@ -513,9 +515,10 @@ def main():
     # expired CLI fallback before any network call is made.
     token = os.environ.get(WRITE_TOKEN_ENV, "").strip()
     if not token:
-        print("note: %s is not set — falling back to the Slack CLI credential, "
-              "which on this estate is expired. If auth fails, export %s."
-              % (WRITE_TOKEN_ENV, WRITE_TOKEN_ENV), file=sys.stderr)
+        print("note: %s is not set — falling back to AAIF_SLACK_READ_TOKEN / the "
+              "repo-root .env / the Slack CLI credential (expired on this "
+              "estate). If auth fails, set %s in the environment or in the "
+              "repo-root .env." % (WRITE_TOKEN_ENV, WRITE_TOKEN_ENV), file=sys.stderr)
         token = slackmod.load_token()
     api = slackmod.Slack(token=token)
     who = api.ok("auth.test")

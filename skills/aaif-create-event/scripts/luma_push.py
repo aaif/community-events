@@ -81,7 +81,7 @@ def show_proposal(payload, hosts, cover, key_ok):
         print("Target: Luma NOT connected — no API key for this calendar.")
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(description="Push a tracker event to Luma (propose, then --create)")
     ap.add_argument("docx", help="tracker.docx already downloaded via gws")
     ap.add_argument("event", help="event title (case-insensitive substring), or 'next'/'latest'")
@@ -102,7 +102,11 @@ def main():
                     help="LIVE WRITE: create the event on Luma (only after user approval)")
     ap.add_argument("--force", action="store_true",
                     help="create even though the tracker already has an event URL")
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    a = build_parser().parse_args()
 
     root = office.read_document(a.docx)
     view = tracker.read_event(root, a.event)

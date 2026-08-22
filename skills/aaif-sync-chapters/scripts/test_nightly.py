@@ -107,6 +107,17 @@ check("access never receives --write, even under nightly --write",
 cmd, wm = nightly.engine_cmd("crm", "sync_crm.py", write_mode=True)
 check("the other engines still get --write",
       ("--write" in cmd, wm), (True, True))
+# The logs are 0600 files in a 0700 gitignored dir and the NEEDS-A-HUMAN step
+# needs real addresses, so the runner turns the engines' CI default OFF.
+for _n, _s in nightly.ENGINES:
+    _cmd, _ = nightly.engine_cmd(_n, _s, write_mode=False)
+    check("%s runs with --no-redact (logs are private, never CI output)" % _n,
+          "--no-redact" in _cmd, _n in nightly.REDACTING)
+check("every engine is in the redacting set", {n for n, _ in nightly.ENGINES}, nightly.REDACTING)
+for _n, _s in nightly.ENGINES:
+    _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), _s),
+                encoding="utf-8").read()
+    check("%s actually accepts --no-redact" % _s, "add_redact_flag(ap)" in _src, True)
 
 
 def access_drive(log_text, code):

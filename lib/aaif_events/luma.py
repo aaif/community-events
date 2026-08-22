@@ -12,9 +12,10 @@ flag in the calling script.
 The payload builders (`event_times`, `event_payload`, `diff_payload`,
 `slug_of_url`) are pure and unit-tested without network.
 
-Transport never follows a redirect (the key would be re-sent to the new host),
-and a LumaError carries the status plus the API's own `message` — never the
-raw response body.
+The authenticated transport never follows a redirect (the key would be re-sent
+to the new host); the pre-signed image PUT carries no key and uses the default
+opener. A LumaError carries the status plus the API's own `message` — never
+the raw response body.
 """
 import datetime as dt
 import json
@@ -38,7 +39,9 @@ _IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 
 
 class LumaError(RuntimeError):
-    status = None   # HTTP status when the API answered; None for network failures
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status   # HTTP status when the API answered; None for network failures
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -59,8 +62,11 @@ def _urlopen(req, timeout):
 
 
 def _api_message(body):
-    """The API's own `message`/`error` field out of an error body, or "".
+    """The API's own message out of a JSON error body, or "" for non-JSON.
 
+    Walks `message`, `error` (a string or `{"message": …}`), `errors[]` (strings
+    or `{"message": …}`), then `detail`. A JSON body with none of them yields a
+    placeholder naming its size, so the operator knows there *was* a body.
     Never the raw body: Luma's error pages have been seen to echo request
     headers back, and the body of a proxy's interstitial is not ours to log.
     """
@@ -70,8 +76,23 @@ def _api_message(body):
         return ""
     if not isinstance(parsed, dict):
         return ""
-    msg = parsed.get("message") or parsed.get("error") or ""
-    return str(msg)[:300] if isinstance(msg, (str, int, float)) else ""
+
+    def scalar(v):
+        if isinstance(v, dict):
+            v = v.get("message")
+        return str(v) if isinstance(v, (str, int, float)) and str(v) else None
+
+    found = []
+    for key in ("message", "error", "detail"):
+        m = scalar(parsed.get(key))
+        if m:
+            found.append(m)
+    errs = parsed.get("errors")
+    if isinstance(errs, list):
+        found.extend(m for m in (scalar(e) for e in errs) if m)
+    if not found:
+        return "(no message field in a %d-byte JSON body)" % len(body.encode("utf-8"))
+    return "; ".join(found)[:300]
 
 
 class NotAnEventUrl(LumaError):
@@ -145,16 +166,18 @@ def call(method, path, params=None, body=None, retries=4):
                 # A proxy or outage page can answer 200 with HTML; a bare
                 # JSONDecodeError mid-run names neither the request nor the fact
                 # that the body was the problem.
+                # Local import so this module stays importable with only the
+                # stdlib + tracker; report_style pulls in slack as well.
+                from aaif_events.report_style import redact
                 raise LumaError("%s %s answered 200 but the body was not JSON "
-                                "(Content-Type: %s)"
-                                % (method, path, r.headers.get("content-type") or "unset"))
+                                "(Content-Type: %s; starts %r)"
+                                % (method, path, r.headers.get("content-type") or "unset",
+                                   redact(text[:60])))
         except urllib.error.HTTPError as e:
             if e.code in _REDIRECT_CODES:
-                err = LumaError("%s %s -> HTTP %d: redirect refused — the API key "
+                raise LumaError("%s %s -> HTTP %d: redirect refused — the API key "
                                 "is never re-sent to another host"
-                                % (method, path, e.code))
-                err.status = e.code
-                raise err
+                                % (method, path, e.code), status=e.code)
             detail = _api_message(e.read().decode("utf-8", errors="replace"))
             retryable = e.code == 429 or (method == "GET" and e.code in _TRANSIENT_HTTP)
             if retryable and i < retries - 1:
@@ -163,12 +186,10 @@ def call(method, path, params=None, body=None, retries=4):
                       file=sys.stderr)
                 time.sleep(2 * (i + 1))
                 continue
-            err = LumaError("%s %s -> HTTP %d%s%s"
+            raise LumaError("%s %s -> HTTP %d%s%s"
                             % (method, path, e.code, ": " + detail if detail else "",
                                write_hint if e.code in _TRANSIENT_HTTP and e.code != 429
-                               else ""))
-            err.status = e.code
-            raise err
+                               else ""), status=e.code)
         except (urllib.error.URLError, TimeoutError) as e:
             if method == "GET" and i < retries - 1:
                 print("luma: %s %s unreachable — retry %d/%d in %ds"

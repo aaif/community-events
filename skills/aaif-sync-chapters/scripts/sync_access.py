@@ -42,10 +42,11 @@ Usage:
   python3 sync_access.py --write --pins     # also run the pin phase first
   python3 sync_access.py --write --phase grant
   python3 sync_access.py --role reader      # grant something other than writer
-  python3 sync_access.py --write --mail-if-required   # email only the addresses
-                                            # with no Google account, which Drive
-                                            # refuses to share with otherwise
-  python3 sync_access.py --write --notify   # email EVERY grantee
+  python3 sync_access.py --write --mail-if-required --i-have-approval
+                                            # email only the addresses with no
+                                            # Google account, which Drive refuses
+                                            # to share with otherwise
+  python3 sync_access.py --write --notify --i-have-approval   # email EVERY grantee
   python3 sync_access.py --write --lock-anyway        # lock even though some
                                             # organizers could not be granted
 """
@@ -62,23 +63,41 @@ from sync_crm import (CHAPTERS_PARENT, SYNC_STATUSES, TEMPLATE_FOLDER,
 
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@domain and
-# names as initials in every printed line. Each standalone script carries its
-# own copy of this flag and these two helpers.
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag and these helpers.
 REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
 
 
 def redact_email(e):
     if not REDACT or not e or "@" not in e:
         return e
     local, _, domain = e.partition("@")
-    return "%s***@%s" % (local[:1], domain)
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
 
 
 def redact_name(n):
-    if not REDACT or not n:
+    if not REDACT or not n or not n.strip():
         return n
-    return " ".join(w[0].upper() + "." for w in n.split() if w)
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld) and names (first initial) "
+                         "on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
 
 
 # Kept deliberately: this is the Linux Foundation's own staff access, not public
@@ -446,7 +465,8 @@ def apply_grants(p, notify, allow_mail=False):
             if not allow_mail:
                 failed.append((g["chapter"], g["name"], g["email"],
                                "no Google account — Drive requires emailing them; "
-                               "re-run with --notify (or --mail-if-required)"))
+                               "re-run with --notify (or --mail-if-required) "
+                               "--i-have-approval"))
                 print("  SKIPPED %s -> %s: needs a notification email"
                       % (redact_email(g["email"]), g["chapter"]), file=sys.stderr)
                 continue
@@ -578,19 +598,18 @@ def main():
     ap.add_argument("--i-have-approval", action="store_true",
                     help="required alongside --notify or --mail-if-required: "
                          "both make Drive email real people, which cannot be unsent")
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=bool(os.environ.get("CI")),
-                    help="mask emails (a***@domain) and names (initials) on "
-                         "stdout; default on when CI is set")
+    add_redact_flag(ap)
     a = ap.parse_args()
-    global REDACT
-    REDACT = a.redact
+    set_redaction(a.redact)
     # Emailing a real person is the line the Slack write steps already draw
     # with --i-have-approval; the same consent is required here, at parse
     # time, before plan() touches the network.
     if (a.notify or a.mail_if_required) and not a.i_have_approval:
         ap.error("--notify / --mail-if-required make Drive email real people; "
                  "add --i-have-approval to confirm a human signed off on that.")
+    if a.i_have_approval and not (a.notify or a.mail_if_required):
+        print("NOTE: --i-have-approval is inert without --notify or "
+              "--mail-if-required; nothing will be emailed.", file=sys.stderr)
     # Refuse, never reinterpret: both flags speak for the pin phase, and each
     # combination below used to be silently inert — the worst behaviour for a
     # flag whose whole job is recording explicit human consent.
@@ -640,7 +659,8 @@ def main():
         if name == "lock" and grant_failures and not a.lock_anyway:
             sys.exit("ABORT before lock: %d organizer(s) have no grant (listed above). "
                      "Removing the public share now would leave them with NO access at "
-                     "all.\nFix the intake rows (or pass --mail-if-required), then "
+                     "all.\nFix the intake rows (or pass --mail-if-required "
+                     "--i-have-approval), then "
                      "re-run — or pass --lock-anyway to accept locking them out."
                      % len(grant_failures))
         print("\nApplying phase %r..." % name)

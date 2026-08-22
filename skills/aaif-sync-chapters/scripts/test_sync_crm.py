@@ -797,8 +797,8 @@ check("redaction off: email passes through", sync_crm.redact_email("ada@x.com"),
 check("redaction off: name passes through", sync_crm.redact_name("Ada Lovelace"), "Ada Lovelace")
 sync_crm.REDACT = True
 try:
-    check("redacted email keeps one char + domain", sync_crm.redact_email("ada@x.com"), "a***@x.com")
-    check("redacted name is initials", sync_crm.redact_name("ada lovelace"), "A. L.")
+    check("redacted email keeps one char + TLD only", sync_crm.redact_email("ada@x.com"), "a***@***.com")
+    check("redacted name is a first initial", sync_crm.redact_name("ada lovelace"), "A.")
     check("a non-email is left alone", sync_crm.redact_email("Boston"), "Boston")
     check("empty values survive", (sync_crm.redact_email(""), sync_crm.redact_name("")), ("", ""))
 finally:
@@ -806,10 +806,12 @@ finally:
 
 sync_crm.REDACT = True
 try:
-    check("redact_sets masks only the identifying columns",
+    check("redact_sets shows column names but masks every value except role/status-like ones",
           sync_crm.redact_sets({"Email": "ada@x.com", "Full name": "Ada Lovelace",
-                                "Company": "Acme"}),
-          {"Email": "a***@x.com", "Full name": "A. L.", "Company": "Acme"})
+                                "Company": "Acme", "Status": "Accepted",
+                                "Role / title": "CTO", "What brings you here?": "my friend Ada"}),
+          {"Email": "…", "Full name": "…", "Company": "…", "Status": "Accepted",
+           "Role / title": "CTO", "What brings you here?": "…"})
 finally:
     sync_crm.REDACT = False
 
@@ -823,12 +825,26 @@ os.makedirs(os.path.join(_wd, "verify"))
 os.makedirs(os.path.join(_wd, "before"))
 for name in ("Boston.xlsx", "reread.xlsx", "verify/Boston.xlsx", "before/Boston.xlsx"):
     open(os.path.join(_wd, name), "wb").write(b"x")
-sync_crm.cleanup_workdir(_wd, keep_backups=True)
+check("cleanup with keep_backups reports nothing stranded",
+      sync_crm.cleanup_workdir(_wd, keep_backups=True), False)
 check("cleanup with keep_backups leaves exactly before/",
       sorted(os.listdir(_wd)), ["before"])
-sync_crm.cleanup_workdir(_wd, keep_backups=False)
+check("cleanup without keep_backups reports nothing stranded",
+      sync_crm.cleanup_workdir(_wd, keep_backups=False), False)
 check("cleanup without keep_backups removes the workdir itself",
       os.path.exists(_wd), False)
+with mock.patch.object(sync_crm.shutil, "rmtree", lambda *a, **k: None), \
+     mock.patch.object(sync_crm, "_unlink_quietly", lambda p: None):
+    _wd2 = tempfile.mkdtemp(prefix="aaif-crm-test-")
+    open(os.path.join(_wd2, "Boston.xlsx"), "wb").write(b"x")
+    check("a file that will not delete is reported as stranded",
+          sync_crm.cleanup_workdir(_wd2, keep_backups=False), True)
+    with mock.patch.object(sync_crm, "_run", return_value=0), \
+         mock.patch.object(sync_crm.tempfile, "mkdtemp", return_value=_wd2):
+        check("run() exits non-zero when member data was stranded",
+              sync_crm.run(mock.Mock()), 1)
+import shutil as _shutil  # noqa: E402
+_shutil.rmtree(_wd2)
 
 import subprocess  # noqa: E402
 _root = sync_crm.backup_root("crm-before-selftest")
@@ -841,14 +857,53 @@ try:
     check("backup_root is private to the operator", os.stat(_root).st_mode & 0o777, 0o700)
 finally:
     os.rmdir(_root)
-with mock.patch.object(sync_crm.subprocess, "run", return_value=mock.Mock(returncode=1)):
-    try:
-        sync_crm.backup_root("crm-before-selftest")
-        _aborted = False
-    except SystemExit:
-        _aborted = True
-check("a backup root git would pick up ABORTS", _aborted, True)
 
+
+def _backup_root_with(results, raise_missing=False):
+    """backup_root with subprocess.run scripted; returns (exit message or None, created path)."""
+    calls = iter(results)
+    def _fake_run(argv, **kw):
+        if raise_missing:
+            raise FileNotFoundError("git")
+        rc, out, err = next(calls)
+        return mock.Mock(returncode=rc, stdout=out, stderr=err)
+    made = []
+    with mock.patch.object(sync_crm.subprocess, "run", _fake_run), \
+         mock.patch.object(sync_crm.os, "makedirs", lambda p, **k: made.append(p)):
+        try:
+            return None, sync_crm.backup_root("crm-before-selftest")
+        except SystemExit as e:
+            return str(e), None
+
+
+_msg, _p = _backup_root_with([], raise_missing=True)
+check("git missing aborts explicitly", "git is not installed" in (_msg or ""), True)
+_msg, _p = _backup_root_with([(128, "", "fatal: not a git repository (or any parent)")])
+check("outside any repo is allowed (nothing to leak into)", (_msg, _p is not None), (None, True))
+_msg, _p = _backup_root_with([(128, "", "fatal: detected dubious ownership in repository at '/x'")])
+check("any other git failure aborts quoting git",
+      ("cannot verify" in (_msg or ""), "dubious ownership" in (_msg or "")), (True, True))
+_msg, _p = _backup_root_with([(0, "/repo\n", ""), (1, "", "")])
+check("a backup root git would pick up ABORTS", "not gitignored" in (_msg or ""), True)
+_msg, _p = _backup_root_with([(0, "/repo\n", ""), (0, "", "")])
+check("inside the repo and ignored is fine", (_msg, _p is not None), (None, True))
+
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", sync_crm.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_crm.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_crm.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", sync_crm.REDACT, False)
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

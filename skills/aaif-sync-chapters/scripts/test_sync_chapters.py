@@ -368,8 +368,8 @@ check("redaction off: email passes through", sync_chapters.redact_email("ada@x.c
 check("redaction off: name passes through", sync_chapters.redact_name("Ada Lovelace"), "Ada Lovelace")
 sync_chapters.REDACT = True
 try:
-    check("redacted email keeps one char + domain", sync_chapters.redact_email("ada@x.com"), "a***@x.com")
-    check("redacted name is initials", sync_chapters.redact_name("ada lovelace"), "A. L.")
+    check("redacted email keeps one char + TLD only", sync_chapters.redact_email("ada@x.com"), "a***@***.com")
+    check("redacted name is a first initial", sync_chapters.redact_name("ada lovelace"), "A.")
     check("a non-email is left alone", sync_chapters.redact_email("Boston"), "Boston")
     check("empty values survive", (sync_chapters.redact_email(""), sync_chapters.redact_name("")), ("", ""))
 finally:
@@ -378,9 +378,86 @@ finally:
 sync_chapters.REDACT = True
 try:
     check("the Organizers cell is masked name by name",
-          sync_chapters.redact_names_cell("Ada Lovelace; Grace Hopper"), "A. L.; G. H.")
+          sync_chapters.redact_names_cell("Ada Lovelace; Grace Hopper"), "A.; G.")
 finally:
     sync_chapters.REDACT = False
 
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", sync_chapters.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_chapters.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_chapters.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", sync_chapters.REDACT, False)
+
+# --- free text and malformed cells are replaced, never trimmed ----------------
+sync_chapters.REDACT = True
+try:
+    check("free text is replaced wholesale under REDACT",
+          sync_chapters.redact_text("I know Ada Lovelace <ada@x.com>"), "[redacted]")
+    check("empty free text stays empty", sync_chapters.redact_text(""), "")
+finally:
+    sync_chapters.REDACT = False
+check("free text passes through with redaction off",
+      sync_chapters.redact_text("hello"), "hello")
+
+# --- redaction through the whole report --------------------------------------
+_st = sync_chapters.State(
+    entries=[{"city": "Boston"}],
+    unresolved=[{"row": 8, "name": "Grace Hopper", "status": "Accepted", "g": "",
+                 "h": "Grace Hopper's town", "events": "yes, with Grace Hopper",
+                 "why": "ties to grace@x.com", "inferred": [], "placed": []}],
+    counts={s: 1 for s in sync_chapters.SYNC_STATUSES},
+    dupes=[{"row": 7, "name": "Ada Lovelace", "city": "Boston"}],
+    chapters=[{"city": "Boston", "row": 5}], last_row=5,
+    adds=[{"city": "Boston", "row": 5, "names": ["Ada Lovelace"],
+           "new_value": "Ada Lovelace; Grace Hopper"}],
+    new_rows=[],
+    near_misses=[{"city": "Bostn", "names": ["Grace Hopper"], "candidates": [("Boston", 5)]}],
+    layout={"index": {"Organizers": 3}, "headers": ["City", "Organizers"]},
+    malformed=[{"row": 9, "city": "Pune", "why": "control char near ada@x.com Ada Lovelace"}])
+_out = _io.StringIO()
+sync_chapters.REDACT = True
+try:
+    with _ctx.redirect_stdout(_out):
+        sync_chapters.print_report(_st)
+finally:
+    sync_chapters.REDACT = False
+_text = _out.getvalue()
+check("redacted report carries no fixture email",
+      [w for w in ("ada@x.com", "grace@x.com") if w in _text], [])
+check("redacted report carries no full name",
+      [w for w in ("Lovelace", "Hopper") if w in _text], [])
+check("the malformed cell and free text print as [redacted]",
+      _text.count("[redacted]") >= 4, True)
+check("the redacted report still names the city", "Boston" in _text, True)
+
+# --- gws subprocesses never inherit the Slack/Luma secrets --------------------
+with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "xoxb-secret",
+                                  "AAIF_SLACK_READ_TOKEN": "xoxp-secret",
+                                  "LUMA_API_KEY": "luma-secret", "KEEP_ME": "1"}):
+    _env = sync_chapters._scrubbed_env()
+    check("_scrubbed_env drops the Slack tokens and the Luma key",
+          [k for k in _env if k.startswith("AAIF_SLACK_") or k == "LUMA_API_KEY"], [])
+    check("_scrubbed_env keeps everything else", _env.get("KEEP_ME"), "1")
+    _seen = {}
+    def _fake_run(cmd, **kw):
+        _seen["env"] = kw.get("env")
+        return mock.Mock(returncode=0, stdout="{}")
+    with mock.patch.object(sync_chapters.subprocess, "run", _fake_run):
+        sync_chapters.gws_json("sheets", "get")
+    check("every gws call passes the scrubbed env",
+          (_seen["env"] is not None, "AAIF_SLACK_WRITE_TOKEN" in (_seen["env"] or {}),
+           "LUMA_API_KEY" in (_seen["env"] or {})),
+          (True, False, False))
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)

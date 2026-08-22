@@ -50,12 +50,12 @@ shelling out to a converter yourself.
 
 Prereqs: for the organizer engine, `gws` installed and authenticated (see the
 user's `gws-cli-access` memory); for Slack, the **AAIF app token**. The client
-looks for `AAIF_SLACK_WRITE_TOKEN` in the environment first, then in a `.env`
-in the working directory, and only then falls back to
-`~/.slack/credentials.json` — where the Slack CLI credential now sits expired.
-In practice the app token is the standing token for all three engines; the
-credentials file is the last resort, not the source. Wherever it came from,
-the token is never printed.
+resolves `AAIF_SLACK_READ_TOKEN` first, then `AAIF_SLACK_WRITE_TOKEN` — each
+from the environment, then from the `.env` at the **repo root** (not the
+working directory) — and only then falls back to `~/.slack/credentials.json`,
+where the Slack CLI credential now sits expired. In practice the app token is
+the standing token for all three engines; the credentials file is the last
+resort, not the source. Wherever it came from, the token is never printed.
 
 ---
 

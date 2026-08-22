@@ -117,9 +117,12 @@ placeholder the organizer fills in).
    A present file whose *content* is corrupt but token-clean is still skipped,
    not repaired. For a Luxembourg-style backfill (design assets missing, CRM and
    tracker already in use): `--write --resume` clones the missing items; read
-   the `!! residual in existing file` lines; re-run with `--repair-existing`
-   only if the flagged files are design assets; anything under `*CRM.xlsx` /
-   `*Tracker.docx` is fixed by hand in Drive.
+   the `!! residual in existing file` lines (the run ends with exit 2 and
+   "N existing file(s) still carry source tokens"); re-run with
+   `--write --resume --repair-existing` only if the flagged files are design
+   assets; anything under `*CRM.xlsx` / `*Tracker.docx` is fixed by hand in
+   Drive. A residual in a *freshly cloned* file is a different failure (exit 1):
+   the template or the rebrand engine is broken — fix that, don't resume.
 
 4. **Verify & hand off.** Confirm the run printed no `!! residual` flags and report
    the new folder URL. Remind the user to (a) fill the `[bracketed]` About-the-

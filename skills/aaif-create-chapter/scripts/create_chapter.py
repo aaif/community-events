@@ -338,10 +338,19 @@ _TRANSIENT = ("timed out", "internalError", "HTTP request failed",
               "Connection", "temporarily", "rateLimit", "userRateLimit",
               "backendError", "503", "500", "502")
 
+def _scrubbed_env():
+    """os.environ minus the Slack/Luma secrets: gws never needs them, and a child
+    inherits the whole environment otherwise. Local so this script stays standalone."""
+    return {k: v for k, v in os.environ.items()
+            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
+            and k != "LUMA_API_KEY"}
+
+
 def _gws(cmd, cwd=None, retries=5):
     """Run a gws command, retrying transient network/server errors."""
     for i in range(retries):
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           env=_scrubbed_env())
         if r.returncode == 0:
             return r.stdout
         msg = (r.stderr or "") + (r.stdout or "")
@@ -422,10 +431,14 @@ def luma_status(slug):
 # Files that hold member data once a chapter/series is live. A --resume never
 # rewrites these in place, even with --repair-existing: a rebrand pass over a CRM
 # or tracker that organizers have already filled could touch real attendee rows.
-MEMBER_DATA_GLOBS = ("*CRM.xlsx", "*Tracker.docx")
+MEMBER_DATA_GLOBS = ("*crm.xlsx", "*tracker.docx")   # matched lowercase
 
 def is_member_data(name):
-    return any(fnmatch.fnmatch(name, g) for g in MEMBER_DATA_GLOBS)
+    """Case- and whitespace-insensitive: a ` CRM.XLSX` renamed by hand in Drive
+    is still the member roster, and a miss here would let --repair-existing
+    rewrite it."""
+    n = name.strip().lower()
+    return any(fnmatch.fnmatchcase(n, g) for g in MEMBER_DATA_GLOBS)
 
 # ----------------------------------------------------------------------------
 def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None):
@@ -481,7 +494,7 @@ def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None)
                         # Never rewrite an existing file on faith: report it and
                         # move on. The operator opts in with --repair-existing,
                         # and member-data files are reported no matter what.
-                        ctx["residuals"].append((new_cname, left))
+                        ctx["existing_residuals"].append((new_cname, left))
                         why = ("holds member data; fix by hand" if is_member_data(new_cname)
                                else "pass --repair-existing to rebrand it in place")
                         print("%s  - %s (exists, not rebranded)  !! residual in existing "
@@ -496,8 +509,8 @@ def clone_and_rebrand(folder_id, parent, name, ctx, indent="", existing_id=None)
                         if n or moved:
                             gws_upload(hit["id"], tmp, MIME_BY_EXT[ext])
                         left = residual_tokens(tmp)
-                        if left:   # repair didn't clear it — fail the run like a clone would
-                            ctx["residuals"].append((new_cname, left))
+                        if left:   # repair didn't clear it — still an existing-file residual
+                            ctx["existing_residuals"].append((new_cname, left))
                             print("%s  - %s (exists, was not rebranded; repaired %d "
                                   "parts%s)  !! residual (skipped) %s"
                                   % (indent, new_cname, n,
@@ -572,6 +585,10 @@ def main():
     if not SLUG_RE.match(slug):
         sys.exit("ABORT: invalid slug %r — must match %s (lowercase letters, digits, "
                  "hyphens) before it is used in a luma.com URL." % (slug, SLUG_RE.pattern))
+    if a.write and a.dry_run:
+        # --dry-run is the documented "plan only" spelling; silently ignoring it
+        # next to --write would turn a rehearsal into a live write.
+        ap.error("--dry-run and --write are mutually exclusive")
     if a.resume and not a.write:
         sys.exit("ABORT: --resume enters and modifies an existing Drive folder; it "
                  "requires --write.")
@@ -649,7 +666,7 @@ def main():
         print("[dry-run] Nothing created. Re-run with --write to create it.")
         return
 
-    ctx = {"name": name, "upper": upper, "slug": slug, "residuals": [], "latlon": latlon,
+    ctx = {"name": name, "upper": upper, "slug": slug, "residuals": [], "existing_residuals": [], "latlon": latlon,
            "repair_existing": a.repair_existing,
            "tmp": tempfile.mkdtemp(prefix="aaif-chapter-")}
     print()
@@ -658,19 +675,38 @@ def main():
                                    existing_id=resume_id)
     finally:
         shutil.rmtree(ctx["tmp"], ignore_errors=True)
+        if os.path.exists(ctx["tmp"]):
+            # The dir holds downloaded workbooks (CRM rows under --resume): a
+            # survivor is a PII copy on disk, so say so rather than hide it.
+            print("WARNING: could not remove temp dir %s — it holds downloaded "
+                  "workbooks; delete it by hand." % ctx["tmp"], file=sys.stderr)
     print("\nDone. New chapter folder id: %s" % new_id)
     print("https://drive.google.com/drive/folders/%s" % new_id)
     if status == "absent":
         print("REMINDER: create the Luma page at https://luma.com/aaif-%s (it is not live yet)." % slug)
     elif status == "unknown":
         print("REMINDER: could not verify the Luma page aaif-%s; check it manually at luma.com." % slug)
+    # Two residual classes, two exits. A freshly cloned file that still carries
+    # source tokens means the template or the rebrand engine is broken (exit 1).
+    # An EXISTING file found dirty under --resume was deliberately left alone —
+    # the operator has to opt in to repairing it (exit 2, with the next step).
     if ctx["residuals"]:
-        print("\nWARNING: %d file(s) still contain source tokens (existing files are "
-              "reported, not rewritten — see --repair-existing; *CRM.xlsx / "
-              "*Tracker.docx are never rewritten):" % len(ctx["residuals"]))
+        print("\nWARNING: %d freshly cloned file(s) still contain source tokens:"
+              % len(ctx["residuals"]))
         for fn, toks in ctx["residuals"]:
             print("  - %s: %s" % (fn, toks))
+    if ctx["existing_residuals"]:
+        print("\nWARNING: %d existing file(s) still contain source tokens (reported, "
+              "not rewritten):" % len(ctx["existing_residuals"]))
+        for fn, toks in ctx["existing_residuals"]:
+            print("  - %s: %s" % (fn, toks))
+    if ctx["residuals"]:
         sys.exit("The new folder is NOT clean - fix the template or rebrand engine and re-run.")
+    if ctx["existing_residuals"]:
+        print("%d existing file(s) still carry source tokens; re-run with --write "
+              "--resume --repair-existing for design assets, fix CRM/Tracker by hand"
+              % len(ctx["existing_residuals"]), file=sys.stderr)
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()

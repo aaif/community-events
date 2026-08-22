@@ -72,16 +72,22 @@ class TestAlreadyPushed(unittest.TestCase):
 class TestVisibility(unittest.TestCase):
     """luma_push creates PRIVATE pages by default; the header says which."""
 
+    REQUIRED = ["t.docx", "next", "--timezone", "UTC"]
+
     def _parse(self, argv):
-        # mirror main()'s parser without running it
-        import argparse
-        ap = argparse.ArgumentParser()
-        ap.add_argument("--visibility", choices=("public", "private"), default="private")
-        return ap.parse_args(argv)
+        # the real parser, not a mirror of it — a drift in main() shows up here
+        return luma_push.build_parser().parse_args(self.REQUIRED + argv)
 
     def test_default_private_and_choices(self):
         self.assertEqual(self._parse([]).visibility, "private")
         self.assertEqual(self._parse(["--visibility", "public"]).visibility, "public")
+        with self.assertRaises(SystemExit):
+            self._parse(["--visibility", "secret"])
+
+    def test_create_is_off_by_default(self):
+        a = self._parse([])
+        self.assertFalse(a.create)
+        self.assertFalse(a.force)
 
     def test_payload_carries_visibility(self):
         v = {"details": {"EVENT TITLE": "Eval Night", "DATE & TIME": "July 8, 2026 · 18:00"}}

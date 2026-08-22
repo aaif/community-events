@@ -154,9 +154,12 @@ Two consequences of dropping the override table:
    A present file whose *content* is corrupt but token-clean is still skipped,
    not repaired. For a Luxembourg-style backfill (design assets missing, CRM and
    tracker already in use), the sequence is: `--write --resume` to clone the
-   missing items; read the `!! residual in existing file` lines; re-run with
-   `--repair-existing` only if the flagged files are design assets; anything
-   flagged under `*CRM.xlsx` / `*Tracker.docx` is fixed by hand in Drive.
+   missing items; read the `!! residual in existing file` lines (the run ends
+   with exit 2 and "N existing file(s) still carry source tokens"); re-run with
+   `--write --resume --repair-existing` only if the flagged files are design
+   assets; anything flagged under `*CRM.xlsx` / `*Tracker.docx` is fixed by hand
+   in Drive. A residual in a *freshly cloned* file is a different failure (exit
+   1): the template or the rebrand engine is broken — fix that, don't resume.
 
 4. **Verify.** Confirm the run printed no `!! residual` flags and report the new
    folder URL to the user. If the Luma page wasn't live, remind them to create it.

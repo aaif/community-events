@@ -474,6 +474,17 @@ class CrmStatusSheet:
 # ----------------------------------------------------------------------------
 # Local-output safety
 # ----------------------------------------------------------------------------
+def _scrubbed_env(**extra):
+    """os.environ minus the Slack/Luma secrets (plus `extra`), for every
+    subprocess: git needs none of them, and a crash dump must not leak one.
+    Local copy — this script stays standalone (gws itself goes through
+    sync_chapters, which scrubs the same way)."""
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN")) and k != "LUMA_API_KEY"}
+    env.update(extra)
+    return env
+
+
 def assert_git_safe(path):
     """Refuse a backup/work path git would ever pick up (this repo is public).
 
@@ -492,7 +503,7 @@ def assert_git_safe(path):
         probe = subprocess.run(
             ["git", "-C", path, "rev-parse", "--show-toplevel"],
             capture_output=True, text=True,
-            env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+            env=_scrubbed_env(LC_ALL="C", LANG="C"))
     except FileNotFoundError:
         sys.exit("ABORT: git is not installed, so this cannot verify that %s "
                  "is outside the repo. The working copies hold every "
@@ -510,13 +521,13 @@ def assert_git_safe(path):
     # directory name, and this works before the child exists.
     ignored = subprocess.run(
         ["git", "-C", root, "check-ignore", "-q", os.path.join(path, "probe")],
-        capture_output=True).returncode == 0
+        capture_output=True, env=_scrubbed_env()).returncode == 0
     # .gitignore has no effect on already-tracked files, so a path committed
     # before the rules landed still rides along on `git add -A` while
     # check-ignore reports it ignored.
     tracked = subprocess.run(
         ["git", "-C", root, "ls-files", "--error-unmatch", path],
-        capture_output=True).returncode == 0
+        capture_output=True, env=_scrubbed_env()).returncode == 0
     if tracked:
         sys.exit("ABORT: %s already holds files TRACKED by the repo at %s — "
                  "git rm --cached them first. The working copies hold every "
@@ -968,11 +979,14 @@ def run(args):
     workdir = tempfile.mkdtemp(prefix="aaif-status-migrate-")
     assert_git_safe(workdir)
     try:
-        return _run(args, workdir)
+        code = _run(args, workdir)
     finally:
         # before/ lives under backup_root(), not here — the workdir itself
         # never survives, in either mode.
-        cleanup_workdir(workdir, keep_backups=False)
+        stranded = cleanup_workdir(workdir, keep_backups=False)
+    # A stranded working copy is member data on disk with nobody told; the
+    # WARNING alone is invisible to a wrapper reading exit codes.
+    return 1 if stranded else code
 
 
 def backup_root():
@@ -1010,12 +1024,13 @@ def cleanup_workdir(workdir, keep_backups):
     if not keep_backups and not left:
         shutil.rmtree(workdir, ignore_errors=True)
         if not os.path.exists(workdir):
-            return
+            return False
         left.append(workdir)
     if left:
         print("WARNING: could not delete %d path(s) holding member data — "
               "remove by hand: %s" % (len(left), ", ".join(left[:5])),
               file=sys.stderr)
+    return bool(left)
 
 
 def _unlink_quietly(path):

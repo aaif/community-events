@@ -42,9 +42,20 @@ BINARY_EXT = {
 }
 
 
+def _scrubbed_env():
+    """os.environ minus the Slack/Luma secrets. gws never needs them, and a child
+    process inherits everything by default — so a crashing or chatty gws would
+    otherwise hold tokens it has no business seeing. Local (not lib) so this
+    script stays standalone."""
+    return {k: v for k, v in os.environ.items()
+            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
+            and k != "LUMA_API_KEY"}
+
+
 def gws_json(args):
     """Run a gws command expecting JSON on stdout (skips the keyring banner line)."""
-    out = subprocess.run(["gws"] + args, capture_output=True, text=True)
+    out = subprocess.run(["gws"] + args, capture_output=True, text=True,
+                         env=_scrubbed_env())
     if out.returncode != 0:
         sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
     txt = out.stdout
@@ -59,7 +70,8 @@ def gws_download(args, out_path):
     on an empty result. A backup that silently produced a 0-byte file (e.g. Drive's
     ~10MB export limit, or a dropped connection returning exit 0) is worse than an
     error, so verify the snapshot is non-empty before we ever report success."""
-    out = subprocess.run(["gws"] + args, capture_output=True, text=True)
+    out = subprocess.run(["gws"] + args, capture_output=True, text=True,
+                         env=_scrubbed_env())
     if out.returncode != 0:
         sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
     if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
@@ -158,7 +170,10 @@ def assert_snapshot_git_ignored(path):
 
     The dest-level probe above can pass while a nested rule (`!backups/foo/*`)
     or a slug-specific pattern re-includes the real file, so the exact path is
-    checked too. Outside any repo there is nothing to leak into."""
+    checked too. Outside any repo there is nothing to leak into. realpath, as
+    assert_dest_git_safe does: /tmp and /var are symlinks on macOS, and git
+    answers check-ignore for the resolved path."""
+    path = os.path.realpath(path)
     root = _repo_root(os.path.dirname(path))
     if root is None:
         return
@@ -183,14 +198,15 @@ def snapshot_path(dest_root, slug, ext):
     """A fresh, non-colliding path. Never returns a path that already exists, so
     two runs in the same second can't overwrite each other (breaking "immutable")."""
     d = os.path.join(dest_root, slug)
-    os.makedirs(d, exist_ok=True)
     stamp = timestamp()
     p = os.path.join(d, f"{stamp}.{ext}")
     n = 1
     while os.path.exists(p):
         p = os.path.join(d, f"{stamp}-{n}.{ext}")
         n += 1
+    # Gate BEFORE makedirs: a refusal must not leave an empty slug folder behind.
     assert_snapshot_git_ignored(p)
+    os.makedirs(d, exist_ok=True)
     return p
 
 

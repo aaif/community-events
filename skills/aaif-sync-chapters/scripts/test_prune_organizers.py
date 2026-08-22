@@ -118,17 +118,32 @@ check("blank and 'none' cells are not skips — nothing was recorded",
 
 # --- --redact: stdout masking (default on under CI) ----------------------------
 pr.REDACT = False
-check("redaction off: email passes through", pr.redact_email("ada@x.com"), "ada@x.com")
 check("redaction off: name passes through", pr.redact_name("Ada Lovelace"), "Ada Lovelace")
 pr.REDACT = True
 try:
-    check("redacted email keeps one char + domain", pr.redact_email("ada@x.com"), "a***@x.com")
-    check("redacted name is initials", pr.redact_name("ada lovelace"), "A. L.")
-    check("a non-email is left alone", pr.redact_email("Boston"), "Boston")
-    check("empty values survive", (pr.redact_email(""), pr.redact_name("")), ("", ""))
+    check("redacted name is a first initial", pr.redact_name("ada lovelace"), "A.")
+    check("empty values survive", pr.redact_name(""), "")
+    check("no redact_email here: nothing in this report prints an address",
+          hasattr(pr, "redact_email"), False)
 finally:
     pr.REDACT = False
 
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", pr.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    pr.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    pr.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", pr.REDACT, False)
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

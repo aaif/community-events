@@ -300,5 +300,41 @@ check("write mode neither reads nor writes the held chapter",
       "a-Boston" in _dl, False)
 check("the hold keeps the write run's exit non-zero", _rc, 2)
 
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", sync_about.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_about.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    sync_about.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", sync_about.REDACT, False)
+
+# --- --redact: the report names people in five places; none survive -----------
+sync_about.REDACT = True
+try:
+    check("redacted name is a first initial", sync_about.redact_name("ada lovelace"), "A.")
+    check("redacted email keeps one char + TLD only", sync_about.redact_email("ada@x.com"), "a***@***.com")
+    _d = sync_about.Doc({"name": "Boston"}, {"id": "a-Boston"}, b"", "",
+                        ["Ada Lovelace"], ["Grace Hopper"], "<new/>", None,
+                        ["Ada Lovelace"], ["Grace Hopper"])
+    _out = _io.StringIO()
+    with _ctx.redirect_stdout(_out):
+        sync_about.print_report(
+            [_d], {s: 1 for s in sync_about.SYNC_STATUSES}, [{"city": "Pune", "names": ["Ada Lovelace"]}],
+            [{"city": "Bostn", "names": ["Grace Hopper"], "candidates": ["Boston"]}])
+    _text = _out.getvalue()
+    check("redacted About report carries no full name",
+          [w for w in ("Lovelace", "Hopper") if w in _text], [])
+    check("the redacted About report still names the chapter", "Boston" in _text, True)
+finally:
+    sync_about.REDACT = False
 print("\n%s (%d failure(s))" % ("ALL PASS" if not fails else "FAILURES", fails))
 sys.exit(1 if fails else 0)

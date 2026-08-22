@@ -160,6 +160,27 @@ class TestAssertDestGitSafe(unittest.TestCase):
             with self.assertRaises(SystemExit) as e:
                 backup.snapshot_path(bk, "intake", "xlsx")
             self.assertIn("REFUSING TO WRITE", str(e.exception))
+            # the refusal happens before makedirs: no empty slug folder is left
+            self.assertFalse(os.path.exists(os.path.join(bk, "intake")))
+
+    def test_snapshot_path_outside_any_repo_is_allowed(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = backup.snapshot_path(os.path.join(d, "bk"), "intake", "xlsx")
+            self.assertTrue(os.path.isdir(os.path.dirname(p)))
+            self.assertFalse(os.path.exists(p))
+
+
+class TestScrubbedEnv(unittest.TestCase):
+    def test_drops_slack_and_luma_secrets_only(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "x",
+                                          "AAIF_SLACK_READ_TOKEN": "y",
+                                          "LUMA_API_KEY": "z", "HOME_KEEP": "1"}):
+            env = backup._scrubbed_env()
+        self.assertNotIn("AAIF_SLACK_WRITE_TOKEN", env)
+        self.assertNotIn("AAIF_SLACK_READ_TOKEN", env)
+        self.assertNotIn("LUMA_API_KEY", env)
+        self.assertEqual(env["HOME_KEEP"], "1")
 
 
 class TestDriveIdDispatch(unittest.TestCase):

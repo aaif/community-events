@@ -51,7 +51,7 @@ jobs:
           PYTHONPATH: lib
       - name: Skill script tests
         run: |
-          for t in skills/*/scripts/test_*.py; do
+          for t in skills/*/scripts/test_*.py scripts/test_*.py; do
             echo "== $t =="
             python "$t"
           done

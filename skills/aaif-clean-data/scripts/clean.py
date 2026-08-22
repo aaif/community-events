@@ -56,8 +56,17 @@ DERIVED_COLUMNS = ("Resolved City",)
 
 
 # ---------- gws helpers ----------
+def _scrubbed_env():
+    """os.environ minus the Slack/Luma secrets: gws never needs them, and a child
+    inherits the whole environment otherwise. Local so this script stays standalone."""
+    return {k: v for k, v in os.environ.items()
+            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
+            and k != "LUMA_API_KEY"}
+
+
 def gws(args):
-    out = subprocess.run(["gws"] + args, capture_output=True, text=True)
+    out = subprocess.run(["gws"] + args, capture_output=True, text=True,
+                         env=_scrubbed_env())
     if out.returncode != 0:
         sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
     txt = out.stdout
@@ -788,23 +797,23 @@ def cities(write=False):
                          "valueInputOption": "RAW"}),
              "--json", json.dumps({"values": [[H_EXTRACTED]]}), "--format", "json"])
         print("\nCreated the %r column at %s." % (H_EXTRACTED, col))
-    # Reuse apply(): row bounds, RAW writes and the Autofixes provenance note are
-    # all already correct there, and a second implementation would drift. The
-    # change list is handed over in memory — it holds names and cities, and a
-    # staging file in $TMPDIR would be a PII copy outside the repo's guards.
-    apply(changes)
+    # Reuse apply_changes(): row bounds, RAW writes and the Autofixes provenance
+    # note are all already correct there, and a second implementation would
+    # drift. The change list is handed over in memory — it holds names and
+    # cities, and a staging file in $TMPDIR would be a PII copy outside the
+    # repo's guards.
+    apply_changes(changes)
 
 
 # ---------- apply ----------
-def apply(changes):
-    """Write a change list to the sheet. `changes` is either a path to a JSON
-    file (the `apply <file>` CLI) or the already-loaded list of
-    {row, header, value} dicts (`cities --write`)."""
-    if isinstance(changes, (str, os.PathLike)):
-        with open(changes) as fh:
-            wanted = json.load(fh)
-    else:
-        wanted = changes
+def apply(path):
+    """The `apply <file>` CLI: load a scan's JSON change list and write it."""
+    with open(path) as fh:
+        apply_changes(json.load(fh))
+
+
+def apply_changes(wanted):
+    """Write a list of {row, header, value} dicts to the sheet."""
     hdr, rows = read_tab(SOURCE)
     ai = idx(hdr, AUTOFIX_COL)
     if ai is None:  # create the Autofixes column at the end of the source headers

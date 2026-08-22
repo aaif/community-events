@@ -65,23 +65,32 @@ from aaif_events import slack as slackmod  # noqa: E402
 
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@domain and
-# names as initials in every printed line. Each standalone script carries its
-# own copy of this flag and these two helpers.
+# a CI log is a publication on a public repo) masks names as a first initial
+# in every printed line. Each standalone script carries its own copy of this
+# flag and these helpers.
 REDACT = False
-
-
-def redact_email(e):
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    return "%s***@%s" % (local[:1], domain)
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
 
 
 def redact_name(n):
-    if not REDACT or not n:
+    if not REDACT or not n or not n.strip():
         return n
-    return " ".join(w[0].upper() + "." for w in n.split() if w)
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask names (first initial) on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
 
 
 KEEPLIST_TAB = "Organizer Keeplist"
@@ -270,13 +279,9 @@ def main():
                     help="required alongside --write; this removes real people "
                          "from channels they are currently in")
     ap.add_argument("--city", help="limit to one chapter")
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=bool(os.environ.get("CI")),
-                    help="mask emails (a***@domain) and names (initials) on "
-                         "stdout; default on when CI is set")
+    add_redact_flag(ap)
     a = ap.parse_args()
-    global REDACT
-    REDACT = a.redact
+    set_redaction(a.redact)
 
     rows, had, skipped = classify(a.city)
     total = report(rows, had, skipped)

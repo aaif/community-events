@@ -7,21 +7,56 @@ in through environment variables (or the gitignored `.env` / the keychain)
 only — see AGENTS.md. This check catches the easy way of getting that wrong:
 a `--token` or `--api-key` style argparse flag.
 
+Walks the AST rather than grepping, so multi-line `add_argument(` calls, a
+short flag listed first (`-t, --token`), and `dest="token"` are all seen. A
+flag is flagged when, split on `-`/`_`, it contains one of SECRET_WORDS as a
+whole word: `--token`, `--api-key` and `dest="token"` fail; `--tokenize` and
+`--keyboard` pass. A compound like `--secret-sauce-mode` is flagged too — a
+whole-word hit is a hit, so rename the flag rather than special-case it.
+
 Usage:  python3 scripts/check_no_secret_args.py [FILE...]
         (no args = every *.py under lib/, skills/, scripts/)
 """
-import glob, re, sys
+import ast, glob, re, sys
 
-FLAG_RE = re.compile(
-    r"""add_argument\(\s*['"]--?[\w-]*(token|api[_-]?key|secret|passw(or)?d|credential)""",
-    re.IGNORECASE)
+SECRET_WORDS = frozenset({
+    "token", "key", "apikey", "api-key", "secret", "password", "passwd",
+    "credential", "credentials", "auth", "bearer", "xoxb", "xoxp",
+})
+
+
+def is_secret_flag(name):
+    """True when a flag/dest name carries a secret word as a whole word."""
+    words = [w for w in re.split(r"[-_]", name.strip("-").lower()) if w]
+    return any(w in SECRET_WORDS for w in words)
+
+
+def _string_args(call):
+    for a in call.args:
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            yield a.value
+    for kw in call.keywords:
+        if kw.arg == "dest" and isinstance(kw.value, ast.Constant) \
+                and isinstance(kw.value.value, str):
+            yield kw.value.value
 
 
 def offenders(path):
     with open(path, encoding="utf-8") as fh:
-        for n, line in enumerate(fh, 1):
-            if FLAG_RE.search(line):
-                yield n, line.strip()
+        src = fh.read()
+    try:
+        tree = ast.parse(src, filename=path)
+    except SyntaxError as e:
+        yield e.lineno or 0, f"(unparsable: {e.msg})"
+        return
+    lines = src.splitlines()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"):
+            continue
+        hit = [s for s in _string_args(node) if is_secret_flag(s)]
+        if hit:
+            yield node.lineno, lines[node.lineno - 1].strip()
 
 
 def main(argv):

@@ -69,31 +69,55 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@domain and
-# names as initials in every printed line. Kept as a module flag + two tiny
-# helpers so each standalone script carries its own copy.
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag and these helpers.
 REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
 
 
 def redact_email(e):
     if not REDACT or not e or "@" not in e:
         return e
     local, _, domain = e.partition("@")
-    return "%s***@%s" % (local[:1], domain)
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
 
 
 def redact_name(n):
-    if not REDACT or not n:
+    if not REDACT or not n or not n.strip():
         return n
-    return " ".join(w[0].upper() + "." for w in n.split() if w)
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld) and names (first initial) "
+                         "on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
+
+#: Columns whose values are categorical, not personal — the only ones a
+#: redacted report still shows. Everything else (survey answers, company,
+#: phone, LinkedIn…) could identify someone, so it prints as `…`.
+SHOWN_UNDER_REDACT = ("Role", "Status", "Signal", "Trusted/Regular")
 
 
 def redact_sets(sets):
-    """The per-op cell dict, with its identifying columns masked."""
+    """The per-op cell dict: under REDACT every value is masked except the
+    role/status-like columns, so the report still shows WHICH columns change."""
     if not REDACT:
         return sets
-    return {k: (redact_email(v) if k == "Email" else
-                redact_name(v) if k == "Full name" else v)
+    return {k: (v if any(tag in k for tag in SHOWN_UNDER_REDACT) else "…")
             for k, v in sets.items()}
 
 
@@ -102,24 +126,53 @@ def backup_root(kind):
 
     `<repo>/backups/<kind>-<UTC stamp>/` — `**/backups/*` is gitignored, and
     the guard below proves it for THIS checkout before anything lands there:
-    a before/ copy holds every synced person's name and email, and this repo
-    is public. Living under the repo (not $TMPDIR) keeps the recovery copy
-    where an operator will find it and where a reboot does not sweep it.
+    the copies hold every synced person's name and email, and this repo is
+    public. Living under the repo (not $TMPDIR) keeps the recovery copy where
+    an operator will find it and where a reboot does not sweep it.
+
+    Three outcomes, ported from migrate_status_prospect.assert_git_safe (the
+    scripts stay standalone): git missing -> abort, since nothing can prove
+    the path is safe; REPO is not a git checkout (a plugin install, a zip) ->
+    allowed, with a printed note, because there is no repo to leak into; any
+    other git failure (dubious ownership, a corrupt .git) -> abort quoting
+    git, because mapping it to "safe" would disengage the PII guard.
     """
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     path = os.path.join(REPO, "backups", "%s-%s" % (kind, stamp))
-    r = subprocess.run(["git", "-C", REPO, "check-ignore", "-q",
-                        os.path.join(path, "probe")], capture_output=True)
-    if r.returncode != 0:
-        sys.exit("ABORT: %s is not gitignored in this checkout — refusing to "
-                 "write member data there (is `**/backups/*` still in "
-                 ".gitignore?)." % path)
+    try:
+        probe = subprocess.run(["git", "-C", REPO, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True,
+                               env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that %s is "
+                 "gitignored. The pre-edit copies hold every organizer's name "
+                 "and email." % path)
+    if probe.returncode != 0:
+        stderr = (probe.stderr or "").strip()
+        if "not a git repository" not in stderr.lower():
+            sys.exit("ABORT: `git rev-parse` failed in %s (exit %d: %s), so this "
+                     "cannot verify that %s is gitignored. The pre-edit copies "
+                     "hold every organizer's name and email."
+                     % (REPO, probe.returncode, stderr[:200], path))
+        print("note: %s is not a git checkout (plugin install?) — writing the "
+              "pre-edit copies under %s; nothing can commit them from here."
+              % (REPO, path), file=sys.stderr)
+    else:
+        r = subprocess.run(["git", "-C", REPO, "check-ignore", "-q",
+                            os.path.join(path, "probe")], capture_output=True)
+        if r.returncode != 0:
+            sys.exit("ABORT: %s is not gitignored in this checkout — refusing to "
+                     "write member data there (is `**/backups/*` still in "
+                     ".gitignore?)." % path)
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
 
 
 def cleanup_workdir(workdir, keep_backups):
     """Delete the working copies; keep only the pre-edit backups if asked.
+
+    Returns True when something could NOT be removed, so run() can turn a
+    stranded member-data file into a non-zero exit.
 
     What lands in workdir is a downloaded working copy per chapter,
     reread.xlsx, and the whole verify/ subtree re-downloaded after each
@@ -141,12 +194,13 @@ def cleanup_workdir(workdir, keep_backups):
     if not keep_backups and not left:
         shutil.rmtree(workdir, ignore_errors=True)
         if not os.path.exists(workdir):
-            return
+            return False
         left.append(workdir)
     if left:
         print("WARNING: could not delete %d path(s) holding member data — "
               "remove by hand: %s" % (len(left), ", ".join(left[:5])),
               file=sys.stderr)
+    return bool(left)
 
 
 def _unlink_quietly(path):
@@ -1300,12 +1354,15 @@ def run(args):
     # Every opened workbook — real names, emails and survey answers — lands in
     # this temp dir. Neither mode may strand ~80 of them there: the workdir is
     # always removed on the way out. The only copy that survives a --write is
-    # the pre-edit before/ set, which lives under backup_root(), not here.
+    # the pre-edit set, which lives under backup_root(), not here.
     workdir = tempfile.mkdtemp(prefix="aaif-crm-")
     try:
-        return _run(args, workdir)
+        code = _run(args, workdir)
     finally:
-        cleanup_workdir(workdir, keep_backups=False)
+        stranded = cleanup_workdir(workdir, keep_backups=False)
+    # A stranded working copy is member data on disk with nobody told; the
+    # WARNING above is not enough for a wrapper (nightly.py) reading codes.
+    return 1 if stranded else code
 
 
 def _run(args, workdir):
@@ -1473,8 +1530,7 @@ def _run(args, workdir):
         return 2
 
     print("\nWriting %d workbook(s)..." % len(touched))
-    backup_dir = os.path.join(backup_root("crm-before"), "before")
-    os.makedirs(backup_dir, mode=0o700, exist_ok=True)
+    backup_dir = backup_root("crm-before")
     written, changed, failed = write_workbooks(touched, workdir, backup_dir)
     print("Wrote %d workbook(s); pre-edit copies kept in %s (gitignored; delete "
           "once the write is confirmed good)" % (len(written), backup_dir))
@@ -1518,13 +1574,9 @@ def main():
     ap.add_argument("--city", help="limit to one chapter folder")
     ap.add_argument("--verbose", action="store_true",
                     help="list every intake row that was not synced")
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=bool(os.environ.get("CI")),
-                    help="mask emails (a***@domain) and names (initials) on "
-                         "stdout; default on when CI is set")
+    add_redact_flag(ap)
     args = ap.parse_args()
-    global REDACT
-    REDACT = args.redact
+    set_redaction(args.redact)
     sys.exit(run(args))
 
 

@@ -488,7 +488,7 @@ class TestCloneResume(unittest.TestCase):
     def run_clone(self, drive, existing_id=None, download=fake_download, repair=False):
         from unittest import mock
         ctx = {"name": "New York", "upper": "NEW YORK", "slug": "newyork",
-               "residuals": [], "latlon": None,
+               "residuals": [], "existing_residuals": [], "latlon": None,
                "repair_existing": repair}
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(cc, "list_children", drive.list_children), \
@@ -562,7 +562,8 @@ class TestCloneResume(unittest.TestCase):
         _, ctx = self.run_clone(drive, existing_id="ex")  # fake_download = SF content
         self.assertEqual(drive.copied, [])                    # still a skip, no dupe
         self.assertEqual(drive.uploaded, [])                  # NOT repaired
-        self.assertEqual([fn for fn, _ in ctx["residuals"]], ["New York Notes.xlsx"])
+        self.assertEqual(ctx["residuals"], [])                # not a clone failure
+        self.assertEqual([fn for fn, _ in ctx["existing_residuals"]], ["New York Notes.xlsx"])
 
     def test_repair_existing_rebrands_a_non_member_data_file_in_place(self):
         drive = FakeDrive({
@@ -573,7 +574,7 @@ class TestCloneResume(unittest.TestCase):
         _, ctx = self.run_clone(drive, existing_id="ex", repair=True)
         self.assertEqual(drive.copied, [])
         self.assertIn("e1", drive.uploaded)                   # repaired in place
-        self.assertEqual(ctx["residuals"], [])                # flag cleared by repair
+        self.assertEqual(ctx["existing_residuals"], [])       # flag cleared by repair
 
     def test_member_data_files_are_never_repaired_even_with_repair_existing(self):
         drive = FakeDrive({
@@ -584,7 +585,7 @@ class TestCloneResume(unittest.TestCase):
         })
         _, ctx = self.run_clone(drive, existing_id="ex", repair=True)
         self.assertEqual(drive.uploaded, [])
-        self.assertEqual(sorted(fn for fn, _ in ctx["residuals"]),
+        self.assertEqual(sorted(fn for fn, _ in ctx["existing_residuals"]),
                          ["Event Tracker.docx", "New York CRM.xlsx"])
 
     def test_is_member_data_globs(self):
@@ -592,6 +593,9 @@ class TestCloneResume(unittest.TestCase):
         self.assertTrue(cc.is_member_data("Event Tracker.docx"))
         self.assertFalse(cc.is_member_data("Slides.pptx"))
         self.assertFalse(cc.is_member_data("notes.txt"))
+        # hand-renamed in Drive: case and stray whitespace must not hide a roster
+        self.assertTrue(cc.is_member_data("  New York CRM.xlsx  ".upper()))
+        self.assertTrue(cc.is_member_data("event tracker.DOCX"))
 
     def test_resume_flags_a_skip_the_repair_cannot_clean(self):
         # A residual the rebrand engine can't rewrite must survive as a flag and
@@ -601,7 +605,7 @@ class TestCloneResume(unittest.TestCase):
                     "mimeType": "application/x-copied"}],
         }))
         _, ctx = self.run_clone(drive, existing_id="ex", download=sticky_download)
-        self.assertEqual([fn for fn, _ in ctx["residuals"]], ["New York CRM.xlsx"])
+        self.assertEqual([fn for fn, _ in ctx["existing_residuals"]], ["New York CRM.xlsx"])
 
     def test_resume_matches_original_name_file_and_renames(self):
         # A survivor of the pre-rename engine holds the ORIGINAL template name —
@@ -616,7 +620,7 @@ class TestCloneResume(unittest.TestCase):
         self.assertEqual(drive.renamed, [("e1", "New York CRM.xlsx")])
         # residual-checked, but a CRM is member data: reported, never rewritten
         self.assertEqual(drive.uploaded, [])
-        self.assertEqual([fn for fn, _ in ctx["residuals"]], ["New York CRM.xlsx"])
+        self.assertEqual([fn for fn, _ in ctx["existing_residuals"]], ["New York CRM.xlsx"])
 
     def test_resume_matches_original_name_subfolder_and_renames(self):
         drive = FakeDrive({
@@ -663,7 +667,60 @@ class TestMainGuards(unittest.TestCase):
 
     def test_default_invocation_plans_only(self):
         self.run_main(["--city", "Zed"])
-        self.run_main(["--city", "Zed", "--dry-run"])   # no-op alias, still plans
+        self.run_main(["--city", "Zed", "--dry-run"])   # plan-only spelling, still plans
+
+    def test_dry_run_with_write_is_a_usage_error(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--write", "--dry-run"])
+        self.assertEqual(cm.exception.code, 2)     # argparse usage error, nothing ran
+
+    def _clone_with(self, fresh=(), existing=()):
+        def fake_clone(_tpl, _parent, _name, ctx, existing_id=None):
+            ctx["residuals"].extend(fresh)
+            ctx["existing_residuals"].extend(existing)
+            return "new"
+        return fake_clone
+
+    def test_fresh_clone_residual_fails_with_exit_1(self):
+        with mock.patch("sys.stdout"), self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--write"],
+                          clone=self._clone_with(fresh=[("Slides.pptx", ["SF"])]))
+        self.assertIn("NOT clean", str(cm.exception))
+
+    def test_existing_file_residual_exits_2_with_the_next_step(self):
+        import io
+        err = io.StringIO()
+        with mock.patch("sys.stdout"), mock.patch("sys.stderr", err), \
+                self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--write", "--resume"],
+                          clone=self._clone_with(existing=[("New York CRM.xlsx", ["SF"])]))
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("1 existing file(s) still carry source tokens; re-run with "
+                      "--write --resume --repair-existing for design assets, fix "
+                      "CRM/Tracker by hand", err.getvalue())
+
+    def test_fresh_residual_wins_when_both_classes_are_present(self):
+        with mock.patch("sys.stdout"), self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--write", "--resume"],
+                          clone=self._clone_with(fresh=[("a.pptx", ["SF"])],
+                                                 existing=[("New York CRM.xlsx", ["SF"])]))
+        self.assertIn("NOT clean", str(cm.exception))
+
+    def test_surviving_tempdir_is_reported_on_stderr(self):
+        import io
+        err, seen = io.StringIO(), {}
+        def fake_clone(_tpl, _parent, _name, ctx, existing_id=None):
+            seen["tmp"] = ctx["tmp"]
+            return "new"
+        try:
+            with mock.patch("sys.stdout"), mock.patch("sys.stderr", err), \
+                    mock.patch.object(cc.shutil, "rmtree", lambda *a, **k: None):
+                self.run_main(["--city", "Zed", "--write"], clone=fake_clone)
+            self.assertIn("could not remove temp dir", err.getvalue())
+            self.assertIn(seen["tmp"], err.getvalue())
+        finally:
+            import shutil
+            shutil.rmtree(seen["tmp"], ignore_errors=True)
 
     def test_write_clones_into_a_fresh_tempdir_that_is_removed(self):
         seen = {}

@@ -120,6 +120,24 @@ class TestCall(unittest.TestCase):
             with self.assertRaises(luma.LumaError) as cm:
                 luma.call("GET", "/v1/x")
             self.assertIn("not JSON", str(cm.exception))
+            self.assertIn("<html>maintenance", str(cm.exception))
+
+    def test_a_200_non_json_body_head_is_bounded_and_redacted(self):
+        r = mock.MagicMock()
+        r.__enter__.return_value = r
+        r.read.return_value = b"key=secret-" + b"s" * 30 + b" " + b"Z" * 500
+        with mock.patch("aaif_events.luma._urlopen", return_value=r):
+            with self.assertRaises(luma.LumaError) as cm:
+                luma.call("GET", "/v1/x")
+        text = str(cm.exception)
+        self.assertNotIn("s" * 30, text)
+        self.assertIn("<redacted>", text)
+        self.assertNotIn("Z" * 100, text)
+
+    def test_lumaerror_takes_status_in_its_constructor(self):
+        self.assertIsNone(luma.LumaError("x").status)
+        self.assertEqual(luma.LumaError("x", status=418).status, 418)
+        self.assertIsNone(luma.NotAnEventUrl("x").status)
 
     def test_an_error_body_is_not_embedded_only_its_message_field(self):
         body = io.BytesIO(b'{"message": "calendar not found", "request_headers": {"x-luma-api-key": "k"}}')
@@ -131,6 +149,26 @@ class TestCall(unittest.TestCase):
         self.assertIn("HTTP 404: calendar not found", text)
         self.assertNotIn("request_headers", text)
         self.assertNotIn('"k"', text)
+
+    def test_api_message_walks_every_known_shape(self):
+        cases = [
+            ('{"error": "bad slug"}', "bad slug"),
+            ('{"error": {"message": "nested"}}', "nested"),
+            ('{"errors": ["one", {"message": "two"}, 3, null]}', "one; two; 3"),
+            ('{"detail": "det"}', "det"),
+            ('{"message": "m", "errors": ["e"]}', "m; e"),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(luma._api_message(body), expected)
+
+    def test_api_message_names_a_json_body_without_any_message_field(self):
+        body = '{"request_headers": {"x-luma-api-key": "sekrit"}}'
+        out = luma._api_message(body)
+        self.assertEqual(out, "(no message field in a %d-byte JSON body)" % len(body))
+        self.assertNotIn("sekrit", out)
+        self.assertEqual(luma._api_message("[1, 2]"), "")
+        self.assertEqual(luma._api_message("nope"), "")
 
     def test_a_non_json_error_body_contributes_nothing(self):
         with mock.patch("aaif_events.luma._urlopen", side_effect=self._http_error(404)):

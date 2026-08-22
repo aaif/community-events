@@ -66,6 +66,46 @@ from sync_chapters import (CHAPTERS_ID, CHAPTERS_TAB, GENERIC_CITY_TOKENS,  # no
                            fold_city, get_values, gws_json, header_index)
 from sync_crm import TEMPLATE_FOLDER, list_chapter_folders  # noqa: E402
 
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag and these helpers.
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld) and names (first initial) "
+                         "on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
+
+
 FOLDER_COLUMN = "Chapter Folder"
 CHANNEL_COLUMNS = ("Slack Channel", "Organizer Channel", "Country Channel")
 HANDLES_COLUMN = "Organizer Handles"
@@ -766,7 +806,9 @@ def main():
                          "channel does not exist yet. The sheet then names "
                          "channels to be created, and the audit will abort until "
                          "they are — see the module docstring.")
+    add_redact_flag(ap)
     a = ap.parse_args()
+    set_redaction(a.redact)
 
     _, layout, chapters = read_grid(a.city)
 
@@ -796,7 +838,7 @@ def main():
         print("\nAccepted organizers with no Slack account (%d) — they cannot be "
               "invited until they join:" % len(unresolved))
         for city, name in unresolved:
-            print("  %-18s %s" % (city, name))
+            print("  %-18s %s" % (city, redact_name(name)))
     if a.plan:
         todo = [p for p in proposals if p.get("why") == "TO CREATE"]
         print("\n%d planned channel(s) DO NOT EXIST yet. Until they are created "
@@ -925,9 +967,9 @@ def slack_half(chapters, plan=False):
         chans = slackmod.channels(api)
     except (slackmod.SlackError, SystemExit) as exc:
         print("Slack unavailable (%s) — channel columns skipped.\n"
-              "Set AAIF_SLACK_WRITE_TOKEN (env or .env — the Slack CLI credential "
-              "expired for good in 2026-08), then re-run for those.\n" % exc,
-              file=sys.stderr)
+              "Set AAIF_SLACK_READ_TOKEN or AAIF_SLACK_WRITE_TOKEN (environment, or "
+              "the repo-root .env — the Slack CLI credential expired for good in "
+              "2026-08), then re-run for those.\n" % exc, file=sys.stderr)
         return [], [], {}, [], False
 
     cfg = ao.load_config()

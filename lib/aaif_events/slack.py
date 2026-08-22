@@ -66,6 +66,9 @@ DOTENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), ".env")
 #: Secrets stripped from any child process environment — see scrubbed_env().
 _SECRET_ENV = re.compile(r"^(AAIF_SLACK_\w*_TOKEN|LUMA_API_KEY)$")
+#: Additionally stripped under `scrubbed_env(strict=True)`: the `gws` CLI's
+#: own configuration (client id/secret, token paths) — only `gws` needs it.
+_STRICT_SECRET_ENV = re.compile(r"^(AAIF_SLACK_\w*_TOKEN|LUMA_API_KEY|GOOGLE_WORKSPACE_CLI_\w+)$")
 API = "https://slack.com/api/"
 
 
@@ -91,15 +94,18 @@ def _urlopen(request, timeout):
     return _OPENER.open(request, timeout=timeout)
 
 
-def scrubbed_env():
+def scrubbed_env(strict=False):
     """A copy of os.environ without the Slack and Luma secrets.
 
     Pass as `env=` to every subprocess the lib spawns: `gws`, Chrome, git.
     None of them needs the tokens, and a child that crashes with an
     environment dump (or a plugin that logs its env) must not be able to leak
-    one.
+    one. The default keeps `GOOGLE_WORKSPACE_CLI_*` because `gws` reads its
+    own configuration from there; pass `strict=True` for children that need
+    no Google credentials at all (Chrome, git) and those go too.
     """
-    return {k: v for k, v in os.environ.items() if not _SECRET_ENV.match(k)}
+    pattern = _STRICT_SECRET_ENV if strict else _SECRET_ENV
+    return {k: v for k, v in os.environ.items() if not pattern.match(k)}
 
 #: The exact set of methods this repo calls. This is deliberately *not* "every
 #: read-only method" — narrowing it to actual callers is a stronger, self-
@@ -227,7 +233,7 @@ def _dotenv_token(env_path=DOTENV_PATH, key=ENV_TOKEN_VAR):
     return None
 
 
-def load_token(path=CRED_PATH, env_path=DOTENV_PATH, log=None):
+def load_token(*, path=CRED_PATH, env_path=DOTENV_PATH, log=None):
     """Return a Slack token, preferring the app token over the CLI credential.
 
     Resolution order: `AAIF_SLACK_READ_TOKEN`, then `AAIF_SLACK_WRITE_TOKEN`,
@@ -325,10 +331,14 @@ class Slack:
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
+                # Local import: report_style imports this module, so a
+                # top-level import would be a cycle.
+                from aaif_events.report_style import redact
                 raise SlackError(method, "not_json",
                                  "HTTP 200 but the body was not JSON "
-                                 "(Content-Type: %s)"
-                                 % (headers.get("Content-Type") or "unset"))
+                                 "(Content-Type: %s; starts %r)"
+                                 % (headers.get("Content-Type") or "unset",
+                                    redact(raw[:60].decode("utf-8", errors="replace"))))
             if not payload.get("ok") and payload.get("error") == "ratelimited":
                 last = "ratelimited"
                 if attempt == MAX_ATTEMPTS - 1:
@@ -398,9 +408,9 @@ class Slack:
             raise SystemExit(
                 "Token is missing the %s scope(s). The audit would report the "
                 "resulting failures as real findings, so it will not run.\n"
-                "Set %s to a token that carries them (environment or ./.env); "
-                "`slack auth login` is the last resort."
-                % (", ".join(missing), ENV_TOKEN_VAR))
+                "Set %s or %s to a token that carries them (environment or the "
+                "repo-root .env at %s); `slack auth login` is the last resort."
+                % (", ".join(missing), READ_TOKEN_VAR, ENV_TOKEN_VAR, DOTENV_PATH))
         return have
 
 

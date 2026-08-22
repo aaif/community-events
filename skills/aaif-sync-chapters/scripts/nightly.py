@@ -19,7 +19,8 @@ Exit-code convention, in two scopes that deliberately differ:
            rest, which the `Verified:` line in its log records), or coverage
            was involuntarily partial (`PARTIAL:` line); anything else = failure.
   Runner:  0 = every engine in sync; 2 = drift found, writes applied, or
-           partial coverage anywhere; 1 = any engine failed.
+           partial coverage anywhere, or `access` has pending grants;
+           1 = any engine failed.
 
 The Slack write steps (provision_channels.py, invite_organizers.py,
 prune_organizers.py) are deliberately NOT here: they carry their own
@@ -73,6 +74,13 @@ IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL = (
 #: a human reading the report (see the module docstring).
 REPORT_ONLY = frozenset({"access"})
 
+#: Engines that take --redact/--no-redact. The runner passes --no-redact to
+#: each: the logs are 0600 files in a 0700 gitignored directory, the
+#: NEEDS-A-HUMAN step requires the real addresses in access.log, and the
+#: engines' CI default (redact when CI is set) is aimed at a direct terminal
+#: run whose stdout IS the CI log — which this runner's stdout never carries.
+REDACTING = frozenset({"chapters", "about", "crm", "access", "resources"})
+
 
 def classify(code, wrote_marker, write_mode, partial_marker=False):
     """Map an engine's exit code (+ two log markers) onto one of five outcomes.
@@ -102,7 +110,8 @@ def engine_cmd(name, script, write_mode):
     if name in REPORT_ONLY:
         write_mode = False
     return ([sys.executable, os.path.join(HERE, script)]
-            + (["--write"] if write_mode else [])), write_mode
+            + (["--write"] if write_mode else [])
+            + (["--no-redact"] if name in REDACTING else [])), write_mode
 
 
 def run_engine(name, script, log_path, write_mode):
@@ -136,7 +145,8 @@ def main():
                     help="subset of %s to run (default: all five, in pipeline "
                          "order)" % "/".join(n for n, _ in ENGINES))
     ap.add_argument("--write", action="store_true",
-                    help="pass --write through to every engine (default: report only)")
+                    help="pass --write through to every engine except `access`, "
+                         "which always runs in report mode (default: report only)")
     ap.add_argument("--report-dir", default=os.path.join(REPO, "nightly-reports"),
                     help="where the full (PII-carrying) engine logs land; must be "
                          "gitignored and must never be uploaded anywhere public")
@@ -178,7 +188,7 @@ def main():
         print("  %-10s %-15s exit %d  %4.0fs  %s.log%s"
               % (name, outcome, code, secs, name,
                  "  (report mode — never written unattended)"
-                 if a.write and name in REPORT_ONLY else ""))
+                 if name in REPORT_ONLY else ""))
 
     print()
     for line in summary_notes(by_name, a.write):
