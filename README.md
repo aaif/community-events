@@ -228,9 +228,6 @@ Before the first dispatch, an admin configures the repo once (Settings →):
    Without this, anyone with push can edit `run-skill.yml` and the environment
    rule is the only thing left.
 4. Delete repo-level secrets that no workflow references.
-5. Only then set the repository variable `RUN_SKILL_ENABLED=true`. The
-   workflow is a skipped no-op until it exists — dispatching it before the
-   tokens are in place cannot run anything.
 
 `scripts/check_workflows.py` enforces the workflow side of this in CI; the
 settings side is yours to keep.

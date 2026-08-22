@@ -42,16 +42,9 @@ concurrency:
 
 jobs:
   run:
-    # DISABLED until the credentials are provisioned: an admin flips the
-    # repository variable RUN_SKILL_ENABLED to "true" (Settings → Secrets and
-    # variables → Actions → Variables) once the `ops` environment holds the
-    # tokens. Until then a dispatch is a no-op skipped job, not a failed run.
-    # The ref/repo guard is belt and braces: the environment rule restricts to
-    # main; this refuses anything else even if the environment is misconfigured.
-    if: >-
-      vars.RUN_SKILL_ENABLED == 'true' &&
-      github.ref == 'refs/heads/main' &&
-      github.repository == 'aaif/community-events'
+    # Belt and braces: the environment rule restricts to main; this guard
+    # refuses anything else even if the environment is misconfigured.
+    if: github.ref == 'refs/heads/main' && github.repository == 'aaif/community-events'
     runs-on: ubuntu-latest
     environment: ops
     timeout-minutes: 45
