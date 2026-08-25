@@ -200,6 +200,9 @@ LABEL_DX, LABEL_DY = -425196, 224028   # label-corner minus dot-corner (SF templ
 # carries an EMPTY <a:t></a:t>, so text presence can't tell them apart — discriminate
 # by the dot's 155448x155448 ext (its signature).
 DOT_EXT_RE = re.compile(r'<a:ext cx="%d" cy="%d"\s*/>' % (DOT_SIZE, DOT_SIZE))
+# Captures x and y: reposition_map_marker() only needs to MATCH the element, but
+# read_marker_offsets() extracts the coordinates from these two groups. Removing
+# them to "simplify" would silently break the read side.
 OFF_RE = re.compile(r'<a:off x="(-?\d+)" y="(-?\d+)"\s*/>')   # tolerate a re-saved " />"
 SP_RE = re.compile(r"<p:sp\b[^>]*>.*?</p:sp>", re.S)            # slide 5 shapes are flat
 
@@ -231,32 +234,58 @@ def marker_offsets(lat, lon):
     return dot_off, label_off
 
 def read_marker_offsets(path):
-    """Return (dot_off, label_off) as EMU (x, y) pairs for the slide-5 markers of
-    an EXISTING deck, or None when there is nothing to read (slide 5 absent, no
-    green marker shapes, or not exactly one dot + one label). The read-side twin
-    of marker_offsets(): compare the two to tell a deck whose dot is already in
-    the right place from one that still needs moving, without rewriting the file.
-    Deliberately returns None instead of raising — a caller sweeping the whole
-    chapter estate reports an odd deck and moves on."""
+    """Return (offsets, reason) for the slide-5 markers of an EXISTING deck.
+
+    On success: ((dot_off, label_off), None), each an EMU (x, y) pair, in the
+    same order marker_offsets() returns them. On anything else: (None, reason),
+    where reason is a short human-readable string.
+
+    The read-side twin of marker_offsets(): compare the two to tell a deck whose
+    dot is already in the right place from one that still needs moving, without
+    rewriting the file. Deliberately returns a reason instead of raising — a
+    caller sweeping the whole chapter estate reports an odd deck and moves on.
+
+    The reason is not decoration. The four failure modes want different human
+    responses: a deck with no slide 5 is probably an older template and is
+    nothing to worry about, while a deck with TWO green dots is the state
+    reposition_map_marker() raises "template drift?" over. Collapsing them into
+    one bare None made the sweep print the same line for both, and the quieter
+    reading won."""
     with zipfile.ZipFile(path) as z:
         if SLIDE5 not in z.namelist():
-            return None
+            return None, "no %s — an older template?" % SLIDE5
         xml = z.read(SLIDE5).decode("utf-8")
-    found = {}
+    found, green_without_off = {}, 0
     for m in SP_RE.finditer(xml):
         block = m.group(0)
         if GREEN not in block:
             continue
         off = OFF_RE.search(block)
         if not off:
+            # A green shape whose <a:off> is inherited from a layout placeholder.
+            # Counted rather than dropped: reposition_map_marker() DOES count it
+            # into `green` and then trips its dot_moved != 1 guard, so a deck
+            # that is silently skipped here would pass a plan run and raise
+            # mid-write. Naming it keeps the two sides telling one story.
+            green_without_off += 1
             continue
         key = "dot" if DOT_EXT_RE.search(block) else "label"
         if key in found:
-            return None      # two dots or two labels — template drift, not our call
+            # Two dots or two labels — template drift, not our call.
+            return None, ("slide 5 has TWO green %ss — template drift; inspect "
+                          "before rewriting" % key)
         found[key] = (int(off.group(1)), int(off.group(2)))
+    if not found:
+        extra = (" (%d green shape(s) had no <a:off>)" % green_without_off
+                 if green_without_off else "")
+        return None, "slide 5 has no green (%s) marker shapes%s" % (GREEN, extra)
     if set(found) != {"dot", "label"}:
-        return None
-    return found["dot"], found["label"]
+        missing = ({"dot", "label"} - set(found)).pop()
+        extra = (" (%d green shape(s) had no <a:off>)" % green_without_off
+                 if green_without_off else "")
+        return None, "slide 5 has a green %s but no %s%s" % (
+            sorted(found)[0], missing, extra)
+    return (found["dot"], found["label"]), None
 
 def reposition_map_marker(path, lat, lon):
     """Move the green dot + its label on slide 5 of a .pptx to (lat, lon).
