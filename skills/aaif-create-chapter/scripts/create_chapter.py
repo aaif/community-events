@@ -200,6 +200,8 @@ LABEL_DX, LABEL_DY = -425196, 224028   # label-corner minus dot-corner (SF templ
 # carries an EMPTY <a:t></a:t>, so text presence can't tell them apart — discriminate
 # by the dot's 155448x155448 ext (its signature).
 DOT_EXT_RE = re.compile(r'<a:ext cx="%d" cy="%d"\s*/>' % (DOT_SIZE, DOT_SIZE))
+OFF_RE = re.compile(r'<a:off x="(-?\d+)" y="(-?\d+)"\s*/>')   # tolerate a re-saved " />"
+SP_RE = re.compile(r"<p:sp\b[^>]*>.*?</p:sp>", re.S)            # slide 5 shapes are flat
 
 # The map is a Gall Stereographic projection, fitted 2026-07-30 against Natural
 # Earth 110m coastlines composited over the drawn map (mean residual 0.64 px —
@@ -228,6 +230,34 @@ def marker_offsets(lat, lon):
     label_off = (dot_off[0] + LABEL_DX, dot_off[1] + LABEL_DY)
     return dot_off, label_off
 
+def read_marker_offsets(path):
+    """Return (dot_off, label_off) as EMU (x, y) pairs for the slide-5 markers of
+    an EXISTING deck, or None when there is nothing to read (slide 5 absent, no
+    green marker shapes, or not exactly one dot + one label). The read-side twin
+    of marker_offsets(): compare the two to tell a deck whose dot is already in
+    the right place from one that still needs moving, without rewriting the file.
+    Deliberately returns None instead of raising — a caller sweeping the whole
+    chapter estate reports an odd deck and moves on."""
+    with zipfile.ZipFile(path) as z:
+        if SLIDE5 not in z.namelist():
+            return None
+        xml = z.read(SLIDE5).decode("utf-8")
+    found = {}
+    for m in SP_RE.finditer(xml):
+        block = m.group(0)
+        if GREEN not in block:
+            continue
+        off = OFF_RE.search(block)
+        if not off:
+            continue
+        key = "dot" if DOT_EXT_RE.search(block) else "label"
+        if key in found:
+            return None      # two dots or two labels — template drift, not our call
+        found[key] = (int(off.group(1)), int(off.group(2)))
+    if set(found) != {"dot", "label"}:
+        return None
+    return found["dot"], found["label"]
+
 def reposition_map_marker(path, lat, lon):
     """Move the green dot + its label on slide 5 of a .pptx to (lat, lon).
 
@@ -245,9 +275,6 @@ def reposition_map_marker(path, lat, lon):
         xml = z.read(SLIDE5).decode("utf-8")
 
     dot_off, label_off = marker_offsets(lat, lon)
-    off_re = re.compile(r'<a:off x="-?\d+" y="-?\d+"\s*/>')   # tolerate a re-saved " />"
-    sp_re = re.compile(r"<p:sp\b[^>]*>.*?</p:sp>", re.S)      # slide 5 shapes are flat
-
     green = 0
     dot_moved = label_moved = 0
     def move_sp(m):
@@ -258,7 +285,7 @@ def reposition_map_marker(path, lat, lon):
         green += 1
         # The dot is the small square shape; the label is the wide text box.
         is_dot = bool(DOT_EXT_RE.search(block))
-        block, n = off_re.subn(
+        block, n = OFF_RE.subn(
             '<a:off x="%d" y="%d"/>' % (dot_off if is_dot else label_off),
             block, count=1)
         if is_dot:
@@ -267,7 +294,7 @@ def reposition_map_marker(path, lat, lon):
             label_moved += n
         return block
 
-    new_xml = sp_re.sub(move_sp, xml)
+    new_xml = SP_RE.sub(move_sp, xml)
     if green == 0:
         print("      note: slide 5 has no green (%s) marker shapes; "
               "leaving map dot as-is." % GREEN)
