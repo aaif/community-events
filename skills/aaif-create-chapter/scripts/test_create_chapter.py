@@ -231,6 +231,82 @@ class TestReposition(unittest.TestCase):
                 self.assertIn("[Content_Types].xml", z.namelist())
 
 
+class TestReadMarkerOffsets(unittest.TestCase):
+    """read_marker_offsets() is the read-side twin of marker_offsets(): the
+    backfill uses it to tell an already-correct deck from one that still needs
+    moving. It must agree exactly with what reposition_map_marker() writes, and
+    must return a REASON — never a guess — on anything that isn't the template.
+    The reason matters: "no slide 5" and "two green dots" want different human
+    responses, and a bare None made the sweep print them identically."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "d.pptx")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_reads_the_template_offsets(self):
+        make_pptx(self.path, slide5(DOT_SP, LABEL_SP, OTHER_SP))
+        self.assertEqual(cc.read_marker_offsets(self.path),
+                         (((4074942, 2650779), (3649553, 2875998)), None))
+
+    def test_round_trips_with_reposition(self):
+        """What reposition writes is exactly what this reads back — the property
+        the backfill's "already correct, skip it" decision rests on."""
+        make_pptx(self.path, slide5(DOT_SP, LABEL_SP, OTHER_SP))
+        cc.reposition_map_marker(self.path, 35.6762, 139.6503)   # Tokyo
+        self.assertEqual(cc.read_marker_offsets(self.path),
+                         (cc.marker_offsets(35.6762, 139.6503), None))
+
+    def test_tolerates_a_re_saved_self_close(self):
+        """PowerPoint re-saves <a:off .../> with a space; OFF_RE allows it."""
+        make_pptx(self.path, slide5(
+            green_sp((10, 20), (cc.DOT_SIZE, cc.DOT_SIZE), text="", off_selfclose=" />"),
+            green_sp((30, 40), (2000000, 300000), text="X", off_selfclose=" />")))
+        self.assertEqual(cc.read_marker_offsets(self.path),
+                         (((10, 20), (30, 40)), None))
+
+    def test_none_when_slide5_is_absent(self):
+        make_pptx(self.path, slide_xml=None)
+        offsets, why = cc.read_marker_offsets(self.path)
+        self.assertIsNone(offsets)
+        self.assertIn("older template", why)
+
+    def test_none_when_there_are_no_green_shapes(self):
+        make_pptx(self.path, slide5(OTHER_SP))
+        offsets, why = cc.read_marker_offsets(self.path)
+        self.assertIsNone(offsets)
+        self.assertIn("no green", why)
+
+    def test_none_when_the_label_is_missing(self):
+        make_pptx(self.path, slide5(DOT_SP, OTHER_SP))
+        offsets, why = cc.read_marker_offsets(self.path)
+        self.assertIsNone(offsets)
+        self.assertIn("no label", why)
+
+    def test_none_when_a_marker_is_duplicated(self):
+        """Two dots means template drift. Returning either one would let the
+        backfill call a deck "already correct" on the strength of a stray shape."""
+        make_pptx(self.path, slide5(DOT_SP, DOT_SP, LABEL_SP))
+        offsets, why = cc.read_marker_offsets(self.path)
+        self.assertIsNone(offsets)
+        # The reason must name template drift: reposition_map_marker() RAISES on
+        # this state, so the sweep must not report it like a benign old deck.
+        self.assertIn("TWO green dots", why)
+        self.assertIn("template drift", why)
+
+    def test_multiline_shape_xml_is_still_matched(self):
+        """SP_RE carries re.S because a PowerPoint re-save can wrap <p:sp>
+        across lines. Without the flag both the read and the write side would
+        see zero markers and the whole estate would report as unreadable."""
+        make_pptx(self.path, slide5(DOT_SP, LABEL_SP).replace("><", ">\n<"))
+        offsets, why = cc.read_marker_offsets(self.path)
+        self.assertIsNone(why)
+        self.assertEqual(offsets, ((4074942, 2650779), (3649553, 2875998)))
+
+
 class TestResolveLatlon(unittest.TestCase):
     def test_override_bypasses_geocoding(self):
         # Both values given -> returned verbatim, no network.

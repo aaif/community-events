@@ -92,9 +92,60 @@ Two consequences of dropping the override table:
   placeable with no network at all; now they hit the geocoder like everyone
   else, and if it is down the fallback above applies to them too.
 - **Decks placed under the old projection sit a few px off the fitted position**
-  (the pre-Stuttgart chapters, and the template's own hand-placed SF dot, ~9 px).
-  A small dot delta against an old deck is the fit being *right*, not a
-  regression — see the validate note below.
+  (the template's own hand-placed SF dot, ~9 px). A small dot delta against an old
+  deck is the fit being *right*, not a regression — see the validate note below.
+  For chapter decks, `backfill_map_dots.py` below reports and repairs this.
+
+## Backfilling existing decks
+
+`scripts/backfill_map_dots.py` re-places the markers in chapter decks that
+already exist. Decks created before the Gall Stereographic fit shipped (PR #20)
+carry their dot from the old placement, which was wrong in two distinct ways:
+the **projection** was ~9% too wide with a ~20 px offset (Tokyo landed in the
+Pacific), and the four `PIXEL_OVERRIDES` cities bypassed the projection entirely
+(Shanghai landed on Honshu because that hand-tuned **override** was wrong — not
+evidence about the formula).
+
+Run the plan (the default) to find out where the estate actually stands: an
+already-corrected estate reports every chapter as `already correct`, and that
+report — not a number written down here — is the authoritative answer. Reach for
+this after a refit, or to check the estate.
+
+Coordinates come from the **Chapters & Teams** sheet's `Generated Geolocation`
+column, joined to Drive by the folder URL in `Chapter Folder` — not from the
+folder name. That is what the website feed already draws, so the deck and the
+site agree; it is also the only source that maps a folder to its real city, and
+a folder's name can lag that city (they have been renamed before). A Drive
+folder with no sheet row is reported and skipped, never guessed at.
+
+```bash
+# Plan (default) — per-chapter drift in pixels, writes nothing:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py
+
+# Apply:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py --write
+
+# One chapter, coordinates given rather than read from the sheet:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py \
+    --city Shanghai --lat 31.2304 --lon 121.4737 --write
+```
+
+`--city` takes the Drive folder's **name** or the city the sheet gives that
+folder, so both `--city Scotland` and `--city Edinburgh` reach the same chapter.
+
+A deck already within `--tolerance` (default 1 px — a pixel or less is rounding,
+not misplacement) is left untouched, so **re-running is a no-op on decks that are
+already correct**. Drift is the worse of the dot and its label, so a refit that
+moves only the label is still caught. A deck whose slide 5 does not hold exactly
+one green dot and one green label is reported with a reason and skipped, never
+rewritten on a guess — and a run that could not evaluate part of the estate exits
+non-zero rather than reading as a finished backfill.
+
+There is **no undo** beyond Drive's revision history: `--write` replaces up to 80
+production decks in place. Read a plan run first.
+
+The script imports the projection and the OOXML surgery from `create_chapter.py`
+— do not reimplement either of those inside the backfill script.
 
 ## Procedure
 
