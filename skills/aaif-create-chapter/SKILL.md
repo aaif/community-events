@@ -92,9 +92,42 @@ Two consequences of dropping the override table:
   placeable with no network at all; now they hit the geocoder like everyone
   else, and if it is down the fallback above applies to them too.
 - **Decks placed under the old projection sit a few px off the fitted position**
-  (the pre-Stuttgart chapters, and the template's own hand-placed SF dot, ~9 px).
-  A small dot delta against an old deck is the fit being *right*, not a
-  regression — see the validate note below.
+  (the template's own hand-placed SF dot, ~9 px). A small dot delta against an old
+  deck is the fit being *right*, not a regression — see the validate note below.
+
+## Backfilling existing decks
+
+`scripts/backfill_map_dots.py` re-places the dot in chapter decks that already
+exist. Every chapter created before 2026-08-12 carried a dot from the old
+projection (mean 31 px out, worst 60 px — Shanghai on Japan, Tokyo in the
+Pacific); **all 80 were corrected on 2026-08-25**, so this is now a maintenance
+tool rather than a one-off — reach for it after a refit, or to check the estate.
+
+Coordinates come from the **Chapters & Teams** sheet's `Generated Geolocation`
+column, joined to Drive by the folder URL in `Chapter Folder` — not from the
+folder name. That is what the website feed already draws, so the deck and the
+site agree; it is also the only source that knows the folder still called
+"Scotland" is the Edinburgh chapter. A Drive folder with no sheet row is reported
+and skipped, never guessed at.
+
+```bash
+# Plan (default) — per-chapter drift in pixels, writes nothing:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py
+
+# Apply:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py --write
+
+# One chapter, coordinates given rather than read from the sheet:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py \
+    --city Shanghai --lat 31.2304 --lon 121.4737 --write
+```
+
+A deck already within `--tolerance` (default 1 px — sub-pixel is invisible and is
+just rounding) is left untouched, so a re-run is a cheap no-op and the run is
+safe to interrupt and repeat. A deck whose slide 5 does not hold exactly one
+green dot and one green label is reported and skipped, never rewritten on a
+guess. The script imports the projection and the OOXML surgery from
+`create_chapter.py` — do not reimplement either there.
 
 ## Procedure
 
