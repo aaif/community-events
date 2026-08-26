@@ -13,12 +13,12 @@ from xml.etree import ElementTree as ET
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sync_chapters
 import sync_crm
-from sync_crm import (Attendees, CRM_HEADERS, DV_STATUS_NEW, DV_STATUS_OLD,
+from sync_crm import (Attendees, CRM_HEADERS, DV_EXPECTED, NEW_COLUMN,
                       SELF_SERVE_MIN, X,
-                      apply_ops, cell_ref, clean_text, col_of, crm_fields,
-                      fold_email, gate_pipeline_organizers, is_aaif_ops,
-                      join_distinct, load_parts, match_chapters,
-                      merge_people, patch_status_dropdown, plan_workbook,
+                      apply_ops, cell_ref, check_dropdowns, clean_text, col_of,
+                      crm_fields, dv_lists, fold_email, gate_pipeline_organizers,
+                      is_aaif_ops, is_auto_role, join_distinct, load_parts,
+                      match_chapters, merge_people, plan_workbook,
                       save_parts, sheet_part, valid_email)
 
 TODAY = "2026-08-06"
@@ -44,8 +44,15 @@ def _c(ref, text, style=None):
 
 
 def make_xlsx(sample_row=None, blank_rows=8, headers=CRM_HEADERS,
-              shared=False, dv=DV_STATUS_OLD):
-    """A two-sheet workbook whose 'Attendees' tab mirrors the shipped template."""
+              shared=False, dv=None, dv_role=None):
+    """A two-sheet workbook whose 'Attendees' tab mirrors the shipped template.
+
+    `dv` / `dv_role` override the Status and `Interested in` dropdown lists;
+    both default to what a migrated workbook holds, so a fixture built with no
+    arguments is the post-2026-08-25 shape the sync expects to find.
+    """
+    dv = DV_EXPECTED["Status"] if dv is None else dv
+    dv_role = DV_EXPECTED[NEW_COLUMN] if dv_role is None else dv_role
     head = "".join(_c(cell_ref(i, 1), h, "2") for i, h in enumerate(headers))
     rows = ['<row r="1" ht="30" customHeight="1" s="20">%s</row>' % head]
     if sample_row:
@@ -57,13 +64,20 @@ def make_xlsx(sample_row=None, blank_rows=8, headers=CRM_HEADERS,
     for r in range(3, 3 + blank_rows):
         rows.append('<row r="%d">%s</row>'
                     % (r, "".join(_c(cell_ref(i, r), None, "5") for i in (1, 2, 3))))
+    # Status sits at D and `Interested in` at L, exactly as the migrated
+    # workbooks carry them — the dropdown checker resolves both by column
+    # index, so a fixture that put them anywhere else would not exercise it.
     sheet = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<dimension ref="A1:K%d" /><sheetData>%s</sheetData>'
-        '<dataValidations count="1"><dataValidation sqref="D2:D1000" type="list">'
-        '<formula1>"%s"</formula1></dataValidation></dataValidations>'
-        '</worksheet>' % (2 + blank_rows, "".join(rows), dv))
+        '<dimension ref="A1:L%d" /><sheetData>%s</sheetData>'
+        '<dataValidations count="2">'
+        '<dataValidation sqref="D2:D1000" type="list">'
+        '<formula1>"%s"</formula1></dataValidation>'
+        '<dataValidation sqref="L2:L1000" type="list">'
+        '<formula1>"%s"</formula1></dataValidation>'
+        '</dataValidations>'
+        '</worksheet>' % (2 + blank_rows, "".join(rows), dv, dv_role))
     parts = {
         "[Content_Types].xml": "<Types />",
         "_rels/.rels": "<Relationships />",
@@ -97,12 +111,12 @@ def make_xlsx(sample_row=None, blank_rows=8, headers=CRM_HEADERS,
 # human" tests were quietly running against a row the cleaner deletes.
 SAMPLE = ["Ravi Menon", "High", "Yes", "Regular",
           "Brought three friends to the Feb event.", "ravi@vendor.co", "", "Vendor Inc.",
-          "Sales", "—", "Community regular"]
+          "Sales", "—", "Community regular", ""]
 
 # The template's shipped fixture row, which every chapter CRM carries.
 DUMMY = ["Sam Taylor", "Non-grata", "No", "Declined",
          "Pitched from the floor. Do not invite.", "sam@example.com", "", "Vendor Inc.",
-         "Sales", "—", "Wanted to pitch"]
+         "Sales", "—", "Wanted to pitch", "Speaker"]
 
 
 def book(**kw):
@@ -175,25 +189,59 @@ check("without a blocked list the row is still refused",
                     person("M", "ada@x.io", "B", "Speakers", "New")])[0]["tabs"],
       ["Organizers"])
 
+# --- the Status / Interested-in split (2026-08-25) --------------------------
+# Every check below exists because ONE column used to answer both questions.
+# The invariant, stated once: `Interested in` is a fact about the APPLICATION
+# and never moves; `Status` is the DECISION and never names a role.
 f_acc = crm_fields(both[0], TODAY)
-check("accepted organizer -> Organizer", f_acc["Status"], "Organizer")
+check("accepted organizer -> Status Accepted", f_acc["Status"], "Accepted")
+check("...and Interested in carries every role applied for",
+      f_acc[NEW_COLUMN], "Organizer/Speaker")
 check("accepted organizer -> Trusted", f_acc["Trusted/Regular"], "Yes")
 check("note carries every role, statuses deduped",
       f_acc["Notes (CRM)"], "Intake: Organizer/Speaker · Accepted · 2026-08-06")
 
 f_host = crm_fields(merge_people([person("Bo", "bo@x.io", "B", "Hosts", "Accepted")])[0], TODAY)
-check("accepted host -> Host", f_host["Status"], "Host")
+check("accepted host -> Status Accepted", f_host["Status"], "Accepted")
+check("...and Interested in Host", f_host[NEW_COLUMN], "Host")
 check("accepted host is not auto-Trusted", f_host["Trusted/Regular"], "")
 
-# Pipeline (not-yet-accepted) people, per the self-serve policy.
+# Pipeline (not-yet-accepted) people. Status mirrors the intake verbatim.
 f_pipe = crm_fields(merge_people([person("Cy", "cy@x.io", "B", "Organizers", "Tentative")])[0], TODAY)
-check("pipeline organizer -> Prospect", f_pipe["Status"], "Prospect")
+check("pipeline organizer keeps its real intake status", f_pipe["Status"], "Tentative")
+check("...and still reads Interested in Organizer", f_pipe[NEW_COLUMN], "Organizer")
 check("pipeline organizer is not Trusted", f_pipe["Trusted/Regular"], "")
 check("pipeline note carries the intake status",
       f_pipe["Notes (CRM)"], "Intake: Organizer · Tentative · 2026-08-06")
-f_pspk = crm_fields(merge_people([person("Dee", "dee@x.io", "B", "Speakers", "New")])[0], TODAY)
-check("pipeline speaker -> Speaker (not Prospect)", f_pspk["Status"], "Speaker")
-check("pipeline speaker is not Trusted", f_pspk["Trusted/Regular"], "")
+
+# THE REGRESSION. A speaker/host sitting at Prospect used to be written as a
+# flat `Speaker`/`Host` in Status — the CRM announced a settled speaker where
+# triage had settled nothing, and only organizers were spared. Both halves are
+# asserted: the decision is Prospect AND the application is still visible.
+for tab, role in (("Speakers", "Speaker"), ("Hosts", "Host")):
+    f_p = crm_fields(merge_people(
+        [person("Dee", "dee@x.io", "B", tab, "Prospect")])[0], TODAY)
+    check("pipeline %s -> Status Prospect, not %r" % (role.lower(), role),
+          f_p["Status"], "Prospect")
+    check("...and Interested in %r" % role, f_p[NEW_COLUMN], role)
+    check("...and not Trusted", f_p["Trusted/Regular"], "")
+
+check("no role word can ever reach the Status column",
+      sorted(set(sync_crm.CRM_LIFECYCLE.values()) & set(sync_crm.CRM_ROLE.values())),
+      [])
+check("...nor be offered by the Status dropdown",
+      [r for r in sync_crm.CRM_ROLE.values() if r in sync_crm.DV_STATUS_VALUES],
+      [])
+
+# Every intake status the sync accepts must map to a CRM status, or the first
+# person carrying it crashes the run mid-sweep.
+check("every syncable intake status has a lifecycle mapping",
+      [st for st in sync_crm.SYNC_STATUSES + sync_crm.PIPELINE_STATUSES
+       if st not in sync_crm.CRM_LIFECYCLE], [])
+check("both accepted-ish statuses land on Accepted",
+      sorted({sync_crm.CRM_LIFECYCLE[st] for st in sync_crm.SYNC_STATUSES}),
+      ["Accepted"])
+
 # The 2026-08-22 rename transition: an intake row still saying the legacy "New"
 # behaves identically to one saying "Prospect".
 check("both the legacy and current spellings are pipeline statuses",
@@ -201,24 +249,52 @@ check("both the legacy and current spellings are pipeline statuses",
       ["New", "Prospect"])
 f_leg = crm_fields(merge_people([person("Lee", "lee@x.io", "B", "Organizers", "New")])[0], TODAY)
 f_cur = crm_fields(merge_people([person("Lee", "lee@x.io", "B", "Organizers", "Prospect")])[0], TODAY)
-check("a legacy-New organizer lands as Prospect, exactly like a Prospect one",
-      (f_leg["Status"], f_leg["Trusted/Regular"]),
-      (f_cur["Status"], f_cur["Trusted/Regular"]))
+check("a legacy-New organizer lands exactly like a Prospect one",
+      (f_leg["Status"], f_leg[NEW_COLUMN], f_leg["Trusted/Regular"]),
+      (f_cur["Status"], f_cur[NEW_COLUMN], f_cur["Trusted/Regular"]))
 check("...and that Status is Prospect", f_cur["Status"], "Prospect")
-# Accepted in one role while still in the pipeline for another: the accepted
-# role wins the Status, and the organizer application alone earns no trust.
+
+# Accepted in one role while still in the pipeline for another: acceptance
+# anywhere decides the Status, both applications stay visible, and an organizer
+# application alone earns no trust.
 f_mix = crm_fields(merge_people([
     person("Eve", "eve@x.io", "B", "Organizers", "Interviewing"),
     person("Eve", "eve@x.io", "B", "Speakers", "Accepted")])[0], TODAY)
-check("accepted speaker beats pipeline organizer", f_mix["Status"], "Speaker")
+check("accepted in any role -> Accepted", f_mix["Status"], "Accepted")
+check("...and BOTH applications are still named", f_mix[NEW_COLUMN], "Organizer/Speaker")
 check("...and does not become Trusted", f_mix["Trusted/Regular"], "")
 
-# Minimal by construction: the automation must not touch Signal or any of the
-# detail columns, so they are absent from the mapping rather than written blank.
-check("only the minimal columns are produced",
+# The detail columns the intake collects. They were parsed, merged and then
+# dropped on the floor for months, leaving the sheet's most useful columns
+# blank in every chapter.
+f_det = crm_fields(merge_people([person(
+    "Ann", "ann@x.io", "B", "Speakers", "Accepted", linkedin="https://li/ann",
+    company="Acme", title="Staff Eng", expertise="Agents, MCP")])[0], TODAY)
+check("the survey detail reaches the CRM",
+      [f_det["LinkedIn URL"], f_det["Company"], f_det["Role / title"],
+       f_det["Technical expertise"]],
+      ["https://li/ann", "Acme", "Staff Eng", "Agents, MCP"])
+check("an unanswered detail question writes nothing",
+      crm_fields(merge_people([person("Zed", "z@x.io", "B")])[0], TODAY)["Company"], "")
+
+# is_auto_role: what the sync may rewrite in `Interested in`.
+for value, want in (("", True), ("Host", True), ("Organizer/Speaker", True),
+                    ("organizer/host", True), ("Organizer / Speaker", True),
+                    ("Organizer/Speaker/Host", True),
+                    ("Sponsor", False), ("Organizer (co-lead)", False),
+                    ("Host — offered the Acme office", False)):
+    check("is_auto_role(%r)" % value, is_auto_role(value), want)
+check("every value the sync writes is one it may later rewrite",
+      [v for v in sync_crm.DV_INTERESTED_VALUES if not is_auto_role(v)], [])
+
+# `Signal` is the chapter's own private judgement of a person and the one
+# column no form answer can supply, so it is absent from the mapping rather
+# than written blank. Every OTHER column is now filled from the intake.
+check("exactly the writable columns are produced",
       sorted(f_acc), sorted(sync_crm.CRM_WRITTEN))
-for col in ("Signal", "LinkedIn URL", "Company", "Role / title", "Technical expertise"):
-    check("%r is never written" % col, col in f_acc, False)
+check("'Signal' is never written", "Signal" in f_acc, False)
+check("'Signal' is the only CRM column the automation leaves alone",
+      [h for h in CRM_HEADERS if h not in sync_crm.CRM_WRITTEN], ["Signal"])
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +451,10 @@ check("new person lands on the first free row", ops[0]["rownum"], 3)
 check("new person is flagged as an add", ops[0]["kind"], "add")
 check("the interest field reaches the CRM cell",
       ops[0]["sets"]["What brings you here?"], "I want to be an organizer/volunteer")
-check("the survey's detail columns are not written",
-      [c for c in ("Technical expertise", "LinkedIn URL", "Company") if c in ops[0]["sets"]], [])
+check("the survey's detail columns reach the CRM",
+      [ops[0]["sets"].get(c) for c in ("Technical expertise", "LinkedIn URL")],
+      ["Agents, MCP", "https://li/ada"])
+check("...and an unanswered one is not written blank", "Company" in ops[0]["sets"], False)
 
 apply_ops(att, ops)
 check("write landed in the sheet", att.value(3, "Email"), "ada@x.io")
@@ -486,11 +564,15 @@ check("the expected-person filter is email-based, not row-based",
       [r["row"] for r in sync_crm.preexisting(atts, [], [])], [2, 3])
 
 # Status: upgrade what the automation wrote, never what a human wrote.
-# Speaker/Host -> Organizer is the case the AUTO_STATUS rule exists for ("a
-# person's role is corrected after re-triage") and was the one it never covered.
-for before, want in (("", "Organizer"), ("New", "Organizer"), ("Prospect", "Organizer"),
-                     ("Speaker", "Organizer"), ("Host", "Organizer"),
-                     ("Organizer", None),
+# The three ROLE values are the pre-split leftovers sitting in ~62 workbooks;
+# they must upgrade like any other automation value, or the migration is the
+# only thing that could ever repair them.
+for before, want in (("", "Accepted"), ("New", "Accepted"), ("Prospect", "Accepted"),
+                     ("In progress", "Accepted"), ("Interviewing", "Accepted"),
+                     ("Tentative", "Accepted"),
+                     ("Speaker", "Accepted"), ("Host", "Accepted"),
+                     ("Organizer", "Accepted"),
+                     ("Accepted", None),
                      ("Attended", None), ("Declined", None), ("Regular", None),
                      ("Volunteer", None)):
     _, _, a = book(sample_row=SAMPLE)
@@ -499,11 +581,28 @@ for before, want in (("", "Organizer"), ("New", "Organizer"), ("Prospect", "Orga
         a.write(3, "Status", before)
     ops_s = plan_workbook(a, people, TODAY)
     # Assert an op exists at all: for the protected values the expected result
-    # is None, which an EMPTY ops list also yields — so four of these checks
-    # would pass vacuously if planning stopped emitting ops entirely.
-    check("Status %-10r -> op kinds" % before, [o["kind"] for o in ops_s], ["fill"])
+    # is None, which an EMPTY ops list also yields — so those checks would pass
+    # vacuously if planning stopped emitting ops entirely.
+    check("Status %-12r -> op kinds" % before, [o["kind"] for o in ops_s], ["fill"])
     got = ops_s[0]["sets"].get("Status") if ops_s else None
-    check("Status %-10r -> %r" % (before, want), got, want)
+    check("Status %-12r -> %r" % (before, want), got, want)
+
+# The same rule on the new column, and the reason it needs its own predicate:
+# "Organizer/Speaker" is not a member of any value set, so a frozenset test
+# would freeze every multi-role person at whatever was written first.
+for before, want in (("", "Organizer"), ("Speaker", "Organizer"),
+                     ("Speaker/Host", "Organizer"),
+                     ("Organizer", None),
+                     ("Sponsor", None), ("Organizer (co-lead)", None)):
+    _, _, a = book(sample_row=SAMPLE)
+    a.write(3, "Email", "ada@x.io")
+    if before:
+        a.write(3, NEW_COLUMN, before)
+    ops_r = plan_workbook(a, people, TODAY)
+    check("%s %-22r -> op kinds" % (NEW_COLUMN, before),
+          [o["kind"] for o in ops_r], ["fill"])
+    check("%s %-22r -> %r" % (NEW_COLUMN, before, want),
+          ops_r[0]["sets"].get(NEW_COLUMN) if ops_r else None, want)
 
 # The self-serve lifecycle end-to-end: a Prospect synced while in the pipeline
 # is upgraded in place once the chapter accepts them — Status is in AUTO_STATUS
@@ -512,12 +611,16 @@ _, _, alc = book(sample_row=SAMPLE)
 pipe = merge_people([person("Ada", "ada@x.io", "Boston", "Organizers", "Tentative",
                             linkedin="https://li/ada", expertise="Agents, MCP")])
 apply_ops(alc, plan_workbook(alc, pipe, TODAY))
-check("a prospect lands untrusted",
-      [alc.value(3, "Status"), alc.value(3, "Trusted/Regular")], ["Prospect", ""])
+check("a prospect lands with its real intake status, untrusted",
+      [alc.value(3, "Status"), alc.value(3, NEW_COLUMN),
+       alc.value(3, "Trusted/Regular")],
+      ["Tentative", "Organizer", ""])
 up = plan_workbook(alc, people, TODAY)
 check("acceptance upgrades the prospect in place",
       (up[0]["kind"], up[0]["sets"].get("Status"), up[0]["sets"].get("Trusted/Regular")),
-      ("fill", "Organizer", "Yes"))
+      ("fill", "Accepted", "Yes"))
+check("...and does not restate the unchanged Interested in",
+      NEW_COLUMN in up[0]["sets"], False)
 
 
 # ---------------------------------------------------------------------------
@@ -534,7 +637,7 @@ check("the new person reads back", rt.value(3, "Full name"), "Ada")
 check("the sample row is untouched", rt.value(2, "Notes (CRM)"), SAMPLE[4])
 check("dimension covers the written rows",
       ET.fromstring(rt_parts["xl/worksheets/sheet1.xml"]).find(X + "dimension").get("ref"),
-      "A1:K10")
+      "A1:L10")
 check("rows stay in ascending order",
       [int(r.get("r")) for r in rt.data.findall(X + "row")], list(range(1, 11)))
 check("re-serialized XML keeps the default namespace",
@@ -554,90 +657,78 @@ check("rows are created past the end of the grid",
 
 
 # ---------------------------------------------------------------------------
-# The Status dropdown patch
+# The dropdowns — CHECKED here, written by migrate_interested_in.py
 # ---------------------------------------------------------------------------
 names, parts, att = book(sample_row=SAMPLE)
-part = sheet_part(parts, "Attendees")
-check("dropdown patch reports a change", patch_status_dropdown(parts, part), "patched")
-check('dropdown now offers "Host"', DV_STATUS_NEW.encode() in parts[part], True)
-check("dropdown patch is idempotent", patch_status_dropdown(parts, part), "already")
-names, parts, _ = book(sample_row=SAMPLE, dv=DV_STATUS_NEW)
-check("an already-patched workbook is left alone",
-      patch_status_dropdown(parts, sheet_part(parts, "Attendees")), "already")
-check('"Host" is the only difference from the shipped list',
-      DV_STATUS_NEW.replace("Host,", ""), DV_STATUS_OLD)
+check("a migrated workbook reports no stale dropdowns", check_dropdowns(att), [])
+check("the lists are found at the right columns",
+      {c: v for c, v in dv_lists(parts[sheet_part(parts, "Attendees")]).items()},
+      {3: DV_EXPECTED["Status"], 11: DV_EXPECTED[NEW_COLUMN]})
 
-# The legacy CRMs escape the formula quotes; matching only `"…"` left every one
-# of them un-patched while the run still reported success.
+# The pre-split list, which is what the whole fleet carried until 2026-08-25.
+# Its role values are exactly the conflation the split removed, so a workbook
+# still offering them must be reported every run.
+LEGACY_STATUS_DV = "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"
+_, _, a_old = book(sample_row=SAMPLE, dv=LEGACY_STATUS_DV)
+check("a pre-split Status list is reported stale", check_dropdowns(a_old), ["Status"])
+_, _, a_nr = book(sample_row=SAMPLE, dv_role="Yes,No")
+check("a wrong Interested-in list is reported stale",
+      check_dropdowns(a_nr), [NEW_COLUMN])
+_, _, a_both = book(sample_row=SAMPLE, dv=LEGACY_STATUS_DV, dv_role="Yes,No")
+check("both are reported together",
+      sorted(check_dropdowns(a_both)), sorted(["Status", NEW_COLUMN]))
+
+# The legacy CRMs escape the formula quotes. Matching only `"…"` is what once
+# left every one of them silently unpatched while the run reported success, so
+# the reader handles both encodings — and a checker that only saw one would
+# report the whole legacy estate as stale forever.
 names, parts, _ = book(sample_row=SAMPLE)
 part = sheet_part(parts, "Attendees")
-parts[part] = parts[part].replace(('"%s"' % DV_STATUS_OLD).encode(),
-                                  ("&quot;%s&quot;" % DV_STATUS_OLD).encode())
-check("patches the &quot;-escaped legacy spelling",
-      patch_status_dropdown(parts, part), "patched")
-check("legacy patch keeps the escaping",
-      ("&quot;%s&quot;" % DV_STATUS_NEW).encode() in parts[part], True)
-check("legacy patch is idempotent", patch_status_dropdown(parts, part), "already")
-
-names, parts, _ = book(sample_row=SAMPLE, dv="Yes,No")
-check("a workbook with no Status list is reported, not guessed at",
-      patch_status_dropdown(parts, sheet_part(parts, "Attendees")), "absent")
-
-# The status-rename migration (migrate_status_prospect.py) removes the legacy
-# "New" from a workbook's Status list; the Host patch must still recognise the
-# migrated spellings rather than reporting the list absent.
-check("the migrated lists differ from the shipped ones only by the leading New",
-      (sync_crm.DV_STATUS_OLD_MIGRATED, sync_crm.DV_STATUS_NEW_MIGRATED),
-      (DV_STATUS_OLD.replace("New,", "", 1), DV_STATUS_NEW.replace("New,", "", 1)))
-names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_OLD_MIGRATED)
-part = sheet_part(parts, "Attendees")
-check("a migrated Host-less workbook is still patched",
-      patch_status_dropdown(parts, part), "patched")
-check('...gaining "Host" in the migrated spelling',
-      sync_crm.DV_STATUS_NEW_MIGRATED.encode() in parts[part], True)
-check("...and never re-gaining the legacy New",
-      DV_STATUS_NEW.encode() in parts[part], False)
-check("the migrated patch is idempotent", patch_status_dropdown(parts, part), "already")
-names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_NEW_MIGRATED)
-check("a migrated, already-Host workbook is left alone",
-      patch_status_dropdown(parts, sheet_part(parts, "Attendees")), "already")
-
-# The real post-migration fleet shape: a LEGACY workbook (&quot;-escaped) whose
-# Status list has been migrated. Every migrated-list case above uses the `"`
-# encoding, so this combination — the likeliest one in the estate — is the one
-# the restructured two-pass loop never exercised.
-names, parts, _ = book(sample_row=SAMPLE, dv=sync_crm.DV_STATUS_OLD_MIGRATED)
-part = sheet_part(parts, "Attendees")
 parts[part] = parts[part].replace(
-    ('"%s"' % sync_crm.DV_STATUS_OLD_MIGRATED).encode(),
-    ("&quot;%s&quot;" % sync_crm.DV_STATUS_OLD_MIGRATED).encode())
-check("a &quot;-escaped MIGRATED workbook is patched, not reported absent",
-      patch_status_dropdown(parts, part), "patched")
-check("...keeping the escaping and the migrated spelling",
-      ("&quot;%s&quot;" % sync_crm.DV_STATUS_NEW_MIGRATED).encode() in parts[part],
-      True)
-check("...and it stays idempotent", patch_status_dropdown(parts, part), "already")
+    ('"%s"' % DV_EXPECTED["Status"]).encode(),
+    ("&quot;%s&quot;" % DV_EXPECTED["Status"]).encode())
+check("the &quot;-escaped spelling reads back identically",
+      dv_lists(parts[part])[3], DV_EXPECTED["Status"])
+check("...so a &quot;-escaped migrated workbook is not reported stale",
+      check_dropdowns(Attendees(parts, part)), [])
 
-# The four dropdown literals are DERIVED from one tuple; pin what they derive to
-# so a future edit to DV_STATUS_VALUES cannot silently change the wire format.
-check("the derived literals are exactly the four the patcher matches",
-      (sync_crm.DV_STATUS_OLD, sync_crm.DV_STATUS_NEW,
-       sync_crm.DV_STATUS_OLD_MIGRATED, sync_crm.DV_STATUS_NEW_MIGRATED),
-      ("New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined",
-       "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined",
-       "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined",
-       "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"))
-
-# Regression: serialize() rewrites the sheet part from the element tree, so a
-# dropdown patch applied BEFORE it is silently discarded — the run reports the
-# patch as applied and the uploaded workbook still has the eight-value list.
-# finalize() is the only supported write path precisely to fix the ordering.
-names, parts, att = book(sample_row=SAMPLE)
+# A validation spanning several columns cannot be attributed to one header, so
+# it is skipped rather than guessed at — guessing would report a correct
+# workbook as broken, or hide a genuinely stale list behind a neighbour's.
+names, parts, _ = book(sample_row=SAMPLE)
 part = sheet_part(parts, "Attendees")
-patch_status_dropdown(parts, part)
-att.serialize()
-check("serialize-then-patch is the bug this guards",
-      DV_STATUS_NEW.encode() in parts[part], False)
+parts[part] = parts[part].replace(b'sqref="D2:D1000"', b'sqref="C2:D1000"')
+check("a multi-column sqref is not attributed to a header",
+      3 in dv_lists(parts[part]), False)
+check("...and the column then reads as having no list",
+      check_dropdowns(Attendees(parts, part)), ["Status"])
+
+# Pin the wire format: both lists are DERIVED from CRM_LIFECYCLE / CRM_ROLE, so
+# an edit to either would otherwise change what lands in ~62 workbooks silently.
+check("the derived dropdown literals",
+      (DV_EXPECTED["Status"], DV_EXPECTED[NEW_COLUMN]),
+      ("Prospect,In progress,Interviewing,Tentative,Accepted,Attended,Regular,"
+       "Volunteer,Declined",
+       "Organizer,Speaker,Host,Organizer/Speaker,Organizer/Host,Speaker/Host,"
+       "Organizer/Speaker/Host"))
+check("the Interested-in list can express everything crm_fields writes",
+      sorted(sync_crm.DV_INTERESTED_VALUES),
+      sorted({crm_fields(m, TODAY)[NEW_COLUMN] for m in [
+          merge_people([person("a", "a@x.io", "B", t)])[0] for t in sync_crm.ROLE_TABS]
+          } | {"Organizer/Speaker", "Organizer/Host", "Speaker/Host",
+               "Organizer/Speaker/Host"}))
+
+# A workbook that predates the split has no `Interested in` column at all.
+# Refusing to open it is correct — nothing is written by column letter — but
+# the message has to name the migration, not read as a corrupt workbook.
+try:
+    _, pre_parts = make_xlsx(sample_row=SAMPLE[:-1],
+                             headers=tuple(h for h in CRM_HEADERS if h != NEW_COLUMN))
+    Attendees(pre_parts, sheet_part(pre_parts, "Attendees"))
+    check("a pre-split workbook is refused", "opened", "refused")
+except ValueError as e:
+    check("a pre-split workbook is refused, naming the migration",
+          ("migrate_interested_in" in str(e), NEW_COLUMN in str(e)), (True, True))
 
 names, parts, att = book(sample_row=SAMPLE)
 b = sync_crm.Book(folder={"name": "Boston"}, crm={"id": "x", "name": "Boston CRM.xlsx"},
@@ -646,9 +737,8 @@ b = sync_crm.Book(folder={"name": "Boston"}, crm={"id": "x", "name": "Boston CRM
 raw = sync_crm.finalize(b, plan_workbook(att, people, TODAY))
 fin_names, fin_parts = load_parts(raw)
 fin = Attendees(fin_parts, sheet_part(fin_parts, "Attendees"))
-check("finalize keeps the dropdown patch",
-      DV_STATUS_NEW.encode() in fin_parts[sheet_part(fin_parts, "Attendees")], True)
 check("finalize keeps the row writes", fin.value(3, "Email"), "ada@x.io")
+check("finalize leaves the dropdowns alone", check_dropdowns(fin), [])
 check("finalize returns a complete zip", sorted(fin_names), sorted(names))
 
 
@@ -678,7 +768,7 @@ check("generic tokens do not create a near-miss (San Diego / San Francisco)",
 # Write guards: the promises that are now structural rather than documented
 # ---------------------------------------------------------------------------
 _, _, attw = book(sample_row=SAMPLE)
-for col in ("Signal", "LinkedIn URL", "Company", "Role / title", "Technical expertise"):
+for col in ("Signal",):
     try:
         attw.write(3, col, "x")
         check("write(%r) is refused" % col, "no error", "ValueError")

@@ -451,15 +451,43 @@ are being onboarded (see the sharing note at the end of this section).
 |---|---|
 | `Full name` | role tab `Name` / `Full name` |
 | `Trusted/Regular` | `Yes` for an **accepted** organizer — they're on the team, not a guest to triage |
-| `Status` | the accepted role (`Organizer` / `Speaker` / `Host`); a pipeline organizer is `Prospect`, a pipeline host/speaker keeps the role status |
+| `Status` | the **decision**, mirrored from the intake: `Prospect` / `In progress` / `Interviewing` / `Tentative` / `Accepted` |
+| `Interested in` | what they **applied for**: `Organizer` / `Speaker` / `Host`, `/`-joined for someone who asked for more than one |
 | `Notes (CRM)` | provenance — `Intake: Organizer · Accepted · 2026-08-07` (every merged role and status, in priority order) |
 | `Email` | role tab `Email` — **also the dedupe key** |
+| `LinkedIn URL` | role tab `LinkedIn` |
+| `Company` | speakers `Affiliation`, hosts `Company` — organizers are not asked |
+| `Role / title` | speakers `Headline` — organizers and hosts are not asked |
+| `Technical expertise` | organizers `Technical expertise`, speakers `Areas of expertise`, hosts `Industry` |
 | `What brings you here?` | the survey answer **verbatim**, plus the role's detail (`Talk title` / `Venue name` / `Chapter / city wanted`) |
 
-**Never written:** `Signal`, `LinkedIn URL`, `Company`, `Role / title`,
-`Technical expertise`. They are absent from the mapping rather than written
-blank, so the automation cannot touch them even on a row it creates. The
-canonical list is `CRM_WRITTEN` in `sync_crm.py`, asserted by the tests.
+### `Status` and `Interested in` are two different questions
+
+Split apart on **2026-08-25**. Before that there was one `Status` column and the
+engine wrote the **role** into it, so a venue host whose intake row still said
+`Prospect` appeared in their chapter's CRM as a flat `Host` — an organizer
+scanning the list saw settled people where triage had settled nothing. Pipeline
+*organizers* were the one role spared (special-cased to `Prospect`), which is
+what made it easy to miss. `Notes (CRM)` had carried both facts correctly all
+along.
+
+- `Interested in` is a fact about the **application** and a decision never
+  changes it. Accepted in **any** role makes `Status` = `Accepted`; otherwise
+  `Status` is the intake's own pipeline value, verbatim.
+- No role word can reach `Status` and none is on its dropdown any more —
+  asserted by the tests, from `CRM_ROLE` / `CRM_LIFECYCLE` in `sync_crm.py`.
+- A workbook last touched before the split has no `Interested in` column, and
+  `sync_crm` **refuses to open it** rather than writing by column letter. Run
+  `migrate_interested_in.py --write` first (see the section at the end).
+
+**Never written:** `Signal` — the chapter's own private judgement of a person,
+which no form answer can supply. It is absent from the mapping rather than
+written blank, so the automation cannot touch it even on a row it creates. The
+canonical list is `CRM_WRITTEN` in `sync_crm.py`, asserted by the tests. (Until
+2026-08-25 the four detail columns above were also withheld, on a rule dating
+from when the Chapters folder was public-link; it is now 92 individual
+per-chapter organizer grants, and the audience for a chapter's CRM is that
+chapter's own organizers.)
 
 `What brings you here?` is the form's routing question, and the role tabs are
 filtered views that drop it — so it is read from `Form Responses` and joined back
@@ -503,11 +531,13 @@ used instead of inventing one.
 - **Never clobber a human.** A CRM cell that already has content is left alone —
   corrected spellings, hand-written notes and manually added companies all
   survive every re-run. Only genuinely blank cells are filled.
-- **`Status` is the one exception**: it is upgraded when it still holds a value
-  the automation itself wrote (`Prospect` — or its legacy spelling `New` —
-  `Organizer`, `Speaker`, `Host`). That is how a person's role is corrected
-  after re-triage — while a human's `Attended`, `Regular`, `Volunteer` or
-  `Declined` is never undone.
+- **`Status` and `Interested in` are the two exceptions**: each is upgraded
+  while it still holds a value the automation itself wrote (`AUTO_OWNED` in
+  `sync_crm.py` — for `Status`, every lifecycle value plus the legacy `New` and
+  the three pre-split role words; for `Interested in`, any `/`-joined
+  combination of the role words). That is how a re-triage reaches a chapter —
+  while a human's `Attended`, `Regular`, `Volunteer`, `Declined`, or a typed
+  `Organizer (co-lead)`, is never undone.
 - **Fixture rows are cleared, and only fixture rows.** A row is wiped **only** if
   its `Email` is at a reserved example domain (`@example.com`, `.org`, `.net`,
   `.edu`) — that is the sole gate, deliberately narrow and anchored on the `@` so
@@ -524,17 +554,18 @@ used instead of inventing one.
   first, copying row 2's per-column cell styles so a synced person looks like a
   hand-entered one. Past row 1000 new `<row>` elements are inserted in ascending
   order.
-- **The `Status` dropdown gains a `Host` value.** It shipped as
-  `New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Declined` with no
-  value for a venue host, so hosts had nowhere honest to land. Every workbook the
-  script opens is patched — including **TemplateCity**, or every chapter cloned
-  from it would re-inherit the gap. Both quote encodings are handled (the
-  template writes `"…"`, older workbooks write `&quot;…&quot;`), and so are the
-  post-migration lists without the legacy `New` (removed by
-  `migrate_status_prospect.py`; the unrelated `New` on the **Signal** list is
-  untouched by that migration). A workbook with
-  no Status list at all is reported, not guessed at.
-- **TemplateCity never receives people** — only the dropdown patch.
+- **The dropdowns are CHECKED here, never written.** `sync_crm` reports any
+  workbook whose `Status` or `Interested in` list is not `DV_EXPECTED` and tells
+  you to run `migrate_interested_in.py`; that script is the only thing that
+  writes them. Schema in one place, data in the other — before 2026-08-25 this
+  file patched the `Status` list in place, which made the *order* of the
+  dropdown patch and the row serializer load-bearing inside `finalize()`, and
+  getting it wrong silently threw the patch away while reporting it applied.
+  People still sync into a workbook with a stale list; the values written are
+  correct either way. The unrelated `New` on the **Signal** list is not touched
+  by anything.
+- **TemplateCity never receives people**, and is no longer opened for a patch —
+  the migration covers it, so every chapter cloned from it is born split.
 - **Rows are skipped, and reported, when**: `Status` is neither a decided-yes
   (`Accepted` / `Existing (from MLOps)`) nor a recognised pipeline status —
   `Denied` / `Inactive` / `Duplicate` and any dropdown value the allowlists do
@@ -973,7 +1004,8 @@ After any run (and after editing the engine):
   for the whole sync.
 - After a CRM `--write`, open one touched workbook and check the person's row
   reads correctly, the sample row and any hand-written notes are untouched, and
-  the `Status` cell offers `Host` in its dropdown.
+  the `Status` cell offers the decision ladder (no role words) and
+  `Interested in` offers the role list.
 - After an About `--write`, open one rewritten doc and check the Organizers list
   reads as a proper bulleted list (not renumbered off the Luma list below it),
   the rest of the doc is untouched, and the brand fonts still render.
@@ -994,6 +1026,7 @@ After any run (and after editing the engine):
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_prune_organizers.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_nightly.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_status_prospect.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_interested_in.py
   ```
 
 ## One-shot: retiring the status `New` (`migrate_status_prospect.py`)
@@ -1093,3 +1126,51 @@ be deleted — that exit code is the evidence they are waiting on.
   straight from the public form and are copied as-is. Fix them at the source with
   **`aaif-clean-data`**, then re-run — the CRM only fills blanks, so a corrected
   intake value will **not** overwrite the bad one already written. Clean first.
+
+## One-shot: splitting `Status` into decision + role (`migrate_interested_in.py`)
+
+Adds the `Interested in` column to every chapter CRM and moves the role out of
+`Status`. Written 2026-08-25. **`sync_crm.py` refuses to open a workbook that
+has not had this run**, so it goes first.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_interested_in.py             # report, writes nothing
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_interested_in.py --city Boston
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_interested_in.py --write     # apply, then verify
+```
+
+Four parts, per workbook (templates included):
+
+- **The column is APPENDED**, at the first free column past the last header —
+  `L` on the shipped layout — not slotted in beside `Status` where it reads
+  best. Inserting would renumber every cell ref in ~1000 rows, every
+  `dataValidation` sqref, and the Guide tab's cross-sheet formulas. Nothing
+  addresses these sheets by letter. Its `<col>` width is split out of the
+  shipped `L..S` run rather than narrowing all eight.
+- **Rows are backfilled from their own `Notes (CRM)`** provenance string, which
+  has carried both facts all along. Nothing is invented: a row whose `Status`
+  holds a role but whose note won't parse has the role **relocated** and its
+  `Status` left **blank** — blank is in `AUTO_STATUS`, so the next sync fills it
+  from the live intake, whereas a guess would outrank it. A `Status` that isn't
+  a role word (`Attended`, `Regular`, `Volunteer`, `Declined`, a pipeline value,
+  or blank) is never touched, and an `Interested in` that already has content is
+  never restated.
+- **Both dropdowns are rewritten** to `sync_crm.DV_EXPECTED`. A validation whose
+  `sqref` spans several columns is **refused and reported** — rewriting it would
+  silently re-validate a neighbour (the Signal list's unrelated `New`), and
+  there's no safe way to split a merged sqref without knowing what a human meant.
+- **The Guide tab's formulas are repointed.** Two landmines: the dashboard
+  counted `COUNTIF(Attendees!D2:D1000,"Speaker")` (and `"Organizer"`), which
+  reads **0 in every chapter** the moment roles leave `Status` — moved to the
+  new column with `*…*` wildcards, since a cell can say `Organizer/Speaker`; and
+  the "Live list" `FILTER` already referenced `Attendees!L2:L`, a column that
+  did not exist on the 11-column layout, so it had been returning a blank column
+  since the columns were last renumbered. A Guide someone has edited reports the
+  miss instead of having a regex rewrite a formula it doesn't understand. Cached
+  `<v>` results are left stale; both Sheets and Excel recalculate on open.
+
+Idempotent — a second pass proposes nothing. Report is the default; `--write`
+applies, re-downloads every written workbook and prints a `Verified` line.
+Pre-edit bytes land in `<repo>/backups/crm-split-before-<stamp>/` (gitignored,
+and holding real names and emails) — **delete the directory once the write is
+confirmed good**; nothing prunes it.

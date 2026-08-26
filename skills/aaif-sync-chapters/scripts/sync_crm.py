@@ -21,9 +21,9 @@ Who syncs (the 2026-08 organizer-selection policy):
     their own team; below the threshold, organizer approval stays with AAIF
     ops and pipeline organizers are held back and reported.
 
-A pipeline person lands as `Prospect` (organizers) or their role status
-(hosts/speakers), never as a trusted team member — Drive access still keys off
-acceptance in sync_access.py, so reaching the CRM grants nothing by itself.
+A pipeline person lands with their real intake status and never as a trusted
+team member — Drive access still keys off acceptance in sync_access.py, so
+reaching the CRM grants nothing by itself.
 
 Each chapter folder under the Chapters Drive holds one "<City> CRM.xlsx" whose
 "Attendees" tab has eleven columns. Only six are ever written (CRM_WRITTEN) —
@@ -31,15 +31,29 @@ identity, decision and interest, and nothing else:
 
     Full name           <- role tab name
     Trusted/Regular     <- "Yes" for an ACCEPTED organizer (they're on the team)
-    Status              <- Organizer / Speaker / Host — or Prospect, for a
-                           pipeline organizer in a self-serve chapter
+    Status              <- the DECISION, mirrored from the intake: Prospect /
+                           In progress / Interviewing / Tentative / Accepted
+    Interested in       <- what they APPLIED FOR: Organizer / Speaker / Host,
+                           "/"-joined for someone who asked for more than one
     Notes (CRM)         <- provenance: role, intake status, date
     Email               <- role tab email        (also the dedupe key)
+    LinkedIn URL, Company, Role / title, Technical expertise
+                        <- their survey answers, where their role's branch of
+                           the form asks (organizers get no company or title
+                           question, hosts get no title)
     What brings you here? <- the survey answer verbatim, + talk/venue/city detail
 
-Deliberately NOT written: Signal, LinkedIn URL, Company, Role / title, Technical
-expertise. They exist on the sheet for an organizer to fill in by hand; the
-automation does not push a survey's worth of personal detail into the folder.
+Split apart on 2026-08-25: `Status` used to hold the ROLE, so a host whose
+intake row said "Prospect" read as a settled `Host` in their chapter's CRM.
+See CRM_ROLE / CRM_LIFECYCLE.
+
+Deliberately NOT written: Signal — the chapter's own private judgement of a
+person, which no form answer can supply.
+
+The `Interested in` column does not exist on a workbook last touched before
+2026-08-25; migrate_interested_in.py adds it, rewrites both dropdowns and the
+Guide tab's formulas, and backfills the existing rows. This script REFUSES to
+open a workbook without it rather than writing by column letter.
 
 The workbooks are stored .xlsx (not native Sheets), so they are edited as OOXML
 zip parts: download, rewrite the Attendees sheet XML, upload. Every part we do
@@ -51,7 +65,7 @@ Usage:
   python3 sync_crm.py --verbose          # also list every intake row NOT synced
   python3 sync_crm.py --write            # apply, then re-read and verify
 """
-import argparse, datetime, io, os, re, shutil, subprocess, sys, tempfile, zipfile
+import argparse, datetime, io, itertools, os, re, shutil, subprocess, sys, tempfile, zipfile
 from collections import Counter, namedtuple
 from xml.etree import ElementTree as ET
 
@@ -222,7 +236,21 @@ CRM_SHEET = "Attendees"
 # formula still references L, so letter addressing must never come back.
 CRM_HEADERS = ("Full name", "Signal", "Trusted/Regular", "Status", "Notes (CRM)",
                "Email", "LinkedIn URL", "Company", "Role / title",
-               "Technical expertise", "What brings you here?")
+               "Technical expertise", "What brings you here?",
+               # Appended at column L, not slotted in beside Status where it
+               # reads best. Inserting a column would renumber every cell ref
+               # in ~1000 rows AND every dataValidation sqref AND the Guide
+               # tab's cross-sheet formulas; appending touches none of them.
+               # Nothing here addresses a column by letter anyway.
+               "Interested in")
+
+#: Added 2026-08-25 by the Status/role split. A workbook that predates
+#: migrate_interested_in.py does not have it, and Attendees() refuses to open
+#: one — the right failure (nothing is written by column letter), but the bare
+#: "missing column(s)" message sends an operator hunting a corrupt workbook
+#: instead of running the migration. open_crm() names the fix when this is the
+#: ONLY thing missing.
+NEW_COLUMN = "Interested in"
 
 # The "decided yes" statuses. A person with one of these always syncs, and they
 # are what an organizer must hold to count toward a chapter's self-serve
@@ -266,7 +294,38 @@ AAIF_OPS_NAMES = ("Rahul Parundekar", "Demetrios Brinkmann", "Demetrios",
 AAIF_OPS_FOLDED = frozenset(fold(n) for n in AAIF_OPS_NAMES)
 
 ROLE_TABS = ("Organizers", "Speakers", "Hosts")   # also the merge priority order
-CRM_STATUS = {"Organizers": "Organizer", "Speakers": "Speaker", "Hosts": "Host"}
+
+# The CRM answers two different questions, in two different columns. Conflating
+# them is the bug this pair of maps exists to prevent:
+#
+#   Interested in  — what the person is ASKING TO DO          (CRM_ROLE)
+#   Status         — how far along the DECISION about them is (CRM_LIFECYCLE)
+#
+# Before 2026-08-25 a single `Status` column held both, written from the role
+# tab alone. A venue host whose intake row still said "Prospect" therefore read
+# as `Host` in their chapter's CRM — an organizer scanning the list saw a
+# settled venue host where triage had settled nothing. (Pipeline ORGANIZERS
+# were the one role spared, because they were special-cased to "Prospect".)
+# Notes (CRM) carried both facts correctly the whole time; nothing was lost,
+# it was just flattened into a cell the eye reads as a decision.
+CRM_ROLE = {"Organizers": "Organizer", "Speakers": "Speaker", "Hosts": "Host"}
+
+# Raw intake dropdown value -> CRM lifecycle Status. Keys cover every value in
+# SYNC_STATUSES + PIPELINE_STATUSES (asserted below), including the blank cell
+# and the legacy "New" spelling.
+#
+# "Existing (from MLOps)" maps to "Accepted" rather than surviving as its own
+# value: it is a TRANSIT status on the intake — an MLOps-community organizer
+# being carried over — and every such row ends up Accepted. The CRM's question
+# is "is this person on the team", and for both values the answer is yes, which
+# is exactly what SYNC_STATUSES already encodes.
+CRM_LIFECYCLE = {
+    "": "Prospect", "New": "Prospect", "Prospect": "Prospect",
+    "In progress": "In progress",
+    "Interviewing": "Interviewing",
+    "Tentative": "Tentative",
+    "Accepted": "Accepted", "Existing (from MLOps)": "Accepted",
+}
 
 # Status values this script is allowed to overwrite — everything the automation
 # itself writes, plus the sheet's own defaults: a BLANK cell (""), "Prospect",
@@ -274,53 +333,88 @@ CRM_STATUS = {"Organizers": "Organizer", "Speakers": "Speaker", "Hosts": "Host"}
 # still hold it, and it must keep upgrading identically). The "" is load-
 # bearing for the same reason it is in PIPELINE_STATUSES above: a hand-added
 # CRM row starts blank, and dropping the "redundant" empty string would freeze
-# every such row out of its role upgrade. A human who moved someone to
+# every such row out of its status upgrade. A human who moved someone to
 # "Attended", "Regular", "Volunteer" or "Declined" has said something the intake
 # does not know; a later triage decision must not silently undo it.
-AUTO_STATUS = frozenset(("", "New", "Prospect", "Organizer", "Speaker", "Host"))
+AUTO_STATUS = frozenset(
+    ("", "New") + tuple(CRM_LIFECYCLE.values())
+    # The three PRE-SPLIT role values. Nothing writes them any more and the
+    # migrated dropdown no longer offers them, but every row synced before
+    # 2026-08-25 still holds one until migrate_interested_in.py reaches its
+    # workbook — and a chapter can always be re-created from an old backup.
+    # Keeping them auto-owned is what lets an ordinary sync REPAIR such a row;
+    # drop them and a stale "Host" reads as a human's decision and freezes that
+    # person at the wrong value permanently, which is the failure this whole
+    # change exists to end.
+    + ("Organizer", "Speaker", "Host"))
 
-# Keep the CRM minimal. Identity, decision and interest — nothing else. The five
-# columns left out (Signal, LinkedIn URL, Company, Role / title, Technical
-# expertise) still exist on the sheet for an organizer to fill in by hand; the
-# automation does not push a survey's worth of personal detail into a shared
-# folder. Enforced by Attendees.write(), not just by crm_fields()'s dict body.
-CRM_WRITTEN = ("Full name", "Trusted/Regular", "Status", "Notes (CRM)", "Email",
-               "What brings you here?")
+#: The words `Interested in` is built from. A cell holding only these, in any
+#: order and any "/"-joined combination, is one this script wrote and may
+#: rewrite; anything else is a human's note and is left alone.
+AUTO_ROLE_WORDS = frozenset(r.casefold() for r in CRM_ROLE.values())
+
+# The columns the automation may author. Everything the intake actually knows
+# about a person now lands here.
+#
+# Until 2026-08-25 this was six columns, on a "we do not push a survey's worth
+# of personal detail into a shared folder" rule dating from when the Chapters
+# folder was public-link. It is not: it is 92 individual per-chapter organizer
+# grants, so the audience for a chapter's CRM is that chapter's own organizers,
+# who need to know who is asking to speak and what they work on. The four
+# detail columns had been collected, parsed and merged all the way to
+# crm_fields() and then thrown away, leaving the sheet's most useful columns
+# permanently blank. Coverage is uneven BY ROLE and that is the intake's shape,
+# not a bug (see ROLE_FIELDS): organizers are asked neither company nor title,
+# hosts are not asked a title. A blank answer writes nothing.
+#
+# `Signal` is the one column still left out, and deliberately: it is the
+# chapter's own private judgement of a person, which no form answer can supply.
+# Enforced by Attendees.write(), not just by crm_fields()'s dict body.
+CRM_WRITTEN = ("Full name", "Trusted/Regular", "Status", "Interested in",
+               "Notes (CRM)", "Email", "LinkedIn URL", "Company", "Role / title",
+               "Technical expertise", "What brings you here?")
+
+# A status the intake offers but this map has never heard of would raise a
+# KeyError deep inside crm_fields(), one chapter into a run, after other
+# workbooks had already been written. Fail at import instead: the two status
+# lists and this map are edited by different people for different reasons, and
+# nothing else pins them together.
+_uncovered = [s for s in SYNC_STATUSES + PIPELINE_STATUSES if s not in CRM_LIFECYCLE]
+if _uncovered:
+    raise AssertionError(
+        "CRM_LIFECYCLE has no entry for intake status(es) %s — add them, or the "
+        "first person carrying one crashes mid-run." % sorted(_uncovered))
 
 # Rows whose email is at one of these domains are shipped fixture data — the
 # "Sam Taylor" sample the template puts in every chapter, and the Tatooine test
 # chapter's cast. They are cleared, and their rows reused by real people.
 DUMMY_DOMAINS = ("example.com", "example.org", "example.net", "example.edu")
 
-# The Status dropdown shipped without a value for a venue host, so hosts had
-# nowhere honest to land. Patched in place on every workbook we open.
+# The two dropdowns the split produces. sync_crm only ever CHECKS these —
+# migrate_interested_in.py owns writing them, and owning the schema in one
+# place is why this file no longer carries a bytes-level dropdown patcher.
 #
-# ONE source of truth for what the dropdown holds — the four literals below are
-# derived, never typed twice. Hand-maintained copies would drift the day a
-# value is added: all four would miss, every workbook would report "absent",
-# and the Host patch would quietly stop working across the whole fleet.
-# LEGACY carries "New"; the MIGRATED pair is the same list after
-# migrate_status_prospect.py retired it (Prospect is the surviving spelling) —
-# the patch must recognise both, or every migrated CRM reads as having no
-# Status list at all.
-DV_STATUS_VALUES = ("New", "Prospect", "Attended", "Regular", "Speaker",
-                    "Organizer", "Volunteer", "Declined")
-_DV_HOST_AFTER = "Volunteer"          # Host slots in just before Declined
+# Status is the decision ladder, in the order triage walks it, followed by the
+# four values only a human ever sets. The role values ("Speaker", "Organizer",
+# "Host") are GONE from this list — that they were ever on it is what let the
+# column mean two things at once.
+DV_STATUS_VALUES = tuple(dict.fromkeys(CRM_LIFECYCLE.values())) + (
+    "Attended", "Regular", "Volunteer", "Declined")
 
+# `Interested in` lists the combinations, not just the three singles: a person
+# who applied as both an organizer and a speaker is written as
+# "Organizer/Speaker", and a dropdown that cannot express what the sync writes
+# would flag correct data as invalid. Generated from CRM_ROLE in ROLE_TABS
+# order so the values and their spelling cannot drift from what crm_fields()
+# produces.
+DV_INTERESTED_VALUES = tuple(
+    "/".join(CRM_ROLE[t] for t in combo)
+    for n in range(1, len(ROLE_TABS) + 1)
+    for combo in itertools.combinations(ROLE_TABS, n))
 
-def dv_status_list(values, with_host):
-    """The comma-joined dropdown list, optionally with "Host" inserted."""
-    out = list(values)
-    if with_host:
-        out.insert(out.index(_DV_HOST_AFTER) + 1, "Host")
-    return ",".join(out)
-
-
-DV_STATUS_OLD = dv_status_list(DV_STATUS_VALUES, False)
-DV_STATUS_NEW = dv_status_list(DV_STATUS_VALUES, True)
-_DV_MIGRATED = tuple(v for v in DV_STATUS_VALUES if v != "New")
-DV_STATUS_OLD_MIGRATED = dv_status_list(_DV_MIGRATED, False)
-DV_STATUS_NEW_MIGRATED = dv_status_list(_DV_MIGRATED, True)
+#: header name -> the exact comma-joined list its dataValidation must hold.
+DV_EXPECTED = {"Status": ",".join(DV_STATUS_VALUES),
+               NEW_COLUMN: ",".join(DV_INTERESTED_VALUES)}
 
 # Per-role source columns on the intake role tabs, resolved by header name and
 # taken in order (first non-empty wins). Organizers have no company or title
@@ -556,7 +650,14 @@ def set_cell(row_el, col, text, style=None):
 class Attendees:
     """The Attendees sheet of one chapter CRM, addressed by header name."""
 
-    def __init__(self, parts, part_name):
+    def __init__(self, parts, part_name, require=CRM_HEADERS):
+        """`require` is the header set the workbook must already have.
+
+        It is a parameter for exactly one caller: migrate_interested_in.py,
+        which opens PRE-split workbooks in order to add the column that the
+        default CRM_HEADERS demands. Everything else takes the default, so the
+        sync still refuses a workbook it cannot address by header name.
+        """
         raw = parts[part_name]
         register_namespaces(raw)
         self.parts, self.part_name = parts, part_name
@@ -578,7 +679,15 @@ class Attendees:
             txt = clean_text(cell_text(c, self.sst))
             if txt:
                 self.headers[txt] = col_of(c.get("r"))
-        missing = [h for h in CRM_HEADERS if h not in self.headers]
+        missing = [h for h in require if h not in self.headers]
+        if missing == [NEW_COLUMN]:
+            # By far the likeliest miss, and the one with a one-command fix.
+            # Without this an operator reads "missing column(s): Interested in"
+            # across 62 chapters and goes looking for corrupt workbooks.
+            raise ValueError(
+                "no %r column yet — this workbook predates the 2026-08-25 "
+                "Status/role split. Run migrate_interested_in.py --write, then "
+                "re-run this sync." % NEW_COLUMN)
         if missing:
             raise ValueError("missing column(s): %s" % ", ".join(missing))
         # Row 2 is the shipped sample row and is the only place the per-column
@@ -624,7 +733,7 @@ class Attendees:
         decides folder access. Nothing downstream can detect it, because the
         verify only ever compares CRM_WRITTEN.
         """
-        return any(self.value(rownum, h) for h in CRM_HEADERS)
+        return any(self.value(rownum, h) for h in CRM_HEADERS if h in self.headers)
 
     def free_rows(self, also_free=()):
         """Row numbers available for new people, lowest first, then rows past the
@@ -647,11 +756,17 @@ class Attendees:
     def clear(self, rownum):
         """Blank every CRM column on a row, keeping the cells and their styles.
 
-        Goes through _write, not write: clearing legitimately touches all
-        eleven columns, including the five the automation may never author.
+        Goes through _write, not write: clearing legitimately touches every
+        column, including `Signal`, which the automation may never author.
+
+        Both this and occupied() skip a header the workbook does not actually
+        have. Only migrate_interested_in.py opens such a workbook (a pre-split
+        one, missing NEW_COLUMN), and without the guard value() raises KeyError
+        on the very column that migration exists to add.
         """
         for header in CRM_HEADERS:
-            self._write(rownum, header, "")
+            if header in self.headers:
+                self._write(rownum, header, "")
 
     def row_for(self, rownum):
         row = self.rows.get(rownum)
@@ -720,37 +835,52 @@ class Attendees:
         self.parts[self.part_name] = _XML_DECL + body[at:]
 
 
-def patch_status_dropdown(parts, part_name):
-    """Add "Host" to the Status column's data-validation list.
+_DV_BLOCK_RE = re.compile(
+    rb"<dataValidation\b[^>]*\bsqref=(?:\"|&quot;)([^\"&]+)(?:\"|&quot;)[^>]*>"
+    rb"(.*?)</dataValidation>", re.S)
+_DV_FORMULA_RE = re.compile(rb"<formula1>(?:\"|&quot;)(.*?)(?:\"|&quot;)</formula1>", re.S)
 
-    Returns "patched" (the part changed), "already" (Host is offered), or
-    "absent" (no list matching any known spelling — reported, never guessed at).
 
-    A bytes-level swap of the one formula string: the validation lives outside
-    <sheetData>, nothing else in the file mentions it, and re-serializing the
-    whole sheet through ElementTree just to change a literal would rewrite
-    unrelated markup. Both quote encodings are handled — the template writes
-    `"…"` and the older workbooks write `&quot;…&quot;`, and matching only the
-    first silently left every legacy CRM un-patched while reporting success.
-    Both the legacy list (leading "New") and the migrated list (Prospect only,
-    after migrate_status_prospect.py) are recognised — every "already" check
-    runs before any patch, so the pass a workbook actually matches decides.
+def dv_lists(raw):
+    """{0-based column index: the list's comma-joined values} for every
+    single-column ONE_OF_LIST dataValidation in the sheet part.
+
+    Read straight from the bytes, like the patcher this replaces: the
+    validations live outside <sheetData>, and both quote encodings occur in the
+    wild (the template writes `"…"`, the older workbooks `&quot;…&quot;` —
+    matching only the first is what once left every legacy CRM silently
+    unpatched while reporting success).
+
+    A multi-column sqref is skipped rather than guessed at: it would attribute
+    one list to several headers, and this function's only caller uses the
+    answer to decide whether a chapter's schema is correct.
     """
-    raw = parts[part_name]
-    variants = ((DV_STATUS_OLD, DV_STATUS_NEW),
-                (DV_STATUS_OLD_MIGRATED, DV_STATUS_NEW_MIGRATED))
-    for q in (b'"', b"&quot;"):
-        for _old, new in variants:
-            if b"<formula1>" + q + new.encode() + q + b"</formula1>" in raw:
-                return "already"
-    for q in (b'"', b"&quot;"):
-        for old, new in variants:
-            old_b = b"<formula1>" + q + old.encode() + q + b"</formula1>"
-            if old_b in raw:
-                parts[part_name] = raw.replace(
-                    old_b, b"<formula1>" + q + new.encode() + q + b"</formula1>")
-                return "patched"
-    return "absent"
+    out = {}
+    for m in _DV_BLOCK_RE.finditer(raw):
+        sqref = m.group(1).decode()
+        f = _DV_FORMULA_RE.search(m.group(2))
+        if f is None or " " in sqref.strip():
+            continue
+        cols = {col_of(end) for end in sqref.split(":")}
+        if len(cols) != 1:
+            continue
+        out[cols.pop()] = f.group(1).decode().replace("&quot;", '"')
+    return out
+
+
+def check_dropdowns(att):
+    """[] when both split columns carry the right list, else a header-name list.
+
+    Read-only on purpose. Until 2026-08-25 this file PATCHED the Status list in
+    place, which meant two scripts could author a workbook's schema; the
+    dropdown patch then had to be sequenced against the row serializer inside
+    finalize(), and getting that order wrong silently threw the patch away
+    while still reporting it applied. Schema is migrate_interested_in.py's job
+    now, and sync_crm reports what it finds.
+    """
+    lists = dv_lists(att.parts[att.part_name])
+    return [h for h, want in DV_EXPECTED.items()
+            if lists.get(att.headers[h]) != want]
 
 
 # ----------------------------------------------------------------------------
@@ -1021,43 +1151,75 @@ def merge_people(people, blocked=None):
 def crm_fields(p, today):
     """The CRM values for one merged person.
 
-    Only CRM_WRITTEN columns are produced — `Signal` and the detail columns are
-    deliberately absent, so the automation never touches them. A blank value
-    means "leave that cell alone", never "blank it out".
+    Only CRM_WRITTEN columns are produced — `Signal` is deliberately absent, so
+    the automation never touches the chapter's own judgement of someone. A
+    blank value means "leave that cell alone", never "blank it out".
 
-    Status and Trusted/Regular follow the ACCEPTED roles only:
-      * any accepted role -> that role's status (highest-priority accepted tab
-        wins), and Trusted/Regular = "Yes" for an accepted organizer;
-      * no accepted role, but an organizer application in flight -> "Prospect"
-        — a candidate for the chapter's own interviews, not on the team;
-      * a pipeline host/speaker -> their role status, never trusted.
-    "Prospect" is in AUTO_STATUS, so acceptance upgrades the row on a later run
-    without a human having to touch it.
+    The two columns the 2026-08-25 split created are filled INDEPENDENTLY, and
+    keeping them independent is the whole point:
+
+      * `Interested in` — every role the person applied for, whatever came of
+        it, in ROLE_TABS priority order ("Organizer/Speaker"). It is a
+        statement about their application, so a decision never changes it.
+      * `Status` — the decision, and nothing else. Accepted in ANY role reads
+        "Accepted"; otherwise it mirrors the intake's own pipeline value, so a
+        host still sitting at Prospect reads Prospect instead of announcing
+        itself as a settled `Host`.
+
+    Every value in CRM_LIFECYCLE is in AUTO_STATUS, so a later triage decision
+    upgrades the row on the next run without a human having to touch it.
     """
     # Derived, not stored: tabs/statuses are index-aligned by merge_people, so
     # the accepted roles need no third parallel list to keep in sync. strict=
     # True is the alignment tripwire: a future edit that appends to one list
     # but not the other must raise here, not silently truncate the zip and
     # demote an accepted person to Prospect.
-    acc = [t for t, s in zip(p["tabs"], p["statuses"], strict=True)
-           if s in SYNC_STATUSES]
-    if acc:
-        status = CRM_STATUS[acc[0]]
-        # An accepted organizer is on the chapter's team, not a guest to triage.
-        trusted = "Yes" if acc[0] == "Organizers" else ""
-    else:
-        status = "Prospect" if "Organizers" in p["tabs"] else CRM_STATUS[p["tabs"][0]]
-        trusted = ""
+    roles = list(zip(p["tabs"], p["statuses"], strict=True))
+    accepted_tabs = [t for t, st in roles if st in SYNC_STATUSES]
+    # tabs[0] is the highest-priority tab a merged person appears on, so an
+    # unaccepted person's Status is the one from their primary application.
+    # No ladder is invented over the in-flight values ("is Tentative further
+    # along than Interviewing?" has no answer this script is entitled to give);
+    # acceptance is the only ordering it actually knows.
+    status = "Accepted" if accepted_tabs else CRM_LIFECYCLE[p["statuses"][0]]
     return {
         "Full name": p["name"],
-        "Trusted/Regular": trusted,
+        # An accepted organizer is on the chapter's team, not a guest to triage.
+        "Trusted/Regular": "Yes" if "Organizers" in accepted_tabs else "",
         "Status": status,
+        NEW_COLUMN: join_distinct([CRM_ROLE[t] for t in p["tabs"]], "/"),
         "Notes (CRM)": "Intake: %s · %s · %s" % (
-            join_distinct([CRM_STATUS[t] for t in p["tabs"]], "/"),
+            join_distinct([CRM_ROLE[t] for t in p["tabs"]], "/"),
             join_distinct(p["statuses"], "/"), today),
         "Email": p["email"],
+        "LinkedIn URL": p["linkedin"],
+        "Company": p["company"],
+        "Role / title": p["title"],
+        "Technical expertise": p["expertise"],
         "What brings you here?": p["interest"],
     }
+
+
+def is_auto_role(value):
+    """True if `Interested in` still holds a value this script authored.
+
+    That is: blank, or nothing but the three role words in any "/"-joined
+    combination and any casing. A human who typed "Organizer (co-lead)" or
+    "Sponsor" has said something the intake does not know, and the same rule
+    that protects a hand-set "Declined" in Status protects it here.
+    """
+    v = clean_text(value)
+    if not v:
+        return True
+    parts = [x.strip() for x in v.split("/")]
+    return all(x.casefold() in AUTO_ROLE_WORDS for x in parts if x) and any(parts)
+
+
+#: header -> "may this script overwrite the value already in the cell?".
+#: Every other column is write-once: content already there is a human's and is
+#: left alone. These two are re-derived from the intake on every run, which is
+#: how a re-triage reaches a chapter without anyone editing a workbook.
+AUTO_OWNED = {"Status": lambda v: v in AUTO_STATUS, NEW_COLUMN: is_auto_role}
 
 
 def is_dummy(email):
@@ -1096,9 +1258,10 @@ def plan_workbook(att, people, today):
     Two write rules, and they are the whole safety story for a sheet humans curate:
       * a cell that already has content is left alone, so notes, corrected
         spellings and hand-added detail survive every re-run;
-      * except `Status`, which is upgraded when it still holds a value this
-        script wrote (AUTO_STATUS) — that is how a person's role is corrected
-        after re-triage, without ever undoing a human's "Declined".
+      * except the two AUTO_OWNED columns (`Status` and `Interested in`),
+        which are upgraded while they still hold a value this script wrote —
+        that is how a re-triage reaches a chapter, without ever undoing a
+        human's "Declined".
     """
     # Fixture rows go first so their row numbers are reusable below, and so a
     # dummy address can never be mistaken for an existing person to merge into.
@@ -1134,7 +1297,8 @@ def plan_workbook(att, people, today):
             current = "" if new else att.value(rownum, header)
             if current == value:
                 continue
-            if current and not (header == "Status" and current in AUTO_STATUS):
+            owned = AUTO_OWNED.get(header)
+            if current and not (owned and owned(current)):
                 continue
             sets[header] = value
         if sets:
@@ -1164,16 +1328,17 @@ def apply_ops(att, ops):
             att.write(op["rownum"], header, value)
 
 
-def finalize(book, ops, expected_dv=None):
-    """Produce the workbook's new bytes: rows first, then serialize, then the
-    dropdown patch — in that order, and only in that order.
+def finalize(book, ops):
+    """Produce the workbook's new bytes: apply the row ops, then serialize.
 
-    `serialize()` rewrites the sheet part wholesale from the element tree, which
-    was parsed before any bytes-level edit. Patching the dropdown first and
-    serializing second therefore throws the patch away, and the run still reports
-    it as applied — exactly what shipped to a probe workbook until this was
-    caught. Keeping both steps in one function is what stops the order drifting
-    apart again.
+    This used to also patch the Status dropdown, which made the ORDER of the two
+    steps load-bearing and easy to get wrong: `serialize()` rewrites the sheet
+    part wholesale from an element tree parsed before any bytes-level edit, so
+    patching first and serializing second threw the patch away while still
+    reporting it applied — which is what shipped to a probe workbook before it
+    was caught. Since 2026-08-25 the schema (columns and dropdowns) belongs to
+    migrate_interested_in.py alone and this function only writes cells, so
+    there is no longer an order to get wrong.
     """
     # finalize serializes through `att` but saves `book.parts` — they must be
     # the same dict, or the returned zip silently loses either the row writes or
@@ -1183,14 +1348,6 @@ def finalize(book, ops, expected_dv=None):
         raise ValueError("Book.parts/part must be the same objects Attendees holds")
     apply_ops(book.att, ops)
     book.att.serialize()
-    got = patch_status_dropdown(book.parts, book.part)
-    if expected_dv is not None and got != expected_dv:
-        # The prediction was made against the downloaded bytes; the real patch
-        # runs against ElementTree's re-encoding of them. They agree today
-        # because both quote spellings are handled — this is what catches the
-        # day they stop agreeing, rather than reporting a patch never applied.
-        raise ValueError("dropdown patch predicted %r but returned %r for %s"
-                         % (expected_dv, got, book.crm["name"]))
     return save_parts(book.names, book.parts)
 
 
@@ -1341,7 +1498,7 @@ def write_workbooks(touched, workdir, backup_dir):
                 print("  SKIPPED %s — workbook changed since the plan was built; "
                       "NOT written, re-run to sync it" % name, file=sys.stderr)
                 continue
-            upload(book.crm["id"], book.path, finalize(book, t["ops"], t["dv"]), XLSX)
+            upload(book.crm["id"], book.path, finalize(book, t["ops"]), XLSX)
             written.append(name)
             print("  wrote %s (%s)" % (name, book.crm["name"]))
         except Exception as e:                     # one bad workbook must not
@@ -1442,20 +1599,20 @@ def _run(args, workdir):
         kept = preexisting(book.att, ops, grp)
         if kept:
             keepers.append((folder["name"], kept))
-        # Detection only — over a shallow copy, so the real patch happens exactly
-        # once, inside finalize(), after the sheet has been serialized.
-        dv = patch_status_dropdown(dict(book.parts), book.part)
-        if dv == "absent":
-            # Not fatal — people still sync — but say so: a chapter whose Status
-            # column has no dropdown at all will not constrain what gets typed.
-            no_dropdown.append(folder["name"])
-        if not ops and dv != "patched":
+        # Read-only. People still sync into a workbook whose dropdowns are
+        # stale — the values written are correct either way — but an organizer
+        # picking from a Status list that still offers "Speaker" can re-create
+        # the exact conflation this split removed, so it is reported every run
+        # until migrate_interested_in.py has been there.
+        stale_dv = check_dropdowns(book.att)
+        if stale_dv:
+            no_dropdown.append((folder["name"], stale_dv))
+        if not ops:
             continue
         n = {k: sum(1 for o in ops if o["kind"] == k) for k in ("clear", "add", "fill")}
         bits = ([("%d dummy cleared" % n["clear"])] if n["clear"] else []) \
             + ([("%d new" % n["add"])] if n["add"] else []) \
-            + ([("%d filled in" % n["fill"])] if n["fill"] else []) \
-            + (['Status dropdown += "Host"'] if dv == "patched" else [])
+            + ([("%d filled in" % n["fill"])] if n["fill"] else [])
         print("  %-18s %s" % (folder["name"], ", ".join(bits)))
         for o in ops:
             mark = {"clear": "-", "add": "+", "fill": "~"}[o["kind"]]
@@ -1465,7 +1622,7 @@ def _run(args, workdir):
             print("      %s row %-4d %s <%s> — %s"
                   % (mark, o["rownum"], redact_name(o["name"]),
                      redact_email(o["email"]), detail))
-        touched.append({"book": book, "ops": ops, "dv": dv})
+        touched.append({"book": book, "ops": ops})
 
     if near_misses:
         print("\nNear-miss chapter names (NOT written — fix the intake city or rename the folder):")
@@ -1502,8 +1659,11 @@ def _run(args, workdir):
               "'What brings you here?' is the generic branch text for their role."
               % len(fallbacks))
     if no_dropdown:
-        print("\nNo Status dropdown to extend (people still sync; the column just "
-              "won't constrain typing):\n  %s" % ", ".join(no_dropdown))
+        print("\nStale or missing dropdown(s) — people still sync, but the column "
+              "won't constrain what an organizer types. Run "
+              "migrate_interested_in.py --write:")
+        for name, cols in no_dropdown:
+            print("  %-28s %s" % (name, ", ".join(repr(c) for c in cols)))
     if rejected and args.verbose:
         print("\nIntake rows not synced:")
         for r in rejected:
@@ -1552,8 +1712,6 @@ def _run(args, workdir):
         left = plan_workbook(book.att, by_folder.get(folder["id"], []), today)
         if left:
             stale.append((folder["name"], "%d op(s) still pending" % len(left)))
-        elif t["dv"] == "patched" and patch_status_dropdown(dict(book.parts), book.part) != "already":
-            stale.append((folder["name"], 'Status dropdown still lacks "Host"'))
     if failed or stale or changed:
         if failed or stale:
             print("VERIFY FAILED:")
