@@ -461,10 +461,30 @@ def _both_quotings(old, new):
             (old.replace('"', "&quot;"), new.replace('"', "&quot;"))]
 
 
-def guide_edits(role_col):
+def _letter(headers, header):
+    """The column letter `header` currently occupies."""
+    return re.sub(r"\d+$", "", cell_ref(headers[header], 1))
+
+
+def guide_edits(headers):
     """[[(old, new), ...]] — one inner list of interchangeable spellings per
-    edit, given the new column's index."""
-    L = re.sub(r"\d+$", "", cell_ref(role_col, 1))
+    edit, for the layout `headers` describes.
+
+    Every letter in the REPLACEMENT is derived from the live header map, never
+    hardcoded. migrate_column_order.py moves `Interested in` from L to D and
+    shifts six other columns, so a hardcoded target would stop matching the
+    moment that ran — this script would then report three unrecognised Guide
+    formulas on all 83 chapters, forever, about a Guide that is perfectly fine.
+    The OLD text stays hardcoded because it is history: it is the one spelling
+    the shipped template ever had.
+    """
+    L = _letter(headers, NEW_COLUMN)
+    company = _letter(headers, "Company")
+    title = _letter(headers, "Role / title")
+    what = _letter(headers, "What brings you here?")
+    name = _letter(headers, "Full name")
+    signal = _letter(headers, "Signal")
+    notes = _letter(headers, "Notes (CRM)")
     return [
         # The dashboard counted the Status column, so both tiles read 0 for
         # every chapter the moment roles left it. Wildcards because a cell can
@@ -480,13 +500,14 @@ def guide_edits(role_col):
         # quote spelling to vary: the match stops before the conditions.
         [("=FILTER({Attendees!A2:A, Attendees!I2:I, Attendees!K2:K, Attendees!L2:L, "
           "Attendees!B2:B, Attendees!E2:E}",
-          "=FILTER({Attendees!A2:A, Attendees!%s2:%s, Attendees!H2:H, "
-          "Attendees!I2:I, Attendees!K2:K, Attendees!B2:B, Attendees!E2:E}"
-          % (L, L))],
+          "=FILTER({Attendees!%s2:%s, Attendees!%s2:%s, Attendees!%s2:%s, "
+          "Attendees!%s2:%s, Attendees!%s2:%s, Attendees!%s2:%s, Attendees!%s2:%s}"
+          % (name, name, L, L, company, company, title, title, what, what,
+             signal, signal, notes, notes))],
     ]
 
 
-def plan_guide(parts, role_col):
+def plan_guide(parts, headers):
     """([(part, old, new)] still to apply, [the old text of each edit not found]).
 
     Exact-match replacement, not a regex: the Guide is prose and seven
@@ -496,7 +517,7 @@ def plan_guide(parts, role_col):
     """
     raws = {p: parts[p].decode("utf-8", "replace") for p in guide_parts(parts)}
     todo, missing = [], []
-    for variants in guide_edits(role_col):
+    for variants in guide_edits(headers):
         if any(new in raw for _, new in variants for raw in raws.values()):
             continue                                   # already migrated
         hit = next(((p, old, new) for old, new in variants
@@ -551,7 +572,10 @@ def plan(book):
     # Guide formulas name it — so predict it the same way add_column picks it.
     p["role_col"] = (att.headers[NEW_COLUMN] if not p["add_column"]
                      else max(att.headers.values()) + 1)
-    p["guide"], p["guide_missing"] = plan_guide(book["parts"], p["role_col"])
+    # The header map AS IT WILL BE once add_column has run — the Guide formulas
+    # name the new column, and its index is only known after that.
+    p["guide"], p["guide_missing"] = plan_guide(
+        book["parts"], dict(att.headers, **{NEW_COLUMN: p["role_col"]}))
     p["cf"] = cf_plan(att, book["parts"])
     p["any"] = bool(p["add_column"] or p["rows"] or p["dv"] or p["guide"]
                     or p["cf"] == "due")

@@ -30,6 +30,9 @@ def check(label, got, want):
 # Fixture: the workbook as it was BEFORE the split
 # ---------------------------------------------------------------------------
 PRE = mig.PRE_SPLIT_HEADERS
+#: The header map as it stands once the column has been appended at L — what
+#: the Guide formulas are computed against.
+POST_SPLIT_HEADERS = dict({h: i for i, h in enumerate(PRE)}, **{NEW_COLUMN: 11})
 # The list every chapter carried until 2026-08-25 — roles and lifecycle values
 # in one column, which is the conflation being undone.
 OLD_DV = "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"
@@ -91,6 +94,7 @@ def make_pre_xlsx(rows_data=(), headers=PRE, dv=OLD_DV, guide=GUIDE, cols=True,
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         '<dimension ref="A1:K%d" />%s<sheetData>%s</sheetData>'
+        '<autoFilter ref="$A$1:$K$1" />'
         # conditionalFormatting must sit AFTER sheetData and BEFORE
         # dataValidations — CT_Worksheet fixes the order, and Excel calls the
         # file corrupt if a block lands after pageMargins.
@@ -362,7 +366,7 @@ check("the colour rules survive a serialize round-trip",
 # The Guide tab
 # ---------------------------------------------------------------------------
 names, parts = make_pre_xlsx()
-todo, missing = mig.plan_guide(parts, 11)
+todo, missing = mig.plan_guide(parts, POST_SPLIT_HEADERS)
 check("all three Guide formulas are due", len(todo), 3)
 check("...and none is unrecognised", missing, [])
 mig.apply_guide(parts, todo)
@@ -380,13 +384,13 @@ check("the live list no longer has a dangling reference",
       "Attendees!L2:L," in g and "Attendees!H2:H" in g, True)
 check("the live list's filter conditions are unchanged",
       "(Attendees!C2:C=&quot;Yes&quot;)+(Attendees!B2:B=&quot;High&quot;)" in g, True)
-check("re-planning a migrated Guide proposes nothing", mig.plan_guide(parts, 11)[0], [])
+check("re-planning a migrated Guide proposes nothing", mig.plan_guide(parts, POST_SPLIT_HEADERS)[0], [])
 
 # A Guide someone edited: report the miss rather than regex something we do not
 # understand into a formula.
 names, parts = make_pre_xlsx(
     guide=GUIDE.replace('COUNTIF(Attendees!D2:D1000,"Speaker")', 'COUNTIF(Foo!A1:A9,"x")'))
-todo, missing = mig.plan_guide(parts, 11)
+todo, missing = mig.plan_guide(parts, POST_SPLIT_HEADERS)
 check("an edited Guide formula is reported, not rewritten", len(missing), 1)
 check("...and the ones still recognised are still planned", len(todo), 2)
 
@@ -413,7 +417,7 @@ LEGACY_SST = (
     '</t></si></sst>')
 names, parts = make_pre_xlsx(guide=LEGACY_GUIDE)
 parts["xl/sharedStrings.xml"] = LEGACY_SST.encode()
-todo, missing = mig.plan_guide(parts, 11)
+todo, missing = mig.plan_guide(parts, POST_SPLIT_HEADERS)
 check("the legacy shape is fully recognised", (len(todo), missing), (3, []))
 check("...with the FILTER found in the SHARED table, not the sheet",
       sorted({t[0] for t in todo}),
@@ -428,7 +432,7 @@ check("...and no legacy tile still counts Status",
 check("the shared-table live list is repointed",
       "Attendees!H2:H" in parts["xl/sharedStrings.xml"].decode(), True)
 check("re-planning the migrated legacy shape proposes nothing",
-      mig.plan_guide(parts, 11)[0], [])
+      mig.plan_guide(parts, POST_SPLIT_HEADERS)[0], [])
 
 
 # ---------------------------------------------------------------------------

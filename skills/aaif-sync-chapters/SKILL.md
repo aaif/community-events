@@ -1142,11 +1142,12 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_interested_in.py --write     # apply
 Five parts, per workbook (templates included):
 
 - **The column is APPENDED**, at the first free column past the last header —
-  `L` on the shipped layout — not slotted in beside `Status` where it reads
-  best. Inserting would renumber every cell ref in ~1000 rows, every
-  `dataValidation` sqref, and the Guide tab's cross-sheet formulas. Nothing
-  addresses these sheets by letter. Its `<col>` width is split out of the
-  shipped `L..S` run rather than narrowing all eight.
+  `L` on the shipped layout. Inserting it in place would renumber every cell
+  ref in ~1000 rows, every `dataValidation` sqref, and the Guide tab's
+  cross-sheet formulas; appending got the split shipped without touching any of
+  that. `migrate_column_order.py` (below) then does the insert properly. Its
+  `<col>` width is split out of the shipped `L..S` run rather than narrowing
+  all eight.
 - **Rows are backfilled from their own `Notes (CRM)`** provenance string, which
   has carried both facts all along. Nothing is invented: a row whose `Status`
   holds a role but whose note won't parse has the role **relocated** and its
@@ -1191,3 +1192,49 @@ applies, re-downloads every written workbook and prints a `Verified` line.
 Pre-edit bytes land in `<repo>/backups/crm-split-before-<stamp>/` (gitignored,
 and holding real names and emails) — **delete the directory once the write is
 confirmed good**; nothing prunes it.
+
+
+## One-shot: `Interested in` before `Status` (`migrate_column_order.py`)
+
+`migrate_interested_in.py` appended the new column at `L`. This moves it to `D`,
+immediately before `Status`, so "what they asked for" and "how far the decision
+got" are read together. Run **after** the split migration.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_column_order.py             # report, writes nothing
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_column_order.py --city Boston
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_column_order.py --write     # apply, then verify
+```
+
+```
+before   A Full name  B Signal  C Trusted  D Status  E Notes … K What…  L Interested in
+after    A Full name  B Signal  C Trusted  D Interested in  E Status  F Notes … L What…
+```
+
+Everything carrying a column position is renumbered: every `<c r="…">` (re-sorted
+into ascending order — a row left out of order reads as a corrupt file), the
+`<cols>` width runs (expanded, mapped and re-collapsed, because they are
+**ranges** and rewriting min/max in place re-widens whatever shared a run),
+`<dimension>`, `<autoFilter>` (which shipped as `$A$1:$K$1` and never covered
+the appended column — it is widened to the real last column), every
+`dataValidation` and `conditionalFormatting` sqref, A1-style column letters
+inside cf **formulas** (the name-turns-red rule tests `$B2="Non-grata"`), and
+the Guide's `Attendees!<col>` references.
+
+- **Only `Attendees!`-prefixed refs move in the Guide.** A Guide-local `B5` is a
+  cell of the dashboard itself; without the prefix scope the Guide rewrites its
+  own layout along with the references it makes.
+- **The verify is a data check, not an "it opens" check.** Every row is
+  snapshotted **by header** before the write and compared after. A workbook whose
+  refs were renumbered inconsistently still opens, still has twelve headers, and
+  quietly shows one person's email against another's name — that fails here.
+- **The mapping is derived by rebuilding the column order as a list**, not by
+  arithmetic on "shift everything between src and dst": the arithmetic version
+  needs a different sign for a left-move than a right-move and gets one boundary
+  wrong. A chapter's own extra columns keep their relative position.
+- `sync_crm.py` is unaffected — it addresses every column by header name, so the
+  move is invisible to it. `migrate_interested_in.py` derives the Guide's target
+  formulas from the live header map for the same reason; hardcoded letters would
+  make it report three unrecognised Guide formulas on all 83 chapters forever.
+
+Idempotent — a workbook already in the target order plans nothing.
