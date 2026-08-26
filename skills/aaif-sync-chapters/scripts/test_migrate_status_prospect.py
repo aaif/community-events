@@ -28,7 +28,6 @@ from migrate_status_prospect import (CF_TOKEN_NEW, CF_TOKEN_OLD, HOWTO_TEXTS,
                                      migrate_list, plan_crm, plan_howto,
                                      plan_intake_cells, runs_of, sqref_cols,
                                      tab_actionable, tab_changes)
-import sync_crm
 from sync_crm import cell_ref, load_parts, save_parts, sheet_part
 
 fails = 0
@@ -50,11 +49,19 @@ CRM_LIST = ["New", "Prospect", "Attended", "Regular", "Speaker", "Organizer",
             "Volunteer", "Host", "Declined"]
 SIGNAL_LIST = ["High", "Low", "Non-grata", "New"]
 
-check("the CRM fixture list IS sync_crm's dropdown (drift here breaks the "
-      "Host patch fleet-wide)",
-      ",".join(CRM_LIST), sync_crm.DV_STATUS_NEW)
-check("and migrating it yields exactly sync_crm's migrated list",
-      ",".join(migrate_list(CRM_LIST)), sync_crm.DV_STATUS_NEW_MIGRATED)
+# CRM_LIST is a HISTORICAL literal, not a copy of a live constant. It used to
+# be pinned to sync_crm.DV_STATUS_NEW, but the 2026-08-25 Status/role split
+# retired that list: `Speaker`, `Organizer` and `Host` moved out of Status into
+# the `Interested in` column, and sync_crm no longer defines the pre-split
+# spelling at all. This script is a finished one-shot whose job was to rewrite
+# the list ABOVE, so the fixture must keep describing the world it ran against
+# — re-pointing it at today's constant would test the wrong migration.
+check("the CRM fixture is the pre-split list this migration ran against",
+      ",".join(CRM_LIST),
+      "New,Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined")
+check("and migrating it drops only the leading New",
+      ",".join(migrate_list(CRM_LIST)),
+      "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined")
 
 check("intake list: New is replaced in place (Prospect not yet offered)",
       migrate_list(INTAKE_LIST),
