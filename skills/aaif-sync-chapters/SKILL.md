@@ -404,11 +404,10 @@ accepted organizer's address cannot write into that person's CRM row. One gap to
 `Denied` stays in the CRM (the engine never deletes people) and shows up under
 "Already in a CRM and NOT touched" — remove that row by hand.
 
-**Keep it minimal.** Only six of the eleven columns are ever written. `Signal`,
-`LinkedIn URL`, `Company`, `Role / title` and `Technical expertise` still exist
-for an organizer to fill in by hand — the automation just doesn't push a survey's
-worth of personal detail into a folder that is still link-readable while chapters
-are being onboarded (see the sharing note at the end of this section).
+**`Signal` is the one column the automation never writes.** Eleven of the twelve
+are, including the four survey-detail columns — see the column mapping above for
+why that changed on 2026-08-25. `Signal` is the chapter's own private rating of a
+person, which no form answer can supply, so it stays hand-entered.
 
 ## The flow: report → approve → write
 
@@ -592,19 +591,31 @@ script doesn't touch is repacked byte-for-byte, and values are written as
 starting with `=` can never become a formula, so there is no RAW-vs-`USER_ENTERED`
 hazard here.
 
-**Write order is load-bearing.** `Attendees.serialize()` rewrites the sheet part
-wholesale from the element tree, so a bytes-level dropdown patch applied *before*
-it is silently discarded — and the run still reports the patch as applied. That
-is why row writes, serialization and the dropdown patch all live inside
-`finalize()`, in that order; call it, don't re-implement it.
+**Write order used to be load-bearing, and is not any more.**
+`Attendees.serialize()` rewrites the sheet part wholesale from the element tree,
+so a bytes-level edit applied *before* it is silently discarded — and the run
+still reports it as applied, which is what once shipped to a probe workbook.
+`sync_crm` no longer makes any bytes-level edit: schema belongs to
+`migrate_interested_in.py`, and `finalize()` only writes rows and serializes.
+The hazard still applies to **the migrations**, which do both — each does every
+structural edit on the element tree and only then touches the Guide part, which
+`serialize()` does not rewrite.
 
 ## Sharing: minimal by design
 
-`CRM_WRITTEN` (six columns) plus the status allowlists (`SYNC_STATUSES`,
-`PIPELINE_STATUSES` and the `SELF_SERVE_MIN` gate on pipeline organizers) are
-what keep declined applicants and everyone's survey detail out of a folder
-shared more widely than intended — and since 2026-08 a *vetting-in-progress*
-person can legitimately appear in a self-serve chapter's CRM as a `Prospect`.
+The status allowlists (`SYNC_STATUSES`, `PIPELINE_STATUSES` and the
+`SELF_SERVE_MIN` gate on pipeline organizers) are what keep **declined
+applicants** out of a folder shared more widely than intended — and since
+2026-08 a *vetting-in-progress* person can legitimately appear in a self-serve
+chapter's CRM as a `Prospect`.
+
+`CRM_WRITTEN` is **no longer part of that mitigation.** It was six columns, on
+the reasoning that the Chapters folder was link-readable; it is not — it is 92
+individual per-chapter organizer grants — and since 2026-08-25 it is eleven
+columns including LinkedIn, employer, job title and expertise. The audience for
+a chapter's CRM is that chapter's own organizers. If the folder's sharing is
+ever widened, that is now a decision about **everyone's survey detail**, not
+just about which people appear.
 **Re-check the folder's sharing before widening any of them** — they
 are the whole mitigation, and the CRM is written *before* access is narrowed
 (feed → CRM → access), so the write lands under whatever sharing exists at the
@@ -1005,7 +1016,8 @@ After any run (and after editing the engine):
 - After a CRM `--write`, open one touched workbook and check the person's row
   reads correctly, the sample row and any hand-written notes are untouched, and
   the `Status` cell offers the decision ladder (no role words), is coloured to
-  match its value, and `Interested in` offers the role list.
+  match its value, and `Interested in` sits immediately to its left and offers
+  the role list.
 - After an About `--write`, open one rewritten doc and check the Organizers list
   reads as a proper bulleted list (not renumbered off the Luma list below it),
   the rest of the doc is untouched, and the brand fonts still render.
@@ -1027,6 +1039,7 @@ After any run (and after editing the engine):
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_nightly.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_status_prospect.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_interested_in.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_column_order.py
   ```
 
 ## One-shot: retiring the status `New` (`migrate_status_prospect.py`)

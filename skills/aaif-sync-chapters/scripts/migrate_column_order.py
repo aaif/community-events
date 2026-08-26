@@ -42,8 +42,9 @@ then re-downloads and re-reads every workbook and prints a Verified line.
 Pre-edit bytes are kept under <repo>/backups/ (gitignored). No member names or
 emails on stdout — counts, chapter names and column names only.
 
-Exit codes: 0 everything already ordered; 2 changes proposed (or applied);
-1 failure (including a failed verify or a skipped workbook).
+Exit codes: 0 nothing due (or a --write that applied and verified cleanly);
+2 changes proposed in report mode; 1 failure — a skipped workbook or a failed
+verify.
 
 Usage:
   python3 migrate_column_order.py                 # report only, zero writes
@@ -81,8 +82,10 @@ def move_mapping(headers, move=MOVE, before=BEFORE):
     right, and gets the boundary wrong in one of the two directions; this cannot,
     and it extends unchanged to any future move.
 
-    Columns past the last header (a chapter that added its own) keep their
-    positions relative to everything else, because they are in the list too.
+    The domain is `0 .. last header column` — a column past the last HEADER is
+    NOT in the mapping, and survives only because every consumer treats the
+    mapping as partial (`mapping.get(old, old)`). move_ranges takes the sheet's
+    new extent from the rows, not from this mapping, for exactly that reason.
     """
     src, dst = headers[move], headers[before]
     order = list(range(max(headers.values()) + 1))
@@ -127,8 +130,15 @@ def remap_formula(text, mapping, prefix=""):
     def one(m):
         body = m.group(2)
         body = _REF_RE.sub(lambda r: remap_ref(r.group(0), mapping), body)
-        # `A2:A` — the half with no row number.
-        body = re.sub(r"(:)(\$?)([A-Z]{1,3})(?![A-Z0-9])",
+        # `A2:A` — the half with no row number. The lookahead MUST exclude
+        # `$`: without it, `$L$2:$L$1000` — which the pass above has already
+        # correctly rewritten to `$D$2:$D$1000` — matches again on `:$D` (the
+        # `$` before the row number is not [A-Z0-9]) and shifts the tail a
+        # second time, yielding `$D$2:$E$1000`: a range spanning TWO columns,
+        # in a dashboard formula, with no error anywhere. Sheets writes
+        # absolute ranges routinely; the shipped template happens to use
+        # relative ones, which is the only reason the tests missed this.
+        body = re.sub(r"(:)(\$?)([A-Z]{1,3})(?![A-Z0-9$])",
                       lambda r: "%s%s%s" % (
                           r.group(1), r.group(2),
                           re.sub(r"\d+$", "",
@@ -206,7 +216,15 @@ def _collapse_cols(block):
 
 def move_ranges(att, mapping):
     """Renumber dimension, autoFilter, and every sqref + cf formula."""
-    last = max(mapping.values())
+    # The last column the SHEET actually uses, not the last one the mapping
+    # covers. move_mapping is built from the headers only, so a column holding
+    # data under a blank header cell is outside it — and taking `last` from the
+    # mapping then NARROWED <dimension> and <autoFilter> past that data.
+    # Attendees.serialize()'s explicit "never NARROW the sheet" guard cannot
+    # help: it recomputes the width from the ref this function just shrank.
+    last = max([max(mapping.values())]
+               + [col_of(c.get("r") or "") for row in att.data.iter(X + "row")
+                  for c in row.iter(X + "c")])
     dim = att.root.find(X + "dimension")
     if dim is not None and dim.get("ref"):
         ref = dim.get("ref")
@@ -221,6 +239,15 @@ def move_ranges(att, mapping):
         # rather than remapping a range that was already wrong.
         af.set("ref", "$A$1:$%s$1" % re.sub(r"\d+$", "", cell_ref(last, 1)))
     for el in att.root.iter():
+        if el.tag == X + "hyperlink" and el.get("ref"):
+            # Hyperlinks carry a position like everything else, and missing
+            # them is silent in the worst way: the link stays on the cell
+            # ADDRESS while the column that owned it slides out from under it,
+            # so a LinkedIn URL ends up attached to the Email cell. Clicking a
+            # person's email opens someone's profile. snapshot() compares cell
+            # VALUES, so the verify cannot see it. Found in review after this
+            # had already run: Dallas and Kampala had 6 such links between them.
+            el.set("ref", remap_ref(el.get("ref"), mapping))
         if el.tag == X + "conditionalFormatting" or el.tag == X + "dataValidation":
             if el.get("sqref"):
                 el.set("sqref", " ".join(remap_ref(p, mapping)
@@ -230,6 +257,33 @@ def move_ranges(att, mapping):
             # whose formula is a bare quoted literal is a cellIs value, not a
             # reference, and must be left exactly alone.
             el.text = remap_formula(el.text, mapping)
+
+
+def unmovable(att):
+    """[description] for anything on the sheet this move cannot safely renumber.
+
+    None of the 83 chapters carried any of these (verified 2026-08-26), which
+    is exactly why they must be REFUSED rather than ignored: the day one
+    appears, moving the columns out from under it is silent. `snapshot()`
+    compares cell VALUES — and a cell formula's cached <v> still holds its
+    pre-move result — so a mis-anchored merge, filter or formula sails through
+    the verify and only goes wrong when Sheets recalculates, long after the
+    backup is gone. Hyperlinks were on this list until they were handled
+    properly in move_ranges; they are what proved the class was real.
+    """
+    out = []
+    merges = sum(1 for el in att.root.iter() if el.tag == X + "mergeCell")
+    filters = sum(1 for el in att.root.iter() if el.tag == X + "filterColumn")
+    # A <f> anywhere in the grid: a chapter's own helper formula, whose column
+    # references this script does not rewrite.
+    formulas = sum(1 for row in att.data.iter(X + "row")
+                   for c in row.iter(X + "c")
+                   if c.find(X + "f") is not None)
+    for n, label in ((merges, "merged cell(s)"), (formulas, "cell formula(s)"),
+                     (filters, "autoFilter column filter(s)")):
+        if n:
+            out.append("%d %s" % (n, label))
+    return out
 
 
 def move_guide(parts, mapping):
@@ -328,6 +382,14 @@ def _run(args, workdir):
         if book is None:
             skipped.append((folder["name"], why))
             print("  %-18s SKIPPED — %s" % (folder["name"], why))
+            continue
+        blockers = unmovable(book["att"])
+        if blockers:
+            skipped.append((folder["name"],
+                            "carries %s, whose position this move cannot "
+                            "renumber — reorder by hand or extend the script"
+                            % " and ".join(blockers)))
+            print("  %-18s SKIPPED — %s" % (folder["name"], skipped[-1][1]))
             continue
         mapping = move_mapping(book["att"].headers)
         if mapping is None:

@@ -604,6 +604,60 @@ for before, want in (("", "Organizer"), ("Speaker", "Organizer"),
     check("%s %-22r -> %r" % (NEW_COLUMN, before, want),
           ops_r[0]["sets"].get(NEW_COLUMN) if ops_r else None, want)
 
+# Demotion visibility. AUTO_STATUS legitimately includes every lifecycle value,
+# so the intake CAN move someone backwards — a chapter that set `Accepted`
+# locally without the intake agreeing has no Drive access anyway, so correcting
+# it is the point. But it is still an edit to a human's cell, and the report
+# used to print only the destination, making it typographically identical to
+# filling a blank. These pin that it is now visible.
+_, _, adem = book(sample_row=SAMPLE)
+adem.write(3, "Email", "ada@x.io")
+adem.write(3, "Status", "Accepted")
+_pipe = merge_people([person("Ada", "ada@x.io", "Boston", "Organizers", "Prospect")])
+ops_d = plan_workbook(adem, _pipe, TODAY)
+check("the old value is recorded on the op", ops_d[0]["was"].get("Status"), "Accepted")
+check("...and the demotion is detected",
+      [(h, o, n) for _, h, o, n in sync_crm.demotions(ops_d)],
+      [("Status", "Accepted", "Prospect")])
+_, _, aup = book(sample_row=SAMPLE)
+aup.write(3, "Email", "ada@x.io")
+aup.write(3, "Status", "Prospect")
+check("...Prospect -> Accepted is silent", sync_crm.demotions(plan_workbook(aup, people, TODAY)), [])
+_, _, ahum = book(sample_row=SAMPLE)
+ahum.write(3, "Email", "ada@x.io")
+ahum.write(3, "Status", "Declined")
+check("a human-only status is never touched, so never a demotion",
+      (plan_workbook(ahum, _pipe, TODAY)[0]["sets"].get("Status"),
+       sync_crm.demotions(plan_workbook(ahum, _pipe, TODAY))), (None, []))
+check("filling a BLANK cell is not a demotion",
+      sync_crm.demotions(plan_workbook(book(sample_row=SAMPLE)[2], _pipe, TODAY)), [])
+
+# The invariants that make the file's prose promises structural. Each has a
+# plausible one-line edit that would break it silently.
+check("no human-only status is auto-owned",
+      sorted(set(sync_crm.HUMAN_ONLY_STATUSES) & sync_crm.AUTO_STATUS), [])
+check("...and all four are on the dropdown, so a human can still set them",
+      [v for v in sync_crm.HUMAN_ONLY_STATUSES if v not in sync_crm.DV_STATUS_VALUES], [])
+check("every writable column is a real CRM column",
+      sorted(set(sync_crm.CRM_WRITTEN) - set(CRM_HEADERS)), [])
+check("every auto-owned column is writable",
+      sorted(set(sync_crm.AUTO_OWNED) - set(sync_crm.CRM_WRITTEN)), [])
+check("every dropdown column is a real CRM column",
+      sorted(set(sync_crm.DV_EXPECTED) - set(CRM_HEADERS)), [])
+check("the ladder covers every lifecycle value",
+      sorted(sync_crm.LIFECYCLE_ORDER), sorted(set(sync_crm.CRM_LIFECYCLE.values())))
+
+# col_of and the $-anchored refs that made three call sites fail OPEN.
+for ref, want in (("D2", 3), ("$D$2", 3), ("$D2", 3), ("AB12", 27),
+                  ("2", -1), ("", -1), ("$", -1)):
+    check("col_of(%-7r)" % ref, col_of(ref), want)
+check("an anchored sqref is attributed to its real column",
+      sync_crm.dv_lists(b'<dataValidation sqref="$D$2:$D$1000" type="list">'
+                        b'<formula1>"a,b"</formula1></dataValidation>'), {3: "a,b"})
+check("a sqref with no column letter is not filed under column A",
+      sync_crm.dv_lists(b'<dataValidation sqref="2:1000" type="list">'
+                        b'<formula1>"a,b"</formula1></dataValidation>'), {})
+
 # The self-serve lifecycle end-to-end: a Prospect synced while in the pipeline
 # is upgraded in place once the chapter accepts them — Status is in AUTO_STATUS
 # and the blank Trusted/Regular cell fills.
@@ -896,12 +950,36 @@ finally:
 
 sync_crm.REDACT = True
 try:
-    check("redact_sets shows column names but masks every value except role/status-like ones",
+    check("redact_sets shows column names but masks every personal value",
           sync_crm.redact_sets({"Email": "ada@x.com", "Full name": "Ada Lovelace",
                                 "Company": "Acme", "Status": "Accepted",
+                                "Interested in": "Organizer",
                                 "Role / title": "CTO", "What brings you here?": "my friend Ada"}),
           {"Email": "…", "Full name": "…", "Company": "…", "Status": "Accepted",
-           "Role / title": "CTO", "What brings you here?": "…"})
+           "Interested in": "Organizer",
+           "Role / title": "…", "What brings you here?": "…"})
+    # The regression this pins. The whitelist WAS a substring test against the
+    # tag "Role", which was harmless only while no written column contained
+    # that word — and this suite asserted `"Role / title": "CTO"` as CORRECT.
+    # Then `Role / title` joined CRM_WRITTEN and a free-text job title started
+    # printing in full under --redact, which defaults ON in CI because a CI log
+    # on a public repo is permanent. Enumerating every written column means a
+    # column added later is masked by default and has to be whitelisted on
+    # purpose, rather than leaking because of how its name happens to be spelt.
+    _person = merge_people([person(
+        "Ada", "ada@x.io", "Boston", "Organizers", "Accepted",
+        linkedin="https://li/ada", company="Acme", title="Head of ML at Acme",
+        expertise="agents")])[0]
+    _shown = sorted(k for k, v in
+                    sync_crm.redact_sets(crm_fields(_person, TODAY)).items()
+                    if v not in ("…", ""))
+    check("only categorical columns survive redaction — no free text, ever",
+          _shown, sorted(["Status", NEW_COLUMN, "Trusted/Regular"]))
+    check("...and the whitelist itself names no free-text column",
+          [h for h in sync_crm.SHOWN_UNDER_REDACT
+           if h in ("Full name", "Email", "Notes (CRM)", "LinkedIn URL", "Company",
+                    "Role / title", "Technical expertise", "What brings you here?")],
+          [])
 finally:
     sync_crm.REDACT = False
 

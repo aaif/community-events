@@ -8,7 +8,7 @@ against. It is built from migrate_interested_in's own fixture, put through
 that migration, so the input here is literally what the previous script
 produces rather than a hand-written guess at it.
 """
-import os, sys
+import os, re, sys
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -97,10 +97,31 @@ for ref, want in (("D2:D1000", "E2:E1000"),     # Status dropdown + colours
                   ("$A$1:$K$1", "$A$1:$L$1")):  # autoFilter, widened
     check("remap_ref(%-11r)" % ref, mo.remap_ref(ref, MAP), want)
 check("the $ anchors survive", mo.remap_ref("$D$2", MAP), "$E$2")
-check("a cf rule that tests another column is rewritten",
-      mo.remap_formula('$B2="Non-grata"', MAP), '$B2="Non-grata"')
-check("...and one testing a column that DOES move",
+check("a cf rule testing a column that MOVES is rewritten",
       mo.remap_formula('$D2="Accepted"', MAP), '$E2="Accepted"')
+check("...and one testing a column that does not is left alone",
+      mo.remap_formula('$B2="Non-grata"', MAP), '$B2="Non-grata"')
+
+# REGRESSION (found in review, after this had already run on 83 workbooks).
+# The open-ended-range pass ran a SECOND time over a range the first pass had
+# already rewritten, because its lookahead `(?![A-Z0-9])` did not exclude `$`:
+# `$L$2:$L$1000` -> `$D$2:$D$1000` -> `$D$2:$E$1000`, a range spanning TWO
+# columns, inside a live dashboard formula, with no error anywhere. Only
+# relative refs appeared in the shipped template, which is the sole reason the
+# suite missed it — Sheets writes absolute ranges routinely.
+for f, want in (("Attendees!$L$2:$L$1000", "Attendees!$D$2:$D$1000"),
+                ("Attendees!$D$2:$D$1000", "Attendees!$E$2:$E$1000"),
+                ("Attendees!$B$2:$B$1000", "Attendees!$B$2:$B$1000"),
+                ("Attendees!$A$1:$K$1",    "Attendees!$A$1:$L$1"),
+                ("Attendees!L2:L1000",     "Attendees!D2:D1000"),
+                ("Attendees!L2:L",         "Attendees!D2:D")):
+    got = mo.remap_formula(f, MAP, prefix="Attendees!")
+    check("absolute/relative range %-24r" % f, got, want)
+check("no remapped range ever spans two columns",
+      [g for g in (mo.remap_formula("Attendees!$%s$2:$%s$1000" % (c, c), MAP,
+                                    prefix="Attendees!")
+                   for c in "ABCDEFGHIJKL")
+       if len(set(re.findall(r"\$([A-Z]+)\$", g))) != 1], [])
 
 # The Guide's cross-sheet references, and only those.
 GUIDE_FILTER = ("=FILTER({Attendees!A2:A, Attendees!L2:L, Attendees!H2:H, "
@@ -173,8 +194,8 @@ check("the colour block now names column E",
       'sqref="E2:E1000"' in d and 'sqref="D2:D1000"' in d, True)
 check("the Signal rules and dropdown did not move",
       d.count('sqref="B2:B1000"'), 2)   # 1 cf block + 1 dropdown
-check("the name-turns-red rule still tests Signal",
-      '$B2="Non-grata"' in d or "$B2=&quot;Non-grata&quot;" in d, True)
+check("the name-turns-red rule still tests Signal, in the fixture's encoding",
+      '$B2="Non-grata"' in d, True)
 
 # Structure.
 check("the dimension covers the last column",
@@ -217,6 +238,96 @@ check("the workbook survives a save/load round-trip",
 check("...with the data still intact", mo.snapshot(rt), before)
 
 
+# A chapter's own data column past the last HEADER is outside move_mapping
+# (which is built from headers), so taking the sheet's new extent from the
+# mapping narrowed <dimension> and <autoFilter> past that data — and
+# Attendees.serialize()'s "never NARROW" guard cannot help, because it
+# recomputes the width from the ref this code just shrank.
+_n4, _p4 = fx.make_pre_xlsx(rows_data=[fx.row("Bo", "Host",
+    "Intake: Host · New · 2026-08-21", "b@x.io")])
+_d4 = _p4["xl/worksheets/sheet1.xml"].decode().replace(
+    "</sheetData>",
+    '<row r="9"><c r="M9" t="inlineStr"><is><t>note</t></is></c></row></sheetData>", 1'[:-4],
+    1).replace('<dimension ref="A1:K2"', '<dimension ref="A1:M9"')
+_p4["xl/worksheets/sheet1.xml"] = _d4.encode()
+_b4 = {"att": Attendees(_p4, sheet_part(_p4, "Attendees"), require=mig.PRE_SPLIT_HEADERS),
+       "parts": _p4, "names": _n4, "part": sheet_part(_p4, "Attendees")}
+_raw4, _ = mig.apply_plan(_b4, mig.plan(_b4))
+_n4, _p4 = load_parts(_raw4)
+_a4 = Attendees(_p4, sheet_part(_p4, "Attendees"))
+_raw4, _ = mo.apply_move({"att": _a4, "parts": _p4, "names": _n4,
+                          "part": sheet_part(_p4, "Attendees")},
+                         mo.move_mapping(_a4.headers))
+_, _pm = load_parts(_raw4)
+_dm = _pm[sheet_part(_pm, "Attendees")].decode()
+check("an un-headered data column does not narrow <dimension>",
+      re.search(r'<dimension ref="([^"]+)"', _dm).group(1), "A1:M9")
+check("...nor the autoFilter", re.search(r'<autoFilter ref="([^"]+)"', _dm).group(1),
+      "$A$1:$M$1")
+check("...and its data survives", 'r="M9"' in _dm, True)
+
+
+# ---------------------------------------------------------------------------
+# Hyperlinks, and the elements this move refuses to touch
+# ---------------------------------------------------------------------------
+# REGRESSION (found in review, after this had run on 83 workbooks). Hyperlinks
+# carry a ref like everything else. Leaving them behind is silent in the worst
+# way: the link stays on the ADDRESS while its column slides out from under it,
+# so a LinkedIn URL ends up on the Email cell and clicking someone's address
+# opens a profile. snapshot() compares cell VALUES, so the verify cannot see
+# it. Dallas and Kampala had 6 such links between them.
+names, parts = fx.make_pre_xlsx(rows_data=[fx.row("Ada","Organizer",
+    "Intake: Organizer · Accepted · 2026-08-07","ada@x.io")])
+_s = parts["xl/worksheets/sheet1.xml"].decode().replace(
+    "<dataValidations", '<hyperlinks><hyperlink ref="G2" location="linkedin"/></hyperlinks>'
+    "<dataValidations", 1)
+parts["xl/worksheets/sheet1.xml"] = _s.encode()
+att_h = Attendees(parts, sheet_part(parts, "Attendees"), require=mig.PRE_SPLIT_HEADERS)
+check("G is 'LinkedIn URL' before the move",
+      mo.target_order(att_h.headers)[6], "LinkedIn URL")
+mig.apply_plan({"att": att_h, "parts": parts, "names": names,
+                "part": sheet_part(parts, "Attendees")}, mig.plan({"att": att_h, "parts": parts}))
+_n, _p = load_parts(save_parts(names, parts))
+att_h = Attendees(_p, sheet_part(_p, "Attendees"))
+raw_h, _ = mo.apply_move({"att": att_h, "parts": _p, "names": _n,
+                          "part": sheet_part(_p, "Attendees")}, mo.move_mapping(att_h.headers))
+_, ph = load_parts(raw_h)
+post_h = Attendees(ph, sheet_part(ph, "Attendees"))
+dh = ph[sheet_part(ph, "Attendees")].decode()
+check("the hyperlink followed its column G -> H",
+      re.search(r'<hyperlink ref="([^"]+)"', dh).group(1), "H2")
+check("...and H is 'LinkedIn URL' after the move",
+      mo.target_order(post_h.headers)[7], "LinkedIn URL")
+check("...so it is NOT sitting on Email",
+      mo.target_order(post_h.headers)[6], "Email")
+
+# Elements whose position this move cannot renumber are refused, not ignored —
+# a cell formula's cached <v> survives the move, so the verify would pass.
+_, _, att_ok = split_book()
+check("a normal workbook has nothing unmovable", mo.unmovable(att_ok), [])
+for frag, want in (('<mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells>',
+                    ["1 merged cell(s)"]),
+                   ('<autoFilter ref="$A$1:$L$1"><filterColumn colId="3"/></autoFilter>',
+                    ["1 autoFilter column filter(s)"])):
+    _n2, _p2 = fx.make_pre_xlsx()
+    _p2["xl/worksheets/sheet1.xml"] = _p2["xl/worksheets/sheet1.xml"].decode().replace(
+        "<dataValidations", frag + "<dataValidations", 1).encode()
+    _a2 = Attendees(_p2, sheet_part(_p2, "Attendees"), require=mig.PRE_SPLIT_HEADERS)
+    check("unmovable detects %s" % want[0], mo.unmovable(_a2), want)
+_n3, _p3 = fx.make_pre_xlsx(rows_data=[fx.row("Ada","Organizer","n","a@x.io")])
+_d3 = _p3["xl/worksheets/sheet1.xml"].decode()
+# A chapter's own helper formula in a spare column, with a CACHED result — the
+# cache is why snapshot() cannot see the breakage and the workbook must be
+# refused instead.
+_d3 = _d3.replace("</sheetData>",
+                  '<row r="9"><c r="M9"><f>IF(D2="Accepted",1,0)</f><v>0</v></c>'
+                  "</row></sheetData>", 1)
+_p3["xl/worksheets/sheet1.xml"] = _d3.encode()
+_a3 = Attendees(_p3, sheet_part(_p3, "Attendees"), require=mig.PRE_SPLIT_HEADERS)
+check("unmovable detects a chapter's own cell formula",
+      mo.unmovable(_a3), ["1 cell formula(s)"])
+
+
 # ---------------------------------------------------------------------------
 # The PREVIOUS migration must stay truthful about a reordered workbook
 # ---------------------------------------------------------------------------
@@ -230,7 +341,7 @@ check("the split migration sees a reordered workbook as fully migrated",
 check("...with no Guide formulas reported unrecognised",
       mig.plan_guide(mo_parts, post_headers)[1], [])
 check("...and its dropdown/colour checks still pass",
-      (mig.dv_plan(post), mig.cf_plan(post, mo_parts)), ([], "ok"))
+      (mig.dv_plan(post), mig.cf_plan(post, mo_parts)), (([], []), mig.CF_OK))
 
 # And the sync is layout-independent by construction — it addresses by header
 # name only, so the move must be invisible to it.

@@ -26,8 +26,7 @@ team member — Drive access still keys off acceptance in sync_access.py, so
 reaching the CRM grants nothing by itself.
 
 Each chapter folder under the Chapters Drive holds one "<City> CRM.xlsx" whose
-"Attendees" tab has eleven columns. Only six are ever written (CRM_WRITTEN) —
-identity, decision and interest, and nothing else:
+"Attendees" tab has twelve columns. All but `Signal` are written (CRM_WRITTEN):
 
     Full name           <- role tab name
     Trusted/Regular     <- "Yes" for an ACCEPTED organizer (they're on the team)
@@ -123,7 +122,19 @@ def set_redaction(on):
 #: Columns whose values are categorical, not personal — the only ones a
 #: redacted report still shows. Everything else (survey answers, company,
 #: phone, LinkedIn…) could identify someone, so it prints as `…`.
-SHOWN_UNDER_REDACT = ("Role", "Status", "Signal", "Trusted/Regular")
+#:
+#: EXACT header names, matched with `in`, never a substring test. It WAS a
+#: substring test against the tag "Role", which was safe only for as long as no
+#: written column happened to contain that word — and on 2026-08-25 `Role /
+#: title` joined CRM_WRITTEN, so `"Role" in "Role / title"` started printing a
+#: free-text job title in full under --redact. That flag defaults ON under CI
+#: precisely because a CI log on a public repo is a permanent publication, and
+#: a headline beside a chapter name re-identifies someone the masked name and
+#: email were protecting. A membership test cannot acquire a new member by
+#: accident; a substring test can.
+#: (Spelled out rather than referencing NEW_COLUMN, which is defined further
+#: down; the assertion beside CRM_HEADERS pins the two together.)
+SHOWN_UNDER_REDACT = ("Status", "Interested in", "Signal", "Trusted/Regular")
 
 
 def redact_sets(sets):
@@ -131,7 +142,7 @@ def redact_sets(sets):
     role/status-like columns, so the report still shows WHICH columns change."""
     if not REDACT:
         return sets
-    return {k: (v if any(tag in k for tag in SHOWN_UNDER_REDACT) else "…")
+    return {k: (v if k in SHOWN_UNDER_REDACT else "…")
             for k, v in sets.items()}
 
 
@@ -229,11 +240,13 @@ TEMPLATE_FOLDER = "TemplateCity"                        # cloned per city; never
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 CRM_SHEET = "Attendees"
-# The eleven the sheet must have. PRESENCE is checked, not order or position —
+# The twelve the sheet must have. PRESENCE is checked, not order or position —
 # every access is by header name, and extra columns are tolerated. A workbook
 # missing any of them is skipped with a report line rather than written by column
-# letter: the columns were renumbered once already, and the Guide tab's live-list
-# formula still references L, so letter addressing must never come back.
+# letter: the columns have been renumbered twice more since (2026-08-25 added
+# `Interested in`, and migrate_column_order.py then moved it to D), and the
+# Guide tab's live-list formula was left pointing at a column that did not
+# exist. Letter addressing must never come back.
 CRM_HEADERS = ("Full name", "Signal", "Trusted/Regular", "Status", "Notes (CRM)",
                "Email", "LinkedIn URL", "Company", "Role / title",
                "Technical expertise", "What brings you here?",
@@ -327,6 +340,23 @@ CRM_LIFECYCLE = {
     "Accepted": "Accepted", "Existing (from MLOps)": "Accepted",
 }
 
+#: Statuses only a HUMAN ever sets. The intake has no way to express any of
+#: them, so the sync must never write or overwrite one. Named rather than
+#: inlined because AUTO_STATUS is built by union and would otherwise grow into
+#: this set silently: one plausible edit — `CRM_LIFECYCLE["Denied"] =
+#: "Declined"`, the CRM already offers "Declined" — would put it in AUTO_STATUS
+#: and the next sync would overwrite every hand-set "Declined" across the
+#: estate, undoing exactly what four separate comments promise is protected.
+#: The assertion below is what makes that promise structural.
+HUMAN_ONLY_STATUSES = ("Attended", "Regular", "Volunteer", "Declined")
+
+#: The decision ladder, in the order triage walks it. Used ONLY to describe a
+#: change in the report — never to decide one. Ranking a person is the intake's
+#: job; this exists so a run that moves someone BACKWARDS says so out loud
+#: instead of printing the new value and nothing else.
+LIFECYCLE_ORDER = tuple(dict.fromkeys(CRM_LIFECYCLE.values()))
+
+
 # Status values this script is allowed to overwrite — everything the automation
 # itself writes, plus the sheet's own defaults: a BLANK cell (""), "Prospect",
 # and its legacy spelling "New" (pre-2026-08-22 rows and un-migrated dropdowns
@@ -385,6 +415,41 @@ if _uncovered:
         "CRM_LIFECYCLE has no entry for intake status(es) %s — add them, or the "
         "first person carrying one crashes mid-run." % sorted(_uncovered))
 
+# The redaction whitelist names real columns, and names only categorical ones.
+# Both halves are asserted because both have already gone wrong: a substring
+# test silently added `Role / title` to it (a free-text job title, printed in
+# full under --redact), and nothing would otherwise catch a typo or a header
+# rename quietly turning a "shown" column into a masked one.
+_not_a_header = [h for h in SHOWN_UNDER_REDACT if h not in CRM_HEADERS]
+if _not_a_header:
+    raise AssertionError(
+        "SHOWN_UNDER_REDACT names %s, which is not a CRM column — a typo or a "
+        "rename, and it masks a column the report is supposed to show."
+        % sorted(_not_a_header))
+_free_text = [h for h in SHOWN_UNDER_REDACT
+              if h in ("Full name", "Email", "Notes (CRM)", "LinkedIn URL",
+                       "Company", "Role / title", "Technical expertise",
+                       "What brings you here?")]
+if _free_text:
+    raise AssertionError(
+        "SHOWN_UNDER_REDACT names %s, which carries free text about a person "
+        "and must never print unmasked in a CI log." % sorted(_free_text))
+
+# The promises this file makes in prose, made structural. Each has a plausible
+# one-line edit that would break it silently, and each currently fails (if at
+# all) as a KeyError deep inside a per-chapter loop, after other workbooks have
+# already been written.
+_clobbered = sorted(set(HUMAN_ONLY_STATUSES) & AUTO_STATUS)
+if _clobbered:
+    raise AssertionError(
+        "AUTO_STATUS contains %s, so the sync would overwrite a status only a "
+        "human ever sets. The intake cannot express these; a CRM_LIFECYCLE "
+        "entry mapping onto one is the likely cause." % _clobbered)
+_unwritable = sorted(set(CRM_WRITTEN) - set(CRM_HEADERS))
+if _unwritable:
+    raise AssertionError("CRM_WRITTEN names %s, which is not a CRM column."
+                         % _unwritable)
+
 # Rows whose email is at one of these domains are shipped fixture data — the
 # "Sam Taylor" sample the template puts in every chapter, and the Tatooine test
 # chapter's cast. They are cleared, and their rows reused by real people.
@@ -398,8 +463,7 @@ DUMMY_DOMAINS = ("example.com", "example.org", "example.net", "example.edu")
 # four values only a human ever sets. The role values ("Speaker", "Organizer",
 # "Host") are GONE from this list — that they were ever on it is what let the
 # column mean two things at once.
-DV_STATUS_VALUES = tuple(dict.fromkeys(CRM_LIFECYCLE.values())) + (
-    "Attended", "Regular", "Volunteer", "Declined")
+DV_STATUS_VALUES = tuple(dict.fromkeys(CRM_LIFECYCLE.values())) + HUMAN_ONLY_STATUSES
 
 # `Interested in` lists the combinations, not just the three singles: a person
 # who applied as both an organizer and a speaker is written as
@@ -415,6 +479,12 @@ DV_INTERESTED_VALUES = tuple(
 #: header name -> the exact comma-joined list its dataValidation must hold.
 DV_EXPECTED = {"Status": ",".join(DV_STATUS_VALUES),
                NEW_COLUMN: ",".join(DV_INTERESTED_VALUES)}
+
+_undropdowned = sorted(set(DV_EXPECTED) - set(CRM_HEADERS))
+if _undropdowned:
+    raise AssertionError("DV_EXPECTED names %s, which is not a CRM column — "
+                         "check_dropdowns would KeyError per chapter."
+                         % _undropdowned)
 
 # Per-role source columns on the intake role tabs, resolved by header name and
 # taken in order (first non-empty wins). Organizers have no company or title
@@ -533,13 +603,29 @@ def register_namespaces(xml_bytes):
 
 
 def col_of(ref):
-    """'AB12' -> 27 (0-based column index)."""
+    """'AB12' -> 27 (0-based column index). '$AB$12' too. -1 if there is no
+    column letter at all.
+
+    The `$` handling is not cosmetic. Without it `col_of("$D$2")` returned -1 —
+    it broke on the very first character — and -1 is a plausible-looking index
+    that three callers used as a real answer: a `$`-anchored dataValidation got
+    filed under column -1, so `check_dropdowns` reported that chapter stale on
+    every run forever, `apply_dropdowns` failed to find the existing rule and
+    appended a SECOND one over the same cells, and `cf_plan` returned "due" for
+    a column a human had already painted and added a second colour block on top.
+    Every one of those fails OPEN. Excel and Sheets both write anchored sqrefs
+    routinely. Callers that can be handed a non-reference still check for -1.
+    """
     n = 0
+    seen = False
     for ch in ref:
+        if ch == "$" and not seen:
+            continue                      # a leading/interior anchor, not data
         if not ch.isalpha():
             break
+        seen = True
         n = n * 26 + (ord(ch.upper()) - 64)
-    return n - 1
+    return n - 1 if seen else -1
 
 
 def cell_ref(col, row):
@@ -725,13 +811,14 @@ class Attendees:
     def occupied(self, rownum):
         """True if ANY CRM column on the row holds something.
 
-        Not just name+email: the five columns this script never writes are also
-        never cleared, so a row whose name and email an operator deleted still
-        carries the departed person's LinkedIn, Company and expertise. Treating
-        it as free hands those fields to the next person written there — a real
-        current organizer showing a stranger's employer, in the workbook that
-        decides folder access. Nothing downstream can detect it, because the
-        verify only ever compares CRM_WRITTEN.
+        Not just name+email: `Signal` is never written and never cleared, so a
+        row whose name and email an operator deleted still carries the departed
+        person's rating. Treating it as free hands that to the next person
+        written there — a real current organizer inheriting a stranger's
+        `Non-grata`, in the workbook that decides folder access. Nothing
+        downstream can detect it, because the verify only compares CRM_WRITTEN.
+        (Before 2026-08-25 this covered five columns, four of which the
+        automation now writes; the hazard is narrower, not gone.)
         """
         return any(self.value(rownum, h) for h in CRM_HEADERS if h in self.headers)
 
@@ -787,11 +874,13 @@ class Attendees:
     def write(self, rownum, header, text):
         """Write one CRM cell. Only CRM_WRITTEN columns may be written.
 
-        The "we never push survey detail into this folder" promise was upheld
-        only by the literal body of crm_fields() and guarded only by a test.
-        Enforcing it here means the privacy boundary cannot be crossed by a
-        future caller at all — use clear() for the blanking path, which is
-        allowed to touch every column.
+        What this enforces is narrower than when it was written: the "never
+        push survey detail into this folder" rule was retired on 2026-08-25
+        (see CRM_WRITTEN), and the surviving promise is that `Signal` — the
+        chapter's own private rating of a person, which no form answer can
+        supply — is never authored by the automation. Enforcing it here rather
+        than in crm_fields()'s dict body means a future caller cannot cross it
+        either. Use clear() for the blanking path, which may touch every column.
         """
         if header not in CRM_WRITTEN:
             raise ValueError(
@@ -862,7 +951,9 @@ def dv_lists(raw):
         if f is None or " " in sqref.strip():
             continue
         cols = {col_of(end) for end in sqref.split(":")}
-        if len(cols) != 1:
+        # -1 means "no column letter" — unattributable, not column A. Filing it
+        # anyway is how a garbled sqref silently claims a real column's list.
+        if len(cols) != 1 or -1 in cols:
             continue
         out[cols.pop()] = f.group(1).decode().replace("&quot;", '"')
     return out
@@ -1174,7 +1265,13 @@ def crm_fields(p, today):
     # True is the alignment tripwire: a future edit that appends to one list
     # but not the other must raise here, not silently truncate the zip and
     # demote an accepted person to Prospect.
-    roles = list(zip(p["tabs"], p["statuses"], strict=True))
+    # strict=True over ALL THREE lists. `rows` was outside the zip, so an edit
+    # that appended to tabs+statuses but not rows passed the tripwire and
+    # silently misattributed intake row numbers in every report line — a report
+    # pointing an operator at the wrong intake row is worse than one pointing
+    # nowhere. The row numbers are not used here; being in the zip is the point.
+    roles = [(t, st) for t, st, _ in
+             zip(p["tabs"], p["statuses"], p["rows"], strict=True)]
     accepted_tabs = [t for t, st in roles if st in SYNC_STATUSES]
     # tabs[0] is the highest-priority tab a merged person appears on, so an
     # unaccepted person's Status is the one from their primary application.
@@ -1221,6 +1318,14 @@ def is_auto_role(value):
 #: how a re-triage reaches a chapter without anyone editing a workbook.
 AUTO_OWNED = {"Status": lambda v: v in AUTO_STATUS, NEW_COLUMN: is_auto_role}
 
+# Defined here rather than beside the other invariants because AUTO_OWNED is,
+# so it can be checked at all. A header here that is not writable would raise
+# only when a chapter happened to have content in that cell.
+_unowned = sorted(set(AUTO_OWNED) - set(CRM_WRITTEN))
+if _unowned:
+    raise AssertionError("AUTO_OWNED names %s, which the automation may not "
+                         "write at all." % _unowned)
+
 
 def is_dummy(email):
     """True only for the reserved example domains. This is the ONLY gate on
@@ -1248,6 +1353,14 @@ def preexisting(att, ops, people=()):
             if r > 1 and r not in touched and att.occupied(r)
             and fold_email(att.value(r, "Email")) not in expected
             and not is_dummy(att.value(r, "Email"))]
+
+
+#: The three op kinds, and the two that write. Named so the report and the
+#: writer cannot drift: the writer already raised on an unknown kind, but the
+#: REPORT — which is the default path — indexed a literal dict and would
+#: KeyError mid-sweep after other chapters had printed, or silently undercount.
+OP_KINDS = ("clear", "add", "fill")
+WRITE_KINDS = ("add", "fill")
 
 
 def plan_workbook(att, people, today):
@@ -1303,12 +1416,45 @@ def plan_workbook(att, people, today):
             sets[header] = value
         if sets:
             ops.append({"kind": "add" if new else "fill", "email": p["email"],
-                        "name": p["name"], "rownum": rownum, "sets": sets})
+                        "name": p["name"], "rownum": rownum, "sets": sets,
+                        # What each cell held before. The report used to print
+                        # only the NEW value, which made overwriting a chapter's
+                        # own decision typographically identical to filling a
+                        # blank cell — see the demotion report in _run.
+                        "was": {h: ("" if new else att.value(rownum, h))
+                                for h in sets}})
         if new:
             # Claim the row even when nothing was written, so two people can
             # never be planned into the same empty row.
             by_email[fold_email(p["email"])] = rownum
+    # Validate on the way OUT of the constructor, not on the way in to the
+    # writer: --write is the rare path, the report is the default one.
+    bad = sorted({o["kind"] for o in ops} - set(OP_KINDS))
+    if bad:
+        raise ValueError("plan_workbook produced unknown op kind(s) %s" % bad)
     return ops
+
+
+def demotions(ops):
+    """[(op, header, old, new)] where a cell moves BACKWARDS down the ladder.
+
+    Only describes; never decides. `AUTO_STATUS` legitimately includes every
+    lifecycle value, so the intake can and does move someone back — a chapter
+    that recorded `Accepted` locally without the intake agreeing is, as far as
+    Drive access is concerned, wrong, and correcting it is the point of this
+    engine. But it is a real edit to a human's cell, and printing only the
+    destination hid it completely. This is what puts it on screen.
+    """
+    out = []
+    for o in ops:
+        for header, new in o["sets"].items():
+            old = o.get("was", {}).get(header, "")
+            if header != "Status" or not old or old == new:
+                continue
+            if old in LIFECYCLE_ORDER and new in LIFECYCLE_ORDER \
+                    and LIFECYCLE_ORDER.index(new) < LIFECYCLE_ORDER.index(old):
+                out.append((o, header, old, new))
+    return out
 
 
 def apply_ops(att, ops):
@@ -1320,10 +1466,10 @@ def apply_ops(att, ops):
     # form treats any future kind as a write — the fail-open direction, on the
     # one path that touches the workbook, while the report (which indexes a
     # dict of the three known marks) would crash or undercount.
-    unknown = [o["kind"] for o in ops if o["kind"] not in ("clear", "add", "fill")]
+    unknown = [o["kind"] for o in ops if o["kind"] not in OP_KINDS]
     if unknown:
         raise ValueError("unknown op kind(s) %s — refusing to write" % sorted(set(unknown)))
-    for op in (o for o in ops if o["kind"] in ("add", "fill")):
+    for op in (o for o in ops if o["kind"] in WRITE_KINDS):
         for header, value in op["sets"].items():
             att.write(op["rownum"], header, value)
 
@@ -1341,9 +1487,8 @@ def finalize(book, ops):
     there is no longer an order to get wrong.
     """
     # finalize serializes through `att` but saves `book.parts` — they must be
-    # the same dict, or the returned zip silently loses either the row writes or
-    # the dropdown patch. open_crm builds them that way; assert it rather than
-    # trusting every future caller to.
+    # the same dict, or the returned zip silently loses the row writes. open_crm
+    # builds them that way; assert it rather than trusting every future caller to.
     if book.parts is not book.att.parts or book.part != book.att.part_name:
         raise ValueError("Book.parts/part must be the same objects Attendees holds")
     apply_ops(book.att, ops)
@@ -1580,11 +1725,12 @@ def _run(args, workdir):
               % len(merge_blocked))
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
-    touched, skipped, no_dropdown, keepers = [], [], [], []
-    # Every folder is opened, not just the ones with people: the Status dropdown
-    # patch has to reach chapters that gained nobody this run, and TemplateCity
-    # most of all — otherwise every chapter created from it re-inherits a list
-    # with no value for a venue host.
+    touched, skipped, no_dropdown, keepers, demoted = [], [], [], [], []
+    # Every folder is opened, not just the ones with people: every workbook
+    # carries the template's fixture row and has to be checked for it, and the
+    # read-only dropdown check has to reach chapters that gained nobody this
+    # run. (This used to PATCH the dropdown; schema moved to
+    # migrate_interested_in.py on 2026-08-25.)
     for folder in folders:
         book, why = open_crm(folder, workdir)
         if book is None:
@@ -1609,21 +1755,39 @@ def _run(args, workdir):
             no_dropdown.append((folder["name"], stale_dv))
         if not ops:
             continue
-        n = {k: sum(1 for o in ops if o["kind"] == k) for k in ("clear", "add", "fill")}
+        n = {k: sum(1 for o in ops if o["kind"] == k) for k in OP_KINDS}
         bits = ([("%d dummy cleared" % n["clear"])] if n["clear"] else []) \
             + ([("%d new" % n["add"])] if n["add"] else []) \
             + ([("%d filled in" % n["fill"])] if n["fill"] else [])
         print("  %-18s %s" % (folder["name"], ", ".join(bits)))
         for o in ops:
-            mark = {"clear": "-", "add": "+", "fill": "~"}[o["kind"]]
+            mark = {"clear": "-", "add": "+", "fill": "~"}.get(o["kind"], "?")
+            # Show the TRANSITION, not just the destination: `Status='Prospect'`
+            # reads as filling a blank cell whether or not it just replaced a
+            # chapter's hand-set `Accepted`.
+            was = redact_sets(o.get("was", {}))
             detail = ("dummy row wiped" if o["kind"] == "clear" else
-                      ", ".join("%s=%r" % (k, v if len(v) < 60 else v[:57] + "…")
-                                for k, v in redact_sets(o["sets"]).items()))
+                      ", ".join(
+                          ("%s: %r -> %r" % (k, was[k], v)) if was.get(k)
+                          else ("%s=%r" % (k, v if len(v) < 60 else v[:57] + "…"))
+                          for k, v in redact_sets(o["sets"]).items()))
             print("      %s row %-4d %s <%s> — %s"
                   % (mark, o["rownum"], redact_name(o["name"]),
                      redact_email(o["email"]), detail))
+        demoted += [(folder["name"],) + d[1:] + (d[0],) for d in demotions(ops)]
         touched.append({"book": book, "ops": ops})
 
+    if demoted:
+        # Loud, and separate. These are the rows where the intake overrode a
+        # value a chapter had already set — legitimate (the intake is what
+        # drives Drive access) but never something to discover later.
+        print("\nStatus moved BACKWARDS — the intake disagrees with a value the "
+              "chapter had set. Legitimate if triage really did reverse; check "
+              "the intake row if not:")
+        for name, header, old, new, op in demoted:
+            print("  %-18s row %-4d %s <%s> — %r -> %r"
+                  % (name, op["rownum"], redact_name(op["name"]),
+                     redact_email(op["email"]), old, new))
     if near_misses:
         print("\nNear-miss chapter names (NOT written — fix the intake city or rename the folder):")
         for m in near_misses:

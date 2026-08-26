@@ -254,13 +254,14 @@ check("a workbook with no <cols> is left alone rather than crashing",
 # ---------------------------------------------------------------------------
 names, parts, att = opened()
 check("the pre-split lists are both reported wrong",
-      sorted(h for h, _ in mig.dv_plan(att)), sorted(["Status", NEW_COLUMN]))
+      sorted(h for h, _ in mig.dv_plan(att)[0]), sorted(["Status", NEW_COLUMN]))
 check("...and the Status one is reported with what it currently holds",
-      dict(mig.dv_plan(att))["Status"], OLD_DV)
+      dict(mig.dv_plan(att)[0])["Status"], OLD_DV)
+check("...and nothing is blocked on a normal workbook", mig.dv_plan(att)[1], [])
 mig.add_column(att)
 check("apply_dropdowns refuses nothing on a normal workbook",
       mig.apply_dropdowns(att), [])
-check("both lists are now right", mig.dv_plan(att), [])
+check("both lists are now right", mig.dv_plan(att), ([], []))
 check("no role word is left on the Status list",
       [r for r in mig.ROLE_WORDS.values()
        if r in DV_EXPECTED["Status"].split(",")], [])
@@ -277,11 +278,43 @@ parts["xl/worksheets/sheet1.xml"] = parts["xl/worksheets/sheet1.xml"].replace(
     b'sqref="D2:D1000"', b'sqref="C2:D1000"')
 att_m = Attendees(parts, sheet_part(parts, "Attendees"), require=mig.PRE_SPLIT_HEADERS)
 mig.add_column(att_m)
+# Status is BLOCKED (its rule spans C:D and cannot be split safely) while
+# Interested in is still ordinary work. Separating the two is what stops a
+# blocked column pinning `plan()["any"]` true for ever.
+check("a merged sqref is reported BLOCKED while the other stays due",
+      mig.dv_plan(att_m), ([(NEW_COLUMN, None)], ["Status"]))
 check("a merged sqref is refused, not rewritten",
       mig.apply_dropdowns(att_m), ["Status"])
-check("...and the merged rule is left exactly as it was",
-      [dv.get("sqref") for dv in mig._dv_elements(att_m)
-       if dv.get("sqref") == "C2:D1000"], ["C2:D1000"])
+check("...and the merged rule keeps its sqref AND its list",
+      [(dv.get("sqref"), mig._dv_formula(dv)) for dv in mig._dv_elements(att_m)
+       if dv.get("sqref") == "C2:D1000"],
+      [("C2:D1000", OLD_DV)])
+
+# REGRESSION (found in review, after this had already run on 83 workbooks).
+# A workbook with NO <dataValidations> block got one via ET.SubElement, which
+# appends to the end of <worksheet> — after <pageMargins>. CT_Worksheet is a
+# fixed sequence, so Excel calls that file corrupt. And because apply_dropdowns
+# runs BEFORE apply_cf, the appended block then became the anchor apply_cf
+# searched for, dragging the colour rules after pageMargins too. Every fixture
+# ships a dropdown block, which is why nothing caught it.
+names, parts = make_pre_xlsx()
+_sheet = parts["xl/worksheets/sheet1.xml"].decode()
+_sheet = (_sheet[:_sheet.index("<dataValidations")]
+          + _sheet[_sheet.index("</dataValidations>") + len("</dataValidations>"):])
+parts["xl/worksheets/sheet1.xml"] = _sheet.encode()
+check("the fixture really has no dropdown block", "<dataValidations" in _sheet, False)
+_book = {"att": Attendees(parts, sheet_part(parts, "Attendees"),
+                          require=mig.PRE_SPLIT_HEADERS),
+         "parts": parts, "names": names, "part": sheet_part(parts, "Attendees")}
+mig.apply_plan(_book, mig.plan(_book))
+_kids = [k.tag.split("}")[1] for k in _book["att"].root]
+check("a created dropdown block lands before pageMargins",
+      _kids.index("dataValidations") < _kids.index("pageMargins"), True)
+check("...and the colour rules land before it",
+      max(i for i, k in enumerate(_kids) if k == "conditionalFormatting")
+      < _kids.index("dataValidations"), True)
+check("...and both dropdowns are correct on the rebuilt block",
+      mig.dv_plan(_book["att"]), ([], []))
 
 
 # ---------------------------------------------------------------------------

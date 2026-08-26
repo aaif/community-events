@@ -10,7 +10,7 @@ settled nothing. Pipeline ORGANIZERS were the one role spared, because they
 were special-cased to "Prospect", which is what made the bug easy to miss.
 
 This script performs the split across every "<City> CRM.xlsx" under the
-Chapters Drive folder (the templates included), in four parts:
+Chapters Drive folder (the templates included), in five parts:
 
   1. A new `Interested in` column is APPENDED — at the first free column past
      the last header, which is L on the shipped layout. Appended, not slotted
@@ -58,8 +58,9 @@ then re-downloads and re-reads every workbook and prints a Verified line.
 Pre-edit bytes are kept under <repo>/backups/ (gitignored). No member names or
 emails on stdout — counts, chapter names and column names only.
 
-Exit codes: 0 everything already split; 2 changes proposed (or applied);
-1 failure (including a failed verify or a skipped workbook).
+Exit codes: 0 nothing due (or a --write that applied and verified cleanly);
+2 changes proposed in report mode; 1 failure — a skipped workbook, a failed
+verify, or a gap this script cannot close.
 
 Usage:
   python3 migrate_interested_in.py                 # report only, zero writes
@@ -90,8 +91,10 @@ PRE_SPLIT_HEADERS = tuple(h for h in CRM_HEADERS if h != NEW_COLUMN)
 #: Matched case-insensitively — these were typed by hand as often as written.
 ROLE_WORDS = {r.casefold(): r for r in CRM_ROLE.values()}
 
-#: Width for the new column. The shipped `<cols>` run covers L..S at 8.71,
-#: which truncates "Organizer/Speaker" to about "Organiz".
+#: Width for the new column. The shipped `<cols>` runs leave the appended
+#: column at the sheet default (8.71), which truncates "Organizer/Speaker" to
+#: about "Organiz". widen_column splits whatever run it lands in, so no column
+#: letter is assumed here.
 NEW_COL_WIDTH = "20"
 
 # The Notes (CRM) provenance string sync_crm writes:
@@ -139,9 +142,11 @@ def plan_row(interested, status, note):
         Every other value — blank, a pipeline status, or a human's "Declined" —
         is left alone, because only a role in that column is unambiguously the
         bug this script exists to undo.
-      * The note is the ONLY source for both. Where it cannot be parsed the
-        role still moves to its proper column and the status goes blank; a
-        blank invites the next sync to decide, a guess would outrank it.
+      * The note is the only source for `Status`. `Interested in` falls back
+        to the role word already sitting in `Status` when the note will not
+        parse — the role still moves to its proper column, and the status goes
+        blank rather than being guessed at; a blank invites the next sync to
+        decide, a guess would outrank it.
     """
     note_role, note_status = parse_note(note)
     status_role = ROLE_WORDS.get(clean_text(status).casefold())
@@ -229,18 +234,35 @@ def widen_column(att, col):
 
 
 def dv_plan(att):
-    """[(header, current list or None)] for each dropdown that is not right yet."""
-    out = []
+    """([(header, current)] due, [header] blocked) for the two dropdowns.
+
+    `blocked` is a column whose validation spans several columns — rewriting it
+    would silently re-validate a neighbour (the Signal list's unrelated "New"),
+    and there is no safe way to split a merged sqref without knowing what a
+    human meant. apply_dropdowns refuses those.
+
+    Splitting the two is not cosmetic. `blocked` used to come back in the same
+    list as `due`, so `plan()["any"]` stayed true for a workbook that had
+    already received everything it was ever going to: the verify reported
+    "1 op still pending", the run exited 1, and every later run re-downloaded,
+    re-backed-up and re-uploaded it to change nothing — for ever. The comment
+    beside the refusal already said counting one "would pin every later run to
+    a permanent failure"; this is what makes that true.
+    """
+    due, blocked = [], []
     for header, want in DV_EXPECTED.items():
         col = att.headers.get(header)
-        got = None
-        for dv in _dv_elements(att):
-            if _dv_column(dv) == col:
-                got = _dv_formula(dv)
-                break
+        if col is None:
+            due.append((header, None))
+            continue
+        if any(_dv_column(dv) is None and _covers(dv, col) for dv in _dv_elements(att)):
+            blocked.append(header)
+            continue
+        got = next((_dv_formula(dv) for dv in _dv_elements(att)
+                    if _dv_column(dv) == col), None)
         if got != want:
-            out.append((header, got))
-    return out
+            due.append((header, got))
+    return due, blocked
 
 
 def _dv_elements(att):
@@ -254,7 +276,9 @@ def _dv_column(dv):
     if not sqref or " " in sqref:
         return None
     cols = {col_of(end) for end in sqref.split(":")}
-    return cols.pop() if len(cols) == 1 else None
+    # -1 is col_of's "no column letter here". Returning it would let an
+    # unparsable sqref match a real column index and be rewritten.
+    return cols.pop() if len(cols) == 1 and -1 not in cols else None
 
 
 def _dv_formula(dv):
@@ -274,7 +298,14 @@ def apply_dropdowns(att, last_row=1000):
     """
     block = att.root.find(X + "dataValidations")
     if block is None:
-        block = ET.SubElement(att.root, X + "dataValidations")
+        # NOT ET.SubElement: that appends to the end of <worksheet>, which puts
+        # dataValidations after pageMargins/pageSetup. CT_Worksheet is a fixed
+        # sequence and Excel calls such a file corrupt — the same trap apply_cf
+        # computes an insertion point to avoid. Worse, apply_dropdowns runs
+        # FIRST, so a block appended here then becomes the anchor apply_cf
+        # searches for and drags the colour rules after pageMargins too.
+        block = ET.Element(X + "dataValidations")
+        att.root.insert(_insert_at(att, AFTER_DATA_VALIDATIONS), block)
     refused = []
     for header, want in DV_EXPECTED.items():
         col = att.headers[header]
@@ -298,9 +329,19 @@ def apply_dropdowns(att, last_row=1000):
 
 
 def _covers(dv, col):
+    """Whether a validation's range includes `col`, for the refusal check.
+
+    Deliberately INCLUSIVE of what it cannot parse: an unreadable end (-1 from
+    col_of) makes this return True, so the column is refused and reported
+    rather than rewritten under a rule nobody understood.
+    """
     sqref = (dv.get("sqref") or "").strip()
     ends = [col_of(e) for e in re.split(r"[\s:]+", sqref) if e]
-    return bool(ends) and min(ends) <= col <= max(ends)
+    if not ends:
+        return False
+    if -1 in ends:
+        return True
+    return min(ends) <= col <= max(ends)
 
 
 # ---------------------------------------------------------------------------
@@ -334,10 +375,11 @@ STATUS_DXF = {
 #: which renders as arbitrary formatting rather than as an error.
 MIN_DXFS = 3
 
-# A blank Status is deliberately NOT painted. The sqref covers D2:D1000 and the
-# template pre-creates 1000 empty rows, so a blank rule lights up the entire
-# column on every chapter that has fewer than a thousand people — i.e. all of
-# them.
+# A blank Status is deliberately NOT painted: the rule covers the whole Status
+# column and the template pre-creates 1000 empty rows, so a blank rule lights up
+# the entire column on every chapter with fewer than a thousand people — i.e.
+# all of them. (_build_cf derives the column from att.headers, so no letter is
+# assumed; migrate_column_order.py has since moved Status to E.)
 _DXF_COUNT_RE = re.compile(rb'<dxfs\b[^>]*\bcount="(\d+)"')
 
 
@@ -372,15 +414,24 @@ def _cf_signature(el):
     return (el.get("sqref"), tuple(rules))
 
 
+#: The states cf_plan can return. Named, because a magic string that is not
+#: "due" is silently skipped by `any` AND silently absent from the gap report —
+#: a fifth state added later would make a whole chapter vanish from both.
+CF_OK, CF_DUE, CF_FOREIGN, CF_NO_DXFS = "ok", "due", "foreign", "no-dxfs"
+CF_STATES = (CF_OK, CF_DUE, CF_FOREIGN, CF_NO_DXFS)
+#: Terminal states: reported, never counted as pending work.
+CF_BLOCKED = (CF_FOREIGN, CF_NO_DXFS)
+
+
 def cf_plan(att, parts):
-    """"ok" | "due" | "foreign" | "no-dxfs" for the Status colour rules.
+    """One of CF_STATES for the Status colour rules.
 
     "foreign" means a conditionalFormatting block already covers the Status
     column and is not the one this script writes — a human painted that column,
     and their rules are not ours to replace. Reported, never overwritten.
     """
     if dxf_count(parts) < MIN_DXFS:
-        return "no-dxfs"
+        return CF_NO_DXFS
     col = att.headers["Status"]
     want = _cf_signature(_build_cf(att, priority=1))
     for el in _cf_blocks(att):
@@ -389,8 +440,8 @@ def cf_plan(att, parts):
             continue
         # Compare the rules, not the priority — a later block insertion may
         # renumber priorities without changing what the rules mean.
-        return "ok" if _cf_signature(el)[1] == want[1] else "foreign"
-    return "due"
+        return CF_OK if _cf_signature(el)[1] == want[1] else CF_FOREIGN
+    return CF_DUE
 
 
 def _build_cf(att, priority, last_row=1000):
@@ -406,6 +457,23 @@ def _build_cf(att, priority, last_row=1000):
     return el
 
 
+#: Elements that must follow <dataValidations>, per the CT_Worksheet sequence.
+#: A new block is inserted before the first of these that the sheet actually
+#: has; if it has none, appending at the end is correct.
+AFTER_DATA_VALIDATIONS = ("hyperlinks", "printOptions", "pageMargins", "pageSetup",
+                          "headerFooter", "rowBreaks", "colBreaks", "drawing",
+                          "legacyDrawing", "tableParts", "extLst")
+#: ...and the same for <conditionalFormatting>, which precedes dataValidations.
+AFTER_CONDITIONAL_FORMATTING = ("dataValidations",) + AFTER_DATA_VALIDATIONS
+
+
+def _insert_at(att, after_tags):
+    """Index of the first child in `after_tags`, else the end of the element."""
+    kids = list(att.root)
+    tags = {X + t for t in after_tags}
+    return next((i for i, k in enumerate(kids) if k.tag in tags), len(kids))
+
+
 def apply_cf(att):
     """Insert the Status colour block at a schema-legal position.
 
@@ -419,12 +487,8 @@ def apply_cf(att):
     priority = max([int(r.get("priority", 0)) for el in existing for r in el]
                    + [0]) + 1
     el = _build_cf(att, priority)
-    if existing:
-        at = kids.index(existing[-1]) + 1
-    else:
-        after = [X + "dataValidations", X + "hyperlinks", X + "printOptions",
-                 X + "pageMargins", X + "pageSetup"]
-        at = next((i for i, k in enumerate(kids) if k.tag in after), len(kids))
+    at = (kids.index(existing[-1]) + 1 if existing
+          else _insert_at(att, AFTER_CONDITIONAL_FORMATTING))
     att.root.insert(at, el)
 
 
@@ -565,9 +629,10 @@ def open_crm(folder, workdir):
 def plan(book):
     """Everything due on one workbook, or None when it is already split."""
     att = book["att"]
+    dv_due, dv_blocked = dv_plan(att)
     p = {"add_column": NEW_COLUMN not in att.headers,
          "rows": plan_workbook(att),
-         "dv": dv_plan(att)}
+         "dv": dv_due, "dv_blocked": dv_blocked}
     # The new column's index is only known after add_column would run, and the
     # Guide formulas name it — so predict it the same way add_column picks it.
     p["role_col"] = (att.headers[NEW_COLUMN] if not p["add_column"]
@@ -577,8 +642,13 @@ def plan(book):
     p["guide"], p["guide_missing"] = plan_guide(
         book["parts"], dict(att.headers, **{NEW_COLUMN: p["role_col"]}))
     p["cf"] = cf_plan(att, book["parts"])
+    if p["cf"] not in CF_STATES:
+        raise ValueError("cf_plan returned %r, which is not one of %s — a new "
+                         "state must be classified as pending or terminal, or "
+                         "the chapter is silently skipped by BOTH the work "
+                         "gate and the gap report." % (p["cf"], sorted(CF_STATES)))
     p["any"] = bool(p["add_column"] or p["rows"] or p["dv"] or p["guide"]
-                    or p["cf"] == "due")
+                    or p["cf"] == CF_DUE)
     return p
 
 
@@ -591,7 +661,7 @@ def apply_plan(book, p):
         for header, value in op["sets"].items():
             att.write(op["rownum"], header, value)
     refused = apply_dropdowns(att)
-    if p["cf"] == "due":
+    if p["cf"] == CF_DUE:
         apply_cf(att)
     att.serialize()
     if p["guide"]:
@@ -605,14 +675,25 @@ def describe(p):
     if p["add_column"]:
         bits.append("+%r column" % NEW_COLUMN)
     if p["rows"]:
-        moved = sum(1 for o in p["rows"] if "Status" in o["sets"])
+        # A relocated status and a BLANKED one are different events and used to
+        # share one count. Blanking happens when a row's Status held a role but
+        # its note could not be parsed: the role moves to its proper column and
+        # no decision is invented. That is the documented policy, but an
+        # operator approving a fleet-wide write deserves to know how many
+        # people's decision state is being cleared.
+        moved = sum(1 for o in p["rows"] if o["sets"].get("Status"))
+        blanked = sum(1 for o in p["rows"]
+                      if "Status" in o["sets"] and not o["sets"]["Status"])
         bits.append("%d row(s) backfilled (%d role(s) moved out of Status)"
-                    % (len(p["rows"]), moved))
+                    % (len(p["rows"]), moved + blanked))
+        if blanked:
+            bits.append("%d Status(es) BLANKED — note unparsable, next sync decides"
+                        % blanked)
     if p["dv"]:
         bits.append("dropdown(s): %s" % ", ".join(h for h, _ in p["dv"]))
     if p["guide"]:
         bits.append("%d Guide formula(s)" % len(p["guide"]))
-    if p["cf"] == "due":
+    if p["cf"] == CF_DUE:
         bits.append("Status colour rules")
     return ", ".join(bits)
 
@@ -638,7 +719,7 @@ def _run(args, workdir):
             sys.exit("ABORT: no chapter folder matches %r." % args.city)
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
-    touched, skipped, guide_gaps, cf_gaps = [], [], [], []
+    touched, skipped, guide_gaps, cf_gaps, dv_gaps = [], [], [], [], []
     for folder in folders:
         book, why = open_crm(folder, workdir)
         if book is None:
@@ -648,22 +729,34 @@ def _run(args, workdir):
         p = plan(book)
         if p["guide_missing"]:
             guide_gaps.append((folder["name"], len(p["guide_missing"])))
-        if p["cf"] in ("foreign", "no-dxfs"):
+        if p["cf"] in CF_BLOCKED:
             cf_gaps.append((folder["name"], p["cf"]))
+        if p["dv_blocked"]:
+            dv_gaps.append((folder["name"], p["dv_blocked"]))
         if not p["any"]:
             continue
         print("  %-18s %s" % (folder["name"], describe(p)))
         touched.append({"book": book, "plan": p})
 
+    if dv_gaps:
+        print("\nDropdown(s) left alone — one validation spans several columns, so "
+              "rewriting it would re-validate a neighbour. Split the range by hand:")
+        for name, cols in dv_gaps:
+            print("  %-28s %s" % (name, ", ".join(cols)))
     if cf_gaps:
         print("\nStatus colour rules NOT written:")
         for name, why in cf_gaps:
+            # .get, not [why]: an unclassified state must not crash the report
+            # halfway through a fleet sweep, after other chapters have printed.
             print("  %-28s %s" % (name, {
-                "foreign": "the Status column already has conditional formatting "
-                           "someone else wrote — left alone",
-                "no-dxfs": "fewer than %d <dxf> styles, so the rules would "
-                           "reference a style that does not exist" % MIN_DXFS,
-            }[why]))
+                CF_FOREIGN: "the Status column already carries conditional "
+                            "formatting that does not match the rules this "
+                            "script writes — left alone (if an earlier version "
+                            "of this script painted it, the rule set has since "
+                            "changed)",
+                CF_NO_DXFS: "fewer than %d <dxf> styles, so the rules would "
+                            "reference a style that does not exist" % MIN_DXFS,
+            }.get(why, why)))
     if guide_gaps:
         print("\nGuide tab not in the shipped shape — the formula(s) below were "
               "not found and are NOT rewritten; fix by hand or they keep counting "
@@ -675,10 +768,18 @@ def _run(args, workdir):
         for name, why in skipped:
             print("  %-28s %s" % (name, why))
 
+    # The gap lists are NOT pending work — nothing this script can do will
+    # clear them — but they are also not nothing, and the last line printed is
+    # what an operator and a CI log actually read. Saying "every chapter CRM
+    # already has the split" directly under a list of chapters whose dashboards
+    # still count the wrong column is how a known problem becomes an unknown one.
+    gaps = len(guide_gaps) + len(cf_gaps) + len(dv_gaps)
     if not touched:
-        if skipped:
-            print("\nNothing due for the chapters that could be opened — but %d "
-                  "was/were SKIPPED above and are NOT split." % len(skipped))
+        if skipped or gaps:
+            print("\nNo column, row, dropdown or colour work is due — but %d "
+                  "chapter(s) above are NOT fully migrated (%d skipped, %d with "
+                  "a gap this script cannot close). Nothing here will fix them."
+                  % (len(skipped) + gaps, len(skipped), gaps))
             return 1
         print("\nNothing to do — every chapter CRM already has the split.")
         return 0
@@ -747,7 +848,12 @@ def _run(args, workdir):
             for name, why in failed + stale:
                 print("  %s — %s" % (name, why))
         return 1
-    print("Verified: a fresh read of every written workbook proposes zero changes.")
+    if gaps:
+        print("Verified: a fresh read of every written workbook proposes zero "
+              "changes — but %d chapter(s) carry a gap listed above that was "
+              "NOT written and is therefore UNVERIFIED." % gaps)
+    else:
+        print("Verified: a fresh read of every written workbook proposes zero changes.")
     return 0
 
 
