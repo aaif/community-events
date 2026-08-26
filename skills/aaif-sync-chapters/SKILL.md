@@ -1004,8 +1004,8 @@ After any run (and after editing the engine):
   for the whole sync.
 - After a CRM `--write`, open one touched workbook and check the person's row
   reads correctly, the sample row and any hand-written notes are untouched, and
-  the `Status` cell offers the decision ladder (no role words) and
-  `Interested in` offers the role list.
+  the `Status` cell offers the decision ladder (no role words), is coloured to
+  match its value, and `Interested in` offers the role list.
 - After an About `--write`, open one rewritten doc and check the Organizers list
   reads as a proper bulleted list (not renumbered off the Luma list below it),
   the rest of the doc is untouched, and the brand fonts still render.
@@ -1139,7 +1139,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_interested_in.py --city Boston
 python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_interested_in.py --write     # apply, then verify
 ```
 
-Four parts, per workbook (templates included):
+Five parts, per workbook (templates included):
 
 - **The column is APPENDED**, at the first free column past the last header —
   `L` on the shipped layout — not slotted in beside `Status` where it reads
@@ -1159,6 +1159,23 @@ Four parts, per workbook (templates included):
   `sqref` spans several columns is **refused and reported** — rewriting it would
   silently re-validate a neighbour (the Signal list's unrelated `New`), and
   there's no safe way to split a merged sqref without knowing what a human meant.
+- **The `Status` column gets colour rules**, so the decision reads at a glance:
+  green for `Accepted` / `Regular` / `Volunteer`, amber for `In progress` /
+  `Interviewing` / `Tentative`, red for `Declined`. `Prospect` (the commonest
+  value) and `Attended` are deliberately **left unpainted** — colouring every
+  value colours nothing. A blank `Status` is not painted either: the range is
+  `D2:D1000` and the template pre-creates 1000 empty rows, so a blank rule
+  would light up the whole column in every chapter.
+  The three `dxf` styles already in every workbook are **referenced, not
+  added** — `dxfId` is a positional index into `<dxfs>`, so appending a style
+  to some workbooks and not others silently paints the wrong colour in
+  whichever drifted. A workbook with fewer than three is refused and reported,
+  and a `Status` column someone has **already** painted is reported and left
+  alone. The block is inserted after `sheetData` and before `dataValidations`,
+  because `CT_Worksheet` fixes that order and appending to the end of the
+  worksheet makes Excel call the file corrupt.
+  (Nothing tested `Status` before this — the existing rules cover **Signal**
+  and **Trusted/Regular** only, which is why the split broke none of them.)
 - **The Guide tab's formulas are repointed.** Two landmines: the dashboard
   counted `COUNTIF(Attendees!D2:D1000,"Speaker")` (and `"Organizer"`), which
   reads **0 in every chapter** the moment roles leave `Status` — moved to the

@@ -304,6 +304,131 @@ def _covers(dv, col):
 
 
 # ---------------------------------------------------------------------------
+# Conditional formatting on Status
+# ---------------------------------------------------------------------------
+# Every CRM ships the same three `dxf` styles, and the Signal column already
+# uses all three — so the decision ladder is painted by REFERENCING them, not
+# by adding any. Editing styles.xml across 83 workbooks to introduce a fourth
+# colour would be real surgery for no gain, and dxfId is a positional index
+# into <dxfs>: appending to one workbook and not another silently paints the
+# wrong colour in whichever one drifted.
+#
+#   0  green  bold #1B7A48 on #C6EFCE   "settled, and settled well"
+#   1  amber       #9C6500 on #FFEB9C   "in flight — someone must act"
+#   2  red    bold #9C0006 on #FFC7CE   "settled no"
+DXF_GOOD, DXF_INFLIGHT, DXF_BAD = 0, 1, 2
+
+#: Status value -> dxfId. Deliberately PARTIAL: `Prospect` is the single most
+#: common value in the column and `Attended` is a neutral fact, so neither is
+#: painted. Colouring every value colours nothing — the point is that the rows
+#: needing attention stand out from the rows that do not.
+STATUS_DXF = {
+    "Accepted": DXF_GOOD, "Regular": DXF_GOOD, "Volunteer": DXF_GOOD,
+    "In progress": DXF_INFLIGHT, "Interviewing": DXF_INFLIGHT,
+    "Tentative": DXF_INFLIGHT,
+    "Declined": DXF_BAD,
+}
+
+#: How many <dxf> entries a workbook must have for the ids above to mean what
+#: they say. Fewer and the rules would reference a style that does not exist,
+#: which renders as arbitrary formatting rather than as an error.
+MIN_DXFS = 3
+
+# A blank Status is deliberately NOT painted. The sqref covers D2:D1000 and the
+# template pre-creates 1000 empty rows, so a blank rule lights up the entire
+# column on every chapter that has fewer than a thousand people — i.e. all of
+# them.
+_DXF_COUNT_RE = re.compile(rb'<dxfs\b[^>]*\bcount="(\d+)"')
+
+
+def dxf_count(parts):
+    m = _DXF_COUNT_RE.search(parts.get("xl/styles.xml", b""))
+    return int(m.group(1)) if m else 0
+
+
+def status_cf_rules():
+    """[(value, dxfId)] in the order the rules are written.
+
+    Sorted by DV_STATUS_VALUES so the block reads down the column's own
+    dropdown, and so two runs cannot produce different orderings of the same
+    rules — which would make the idempotency check below fail forever.
+    """
+    order = {v: i for i, v in enumerate(DV_EXPECTED["Status"].split(","))}
+    return sorted(STATUS_DXF.items(), key=lambda kv: order.get(kv[0], 99))
+
+
+def _cf_blocks(att):
+    return [el for el in att.root if el.tag == X + "conditionalFormatting"]
+
+
+def _cf_signature(el):
+    """(sqref, ((value, dxfId), ...)) for one block, for comparison."""
+    rules = []
+    for r in el:
+        f = r.find(X + "formula")
+        text = (f.text or "").strip() if f is not None else ""
+        rules.append((text.strip('"').replace("&quot;", "").strip('"'),
+                      int(r.get("dxfId", -1))))
+    return (el.get("sqref"), tuple(rules))
+
+
+def cf_plan(att, parts):
+    """"ok" | "due" | "foreign" | "no-dxfs" for the Status colour rules.
+
+    "foreign" means a conditionalFormatting block already covers the Status
+    column and is not the one this script writes — a human painted that column,
+    and their rules are not ours to replace. Reported, never overwritten.
+    """
+    if dxf_count(parts) < MIN_DXFS:
+        return "no-dxfs"
+    col = att.headers["Status"]
+    want = _cf_signature(_build_cf(att, priority=1))
+    for el in _cf_blocks(att):
+        cols = {col_of(end) for end in (el.get("sqref") or "").split(":")}
+        if cols != {col}:
+            continue
+        # Compare the rules, not the priority — a later block insertion may
+        # renumber priorities without changing what the rules mean.
+        return "ok" if _cf_signature(el)[1] == want[1] else "foreign"
+    return "due"
+
+
+def _build_cf(att, priority, last_row=1000):
+    """The <conditionalFormatting> element for the Status column."""
+    col = att.headers["Status"]
+    el = ET.Element(X + "conditionalFormatting", {
+        "sqref": "%s:%s" % (cell_ref(col, 2), cell_ref(col, last_row))})
+    for i, (value, dxf) in enumerate(status_cf_rules()):
+        rule = ET.SubElement(el, X + "cfRule", {
+            "type": "cellIs", "dxfId": str(dxf),
+            "priority": str(priority + i), "operator": "equal"})
+        ET.SubElement(rule, X + "formula").text = '"%s"' % value
+    return el
+
+
+def apply_cf(att):
+    """Insert the Status colour block at a schema-legal position.
+
+    CT_Worksheet fixes the child order, and `conditionalFormatting` must come
+    AFTER sheetData and BEFORE dataValidations. Appending to the end puts it
+    after pageMargins/pageSetup and Excel reports the file as corrupt — so the
+    insertion point is computed, never assumed.
+    """
+    kids = list(att.root)
+    existing = _cf_blocks(att)
+    priority = max([int(r.get("priority", 0)) for el in existing for r in el]
+                   + [0]) + 1
+    el = _build_cf(att, priority)
+    if existing:
+        at = kids.index(existing[-1]) + 1
+    else:
+        after = [X + "dataValidations", X + "hyperlinks", X + "printOptions",
+                 X + "pageMargins", X + "pageSetup"]
+        at = next((i for i, k in enumerate(kids) if k.tag in after), len(kids))
+    att.root.insert(at, el)
+
+
+# ---------------------------------------------------------------------------
 # The Guide tab
 # ---------------------------------------------------------------------------
 def guide_parts(parts):
@@ -427,7 +552,9 @@ def plan(book):
     p["role_col"] = (att.headers[NEW_COLUMN] if not p["add_column"]
                      else max(att.headers.values()) + 1)
     p["guide"], p["guide_missing"] = plan_guide(book["parts"], p["role_col"])
-    p["any"] = bool(p["add_column"] or p["rows"] or p["dv"] or p["guide"])
+    p["cf"] = cf_plan(att, book["parts"])
+    p["any"] = bool(p["add_column"] or p["rows"] or p["dv"] or p["guide"]
+                    or p["cf"] == "due")
     return p
 
 
@@ -440,6 +567,8 @@ def apply_plan(book, p):
         for header, value in op["sets"].items():
             att.write(op["rownum"], header, value)
     refused = apply_dropdowns(att)
+    if p["cf"] == "due":
+        apply_cf(att)
     att.serialize()
     if p["guide"]:
         apply_guide(book["parts"], p["guide"])
@@ -459,6 +588,8 @@ def describe(p):
         bits.append("dropdown(s): %s" % ", ".join(h for h, _ in p["dv"]))
     if p["guide"]:
         bits.append("%d Guide formula(s)" % len(p["guide"]))
+    if p["cf"] == "due":
+        bits.append("Status colour rules")
     return ", ".join(bits)
 
 
@@ -483,7 +614,7 @@ def _run(args, workdir):
             sys.exit("ABORT: no chapter folder matches %r." % args.city)
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
-    touched, skipped, guide_gaps = [], [], []
+    touched, skipped, guide_gaps, cf_gaps = [], [], [], []
     for folder in folders:
         book, why = open_crm(folder, workdir)
         if book is None:
@@ -493,11 +624,22 @@ def _run(args, workdir):
         p = plan(book)
         if p["guide_missing"]:
             guide_gaps.append((folder["name"], len(p["guide_missing"])))
+        if p["cf"] in ("foreign", "no-dxfs"):
+            cf_gaps.append((folder["name"], p["cf"]))
         if not p["any"]:
             continue
         print("  %-18s %s" % (folder["name"], describe(p)))
         touched.append({"book": book, "plan": p})
 
+    if cf_gaps:
+        print("\nStatus colour rules NOT written:")
+        for name, why in cf_gaps:
+            print("  %-28s %s" % (name, {
+                "foreign": "the Status column already has conditional formatting "
+                           "someone else wrote — left alone",
+                "no-dxfs": "fewer than %d <dxf> styles, so the rules would "
+                           "reference a style that does not exist" % MIN_DXFS,
+            }[why]))
     if guide_gaps:
         print("\nGuide tab not in the shipped shape — the formula(s) below were "
               "not found and are NOT rewritten; fix by hand or they keep counting "

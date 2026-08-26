@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import migrate_interested_in as mig
 import sync_crm
 from sync_crm import (Attendees, DV_EXPECTED, NEW_COLUMN, X, check_dropdowns,
-                      cell_ref, col_of, load_parts, sheet_part)
+                      cell_ref, col_of, load_parts, save_parts, sheet_part)
 
 fails = 0
 def check(label, got, want):
@@ -33,6 +33,17 @@ PRE = mig.PRE_SPLIT_HEADERS
 # The list every chapter carried until 2026-08-25 — roles and lifecycle values
 # in one column, which is the conflation being undone.
 OLD_DV = "Prospect,Attended,Regular,Speaker,Organizer,Volunteer,Host,Declined"
+
+# The conditional formatting every CRM already carries: Signal (B) and
+# Trusted/Regular (C). Nothing tested Status, which is why the split broke none
+# of it — and why the new rules have the column to themselves.
+SIGNAL_CF = (
+    '<conditionalFormatting sqref="B2:B1000">'
+    '<cfRule type="cellIs" priority="1" operator="equal" dxfId="0">'
+    '<formula>"High"</formula></cfRule></conditionalFormatting>'
+    '<conditionalFormatting sqref="A2:A1000">'
+    '<cfRule type="expression" priority="4" dxfId="2">'
+    '<formula>$B2="Non-grata"</formula></cfRule></conditionalFormatting>')
 
 # The Guide tab's real content, verbatim from the shipped template: two
 # dashboard COUNTIFs against the Status column and the live-list FILTER whose
@@ -58,7 +69,13 @@ def _c(ref, text, style=None):
     return '<c r="%s"%s t="inlineStr"><is><t>%s</t></is></c>' % (ref, s, text)
 
 
-def make_pre_xlsx(rows_data=(), headers=PRE, dv=OLD_DV, guide=GUIDE, cols=True):
+#: The three dxf styles every shipped CRM carries — green / amber / red. The
+#: count is what the colour rules check before referencing dxfId 0..2.
+STYLES = '<styleSheet><dxfs count="3"><dxf /><dxf /><dxf /></dxfs></styleSheet>'
+
+
+def make_pre_xlsx(rows_data=(), headers=PRE, dv=OLD_DV, guide=GUIDE, cols=True,
+                  styles=STYLES, cf=""):
     """A pre-split workbook. `rows_data` is [[cell, ...]] starting at row 2."""
     head = "".join(_c(cell_ref(i, 1), h, "2") for i, h in enumerate(headers))
     rows = ['<row r="1" ht="30" customHeight="1" s="20">%s</row>' % head]
@@ -74,13 +91,18 @@ def make_pre_xlsx(rows_data=(), headers=PRE, dv=OLD_DV, guide=GUIDE, cols=True):
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         '<dimension ref="A1:K%d" />%s<sheetData>%s</sheetData>'
+        # conditionalFormatting must sit AFTER sheetData and BEFORE
+        # dataValidations — CT_Worksheet fixes the order, and Excel calls the
+        # file corrupt if a block lands after pageMargins.
+        '%s'
         '<dataValidations count="2">'
         '<dataValidation sqref="B2:B1000" type="list">'
         '<formula1>"High,Low,Non-grata,New"</formula1></dataValidation>'
         '<dataValidation sqref="D2:D1000" type="list">'
         '<formula1>"%s"</formula1></dataValidation>'
-        '</dataValidations></worksheet>'
-        % (1 + len(rows_data), colblock, "".join(rows), dv))
+        '</dataValidations><pageMargins left="0.75" /></worksheet>'
+        % (1 + len(rows_data), colblock, "".join(rows),
+           SIGNAL_CF + cf, dv))
     parts = {
         "[Content_Types].xml": "<Types />",
         "_rels/.rels": "<Relationships />",
@@ -96,6 +118,8 @@ def make_pre_xlsx(rows_data=(), headers=PRE, dv=OLD_DV, guide=GUIDE, cols=True):
         "xl/worksheets/sheet1.xml": sheet,
         "xl/worksheets/sheet2.xml": guide,
     }
+    if styles:
+        parts["xl/styles.xml"] = styles
     names = list(parts)
     return names, {n: v.encode() for n, v in parts.items()}
 
@@ -254,6 +278,84 @@ check("a merged sqref is refused, not rewritten",
 check("...and the merged rule is left exactly as it was",
       [dv.get("sqref") for dv in mig._dv_elements(att_m)
        if dv.get("sqref") == "C2:D1000"], ["C2:D1000"])
+
+
+# ---------------------------------------------------------------------------
+# Conditional formatting on Status
+# ---------------------------------------------------------------------------
+names, parts, att = opened()
+mig.add_column(att)
+check("the colour rules are due on a fresh workbook", mig.cf_plan(att, parts), "due")
+mig.apply_cf(att)
+check("...and satisfied once applied", mig.cf_plan(att, parts), "ok")
+before = [mig._cf_signature(e) for e in mig._cf_blocks(att)][:2]
+
+block = [e for e in mig._cf_blocks(att)
+         if e.get("sqref") == "D2:D1000" and len(e) > 1][0]
+check("the rules paint the Status column",
+      [(r.find(X + "formula").text.strip('"'), r.get("dxfId")) for r in block],
+      [("In progress", "1"), ("Interviewing", "1"), ("Tentative", "1"),
+       ("Accepted", "0"), ("Regular", "0"), ("Volunteer", "0"), ("Declined", "2")])
+check("...in the dropdown's own order",
+      [r.find(X + "formula").text.strip('"') for r in block],
+      [v for v in DV_EXPECTED["Status"].split(",")
+       if v in dict(mig.status_cf_rules())])
+check("Prospect and Attended are deliberately NOT painted",
+      [v for v in ("Prospect", "Attended") if v in mig.STATUS_DXF], [])
+check("a blank Status is not painted (it would light up 990 empty rows)",
+      "" in mig.STATUS_DXF, False)
+check("every painted value is a real Status dropdown value",
+      [v for v in mig.STATUS_DXF if v not in DV_EXPECTED["Status"].split(",")], [])
+check("no role word is painted — they are not statuses any more",
+      [v for v in mig.STATUS_DXF if v in mig.ROLE_WORDS.values()], [])
+check("only the three shipped dxf styles are referenced",
+      sorted(set(mig.STATUS_DXF.values())), [0, 1, 2])
+check("the Signal rules are untouched",
+      [mig._cf_signature(e) for e in mig._cf_blocks(att)][:2], before)
+
+# Schema order: conditionalFormatting must precede dataValidations, or Excel
+# calls the file corrupt. Appending to the end of the worksheet is the easy
+# mistake, and it puts the block after pageMargins.
+kids = [k.tag.split("}")[1] for k in att.root]
+check("the new block lands before dataValidations",
+      kids.index("conditionalFormatting") < kids.index("dataValidations"), True)
+check("...and before pageMargins",
+      max(i for i, k in enumerate(kids) if k == "conditionalFormatting")
+      < kids.index("pageMargins"), True)
+check("priorities are unique across every block",
+      len({r.get("priority") for e in mig._cf_blocks(att) for r in e}),
+      sum(len(e) for e in mig._cf_blocks(att)))
+
+# A workbook whose Status column someone already painted: their rules are not
+# ours to replace.
+_, fparts, fatt = opened(cf='<conditionalFormatting sqref="D2:D1000">'
+                            '<cfRule type="cellIs" priority="9" operator="equal" '
+                            'dxfId="1"><formula>"VIP"</formula></cfRule>'
+                            '</conditionalFormatting>')
+mig.add_column(fatt)
+check("a human's Status formatting is reported, not overwritten",
+      mig.cf_plan(fatt, fparts), "foreign")
+
+# Referencing dxfId 0..2 in a workbook that has fewer than three styles would
+# render as arbitrary formatting rather than as an error.
+_, nparts, natt = opened(styles='<styleSheet><dxfs count="1"><dxf /></dxfs></styleSheet>')
+mig.add_column(natt)
+check("a workbook without the three dxf styles is refused",
+      mig.cf_plan(natt, nparts), "no-dxfs")
+_, sparts, satt = opened(styles="")
+mig.add_column(satt)
+check("...as is one with no styles.xml at all", mig.cf_plan(satt, sparts), "no-dxfs")
+
+# The whole block must survive serialize(), which rewrites the sheet part from
+# the tree — the same trap that once discarded the dropdown patch.
+names, parts, att = opened()
+mig.add_column(att)
+mig.apply_cf(att)
+att.serialize()
+rt_names, rt_parts = load_parts(save_parts(names, parts))
+rt = Attendees(rt_parts, sheet_part(rt_parts, "Attendees"))
+check("the colour rules survive a serialize round-trip",
+      mig.cf_plan(rt, rt_parts), "ok")
 
 
 # ---------------------------------------------------------------------------
