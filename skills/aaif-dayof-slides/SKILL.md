@@ -26,6 +26,15 @@ deck (`Event Template/Slides.pptx`). Fill the per-event slides from the tracker 
 **leave the fixed brand slides** (`[FIXED]`: About AAIF, the global-network stats)
 **exactly as written** — they are brand-standard.
 
+**The logo footer is not yours to write.** On the cover and the welcome slide,
+`HOSTED BY` carries the fixed AAIF lockup — AAIF hosts these events — and the
+slots beside it read `LOGO 1`, `LOGO 2`. Those are placeholders an organizer
+replaces with a **logo image**; the words are just what an empty slot looks
+like, so do not treat them as copy to fill in. Never emit a host-venue name or
+a member name for those slots, and never replace the lockup. The venue and the
+members get their credit in prose on **slide 12 (Thank you)**, which is where
+the `Host`/`Members` inputs belong.
+
 Keep it **terse and label-driven** (the deck voice). Output as `Slide N — <name>:`
 then the fields, slide for slide, then paste into the template.
 Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
@@ -33,7 +42,8 @@ Never include emails, phone numbers, door codes, or attendee names that are not 
 ## Input (from the event tracker)
 - Event : `[EVENT TITLE]`   Series: `[SERIES]`   Theme: `[THEME + ONE-LINER]`
 - When : `[DATE & TIME]`   Venue/City: `[VENUE], [CITY]`
-- Host : `[HOST VENUE]`   Members: `[MEMBER LOGOS]`
+- Host : `[HOST VENUE]`   Members: `[MEMBER LOGOS]`   *(→ slide 12's credits, not
+  the cover: see the logo-footer note below)*
 - Speakers : `[FOR EACH: NAME | ROLE | TALK or DEMO | "QUOTE"]`
 - Agenda : `[RUN-OF-SHOW: TIME | BLOCK | NOTE]`
 - Next : `[NEXT EVENT + DATE]`   Links: `[LUMA / SLACK / NEWSLETTER]`
@@ -52,8 +62,8 @@ Agentic AI Night:
 
 > **Slide 1 — Cover:**
 >   Kicker: THE AAIF COMMUNITY · Title: Agentic AI Night. · Sub: Launch Series —
->   San Francisco · Date: WED — JUNE 24, 2026 — 17:30 — LATE · Hosted by: Host
->   Venue Co. · With: [member logos]
+>   San Francisco · Date: WED — JUNE 24, 2026 — 17:30 — LATE
+>   (the HOSTED BY / LOGO 1 / LOGO 2 footer is left alone — see above)
 >
 > **Slide 6 — Tonight's theme:**
 >   Label: TONIGHT'S THEME 01 · Title: Agents in production. · Body: What's working

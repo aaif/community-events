@@ -147,6 +147,57 @@ production decks in place. Read a plan run first.
 The script imports the projection and the OOXML surgery from `create_chapter.py`
 — do not reimplement either of those inside the backfill script.
 
+## Backfilling the host footer
+
+`scripts/backfill_host_footer.py` reworks the **"HOSTED BY / WITH" logo footer**
+in the event templates. The footer used to draw each logo as a bordered, filled
+rounded-rect button holding centred bold text; the current design has no boxes,
+puts the **AAIF lockup** in the host slot, and leaves the remaining slots as
+muted `LOGO 1`, `LOGO 2`, … placeholders, with the row packed left on one even
+gap.
+
+The lockup is built from the mark image the slide **already embeds for its own
+header**, plus the wordmark set in Space Grotesk bold. No media and no
+relationship is added, so the footer lockup cannot drift from the header's.
+
+Three cases the script keeps apart, and they are not interchangeable: an
+**unfilled slot** (`MEMBER LOGO`, `HOST VENUE CO.`) is renumbered `LOGO n` and
+muted; a **real name** (the carousel's founding-member grid) keeps its text, ink
+and position and its grid keeps its columns; the old **`AAIF · SF` badge** beside
+the host is dropped, because the lockup now says the same thing. The script's
+own docstring explains why each rule is drawn where it is.
+
+Scope is **templates**, not the copies organizers have already made for a given
+event: every `.pptx` under a folder matching `Event Templates…` / `Event Name`,
+across all chapters, the online series, and the shared Templates folder. That set
+includes **TemplateCity** — the folder `create_chapter.py` clones for every new
+chapter — so a full sweep is what stops new chapters being minted on the old
+footer. A run that never reaches TemplateCity, or that finds a chapter folder
+contributing no template at all (what a folder rename looks like), prints an
+`ATTENTION` block and exits non-zero rather than reading as finished. A file
+whose footer has already been reworked has no chips left to find, so it is not
+re-uploaded and **re-running is a no-op**.
+
+```bash
+# Plan (default) — list every template and its footer, writes nothing:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py
+
+# Apply across the estate:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py --write
+
+# One chapter (matches anywhere in the Drive path, case-insensitive):
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py \
+    --chapter "New York City" --write
+
+# Test the XML engine on a local file, no Drive at all:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py \
+    --rework-local ./Event-Hero-Square.pptx
+```
+
+There is **no undo** beyond Drive's revision history, and `--write` replaces
+every template the scan finds, in place — a plan run prints that count. Read one
+first.
+
 ## Procedure
 
 1. **Confirm the city name and slug with the user.** Ask for the exact display

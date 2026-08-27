@@ -4,6 +4,25 @@ All notable changes to the **AAIF Community Events Toolkit** plugin are document
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 plugin version is the `version` field in `.claude-plugin/plugin.json`.
 
+## [Unreleased]
+
+### Changed
+- **The event templates' "HOSTED BY / WITH" logo footer is no longer boxed.**
+  Each logo slot used to be a bordered, filled rounded-rect button holding
+  centred bold text, which read as a control and fought the flat rule-and-type
+  language of the rest of the deck. The boxes are gone, the host slot now
+  carries the **AAIF lockup** (AAIF hosts these events; the slot used to say
+  `HOST VENUE CO.`), and unfilled slots are muted `LOGO 1`, `LOGO 2`, …
+  placeholders rather than the misleading `MEMBER LOGO`. The lockup is drawn
+  from the mark image each slide already embeds for its own header, so it cannot
+  drift from it.
+
+### Added
+- **`skills/aaif-create-chapter/scripts/backfill_host_footer.py`** applies that
+  rework to templates that already exist — all chapters, the online series, and
+  the shared Templates folder. Read-only by default; `--write` applies, and a
+  file already reworked has no chips left to find, so re-running is a no-op.
+
 ## [0.5.0]
 
 ### Changed
