@@ -203,6 +203,59 @@ There is **no undo** beyond Drive's revision history, and `--write` replaces
 every template the scan finds, in place — a plan run prints that count. Read one
 first.
 
+## Conforming the estate to the design system
+
+`scripts/restyle_design_system.py` is the sweep that keeps every deck, tracker
+and CRM in the estate on the AAIF design system. The rules live in
+`lib/aaif_events/ooxml_style.py` — shared with the repo's own CI check, so what
+the sweep writes and what the tests assert cannot drift apart — and the
+background plates in `lib/aaif_events/agent_art.py`.
+
+Scope is **templates, not events**: files directly in a chapter / online-series
+/ shared-Templates folder, plus their `Event Templates (Copy for Each Event)`,
+`Event Template`, `Event Name` and `Banners (…)` subfolders. An organizer's
+dated copy of a past event is deliberately left alone, and the run says how many
+it skipped so "out of scope" never reads as "missed".
+
+It is read-only by default, and **archives every pre-change file** to
+`./backups/restyle-<UTC>/` before uploading it — `--write` refuses to start if
+that directory cannot be created. A re-run over a conformant estate uploads
+nothing.
+
+```bash
+# Audit: what is still off the design system? (exit 1 if anything is)
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --check
+
+# Plan (default), then apply:
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --write
+
+# One folder. Matched as a whole path SEGMENT, so "Templates" selects the
+# shared folder and not every chapter's "Event Templates (…)" subfolder:
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+    --chapter TemplateCity --write
+
+# Also give the two hero decks their background plates (idempotent):
+python3 -c "from aaif_events import agent_art; agent_art.build('/tmp/plates')"
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+    --plates /tmp/plates --write
+
+# Run the engine on a local file, no Drive at all:
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+    --restyle-local ./Slides.pptx
+```
+
+A full run asserts it reached **TemplateCity**, **TemplateSeries** and the
+shared **Templates** folder and exits non-zero if it did not: those three mint
+everything else, so missing one means every chapter created afterwards is born
+off-brand again.
+
+**The map-marker fill is shared state.** `create_chapter.GREEN` is `--spec-3`
+(`14B8B0`) and `ooxml_style` maps the legacy `14964A` onto it. `MARKER_FILLS`
+still recognises the old value so a deck the sweep has not reached yet stays
+findable — keep the three in step, and a test pins that `GREEN` equals the
+design system's `--spec-3`.
+
 ## Procedure
 
 1. **Confirm the city name and slug with the user.** Ask for the exact display
