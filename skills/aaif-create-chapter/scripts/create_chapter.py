@@ -190,7 +190,23 @@ def residual_tokens(path):
 # the template's map image changes, refit (see SKILL.md).
 # ----------------------------------------------------------------------------
 SLIDE5 = "ppt/slides/slide5.xml"
-GREEN = "14964A"                       # AAIF green fill on both marker shapes
+# The marker fill. It used to be 14964A, an invented green that belonged to no
+# part of the design system; a you-are-here dot is exactly — and only — what the
+# system reserves the spectrum for, so it is --spec-3 teal now. Detection still
+# accepts the legacy value: the estate is restyled by a separate sweep, and
+# between the two runs a chapter's deck may carry either. Both are recognised;
+# only GREEN is ever written. (Keep this in step with ooxml_style's rule for
+# 14964A — the two must not disagree about what a marker looks like.)
+GREEN = "14B8B0"                       # --spec-3, the marker fill on both shapes
+LEGACY_GREEN = "14964A"                # pre-design-system fill, still in the wild
+MARKER_FILLS = (GREEN, LEGACY_GREEN)
+
+
+def is_marker(block):
+    """True if this <p:sp> block is one of the two map-marker shapes."""
+    return any(g in block for g in MARKER_FILLS)
+
+
 DOT_SIZE = 155448                      # dot ext cx=cy, EMU
 MAP_OFF = (3246120, 1234440)           # world-map picture off, EMU
 MAP_EXT = (5394960, 3814424)           # world-map picture ext, EMU
@@ -258,7 +274,7 @@ def read_marker_offsets(path):
     found, green_without_off = {}, 0
     for m in SP_RE.finditer(xml):
         block = m.group(0)
-        if GREEN not in block:
+        if not is_marker(block):
             continue
         off = OFF_RE.search(block)
         if not off:
@@ -278,7 +294,8 @@ def read_marker_offsets(path):
     if not found:
         extra = (" (%d green shape(s) had no <a:off>)" % green_without_off
                  if green_without_off else "")
-        return None, "slide 5 has no green (%s) marker shapes%s" % (GREEN, extra)
+        return None, "slide 5 has no marker (%s) shapes%s" % (
+            " / ".join(MARKER_FILLS), extra)
     if set(found) != {"dot", "label"}:
         missing = ({"dot", "label"} - set(found)).pop()
         extra = (" (%d green shape(s) had no <a:off>)" % green_without_off
@@ -309,7 +326,7 @@ def reposition_map_marker(path, lat, lon):
     def move_sp(m):
         nonlocal green, dot_moved, label_moved
         block = m.group(0)
-        if GREEN not in block:
+        if not is_marker(block):
             return block
         green += 1
         # The dot is the small square shape; the label is the wide text box.
@@ -325,8 +342,8 @@ def reposition_map_marker(path, lat, lon):
 
     new_xml = SP_RE.sub(move_sp, xml)
     if green == 0:
-        print("      note: slide 5 has no green (%s) marker shapes; "
-              "leaving map dot as-is." % GREEN)
+        print("      note: slide 5 has no marker (%s) shapes; "
+              "leaving map dot as-is." % " / ".join(MARKER_FILLS))
         return 0
     if dot_moved != 1 or label_moved != 1:
         raise RuntimeError(

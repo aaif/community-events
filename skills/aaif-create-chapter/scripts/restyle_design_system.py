@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""Conform every template in the Drive estate to the AAIF design system.
+
+The decks and trackers were hand-authored before the design system existed, so
+the brand lives in them as literal font names and hex values: Space Grotesk and
+Manrope as display faces, Arial in every theme, a warm-grey ramp half a shade
+off `--line-2`, a navy `1E2761` in the trackers, and Office's stock colour
+scheme underneath all of it. This sweep replaces those with the tokens in
+`design/aaif-tokens.css`.
+
+The actual rewriting lives in `aaif_events.ooxml_style`, which is shared with
+the repo's own CI check so the rules cannot drift from what the tests assert.
+This script is the Drive half: find the templates, archive them, rewrite them,
+and report honestly on what it could not reach.
+
+**Scope is templates, not events.** A file is in scope if it sits directly in a
+chapter / online-series / shared-Templates folder (`About.docx`, the CRM) or in
+one of that folder's template subfolders (`Event Templates (Copy for Each
+Event)`, `Event Name`, `Banners (Chapter Specific, Changed Rarely)`). Anything
+deeper is an organizer's copy of a real event and is deliberately left alone —
+those are counted and reported so "out of scope" never silently becomes
+"missed".
+
+That set includes **TemplateCity** and **TemplateSeries**, the folders cloned
+for every new chapter and series, and the shared **Templates** folder. Those
+three are what mint everything else, so a full run asserts it reached all of
+them and exits non-zero if it did not: miss one and every chapter created after
+this migration is born off-brand again.
+
+**Nothing is written without an archive.** Every file whose bytes change is
+written to `./backups/restyle-<UTC>/<path>` *before* the upload, so there is a
+local rollback that does not depend on Drive's revision history. `--write`
+refuses to start if that directory cannot be created.
+
+Read-only by default. There is no undo beyond the archive and Drive's own
+revisions, so read a plan run before passing `--write`.
+
+Usage:
+  # Plan (default) — list what would change, write nothing:
+  python restyle_design_system.py
+
+  # Audit only: what is still off the design system, estate-wide? (exit 1 if any)
+  python restyle_design_system.py --check
+
+  # Apply to the whole estate:
+  python restyle_design_system.py --write
+
+  # One chapter, or one of the three template roots:
+  python restyle_design_system.py --chapter TemplateCity --write
+
+  # Run the engine on a local file, no Drive at all:
+  python restyle_design_system.py --restyle-local ./Slides.pptx
+"""
+import argparse
+import datetime
+import os
+import re
+import shutil
+import sys
+import tempfile
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import create_chapter as cc      # Drive plumbing + the shared zip rewriter
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))), "lib"))
+from aaif_events import ooxml_style as ox    # noqa: E402  (after the path shim)
+from aaif_events import agent_art as aa      # noqa: E402
+
+COMMUNITY_ROOT = "1Z1M-xk0S16sksS1IBNm9OG6Ia22Yql6f"   # "Community Events"
+CHAPTERS_FOLDER = "Chapters"
+SERIES_FOLDER = "Online"
+SHARED_TEMPLATES = "Templates"
+
+#: The three folders that mint everything else. A full run must reach all three.
+MINTS = ("TemplateCity", "TemplateSeries", SHARED_TEMPLATES)
+
+#: Folders holding a *template* rather than one event's copy of it. The chapter
+#: tree names them "Event Templates (Copy for Each Event)", the online series
+#: "Event Template", the shared folder "Event Name"; every tree also has a
+#: "Banners (Chapter Specific, Changed Rarely)". Matching on a folder NAME is
+#: fragile — one of these has been renamed once already — so main() reports any
+#: chapter that contributed no file at all, which is what a rename looks like.
+TEMPLATE_FOLDER_RE = re.compile(r"^(event templates?\b.*|event name|banners\b.*)$", re.I)
+
+#: The roots whose *direct* children are in scope: a chapter, an online series,
+#: or the shared Templates folder. `About.docx` and the CRM live here.
+ROOT_PARENTS = (CHAPTERS_FOLDER, SERIES_FOLDER)
+
+OOXML = {cc.PPTX: ".pptx", cc.DOCX: ".docx", cc.XLSX: ".xlsx"}
+
+#: Decks that get the background plates, and which aspect each one is drawn at.
+#: Only the hero decks: a plate is a title-card background, and the runbook deck
+#: and the banners have their own compositions.
+PLATED = {"Event-Hero.pptx": "wide", "Event-Hero-Square.pptx": "square",
+          "Copy of Event-Hero-Square.pptx": "square"}
+
+
+def walk_estate(root, jobs=8):
+    """(entries, chapters, series, owners-with-files, out-of-scope count).
+
+    `entries` are the OOXML files in scope, deduped by Drive id — a file
+    reachable under two parents would otherwise be handed to two workers that
+    share a scratch filename and race.
+    """
+    found, chapters, series, with_files = [], set(), set(), set()
+    skipped = 0
+    level, seen = [(root, "Community Events")], set()
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        while level:
+            level = [(f, p) for f, p in level if f not in seen]
+            seen.update(f for f, _ in level)
+            nxt = []
+            for path, kids in pool.map(lambda t: (t[1], cc.list_children(t[0])), level):
+                parts = path.split("/")
+                leaf = parts[-1]
+                # In scope if this folder is a template folder, or is itself a
+                # chapter / series root, or is the shared Templates folder.
+                is_template = bool(TEMPLATE_FOLDER_RE.match(leaf))
+                is_root = ((len(parts) == 3 and parts[1] in ROOT_PARENTS)
+                           or (len(parts) == 2 and leaf == SHARED_TEMPLATES))
+                owner = parts[2] if len(parts) > 2 else (
+                    leaf if leaf == SHARED_TEMPLATES else None)
+                for k in kids:
+                    if k["mimeType"] == cc.FOLDER:
+                        nxt.append((k["id"], path + "/" + k["name"]))
+                        if leaf == CHAPTERS_FOLDER:
+                            chapters.add(k["name"])
+                        elif leaf == SERIES_FOLDER:
+                            series.add(k["name"])
+                    elif k["mimeType"] in OOXML:
+                        if owner:
+                            with_files.add(owner)
+                        if is_template or is_root:
+                            found.append({"id": k["id"], "name": k["name"],
+                                          "mime": k["mimeType"],
+                                          "path": path + "/" + k["name"]})
+                        else:
+                            skipped += 1
+            level = nxt
+    seen_ids, unique = set(), []
+    for f in found:
+        if f["id"] not in seen_ids:
+            seen_ids.add(f["id"])
+            unique.append(f)
+    return unique, chapters, series, with_files, skipped
+
+
+def _archive(entry, src, backup_dir):
+    """Copy the pre-change file into the archive, mirroring its Drive path.
+
+    Raises on failure. An upload that proceeds after a failed archive is an
+    unrecoverable edit to a file nobody has a copy of.
+    """
+    rel = entry["path"].replace("Community Events/", "", 1)
+    dst = os.path.join(backup_dir, rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(src, dst)
+    return dst
+
+
+def _plates_for(entry, plate_dir):
+    """`[(label, path), ...]` for this file, or [] if it takes no plates."""
+    aspect = PLATED.get(entry["name"])
+    if not (aspect and plate_dir):
+        return []
+    out = []
+    for kind in aa.PLATES:
+        ext = "gif" if kind in aa.ANIMATED else "png"
+        path = os.path.join(plate_dir, "plate-%s-%s.%s" % (kind, aspect, ext))
+        if not os.path.exists(path):
+            raise RuntimeError("plate %s missing from %s — run agent_art.build "
+                               "first" % (os.path.basename(path), plate_dir))
+        out.append((kind, path))
+    return out
+
+
+def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None):
+    """Restyle one file. Returns (entry, report, error or None).
+
+    `report` is `{"parts": n, "before": [...], "after": [...]}` when the file
+    changed or is off-system, and `{}` when it is already conformant.
+    """
+    ext = OOXML[entry["mime"]]
+    # Named by Drive id, not by path: two truncated paths that collide would
+    # have concurrent workers overwriting each other's download.
+    src = os.path.join(tmpdir, "in-%s%s" % (entry["id"], ext))
+    try:
+        cc.gws_download(entry["id"], src)
+        # gws writes the response body to --output even when the API returned an
+        # error at exit 0, so a JSON error page would reach zipfile and surface
+        # as a BadZipFile blaming the OOXML engine.
+        if not os.path.exists(src) or os.path.getsize(src) == 0:
+            raise RuntimeError("download wrote no file")
+        if not zipfile.is_zipfile(src):
+            raise RuntimeError("download is not OOXML (%d bytes) — an error body, "
+                               "not the template" % os.path.getsize(src))
+        before = ox.audit(src)
+        if check_only:
+            return entry, ({"before": before, "parts": 0, "after": before,
+                            "plates": []} if before else {}), None
+
+        # Archive BEFORE the rewrite: the archive must hold what Drive holds.
+        archived = None
+        if write and before:
+            archived = _archive(entry, src, backup_dir)
+
+        parts = cc._rewrite_zip(src, ox.restyle_part)
+        # Plates are appended after the restyle so the slide they are cloned
+        # from is already conformant — otherwise every new slide would carry a
+        # copy of the drift this run just removed.
+        wanted = _plates_for(entry, plate_dir)
+        plated = ox.add_plate_slides(src, wanted) if wanted else []
+        after = ox.audit(src)
+        if not parts and not plated:
+            # Nothing changed. If we archived a file we are not going to upload,
+            # take the copy back out so the archive means "these were replaced".
+            if archived and os.path.exists(archived):
+                os.remove(archived)
+            return entry, ({"before": before, "parts": 0, "after": after,
+                            "plates": []} if before else {}), None
+        if write:
+            cc.gws_upload(entry["id"], src, entry["mime"])
+        return entry, {"before": before, "parts": parts, "after": after,
+                       "plates": plated}, None
+    except Exception as e:                # one bad file must not stop the run
+        # Prefix the class: this catch spans the XML engine, the archive, and
+        # both transfers, and a bare message makes a ValueError in the rewrite
+        # read as a network blip. Never return a bare str() — an exception whose
+        # str() is empty would be falsy and the caller would count the file as
+        # clean, printing nothing at all.
+        return entry, {}, "%s: %s" % (type(e).__name__, str(e)[:200])
+    finally:
+        if os.path.exists(src):
+            os.remove(src)
+
+
+def restyle_local(path):
+    """--restyle-local: run the engine on one file, no Drive access at all."""
+    out = re.sub(r"\.(pptx|docx|xlsx)$", "", path) + "-restyled" + os.path.splitext(path)[1]
+    shutil.copy2(path, out)
+    before = ox.audit(out)
+    parts = cc._rewrite_zip(out, ox.restyle_part)
+    after = ox.audit(out)
+    print("%s -> %s" % (path, out))
+    print("  %d part(s) rewritten; %d off-system value(s) before, %d after"
+          % (parts, len(before), len(after)))
+    for _p, kind, val in after:
+        print("     REMAINS  %s %s" % (kind, val))
+    return 0 if not after else 1
+
+
+def _summarise(hits):
+    """"font Arial x3, colour 1E2761 x12" — values, not part paths, because the
+    operator is deciding whether a RULE is missing, not reading a file."""
+    counts = {}
+    for _part, kind, val in hits:
+        counts[(kind, val)] = counts.get((kind, val), 0) + 1
+    return ", ".join("%s %s x%d" % (k, v, n)
+                     for (k, v), n in sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--write", action="store_true",
+                    help="Actually upload the restyled templates (default: plan only)")
+    ap.add_argument("--check", action="store_true",
+                    help="Audit only: report every off-system value and exit 1 if any. "
+                         "Downloads nothing else and never writes.")
+    ap.add_argument("--chapter", help="Only files under this exact folder name, "
+                                      "matched as a whole path segment and "
+                                      "case-insensitively, e.g. 'TemplateCity'")
+    ap.add_argument("--restyle-local", metavar="FILE",
+                    help="Restyle a local .pptx/.docx/.xlsx; no Drive access")
+    ap.add_argument("--backup-dir", help="Where to archive pre-change files "
+                                         "(default: ./backups/restyle-<UTC>)")
+    ap.add_argument("--plates", metavar="DIR",
+                    help="Also append the background plates in DIR to the hero "
+                         "decks (build them with aaif_events.agent_art). "
+                         "Idempotent: a deck that already has them is skipped.")
+    ap.add_argument("--jobs", type=int, default=6,
+                    help="Concurrent Drive transfers and folder listings (default: 6)")
+    args = ap.parse_args()
+
+    if args.restyle_local:
+        return restyle_local(args.restyle_local)
+    if args.check and args.write:
+        print("--check audits and never writes; drop one of --check / --write.")
+        return 2
+
+    backup_dir = args.backup_dir or os.path.join(
+        os.getcwd(), "backups", "restyle-%s"
+        % datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    if args.write:
+        # Fail before touching Drive, not after the first upload.
+        try:
+            os.makedirs(backup_dir, exist_ok=True)
+        except OSError as e:
+            print("ABORT: cannot create the archive at %s (%s). Nothing was "
+                  "written." % (backup_dir, e))
+            return 2
+        print("Archiving pre-change files to %s" % backup_dir)
+
+    print("Scanning the Community Events tree for templates...")
+    entries, chapters, series, with_files, skipped = walk_estate(
+        COMMUNITY_ROOT, max(args.jobs, 8))
+    scanned = entries
+    if args.chapter:
+        # Matched against whole path SEGMENTS, not as a substring. A substring
+        # match on "Templates" would also select every chapter's "Event
+        # Templates (Copy for Each Event)" folder — i.e. quietly sweep the whole
+        # estate when the operator asked for one shared folder.
+        needle = args.chapter.lower()
+        entries = [e for e in entries
+                   if needle in [seg.lower() for seg in e["path"].split("/")]]
+    if not entries:
+        print("No templates matched." if args.chapter else
+              "No templates found — has the Community Events tree moved?")
+        return 1
+    mode = ("AUDIT ONLY." if args.check else
+            "" if args.write else "PLAN ONLY — nothing will be written.")
+    print("Found %d template file(s); %d event copies left alone.  %s\n"
+          % (len(entries), skipped, mode))
+
+    changed = clean = failed = 0
+    residue = []
+    with tempfile.TemporaryDirectory() as tmpdir, \
+            ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        for entry, report, err in pool.map(
+                lambda e: process(e, tmpdir, args.write, backup_dir, args.check,
+                                  args.plates), entries):
+            if err is not None:
+                failed += 1
+                print("  FAILED  %s\n            %s" % (entry["path"], err))
+                continue
+            if not report:
+                clean += 1
+                continue
+            changed += 1
+            if report["after"]:
+                residue.append((entry["path"], report["after"]))
+            verb = ("off-system" if args.check else
+                    "RESTYLED" if args.write else "would restyle")
+            print("  %-12s %s\n                 %s"
+                  % (verb, entry["path"],
+                     _summarise(report["before"]) or "(already conformant)"))
+            if report.get("plates"):
+                print("                 + plates: %s" % ", ".join(report["plates"]))
+            if report["after"]:
+                print("                 REMAINS: %s" % _summarise(report["after"]))
+
+    if args.check:
+        print("\n%d file(s) off the design system, %d clean, %d failed."
+              % (changed, clean, failed))
+    else:
+        print("\n%d %s, %d already conformant, %d failed."
+              % (changed, "restyled" if args.write else "would be restyled",
+                 clean, failed))
+
+    # A folder-name match that stops matching looks exactly like a clean estate,
+    # so name what the scan could not see instead of letting it read as done.
+    attention = []
+    for path, hits in residue:
+        attention.append("%s still holds %s — ooxml_style has no rule for it"
+                         % (path, _summarise(hits)))
+    if not args.chapter:
+        covered = {e["path"].split("/")[2] for e in scanned
+                   if len(e["path"].split("/")) > 2
+                   and e["path"].split("/")[1] == CHAPTERS_FOLDER}
+        for missing in sorted((chapters - covered) & with_files):
+            attention.append("chapter %r holds Office files but contributed none — "
+                             "template folder renamed?" % missing)
+        covered_series = {e["path"].split("/")[2] for e in scanned
+                          if len(e["path"].split("/")) > 2
+                          and e["path"].split("/")[1] == SERIES_FOLDER}
+        for missing in sorted((series - covered_series) & with_files):
+            attention.append("online series %r holds Office files but contributed "
+                             "none — template folder renamed?" % missing)
+        if not chapters:
+            attention.append("no chapter folders found under %r — has it been renamed? "
+                             "the per-chapter coverage check is disabled without it"
+                             % CHAPTERS_FOLDER)
+        for mint in MINTS:
+            if not any(("/%s/" % mint) in e["path"] or e["path"].endswith("/" + mint)
+                       for e in scanned):
+                attention.append("%s was never reached — anything cloned from it "
+                                 "would still be off-brand" % mint)
+    if attention:
+        print("\nATTENTION — the sweep did not cover the whole estate:")
+        for line in attention:
+            print("  - %s" % line)
+    if changed and not args.write and not args.check:
+        print("Re-run with --write to apply.")
+    return 1 if (failed or attention or (args.check and changed)) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

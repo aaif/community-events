@@ -274,11 +274,16 @@ class TestReadMarkerOffsets(unittest.TestCase):
         self.assertIsNone(offsets)
         self.assertIn("older template", why)
 
-    def test_none_when_there_are_no_green_shapes(self):
+    def test_none_when_there_are_no_marker_shapes(self):
         make_pptx(self.path, slide5(OTHER_SP))
         offsets, why = cc.read_marker_offsets(self.path)
         self.assertIsNone(offsets)
-        self.assertIn("no green", why)
+        # The message names BOTH accepted fills, so an operator reading it can
+        # tell "this deck has no marker" from "this deck's marker is a colour we
+        # stopped recognising" — the two look identical otherwise.
+        self.assertIn("no marker", why)
+        for fill in cc.MARKER_FILLS:
+            self.assertIn(fill, why)
 
     def test_none_when_the_label_is_missing(self):
         make_pptx(self.path, slide5(DOT_SP, OTHER_SP))

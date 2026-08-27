@@ -22,6 +22,7 @@ Run: python3 skills/aaif-create-chapter/scripts/test_backfill_map_dots.py
 import contextlib
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -656,6 +657,29 @@ class TestExitStatus(unittest.TestCase):
         dot, label = cc.marker_offsets(*SF)
         _out, printed = self.drive(lambda _p: ((dot, label), None))
         self.assertIn("already correct", printed)
+
+
+class TestMarkerFill(unittest.TestCase):
+    """The marker fill is shared state across three places — this module, the
+    chapter cloner, and ooxml_style's colour rule. If they disagree, the dot
+    silently stops being findable and every backfill reports "no marker shapes"
+    on a deck that plainly has one."""
+
+    def test_the_marker_fill_is_the_design_systems_spectrum_teal(self):
+        tokens = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))), "design", "aaif-tokens.css")
+        with open(tokens, encoding="utf-8") as fh:
+            css = fh.read()
+        m = re.search(r"--spec-3:\s*#([0-9A-Fa-f]{6})", css)
+        self.assertIsNotNone(m, "design system no longer defines --spec-3")
+        self.assertEqual(cc.GREEN, m.group(1).upper())
+
+    def test_the_legacy_fill_is_still_recognised(self):
+        """The estate is restyled by a separate sweep, so between runs a deck may
+        carry either fill. Both must be found; only the new one is written."""
+        for fill in cc.MARKER_FILLS:
+            self.assertTrue(cc.is_marker('<a:srgbClr val="%s"/>' % fill), fill)
+        self.assertFalse(cc.is_marker('<a:srgbClr val="ABCDEF"/>'))
 
 
 if __name__ == "__main__":
