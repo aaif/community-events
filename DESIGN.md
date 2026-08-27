@@ -93,6 +93,10 @@ It is read-only by default and asserts it reached **TemplateCity**,
 **TemplateSeries** and the shared **Templates** folder — the three that mint
 everything else — exiting non-zero if it did not.
 
+Scope is the template *files*, by name, not everything sitting in a template
+folder: organizers keep their own decks there and those are not the toolkit's to
+rebrand. Anything skipped for that reason is named in the report.
+
 ## How report-generating skills consume it
 
 `lib/aaif_events/report_style.py` is the only module that knows AAIF token

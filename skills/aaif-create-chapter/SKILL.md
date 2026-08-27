@@ -211,16 +211,33 @@ and CRM in the estate on the AAIF design system. The rules live in
 the sweep writes and what the tests assert cannot drift apart — and the
 background plates in `lib/aaif_events/agent_art.py`.
 
-Scope is **templates, not events**: files directly in a chapter / online-series
-/ shared-Templates folder, plus their `Event Templates (Copy for Each Event)`,
-`Event Template`, `Event Name` and `Banners (…)` subfolders. An organizer's
-dated copy of a past event is deliberately left alone, and the run says how many
-it skipped so "out of scope" never reads as "missed".
+Scope is **templates, not events**, and being *in* a template folder is not
+enough. The sweep only touches files whose NAME is a template — the set in
+`TEMPLATE_FILES` plus each chapter's own `<City> CRM.xlsx` — inside a chapter /
+online-series / shared-Templates folder or its `Event Templates (Copy for Each
+Event)`, `Event Template`, `Event Name` and `Banners (…)` subfolders.
+
+Organizers park their own work in those folders: a dated event deck, a "Copy
+of …", a personal draft. Rebranding someone's finished event deck is not this
+script's business, and the first estate run swept eleven such files before the
+allowlist existed (they were restored from the archive). Anything in a template
+folder that is not a template is **skipped and named in the report**, so a
+genuinely new template gets noticed rather than silently missed — add it to
+`TEMPLATE_FILES` when that happens. Copies deeper in the tree are counted too,
+so "out of scope" never reads as "missed".
+
+Only a CRM's *styling* is ever rewritten: cell values live in `xl/worksheets/`
+and `xl/sharedStrings.xml`, which `restyle_part` never opens.
 
 It is read-only by default, and **archives every pre-change file** to
 `./backups/restyle-<UTC>/` before uploading it — `--write` refuses to start if
 that directory cannot be created. A re-run over a conformant estate uploads
 nothing.
+
+An archive entry is **never overwritten**: the earliest copy is the pristine
+one, so a second run sharing a `--backup-dir` keeps it. Without that, the second
+run archives the already-restyled file over the original and the archive is
+silently useless as a rollback for exactly the files that needed two passes.
 
 ```bash
 # Audit: what is still off the design system? (exit 1 if anything is)

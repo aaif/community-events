@@ -91,6 +91,32 @@ ROOT_PARENTS = (CHAPTERS_FOLDER, SERIES_FOLDER)
 
 OOXML = {cc.PPTX: ".pptx", cc.DOCX: ".docx", cc.XLSX: ".xlsx"}
 
+#: The template files themselves, by name. Being *in* a template folder is not
+#: enough to be a template: organizers park their own work there — a dated event
+#: deck, a "Copy of …", a personal draft — and rebranding someone's finished
+#: event deck is not this script's business. The first estate run swept eleven
+#: such files before this allowlist existed; they were restored from the archive.
+#:
+#: Anything else in a template folder is skipped AND NAMED in the report, so a
+#: genuinely new template gets noticed rather than silently missed — which is
+#: the failure mode an allowlist trades for.
+TEMPLATE_FILES = frozenset((
+    "Slides.pptx", "Event-Hero.pptx", "Event-Hero-Square.pptx",
+    "LinkedIn Carousel.pptx", "Square Logo.pptx", "Banner 1.91.pptx",
+    "Luma Banners.pptx", "Event Tasks.docx", "About.docx",
+    "Event Tracker.docx", "Event Tracker (IRL).docx",
+    "Event Tracker (Online).docx", "Attendee CRM.xlsx",
+))
+
+#: The per-chapter CRM is named for its chapter ("Boston CRM.xlsx"), so it
+#: cannot be listed above. Only its styling is ever rewritten — cell values live
+#: in xl/worksheets/ and xl/sharedStrings.xml, which restyle_part never opens.
+CRM_RE = re.compile(r"^.+ CRM\.xlsx$")
+
+
+def is_template(name):
+    return name in TEMPLATE_FILES or bool(CRM_RE.match(name))
+
 #: Decks that get the background plates, and which aspect each one is drawn at.
 #: Only the hero decks: a plate is a title-card background, and the runbook deck
 #: and the banners have their own compositions.
@@ -106,7 +132,7 @@ def walk_estate(root, jobs=8):
     share a scratch filename and race.
     """
     found, chapters, series, with_files = [], set(), set(), set()
-    skipped = 0
+    skipped, strays = 0, []
     level, seen = [(root, "Community Events")], set()
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         while level:
@@ -118,7 +144,7 @@ def walk_estate(root, jobs=8):
                 leaf = parts[-1]
                 # In scope if this folder is a template folder, or is itself a
                 # chapter / series root, or is the shared Templates folder.
-                is_template = bool(TEMPLATE_FOLDER_RE.match(leaf))
+                is_template_folder = bool(TEMPLATE_FOLDER_RE.match(leaf))
                 is_root = ((len(parts) == 3 and parts[1] in ROOT_PARENTS)
                            or (len(parts) == 2 and leaf == SHARED_TEMPLATES))
                 owner = parts[2] if len(parts) > 2 else (
@@ -133,19 +159,22 @@ def walk_estate(root, jobs=8):
                     elif k["mimeType"] in OOXML:
                         if owner:
                             with_files.add(owner)
-                        if is_template or is_root:
+                        if not (is_template_folder or is_root):
+                            skipped += 1          # an organizer's event copy
+                        elif is_template(k["name"]):
                             found.append({"id": k["id"], "name": k["name"],
                                           "mime": k["mimeType"],
                                           "path": path + "/" + k["name"]})
                         else:
-                            skipped += 1
+                            # In a template folder but not a template.
+                            strays.append(path + "/" + k["name"])
             level = nxt
     seen_ids, unique = set(), []
     for f in found:
         if f["id"] not in seen_ids:
             seen_ids.add(f["id"])
             unique.append(f)
-    return unique, chapters, series, with_files, skipped
+    return unique, chapters, series, with_files, skipped, sorted(strays)
 
 
 def _archive(entry, src, backup_dir):
@@ -156,6 +185,13 @@ def _archive(entry, src, backup_dir):
     """
     rel = entry["path"].replace("Community Events/", "", 1)
     dst = os.path.join(backup_dir, rel)
+    if os.path.exists(dst):
+        # Never overwrite. Two runs sharing a --backup-dir would otherwise have
+        # the second archive the ALREADY-RESTYLED file over the original, and
+        # the archive would then silently be useless as a rollback — which is
+        # exactly what happened to two files on the first estate run. The
+        # earliest copy is the pristine one, so it is the one that is kept.
+        return dst
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copy2(src, dst)
     return dst
@@ -203,9 +239,15 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None):
                             "plates": []} if before else {}), None
 
         # Archive BEFORE the rewrite: the archive must hold what Drive holds.
-        archived = None
+        # `fresh` is False when an earlier run in the same --backup-dir already
+        # archived this file; that copy is the pristine one and is kept, so this
+        # run must not remove it on a no-op below.
+        archived, fresh = None, False
         if write and before:
+            existed = os.path.exists(os.path.join(
+                backup_dir, entry["path"].replace("Community Events/", "", 1)))
             archived = _archive(entry, src, backup_dir)
+            fresh = not existed
 
         parts = cc._rewrite_zip(src, ox.restyle_part)
         # Plates are appended after the restyle so the slide they are cloned
@@ -217,7 +259,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None):
         if not parts and not plated:
             # Nothing changed. If we archived a file we are not going to upload,
             # take the copy back out so the archive means "these were replaced".
-            if archived and os.path.exists(archived):
+            if fresh and archived and os.path.exists(archived):
                 os.remove(archived)
             return entry, ({"before": before, "parts": 0, "after": after,
                             "plates": []} if before else {}), None
@@ -305,7 +347,7 @@ def main():
         print("Archiving pre-change files to %s" % backup_dir)
 
     print("Scanning the Community Events tree for templates...")
-    entries, chapters, series, with_files, skipped = walk_estate(
+    entries, chapters, series, with_files, skipped, strays = walk_estate(
         COMMUNITY_ROOT, max(args.jobs, 8))
     scanned = entries
     if args.chapter:
@@ -322,8 +364,15 @@ def main():
         return 1
     mode = ("AUDIT ONLY." if args.check else
             "" if args.write else "PLAN ONLY — nothing will be written.")
-    print("Found %d template file(s); %d event copies left alone.  %s\n"
+    print("Found %d template file(s); %d event copies left alone.  %s"
           % (len(entries), skipped, mode))
+    if strays:
+        print("\n%d file(s) sit in a template folder but are not templates, and "
+              "are left alone.\nIf one of these IS a template, add it to "
+              "TEMPLATE_FILES:" % len(strays))
+        for p_ in strays:
+            print("  - %s" % p_.replace("Community Events/", "", 1))
+    print()
 
     changed = clean = failed = 0
     residue = []
