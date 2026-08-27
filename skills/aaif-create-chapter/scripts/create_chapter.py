@@ -448,11 +448,26 @@ def gws_upload(file_id, path, mime):
           "--upload", os.path.basename(path), "--upload-content-type", mime], cwd=d)
 
 def list_children(folder_id):
-    res = gws_json("drive", "files", "list", params={
-        "q": "'%s' in parents and trashed=false" % folder_id,
-        "fields": "files(id,name,mimeType)", "pageSize": 1000,
-        "supportsAllDrives": True, "includeItemsFromAllDrives": True})
-    return res.get("files", [])
+    """Every child of `folder_id`, following pagination to the end.
+
+    Drive may return fewer items than `pageSize` *and* a `nextPageToken` — that
+    is documented behaviour, not a >1000-children edge case. Reading only the
+    first page silently drops children, and a truncated listing is
+    indistinguishable from a complete one: a clone would miss files, and a
+    backfill would report a folder it never fully saw as clean."""
+    out, token = [], None
+    while True:
+        params = {
+            "q": "'%s' in parents and trashed=false" % folder_id,
+            "fields": "nextPageToken, files(id,name,mimeType)", "pageSize": 1000,
+            "supportsAllDrives": True, "includeItemsFromAllDrives": True}
+        if token:
+            params["pageToken"] = token
+        res = gws_json("drive", "files", "list", params=params)
+        out.extend(res.get("files", []))
+        token = res.get("nextPageToken")
+        if not token:
+            return out
 
 def create_folder(name, parent):
     return gws_json("drive", "files", "create",
