@@ -33,6 +33,7 @@ import hashlib
 import os
 import re
 import zipfile
+from typing import NamedTuple, Sequence
 
 #: `design/aaif-tokens.css`, which is itself generated from the design system
 #: bundle by `scripts/extract_design_tokens.py`. Parsing it — rather than
@@ -79,8 +80,19 @@ def token(name):
 #: One family, per the design system: "There is no second display face."
 SANS = "Instrument Sans"
 #: A PPTX cannot express a font *stack*, so the system names JetBrains Mono for
-#: the metadata runs that resolve to `--font-mono` on the web. It stays — but
-#: only for metadata. See `_MONO_IS_PROSE` below.
+#: the metadata runs that resolve to `--font-mono` on the web. It stays, in
+#: every part and both formats: DESIGN.md reserves mono for "metadata and
+#: eyebrows", and a run already set in it is that reservation being honoured,
+#: not drift. It is absent from `FONT_MAP` for the same reason `+mj-lt` is.
+#:
+#: An earlier pass demoted mono to the sans throughout `word/document.xml`, on
+#: the reading that the trackers' 205 mono runs were body prose. They were not:
+#: every one is a field label (EVENT TITLE, DATE & TIME), a table header
+#: (TASK/OWNER/DUE/STATUS), a date, a status, or a phase eyebrow ("4 WEEKS OUT
+#: May 27 · lock the basics"). The trackers' actual prose was already in the
+#: sans. The rule flattened the one thing mono is for, so it is gone — but see
+#: the note in `prune_embedded_fonts`, which the removal puts back on its
+#: other branch.
 MONO = "JetBrains Mono"
 
 #: Every face found across the estate that is not one of the two above. Calibri
@@ -108,12 +120,6 @@ FONT_MAP = {
 # font, not a face. It is absent from FONT_MAP on purpose — such a run is
 # already correct once the theme is, and rewriting it to a literal would break
 # the indirection the theme exists to provide.
-
-#: Parts where JetBrains Mono is carrying body prose rather than metadata, and
-#: so must become Instrument Sans. The design system is explicit: "Mono carries
-#: metadata, not prose." The trackers set 205 body runs in mono; a deck's mono
-#: runs are eyebrows, dates and cities, which are exactly what it is for.
-_MONO_IS_PROSE = ("word/document.xml",)
 
 
 # ------------------------------------------------------------------- colour --
@@ -327,21 +333,14 @@ def _restyle_pptx(xml, part_name):
 _DOCX_BORDER_CTX = ("w:tcBorders", "w:pBdr", "w:tblBorders")
 
 
-def _restyle_docx(xml, part_name):
-    mono_to_sans = part_name in _MONO_IS_PROSE
-
-    def face(f):
-        if f == MONO:
-            return SANS if mono_to_sans else None
-        return FONT_MAP.get(f)
-
+def _restyle_docx(xml):
     def handler(tag, attrs, stack):
         if tag == "w:rFonts":
             new = attrs
             for a in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
                 cur = _attr(new, a)
                 if cur:
-                    repl = face(cur)
+                    repl = FONT_MAP.get(cur)
                     if repl:
                         new = _rewrite_attr(new, a, repl)
             return new
@@ -471,11 +470,9 @@ def restyle_part(part_name, data):
     if (_PPTX_PARTS.match(part_name) or part_name in _PPTX_SINGLETONS
             or re.match(r"ppt/theme/theme\d+\.xml$", part_name)):
         out = _restyle_pptx(xml, part_name)
-    elif part_name in ("word/document.xml", "word/styles.xml",
-                       "word/header1.xml", "word/footer1.xml"):
-        out = _restyle_docx(xml, part_name)
-    elif re.match(r"word/(header|footer)\d+\.xml$", part_name):
-        out = _restyle_docx(xml, part_name)
+    elif (part_name in ("word/document.xml", "word/styles.xml")
+            or re.match(r"word/(header|footer)\d+\.xml$", part_name)):
+        out = _restyle_docx(xml)
     elif re.match(r"word/theme/theme\d+\.xml$", part_name):
         out = _restyle_word_theme(xml)
     elif part_name == "xl/styles.xml":
@@ -844,9 +841,9 @@ def improve_contrast(path):
     failure COUNT need not drop: a rescue from 1.19 to 4.48 against a 4.50
     threshold is real and leaves that count unchanged.
 
-    Returns `(rescued, before, after)`, where `before`/`after` count runs
-    failing AA and `rescued` counts runs **materially improved** — an AA
-    crossing, or an escape from the invisible band to at least `AA_LARGE`.
+    Returns a `Rescued`, whose `before`/`after` count runs failing AA and
+    whose `runs` counts those **materially improved** — an AA crossing, or an
+    escape from the invisible band to at least `AA_LARGE`.
 
     Those are two different numbers on purpose. A slide can be genuinely
     repaired without any AA crossing: lifting footer text from 1.19 to 4.48
@@ -860,7 +857,7 @@ def improve_contrast(path):
     before = [f for f in ct.check_pptx(path)
               if f.ratio is not None and f.ratio < f.threshold]
     if not before:
-        return 0, 0, 0
+        return Rescued()
 
     failing_parts = {f.part for f in before}
 
@@ -935,7 +932,7 @@ def improve_contrast(path):
                 os.remove(trial)
 
     if not keep:
-        return 0, len(before), len(before)
+        return Rescued(0, len(before), len(before))
 
     _rewrite_zip_to(path, path + ".new",
                     lambda n, d: (to_on_dark(d.decode("utf-8")).encode("utf-8")
@@ -957,7 +954,7 @@ def improve_contrast(path):
 
     after_all = [f for f in ct.check_pptx(path)
                  if f.ratio is not None and f.ratio < f.threshold]
-    return rescued, len(before), len(after_all)
+    return Rescued(rescued, len(before), len(after_all))
 
 
 def _rewrite_zip_to(src, dst, transform, drop=(), add=None):
@@ -1018,13 +1015,44 @@ _EMBED = re.compile(r"<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*/>")
 _EMBED_ID = re.compile(r'r:id="([^"]+)"')
 
 
+class Pruned(NamedTuple):
+    """What `prune_embedded_fonts` took out of `word/fontTable.xml`.
+
+    A plain 2-tuple here was read positionally at three call sites and printed
+    through `report["pruned"][0]`, which is a truth test on a *list of face
+    names* — legible only if you already know the order. Named, `pruned.faces`
+    says what the index meant.
+    """
+    #: Face names dropped from the table.
+    faces: Sequence = ()
+    #: `word/fonts/*.ttf` parts dropped with them.
+    parts: Sequence = ()
+
+
+class Rescued(NamedTuple):
+    """What `improve_contrast` did to one file's legibility.
+
+    `runs` is deliberately not derivable from `before - after`: a run lifted
+    from 1.19 to 4.48 against a 4.50 threshold is materially rescued and leaves
+    the AA count unchanged. `report.get("rescued", (0,))[0]` was the reporting
+    gate for exactly that number, and nothing about the expression said so.
+    """
+    #: Runs materially improved — an AA crossing, or an escape from the
+    #: invisible band to at least `AA_LARGE`.
+    runs: int = 0
+    #: Runs failing AA before the repair.
+    before: int = 0
+    #: Runs failing AA after it.
+    after: int = 0
+
+
 def prune_embedded_fonts(path):
     """Make `word/fontTable.xml` agree with the faces the document actually uses.
 
     Reconciled against USAGE, not just against the rename map: an entry is
     dropped when its face was renamed away *or* when no content part references
-    it any more. Both happen here — `_MONO_IS_PROSE` rewrites mono body prose
-    to the sans, so JetBrains Mono stops being used at all.
+    it any more. The second case is the one the rename map cannot see — a face
+    the estate declares and embeds but no run asks for.
 
     Renaming every face to Instrument Sans leaves a tracker in a worse state
     than it started: the document references a font the file does not embed,
@@ -1038,26 +1066,30 @@ def prune_embedded_fonts(path):
     the table is deduplicated to the faces actually in use.
 
     That does mean the trackers no longer carry an embedded copy of their
-    typeface. Instrument Sans is not embeddable from here — `assets/fonts` has
+    display typeface. Instrument Sans is not embeddable from here — `assets/fonts` has
     woff2, which OOXML cannot use — so this is honest rather than complete:
     correct metadata and a smaller file, and the face resolves from the system
     (Google Docs, where these live, has it). See DESIGN.md.
 
-    Returns (faces removed, parts dropped).
+    Returns a `Pruned`.
     """
     with zipfile.ZipFile(path) as z:
         names = set(z.namelist())
         if "word/fontTable.xml" not in names:
-            return [], []
+            return Pruned()
         table = z.read("word/fontTable.xml").decode("utf-8", "replace")
         rels_name = "word/_rels/fontTable.xml.rels"
         rels = z.read(rels_name).decode("utf-8", "replace") if rels_name in names else ""
         # What the document ACTUALLY asks for. Deduping by mapped name alone
-        # leaves a face declared and embedded that nothing references: mono
-        # body prose is rewritten to the sans by `_MONO_IS_PROSE`, so a tracker
-        # kept JetBrains Mono in its table and shipped 443KB of it while using
-        # it zero times. The table has to be reconciled against usage, which is
-        # what this function's name has always claimed.
+        # leaves a face declared and embedded that nothing references — every
+        # tracker declared Space Grotesk and Manrope after the rename folded
+        # both into Instrument Sans, and shipped their bytes with it. The table
+        # has to be reconciled against usage, which is what this function's
+        # name has always claimed.
+        #
+        # JetBrains Mono is the case that goes the OTHER way and is why this is
+        # usage-driven rather than a drop-list: the trackers' metadata runs
+        # genuinely are set in it, so it stays declared and stays embedded.
         in_use = set()
         for n in names:
             if not n.startswith("word/") or n.endswith("fontTable.xml"):
@@ -1126,7 +1158,7 @@ def prune_embedded_fonts(path):
             new_rels = new_rels.replace(rm.group(0), "")
 
     if not removed and not parts:
-        return [], []
+        return Pruned()
 
     def tx(name, data):
         if name == "word/fontTable.xml":
@@ -1143,7 +1175,7 @@ def prune_embedded_fonts(path):
 
     _rewrite_zip_to(path, path + ".new", tx, drop=set(parts))
     os.replace(path + ".new", path)
-    return sorted(set(removed)), sorted(parts)
+    return Pruned(tuple(sorted(set(removed))), tuple(sorted(parts)))
 
 
 # ------------------------------------------------- retiring a legacy plate ----

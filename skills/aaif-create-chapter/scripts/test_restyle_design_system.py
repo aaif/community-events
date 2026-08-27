@@ -254,9 +254,15 @@ class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
             return rd.process(self.entry, work, write, self.backup, False)
 
     def test_a_write_run_archives_the_bytes_that_were_in_drive(self):
-        _e, report, err = self._run(write=True)
+        _e, changes, err = self._run(write=True)
         self.assertIsNone(err)
-        self.assertTrue(report, "a file that changed must report what changed")
+        # `.reportable`, not `assertTrue(changes)`: a Changes is a namedtuple
+        # and is therefore ALWAYS truthy. When this was a dict, `{}` carried
+        # the clean/changed decision implicitly and this line tested it;
+        # against a record the same line passes unconditionally.
+        self.assertTrue(changes.reportable,
+                        "a file that changed must report what changed")
+        self.assertEqual(changes.pruned.faces, ("Space Grotesk",))
         archived = rd._archive_path(self.entry, self.backup)
         self.assertTrue(os.path.exists(archived), "nothing was archived")
         with open(archived, "rb") as fh:
@@ -275,8 +281,10 @@ class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
         """The archive means "these were replaced". A file that turned out to
         need nothing must not leave a copy behind implying it was."""
         self.payload = _already_conformant_docx()
-        _e, report, err = self._run(write=True)
+        _e, changes, err = self._run(write=True)
         self.assertIsNone(err)
+        self.assertFalse(changes.reportable,
+                         "a file that needed nothing must report nothing")
         self.assertEqual(self.uploaded, [])
         self.assertFalse(os.path.exists(rd._archive_path(self.entry, self.backup)))
 
@@ -335,7 +343,7 @@ class TestWalkEstate(unittest.TestCase):
         return rd.walk_estate("root", jobs=2)
 
     def test_it_finds_exactly_the_templates_and_no_more(self):
-        entries, _c, _s, _w, _skipped, _strays = self.walk()
+        entries = self.walk().entries
         got = {e["path"].replace("Community Events/", "", 1) for e in entries}
         self.assertEqual(got, {
             "Chapters/Boston/About.docx",
@@ -347,20 +355,20 @@ class TestWalkEstate(unittest.TestCase):
         })
 
     def test_an_organizers_dated_copy_is_counted_not_swept(self):
-        entries, _c, _s, _w, skipped, _strays = self.walk()
-        paths = {e["path"] for e in entries}
+        estate = self.walk()
+        paths = {e["path"] for e in estate.entries}
         self.assertFalse(any("2026-09-01" in p for p in paths))
-        self.assertEqual(skipped, 1)
+        self.assertEqual(estate.skipped, 1)
 
     def test_a_non_template_in_a_template_folder_is_named_as_a_stray(self):
-        _e, _c, _s, _w, _skipped, strays = self.walk()
+        strays = self.walk().strays
         self.assertEqual(
             [p.replace("Community Events/", "", 1) for p in strays],
             ["Chapters/Boston/Event Templates (Copy for Each Event)/"
              "#27 linkedin.pptx"])
 
     def test_the_mint_folders_are_reached(self):
-        entries, _c, _s, _w, _skipped, _strays = self.walk()
+        entries = self.walk().entries
         paths = " ".join(e["path"] for e in entries)
         for mint in rd.MINTS:
             self.assertIn(mint, paths)
@@ -369,14 +377,13 @@ class TestWalkEstate(unittest.TestCase):
         """The dedupe exists so two workers never share a scratch filename."""
         self.TREE["shared"] = self.TREE["shared"] + [
             ("f9", "Event Tracker (IRL).docx", False)]
-        entries, *_rest = self.walk()
-        ids = [e["id"] for e in entries]
+        ids = [e["id"] for e in self.walk().entries]
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_chapter_and_series_names_are_reported(self):
-        _e, chapters, series, _w, _skipped, _strays = self.walk()
-        self.assertEqual(chapters, {"Boston", "TemplateCity"})
-        self.assertEqual(series, {"TemplateSeries"})
+        estate = self.walk()
+        self.assertEqual(estate.chapters, {"Boston", "TemplateCity"})
+        self.assertEqual(estate.series, {"TemplateSeries"})
 
 
 class TestRetirementScope(unittest.TestCase):

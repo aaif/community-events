@@ -81,9 +81,19 @@ Three things about it are worth knowing before editing:
   for a font it does not embed, still declaring the ones it no longer uses, and
   carrying their bytes — which is where the trackers ended up. `prune_embedded_
   fonts` reconciles the table against what the document actually references and
-  drops the orphans: a tracker goes from ~382KB to ~19KB, because once mono body
-  prose becomes the sans, JetBrains Mono is referenced nowhere and its four
-  embedded faces (~443KB) go too.
+  drops the orphans: a tracker sheds Arial, Georgia, Manrope and Space Grotesk
+  from its table and the four Manrope/Space Grotesk faces (~180KB) from
+  `word/fonts/`.
+  **JetBrains Mono is not among them, and that is the point of reconciling
+  against usage rather than against a drop-list.** A tracker's 205 mono runs are
+  its field labels, table headers, dates, statuses and phase eyebrows — mono
+  doing exactly what the rule two sections up reserves it for — so the face is
+  still referenced, stays declared, and keeps its embed. A tracker therefore
+  lands at ~430KB, slightly *above* where it started, because the metric
+  fallback goes in on top. An earlier pass reported ~19KB instead; it got there
+  by rewriting every mono run in `word/document.xml` to the sans, which read
+  205 metadata runs as body prose and flattened the distinction this system is
+  built on. Size is not the thing being optimised here.
   The embedded bytes cannot simply be renamed along with the entry: they *are*
   Manrope, and calling them Instrument Sans makes Word render the old face
   under the new name, which is worse than substituting. **Instrument Sans is

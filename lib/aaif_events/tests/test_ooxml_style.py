@@ -198,18 +198,35 @@ def test_word_keeps_the_files_own_lowercase_hex():
     assert ox.token("ink-3") not in out       # not the uppercase form
 
 
-def test_mono_body_prose_becomes_the_sans():
-    """"Mono carries metadata, not prose" — and the trackers set 205 body runs
-    in JetBrains Mono."""
+@pytest.mark.parametrize("part", ["word/document.xml", "word/styles.xml",
+                                  "word/header1.xml", "word/footer2.xml"])
+def test_mono_survives_the_sweep_in_every_word_part(part):
+    """DESIGN.md reserves mono for "metadata and eyebrows", so a run already
+    set in it is the rule being honoured, not drift — in the body like anywhere.
+
+    An earlier pass demoted mono to the sans in `word/document.xml` alone, on
+    the reading that the trackers' 205 mono runs were body prose. Every one of
+    them is a field label, a table header, a date, a status or a phase eyebrow;
+    the prose was already in the sans. `word/document.xml` is parametrized
+    FIRST here because it is the part that regressed.
+    """
     xml = _docx('<w:rPr><w:rFonts w:ascii="JetBrains Mono" w:hAnsi="JetBrains Mono"/></w:rPr>')
+    data = xml.encode()
+    out = ox.restyle_part(part, data)
+    # Byte-identical, not merely mono-preserving: the sweep uses "did the bytes
+    # change" as its upload test, so a tracker whose only non-sans face is mono
+    # must not be re-uploaded at all.
+    assert out is data
+    assert ox.MONO in out.decode() and ox.SANS not in out.decode()
+
+
+def test_the_faces_around_mono_still_move():
+    """The parametrized test above passes trivially if the docx pass stopped
+    rewriting fonts altogether. Pin that it did not."""
+    xml = _docx('<w:rPr><w:rFonts w:ascii="Space Grotesk" w:hAnsi="Consolas"/></w:rPr>')
     out = ox.restyle_part("word/document.xml", xml.encode()).decode()
-    assert ox.MONO not in out and out.count(ox.SANS) == 2
-
-
-def test_mono_is_kept_outside_the_body():
-    xml = _docx('<w:rPr><w:rFonts w:ascii="JetBrains Mono"/></w:rPr>')
-    out = ox.restyle_part("word/styles.xml", xml.encode()).decode()
-    assert ox.MONO in out
+    assert 'w:ascii="%s"' % ox.SANS in out      # display drift -> the sans
+    assert 'w:hAnsi="%s"' % ox.MONO in out      # a metadata face -> the mono
 
 
 # --------------------------------------------------------------- invariants --
@@ -244,7 +261,15 @@ def test_the_scanner_preserves_every_other_byte():
 @pytest.mark.parametrize("name", ["event_tracker_irl.docx", "event_tracker_online.docx"])
 def test_the_shipped_fixtures_are_conformant(name):
     """The repo's only OOXML assets, and therefore the CI gate: if these drift
-    off the design system, this fails in review rather than months later."""
+    off the design system, this fails in review rather than months later.
+
+    Note what they CANNOT catch: both were captured after a sweep that demoted
+    every mono run to the sans, so neither holds a single JetBrains Mono run
+    any more. They are ~19KB each because of it. A fixture that did would be
+    ~430KB — the four mono faces stay embedded once the face is in use — which
+    is not worth carrying twice in a public repo, so mono preservation is
+    pinned by `test_mono_survives_the_sweep_in_every_word_part` on synthetic
+    XML instead."""
     path = os.path.join(FIXTURES, name)
     assert ox.audit(path) == [], "off-system values in %s: %s" % (name, ox.audit(path))
 
@@ -418,7 +443,7 @@ def test_the_repair_leaves_a_light_slide_alone(tmp_path):
     deck = _ct_deck(tmp_path, [(tc.SOLID_WHITE, [tc._run("BODY", "0A0A0A")])])
     with zipfile.ZipFile(deck) as z:
         before = z.read("ppt/slides/slide1.xml")
-    assert ox.improve_contrast(deck) == (0, 0, 0)
+    assert ox.improve_contrast(deck) == ox.Rescued()
     with zipfile.ZipFile(deck) as z:
         assert z.read("ppt/slides/slide1.xml") == before
 
@@ -452,7 +477,7 @@ def test_a_small_drop_inside_the_passing_band_does_not_block_the_repair(tmp_path
 def test_a_clean_deck_is_not_rewritten(tmp_path):
     from aaif_events.tests import test_contrast as tc
     deck = _ct_deck(tmp_path, [(tc.SOLID_WHITE, [tc._run("BODY", "0A0A0A", size=2400)])])
-    assert ox.improve_contrast(deck) == (0, 0, 0)
+    assert ox.improve_contrast(deck) == ox.Rescued()
 
 
 def test_escaping_the_invisible_band_counts_even_without_an_aa_crossing(tmp_path):
@@ -602,7 +627,7 @@ def _docx_with_fonts(tmp_path, name="f.docx"):
 def test_the_font_table_ends_up_declaring_only_the_faces_in_use(tmp_path):
     deck = _docx_with_fonts(tmp_path)
     removed, parts = ox.prune_embedded_fonts(deck)
-    assert removed == ["Arial", "Georgia", "Manrope", "Space Grotesk"]
+    assert removed == ("Arial", "Georgia", "Manrope", "Space Grotesk")
     with zipfile.ZipFile(deck) as z:
         table = z.read("word/fontTable.xml").decode()
     assert sorted(set(re.findall(r'w:name="([^"]+)"', table))) == \
@@ -623,7 +648,7 @@ def test_the_renamed_faces_embedded_bytes_are_dropped_not_relabelled(tmp_path):
     render the OLD face under the new name, which is worse than substituting."""
     deck = _docx_with_fonts(tmp_path)
     _r, parts = ox.prune_embedded_fonts(deck)
-    assert sorted(parts) == ["word/fonts/Manrope.ttf", "word/fonts/SpaceGrotesk.ttf"]
+    assert parts == ("word/fonts/Manrope.ttf", "word/fonts/SpaceGrotesk.ttf")
     with zipfile.ZipFile(deck) as z:
         names = z.namelist()
         assert "word/fonts/JetBrainsMono.ttf" in names     # still used, kept
@@ -649,7 +674,7 @@ def test_no_embed_reference_is_left_dangling(tmp_path):
 def test_pruning_is_idempotent(tmp_path):
     deck = _docx_with_fonts(tmp_path)
     ox.prune_embedded_fonts(deck)
-    assert ox.prune_embedded_fonts(deck) == ([], [])
+    assert ox.prune_embedded_fonts(deck) == ox.Pruned()
 
 
 def test_a_bad_repack_never_replaces_the_original(tmp_path):
@@ -714,10 +739,13 @@ def test_the_repair_will_not_push_readable_text_into_the_invisible_band(tmp_path
 
 
 def test_a_face_nothing_references_is_dropped_even_if_it_was_not_renamed(tmp_path):
-    """The table must agree with USAGE, not just with the rename map. Mono body
-    prose is rewritten to the sans, so JetBrains Mono stops being referenced at
-    all — and deduping by mapped name alone left it declared and shipping 443KB
-    of embedded faces in every tracker."""
+    """The table must agree with USAGE, not just with the rename map: a face
+    can go unreferenced without the rename map ever naming it. The document
+    below asks only for Instrument Sans, so the mono entry and its embed go.
+
+    See `test_the_renamed_faces_embedded_bytes_are_dropped_not_relabelled` for
+    the other direction — the real trackers DO reference mono, and there its
+    embed must survive."""
     path = str(tmp_path / "u.docx")
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("[Content_Types].xml",
@@ -738,8 +766,8 @@ def test_a_face_nothing_references_is_dropped_even_if_it_was_not_renamed(tmp_pat
                    'Target="fonts/JetBrainsMono.ttf"/></Relationships>')
         z.writestr("word/fonts/JetBrainsMono.ttf", b"TTF" * 200)
     removed, parts = ox.prune_embedded_fonts(path)
-    assert removed == ["JetBrains Mono"]
-    assert parts == ["word/fonts/JetBrainsMono.ttf"]
+    assert removed == ("JetBrains Mono",)
+    assert parts == ("word/fonts/JetBrainsMono.ttf",)
     with zipfile.ZipFile(path) as z:
         assert "word/fonts/JetBrainsMono.ttf" not in z.namelist()
         assert "JetBrains Mono" not in z.read("word/fontTable.xml").decode()
@@ -756,7 +784,7 @@ def test_a_face_that_is_still_referenced_is_kept(tmp_path):
         z.writestr("word/fontTable.xml",
                    '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
                    '<w:font w:name="JetBrains Mono"/></w:fonts>')
-    assert ox.prune_embedded_fonts(path) == ([], [])
+    assert ox.prune_embedded_fonts(path) == ox.Pruned()
     with zipfile.ZipFile(path) as z:
         assert "JetBrains Mono" in z.read("word/fontTable.xml").decode()
 
@@ -954,7 +982,7 @@ def test_pruning_keeps_a_face_that_only_an_altname_references(tmp_path):
     the other re-adds it, and every sweep re-uploads every tracker forever."""
     deck = _docx_asking_for_the_sans(tmp_path, name="alt.docx")
     ox.ensure_fallback_font(deck)
-    assert ox.prune_embedded_fonts(deck) == ([], []), "the fallback was pruned"
+    assert ox.prune_embedded_fonts(deck) == ox.Pruned(), "the fallback was pruned"
     with zipfile.ZipFile(deck) as z:
         assert ox.FALLBACK_FACE in z.read("word/fontTable.xml").decode()
 

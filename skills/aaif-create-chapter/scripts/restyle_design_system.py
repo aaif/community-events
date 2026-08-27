@@ -61,6 +61,7 @@ import sys
 import tempfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import create_chapter as cc      # Drive plumbing + the shared zip rewriter
@@ -131,8 +132,74 @@ def is_template(name):
 PLATED = {"Event-Hero.pptx": "wide", "Event-Hero-Square.pptx": "square"}
 
 
+class Estate(NamedTuple):
+    """What one scan of Drive found. Six values; the docstring here used to
+    promise five, which is the failure mode a positional return invites."""
+    #: The OOXML files in scope, deduped by Drive id.
+    entries: list
+    #: Every chapter folder name seen, in scope or not.
+    chapters: set
+    #: Likewise for online series.
+    series: set
+    #: Chapters/series that hold Office files at all — the denominator for the
+    #: "contributed none" coverage check.
+    with_files: set
+    #: Organizers' event copies, deliberately left alone.
+    skipped: int
+    #: Files sitting in a template folder that are not templates.
+    strays: list
+
+
+class Changes(NamedTuple):
+    """What one file's pass actually did.
+
+    This was a bare dict, and the two habits it grew are why it is a record:
+
+    * **`{}` meant "already conformant"**, so `if not report` was the whole
+      clean/changed decision. Every optional key then had to be fetched with a
+      `.get` and a default that re-stated the empty case — `report.get(
+      "rescued", (0,))[0]` — and one such default being subtly wrong is how a
+      file that HAD changed printed nothing. `reportable` names that decision
+      once, and every field has a real default, so no call site invents one.
+    * **positional sub-tuples**: `report["pruned"][0]` and
+      `report.get("rescued", (0,))[0]` are truth tests on an unnamed slot.
+      Those are `ox.Pruned` and `ox.Rescued` now, so they read
+      `changes.pruned.faces` and `changes.rescued.runs`.
+    """
+    #: Off-system values found before the pass, and after it. Anything left in
+    #: `after` is drift `ooxml_style` has no rule for, and is reported.
+    before: Sequence = ()
+    after: Sequence = ()
+    #: Zip parts rewritten.
+    parts: int = 0
+    #: Plate slides added or refreshed, by label.
+    plates: Sequence = ()
+    #: Legacy background images replaced.
+    retired: Sequence = ()
+    pruned: ox.Pruned = ox.Pruned()
+    #: Whether the metric fallback font was embedded.
+    fallback: bool = False
+    rescued: ox.Rescued = ox.Rescued()
+    #: `--contrast` only: runs failing AA, and runs that could not be scored.
+    contrast: Sequence = ()
+    unchecked: Sequence = ()
+
+    @property
+    def reportable(self):
+        """Whether this file earns a line in the run's output.
+
+        False means "already conformant, and nothing to say" — the old `{}`.
+        A file can be reportable without having been WRITTEN: `--check` and
+        `--contrast` both report without touching Drive.
+        """
+        return bool(self.before or self.after or self.parts or self.plates
+                    or self.retired or self.fallback or self.contrast
+                    or self.unchecked or self.pruned.faces
+                    or self.pruned.parts or self.rescued.runs)
+
+
 def walk_estate(root, jobs=8):
-    """(entries, chapters, series, owners-with-files, out-of-scope count).
+    """Scan Drive for the template estate. Returns an `Estate`.
 
     `entries` are the OOXML files in scope, deduped by Drive id — a file
     reachable under two parents would otherwise be handed to two workers that
@@ -181,7 +248,7 @@ def walk_estate(root, jobs=8):
         if f["id"] not in seen_ids:
             seen_ids.add(f["id"])
             unique.append(f)
-    return unique, chapters, series, with_files, skipped, sorted(strays)
+    return Estate(unique, chapters, series, with_files, skipped, sorted(strays))
 
 
 #: Characters kept when a Drive name becomes part of a local path. Everything
@@ -288,6 +355,15 @@ def _plates_for(entry, plate_dir):
     return out
 
 
+class Legibility(NamedTuple):
+    """`contrast_report`'s two lists, which must never be added together."""
+    #: Runs measured as failing WCAG AA against what is behind them.
+    bad: Sequence = ()
+    #: Runs that could not be scored — an inherited colour, a translucent run,
+    #: a background the checker could not read. NOT failures.
+    unchecked: Sequence = ()
+
+
 def contrast_report(entry, src):
     """Text in this file that fails WCAG AA against what is behind it.
 
@@ -296,22 +372,25 @@ def contrast_report(entry, src):
     background and its text sits on the page.
     """
     if entry["mime"] != cc.PPTX:
-        return [], []
+        return Legibility()
     found = ctr.check_pptx(src)
     # Unreadable and unchecked are DIFFERENT, and conflating them destroys the
     # distinction the checker is built around: inherited-colour runs are common,
     # so counting them as failures means --contrast can never exit 0 and its
     # exit status stops meaning anything.
-    return ([f for f in found if f.ratio is not None and f.ratio < f.threshold],
-            [f for f in found if f.ratio is None])
+    return Legibility([f for f in found if f.ratio is not None and f.ratio < f.threshold],
+                      [f for f in found if f.ratio is None])
 
 
 def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             contrast_only=False, fix_contrast=False, retire=False):
-    """Restyle one file. Returns (entry, report, error or None).
+    """Restyle one file. Returns `(entry, Changes, error or None)`.
 
-    `report` is `{"parts": n, "before": [...], "after": [...]}` when the file
-    changed or is off-system, and `{}` when it is already conformant.
+    The `Changes` is empty — `.reportable` False — when the file is already
+    conformant and there is nothing to say about it. On error it is empty too,
+    but the caller must test the error first: an empty record is indistinguish-
+    able from a clean file, which is the point of returning the error beside it
+    rather than encoding it in the record.
     """
     ext = OOXML[entry["mime"]]
     # Named by Drive id, not by path: two truncated paths that collide would
@@ -328,13 +407,14 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             raise RuntimeError("download is not OOXML (%d bytes) — an error body, "
                                "not the template" % os.path.getsize(src))
         if contrast_only:
-            bad, unchecked = contrast_report(entry, src)
-            return entry, ({"contrast": bad, "unchecked": unchecked}
-                           if bad or unchecked else {}), None
+            legible = contrast_report(entry, src)
+            return entry, Changes(contrast=legible.bad,
+                                  unchecked=legible.unchecked), None
         before = ox.audit(src)
         if check_only:
-            return entry, ({"before": before, "parts": 0, "after": before,
-                            "plates": []} if before else {}), None
+            # `after` is `before`: nothing was rewritten, so what the file holds
+            # afterwards is what it held.
+            return entry, Changes(before=before, after=before), None
 
         # Archive BEFORE any rewrite: the archive must hold what Drive holds.
         # Gated on `write` ALONE, not on `before` — a file can be perfectly
@@ -358,7 +438,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         # their embedded bytes. Reconcile the font table with what the document
         # now actually asks for.
         pruned = (ox.prune_embedded_fonts(src)
-                  if entry["mime"] == cc.DOCX else ([], []))
+                  if entry["mime"] == cc.DOCX else ox.Pruned())
         # Pruning leaves the document asking for a face it does not carry.
         # Give it an embedded metric fallback to reach for, so a .docx opened
         # on a machine without Instrument Sans still sets in something close
@@ -390,30 +470,27 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
                 replacement = fh.read()
             retired = ox.retire_plates(src, replacement, _plate_digests(plate_dir))
         rescued = (ox.improve_contrast(src)
-                   if fix_contrast and entry["mime"] == cc.PPTX else (0, 0, 0))
+                   if fix_contrast and entry["mime"] == cc.PPTX else ox.Rescued())
         after = ox.audit(src)
-        if not parts and not plated and not rescued[0] and not retired \
-                and not pruned[0] and not pruned[1] and not fallback:
+        if not (parts or plated or rescued.runs or retired
+                or pruned.faces or pruned.parts or fallback):
             # Nothing changed. If we archived a file we are not going to upload,
             # take the copy back out so the archive means "these were replaced".
             if fresh and archived and os.path.exists(archived):
                 os.remove(archived)
-            return entry, ({"before": before, "parts": 0, "after": after,
-                            "plates": [], "rescued": (0, 0, 0)}
-                           if before else {}), None
+            return entry, Changes(before=before, after=after), None
         if write:
             cc.gws_upload(entry["id"], src, entry["mime"])
-        return entry, {"before": before, "parts": parts, "after": after,
-                       "plates": plated, "rescued": rescued,
-                       "retired": retired, "pruned": pruned,
-                       "fallback": fallback}, None
+        return entry, Changes(before=before, after=after, parts=parts,
+                              plates=plated, retired=retired, pruned=pruned,
+                              fallback=fallback, rescued=rescued), None
     except Exception as e:                # one bad file must not stop the run
         # Prefix the class: this catch spans the XML engine, the archive, and
         # both transfers, and a bare message makes a ValueError in the rewrite
         # read as a network blip. Never return a bare str() — an exception whose
         # str() is empty would be falsy and the caller would count the file as
         # clean, printing nothing at all.
-        return entry, {}, "%s: %s" % (type(e).__name__, str(e)[:200])
+        return entry, Changes(), "%s: %s" % (type(e).__name__, str(e)[:200])
     finally:
         if os.path.exists(src):
             os.remove(src)
@@ -508,9 +585,10 @@ def main():
         print("Archiving pre-change files to %s" % backup_dir)
 
     print("Scanning the Community Events tree for templates...")
-    entries, chapters, series, with_files, skipped, strays = walk_estate(
-        COMMUNITY_ROOT, max(args.jobs, 8))
-    scanned = entries
+    estate = walk_estate(COMMUNITY_ROOT, max(args.jobs, 8))
+    chapters, series, with_files = estate.chapters, estate.series, estate.with_files
+    skipped, strays = estate.skipped, estate.strays
+    entries = scanned = estate.entries
     if args.chapter:
         # Matched against whole path SEGMENTS, not as a substring. A substring
         # match on "Templates" would also select every chapter's "Event
@@ -540,22 +618,24 @@ def main():
     residue, unchecked_only = [], []
     with tempfile.TemporaryDirectory() as tmpdir, \
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for entry, report, err in pool.map(
+        for entry, changes, err in pool.map(
                 lambda e: process(e, tmpdir, args.write, backup_dir, args.check,
                                   args.plates, args.contrast, args.fix_contrast,
                                   args.retire),
                 entries):
+            # The error first: a failed file also comes back with an empty
+            # record, so testing `reportable` before `err` would count every
+            # failure as clean and print nothing.
             if err is not None:
                 failed += 1
                 print("  FAILED  %s\n            %s" % (entry["path"], err))
                 continue
-            if not report:
+            if not changes.reportable:
                 clean += 1
                 continue
             changed += 1
             if args.contrast:
-                bad = report["contrast"]
-                unchecked = report.get("unchecked", [])
+                bad, unchecked = changes.contrast, changes.unchecked
                 if not bad:
                     unchecked_only.append((entry["path"], len(unchecked)))
                     changed -= 1
@@ -572,33 +652,34 @@ def main():
                 if len(bad) > 6:
                     print("        ... and %d more" % (len(bad) - 6))
                 continue
-            if report["after"]:
-                residue.append((entry["path"], report["after"]))
+            if changes.after:
+                residue.append((entry["path"], changes.after))
             verb = ("off-system" if args.check else
                     "RESTYLED" if args.write else "would restyle")
             print("  %-12s %s\n                 %s"
                   % (verb, entry["path"],
-                     _summarise(report["before"]) or "(already conformant)"))
-            if report.get("plates"):
-                print("                 + plates: %s" % ", ".join(report["plates"]))
-            if report.get("pruned") and report["pruned"][0]:
-                faces, dropped = report["pruned"]
+                     _summarise(changes.before) or "(already conformant)"))
+            if changes.plates:
+                print("                 + plates: %s" % ", ".join(changes.plates))
+            if changes.pruned.faces:
                 print("                 + fonts: dropped %s from the font table"
-                      "%s" % (", ".join(faces),
-                              "; removed %d embedded face part(s)" % len(dropped)
-                              if dropped else ""))
-            if report.get("fallback"):
+                      "%s" % (", ".join(changes.pruned.faces),
+                              "; removed %d embedded face part(s)"
+                              % len(changes.pruned.parts)
+                              if changes.pruned.parts else ""))
+            if changes.fallback:
                 print("                 + fonts: embedded the %s metric "
                       "fallback for %s" % (ox.FALLBACK_FACE, ox.SANS))
-            if report.get("retired"):
+            if changes.retired:
                 print("                 + retired legacy plate: %s"
-                      % ", ".join(os.path.basename(x) for x in report["retired"]))
-            if report.get("rescued", (0,))[0]:
-                n, b, a = report["rescued"]
+                      % ", ".join(os.path.basename(x) for x in changes.retired))
+            if changes.rescued.runs:
                 print("                 + legibility: %d run(s) rescued "
-                      "(%d below AA -> %d)" % (n, b, a))
-            if report["after"]:
-                print("                 REMAINS: %s" % _summarise(report["after"]))
+                      "(%d below AA -> %d)"
+                      % (changes.rescued.runs, changes.rescued.before,
+                         changes.rescued.after))
+            if changes.after:
+                print("                 REMAINS: %s" % _summarise(changes.after))
 
     if args.contrast:
         print("\n%d file(s) hold unreadable text, %d clean, %d failed."

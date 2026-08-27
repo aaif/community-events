@@ -51,6 +51,7 @@ import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple, Optional, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import create_chapter as cc      # noqa: E402
@@ -94,19 +95,39 @@ def art_for(art_dir, name):
     return want
 
 
+class Synced(NamedTuple):
+    """What one chapter's `Icons/` folder needed.
+
+    `uploaded` and `skipped` are both lists of filenames and were returned
+    positionally next to each other, which is a swap waiting to happen — and
+    the summary counts a chapter as clean on `not uploaded` alone, so a swap
+    would report a whole estate as current while uploading nothing.
+
+    `error` is beside them rather than raised: `sync_chapter` runs under a
+    `ThreadPoolExecutor.map`, and one chapter's Drive failure must not take the
+    other eighty down with it.
+    """
+    name: str
+    uploaded: Sequence = ()
+    skipped: Sequence = ()
+    error: Optional[str] = None
+
+
 def sync_chapter(chapter_id, name, art_dir, write, tmpdir):
-    """(name, uploaded, skipped, error). Idempotent: a file whose bytes already
-    match is left alone, so a re-run after adding one chapter touches only it."""
+    """Bring one chapter's `Icons/` folder up to date. Returns a `Synced`.
+
+    Idempotent: a file whose bytes already match is left alone, so a re-run
+    after adding one chapter touches only it."""
     want = art_for(art_dir, name)
     if not any(f.endswith(" Agent.gif") for f, _p in want):
-        return name, [], [], "no agent art generated for this chapter"
+        return Synced(name, error="no agent art generated for this chapter")
     try:
         kids = cc.list_children(chapter_id)
         folder = next((k for k in kids if k["name"] == ICONS_FOLDER
                        and k["mimeType"] == cc.FOLDER), None)
         if folder is None:
             if not write:
-                return name, [f for f, _p in want], [], None
+                return Synced(name, uploaded=[f for f, _p in want])
             folder_id = cc.create_folder(ICONS_FOLDER, chapter_id)
             existing = {}
         else:
@@ -138,9 +159,11 @@ def sync_chapter(chapter_id, name, art_dir, write, tmpdir):
                 else:
                     cc.gws_upload(hit["id"], path, mime)
             uploaded.append(fname)
-        return name, uploaded, skipped, None
+        return Synced(name, uploaded, skipped)
     except Exception as e:
-        return name, [], [], "%s: %s" % (type(e).__name__, str(e)[:200])
+        # Never a bare str(): an exception whose str() is empty would be falsy
+        # and main() would count the chapter as clean, printing nothing at all.
+        return Synced(name, error="%s: %s" % (type(e).__name__, str(e)[:200]))
 
 
 def main():
@@ -183,16 +206,17 @@ def main():
     missing = []
     with tempfile.TemporaryDirectory() as tmpdir, \
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for name, up, skip, err in pool.map(
+        for r in pool.map(
                 lambda t: sync_chapter(t[0], t[1], args.art, args.write, tmpdir), todo):
-            if err:
+            if r.error:
                 failed += 1
-                missing.append((name, err))
-                print("  FAILED  %s\n            %s" % (name, err))
-            elif up:
+                missing.append((r.name, r.error))
+                print("  FAILED  %s\n            %s" % (r.name, r.error))
+            elif r.uploaded:
                 uploaded += 1
                 print("  %s  %-26s %d file(s)"
-                      % ("UPLOADED" if args.write else "would add", name, len(up)))
+                      % ("UPLOADED" if args.write else "would add", r.name,
+                         len(r.uploaded)))
             else:
                 clean += 1
     print("\n%d chapter(s) %s, %d already current, %d failed."
