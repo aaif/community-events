@@ -177,8 +177,12 @@ _ROLE_MAP = {
     "1155CC": {"fill": "paper-3", "stroke": "line", "text": "ink"},
     "C7D2EC": {"fill": "paper-3", "stroke": "line", "text": "ink-3"},
     "666666": {"fill": "line-2", "stroke": "line-2", "text": "ink-3"},
-    # Slack's own near-black, which rides in on text pasted from a channel.
+    # Near-blacks that ride in on pasted content rather than from the template:
+    # Slack's own ink, GitHub's, and a plain 222222. All three are "black" by
+    # intent and become the system's ink or its dark surface accordingly.
     "1D1C1D": {"fill": "void-2", "stroke": "line", "text": "ink-2"},
+    "222222": {"fill": "void-3", "stroke": "line-inv", "text": "ink-2"},
+    "1F2328": {"fill": "void-3", "stroke": "line-inv", "text": "ink-2"},
 
     # --- the warm off-white, retired as a surface -------------------------
     # --paper-2 is section banding in the design system, not a background, and
