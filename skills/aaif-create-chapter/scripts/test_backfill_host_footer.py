@@ -10,6 +10,15 @@ import os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import backfill_host_footer as bf
+import create_chapter as cc
+
+# No test in this file may touch Drive. The sibling backfill's suite carries the
+# same guard after a "unit" test once listed the live Chapters folder and
+# downloaded a production deck; main() here has no pre-Drive validation at all,
+# so one mocked argv line would be enough to start a sweep.
+for _name in ("gws_json", "gws_download", "gws_upload", "list_children", "_gws"):
+    setattr(cc, _name, (lambda n: lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("test touched the network via cc.%s" % n)))(_name))
 
 FAILURES = []
 
@@ -243,6 +252,142 @@ with tempfile.TemporaryDirectory() as td:
     rep = bf.rework_pptx(src, dst)
     check("a footerless deck reports nothing", rep == {})
     check("and no output file is written", not _os.path.exists(dst))
+
+print("find_host — band beats document order")
+# Without the band preference, the earlier-in-document-order member chip is
+# picked as the host: the lockup is drawn OVER a real member logo and the true
+# host slot is renumbered. Deleting that branch leaves every other assertion in
+# this file green, so this is the only thing locking it.
+crossed = ("<p:sld><p:cSld><p:spTree>%s%s%s%s%s%s</p:spTree></p:cSld></p:sld>"
+           % (header_pic(),
+              text_sp(20, 548640, Y, 914400, CY, "HOSTED BY", 0, bf.MUTED, 1100, "l"),
+              box_sp(21, *GRID_BOX), text_sp(22, *GRID_BOX, text="AWS"),
+              box_sp(23, 1536192, Y, 1883664, CY),
+              text_sp(24, 1536192, Y, 1883664, CY, "HOST VENUE CO.")))
+outc, _cc, hostc = bf.rework_slide(crossed)
+check("the in-band chip wins over the earlier document-order chip", hostc)
+check("the real member name is not overwritten by the lockup", "AWS" in outc)
+check("the host slot, not the member, became the lockup",
+      "HOST VENUE CO." not in outc and "LOGO" not in outc)
+
+print("run-split text — a label broken across runs still matches")
+# OOXML runs concatenate with NO separator; Slides splits them for a spell-check
+# or a language tag. Joining on " " made "HOSTED BY" read "HOSTED  BY", so the
+# host was not found and the host chip was RELABELLED "LOGO 1" — a destructive
+# half-migration reported as success.
+check("runs concatenate without a separator",
+      bf.shape_text("<a:t>HOSTED </a:t><a:t>BY</a:t>") == "HOSTED BY")
+check("internal whitespace is collapsed",
+      bf.shape_text("<a:t>HOST  VENUE</a:t><a:t>  CO.</a:t>") == "HOST VENUE CO.")
+split = hero_slide().replace("<a:t>HOSTED BY</a:t>", "<a:t>HOSTED </a:t><a:t>BY</a:t>")
+outs, chips_s, host_s = bf.rework_slide(split)
+check("the host is still found", host_s)
+check("the host slot is NOT relabelled as a placeholder", "LOGO 3" not in outs)
+check("the lockup is drawn", "Agentic AI" in outs)
+
+print("find_mark — the lockup uses the logo, not whatever picture is first")
+photo = ('<p:pic><p:nvPicPr><p:cNvPr id="99" name="Backdrop" descr="venue-photo.jpg"/>'
+         '<p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId77"/>'
+         '<a:stretch/></p:blipFill><p:spPr><a:xfrm><a:off x="0" y="0"/>'
+         '<a:ext cx="9144000" cy="5000000"/></a:xfrm>'
+         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>')
+withphoto = hero_slide().replace(header_pic(), photo + header_pic())
+outp, _cp, hostp = bf.rework_slide(withphoto)
+check("a backdrop before the logo is not promoted to the mark",
+      'name="AAIF Lockup Mark"' in outp and 'r:embed="rId77"' not in
+      outp.split('name="AAIF Lockup Mark"')[1][:400])
+check("the lockup still embeds the header logo", hostp and outp.count('r:embed="rId3"') == 2)
+nomark = hero_slide().replace('descr="/tmp/x/logo.png" ', "").replace('name="Logo"', 'name="Blob"')
+check("find_mark falls back to a square picture", bf.find_mark(bf.shapes(nomark)) == "rId3")
+check("find_mark gives up rather than guessing",
+      bf.find_mark(bf.shapes("<p:sld>%s</p:sld>" % photo)) is None)
+
+print("unbox — muting survives a re-saved self-close")
+resaved2 = hero_slide().replace('"/>', '" />')
+outm, _cm, _hm = bf.rework_slide(resaved2)
+check("a relabelled slot is muted, not left in ink",
+      outm.count('val="%s"' % bf.MUTED) >= 4)
+for s_ in bf.shapes(outm):
+    if re.match(r"^LOGO \d+$", s_.text):
+        check("LOGO %s is not in ink" % s_.text.split()[-1],
+              bf.INK.lower() not in s_.body.lower())
+
+print("orphan and duplicate button plates")
+# A plate with no text partner used to survive, then get reflowed to cx=0 — a
+# zero-width bordered rect that renders as a stray hairline. 115 production
+# files carried one.
+orphan = hero_slide().replace(box_sp(26, 1536192, Y, 1883664, CY),
+                              box_sp(26, 1536192, Y, 1883664, CY)
+                              + box_sp(40, 3000000, Y, 900000, CY))
+outo, _co, _ho = bf.rework_slide(orphan)
+check("an unpaired plate in the host band is removed", "roundRect" not in outo)
+check("no shape is left at zero width",
+      all(s_.box.cx > 0 for s_ in bf.shapes(outo) if s_.box))
+dup = hero_slide().replace(box_sp(26, 1536192, Y, 1883664, CY),
+                           box_sp(26, 1536192, Y, 1883664, CY)
+                           + box_sp(41, 1536192, Y, 1883664, CY))
+outd, _cd, _hd = bf.rework_slide(dup)
+check("stacked plates at identical geometry both go", "roundRect" not in outd)
+
+print("rework_slide — a slide with no numeric cNvPr id")
+noids = re.sub(r'\sid="\d+"', "", hero_slide())
+try:
+    _o, n_noid, _h = bf.rework_slide(noids)
+    check("no ValueError from id allocation", True)
+except ValueError as e:
+    check("no ValueError from id allocation", False, str(e))
+
+print("rework_pptx — the write path and what it must not touch")
+with tempfile.TemporaryDirectory() as td:
+    src = _os.path.join(td, "mixed.pptx")
+    dst = _os.path.join(td, "mixed-out.pptx")
+    media = b"\x89PNG" + b"0" * 4096
+    with _zip.ZipFile(src, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("ppt/slides/slide1.xml", plain)
+        z.writestr("ppt/slides/slide2.xml", hero_slide())
+        z.writestr("ppt/slideLayouts/slideLayout1.xml", hero_slide())
+        z.writestr("ppt/media/image1.png", media)
+    rep = bf.rework_pptx(src, dst)
+    check("only the slide with chips is reported", list(rep) == ["ppt/slides/slide2.xml"])
+    check("the report carries the lockup flag", rep["ppt/slides/slide2.xml"] == (3, True))
+    with _zip.ZipFile(dst) as z:
+        check("the repack is a valid zip", z.testzip() is None)
+        check("every part survives the repack", len(z.namelist()) == 5)
+        check("the chip slide is reworked", "Agentic AI" in z.read("ppt/slides/slide2.xml").decode())
+        check("the chipless slide is byte-identical", z.read("ppt/slides/slide1.xml").decode() == plain)
+        check("slideLayouts are out of scope",
+              z.read("ppt/slideLayouts/slideLayout1.xml").decode() == hero_slide())
+        check("media survives untouched", z.read("ppt/media/image1.png") == media)
+
+print("repair pass — an already-migrated file with a zero-width plate")
+# The state 115 production files were left in: no chips (already migrated), a
+# lockup already drawn, and one plate reflowed to cx=0. A re-run must clean it,
+# and must NOT report the file as having lost its host slot.
+migrated, _cm2, _hm2 = bf.rework_slide(hero_slide())
+stray_plate = box_sp(50, 2164109, Y, 0, CY)
+damaged = migrated.replace("</p:spTree>", stray_plate + "</p:spTree>")
+check("the damaged fixture really has a zero-width plate",
+      any(s_.geom == "roundRect" and s_.box and s_.box.cx == 0
+          for s_ in bf.shapes(damaged)))
+outr, nr, hostr = bf.rework_slide(damaged)
+check("the repair pass reports work to do", nr == 1, "got %d" % nr)
+check("the zero-width plate is removed", "roundRect" not in outr)
+check("an already-drawn lockup counts as present", hostr)
+check("the lockup itself is untouched", outr.count("Agentic AI") == 1)
+check("a repaired file is then stable", bf.rework_slide(outr)[1] == 0)
+
+print("repair pass — a clean migrated file is still a no-op")
+again2, n2, _h2 = bf.rework_slide(migrated)
+check("no work reported", n2 == 0)
+check("byte-identical", again2 == migrated)
+
+print("main() — populations that must each contribute a template")
+check("SERIES_FOLDER names the online tree", bf.SERIES_FOLDER == "Online")
+check("dated per-event folders are not template folders",
+      not bf.TEMPLATE_FOLDER_RE.match("2026-07-28 · MCP Release Party")
+      and not bf.TEMPLATE_FOLDER_RE.match("Archive")
+      and not bf.TEMPLATE_FOLDER_RE.match("Agentic-Architecture"))
 
 print()
 if FAILURES:
