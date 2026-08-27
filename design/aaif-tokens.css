@@ -1,0 +1,209 @@
+/* AAIF design tokens — GENERATED, DO NOT EDIT.
+ *
+ * Source: design/aaif-design-system.html
+ * Regenerate: python3 scripts/extract_design_tokens.py
+ *
+ * Edit the design system, not this file. See DESIGN.md.
+ */
+
+:root {
+  /* ─────────────────────────────────────────────────────────
+   * COLORS
+   *
+   * The 2026 site is dark-entry: theme-color is #000000, the hero
+   * and closing CTA are black plates carrying a gradient image, and
+   * editorial content sits on white between them. Both surfaces are
+   * first-class — always state which one a component is drawn on.
+   * ──────────────────────────────────────────────────────── */
+
+  /* Neutrals — light surfaces */
+  --ink:        #0A0A0A;   /* primary text, logo, on-white surfaces */
+  --ink-2:      #1A1A1A;   /* secondary text */
+  --ink-3:      #4A4A4A;   /* tertiary text, captions */
+  --ink-4:      #8C8C8C;   /* placeholder, disabled label */
+  --line:       #E5E5E2;   /* hairline dividers */
+  --line-2:     #CFCFC9;   /* heavier dividers */
+  --paper:      #FFFFFF;   /* canonical content background */
+  --paper-2:    #F6F5F1;   /* warm off-white, used for sections */
+  --paper-3:    #ECEBE6;   /* tinted card / inset / chip */
+
+  /* Inverse (dark) surfaces — ribbon, hero, closing CTA, footer */
+  --void:       #000000;   /* page-entry black; matches theme-color */
+  --void-2:     #0A0A0A;   /* dark surface */
+  --void-3:     #161616;   /* raised dark card, filter row */
+  --ink-inv:    #FFFFFF;   /* text on dark */
+  --ink-inv-2:  #C9C9C5;   /* secondary text on dark */
+  --ink-inv-3:  #8A8A86;   /* meta text on dark */
+  --line-inv:   #262626;   /* hairline on dark */
+  --line-inv-2: rgba(255,255,255,0.14); /* hairline over imagery */
+
+  /* Spectrum — accents sampled from the gradient plate */
+  --spec-1:     #6C5CE7;   /* indigo */
+  --spec-2:     #4D7CFE;   /* electric blue */
+  --spec-3:     #14B8B0;   /* teal */
+  --spec-4:     #F2B23E;   /* amber highlight */
+  --spec-5:     #E94B7B;   /* magenta */
+
+  /* Spectrum, extended — five more hues that close the gaps in the wheel.
+     Rule is unchanged: one hue leads a surface. A second may appear only
+     as the object or action accent inside a chapter plate, never as a
+     second fill on the same element. spec-1…5 stay the primaries; 6…10
+     are the secondaries the agent carries. */
+  --spec-6:     #45C07A;   /* spring green — growth, seedlings, go */
+  --spec-7:     #38BDF8;   /* sky — water, air, cold-clear */
+  --spec-8:     #FF6B4A;   /* coral — heat, alert, energy */
+  --spec-9:     #A855F7;   /* orchid — night, signal, compute */
+  --spec-10:    #C9D93F;   /* chartreuse — leaves, late sun, sand light */
+
+  /* Scene neutrals — the sand masses in chapter plates. Three values so
+     terrain reads as depth (far, mid, near) instead of one flat opacity. */
+  --sand-far:   #E4E3DD;
+  --sand:       #CFCFC9;
+  --sand-near:  #B7B6AD;
+
+  /* Stand-in for the hero/CTA gradient plate (real asset is a .webp) */
+  --gradient-hero:
+      radial-gradient(120% 80% at 15% 20%, #6C5CE7 0%, transparent 55%),
+      radial-gradient(90% 70% at 85% 30%, #4D7CFE 0%, transparent 60%),
+      radial-gradient(100% 90% at 50% 100%, #14B8B0 0%, transparent 55%),
+      #000000; /* @kind color */
+  /* Bright fill for masked hero type — stands in for hero-text.webm.
+     Must stay legible on black, so it never drops below ~60% L. */
+  --gradient-fill: linear-gradient(96deg,#F2B23E 0%,#E94B7B 20%,#A78BFA 42%,#7FA8FF 66%,#4FD8CE 100%);
+  /* Softer plate: people cards, daily-briefing card */
+  --gradient-plate:
+      radial-gradient(90% 120% at 20% 0%, rgba(108,92,231,0.55) 0%, transparent 60%),
+      radial-gradient(80% 100% at 100% 100%, rgba(20,184,176,0.45) 0%, transparent 60%),
+      #0A0A0A; /* @kind color */
+
+  /* Semantic */
+  --success:    #2BB673;
+  --warning:    #E0A23A;
+  --danger:     #E26052;
+  --info:       #6B8FFF;
+
+  /* Aliases — by role, not by hex */
+  --fg-1:       var(--ink);
+  --fg-2:       var(--ink-2);
+  --fg-3:       var(--ink-3);
+  --fg-muted:   var(--ink-4);
+  --bg-1:       var(--paper);
+  --bg-2:       var(--paper-2);
+  --bg-3:       var(--paper-3);
+  --border-1:   var(--line);
+  --border-2:   var(--line-2);
+  --accent:     var(--ink);          /* primary actions are black */
+  --link:       var(--ink);
+  --link-hover: var(--spec-2);
+
+  /* ─────────────────────────────────────────────────────────
+   * TYPOGRAPHY — Instrument Sans, one family, weights 400/500/600/700
+   *
+   * --font-display is an alias of --font-sans, kept so existing
+   * components keep working. There is no second display face.
+   * Mono is a stack, not a webfont — use it only for metadata.
+   * ──────────────────────────────────────────────────────── */
+  --font-sans:    'Instrument Sans', 'Instrument Sans Fallback', ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono:    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+
+  /* Type scale — the site's own tokens (size / line-height) */
+  --t-xs:   12px;   /* body xs  · 20 */
+  --t-sm:   14px;   /* body sm  · 20 */
+  --t-base: 16px;   /* body md  · 24 */
+  --t-md:   18px;   /* body lg  · 28 */
+  --t-lg:   20px;   /* h6       · 28 */
+  --t-xl:   24px;   /* h5       · 32 */
+  --t-2xl:  28px;   /* h4       · 36 */
+  --t-3xl:  32px;   /* h3       · 40 */
+  --t-4xl:  36px;   /* h2       · 44 */
+  --t-5xl:  40px;   /* h1       · 56 */
+  --t-6xl:  52px;   /* display  · 56 */
+  --t-display: 56px; /* @kind font */ /* display-2 · 56 */
+  /* Hero statement — the masked headline. Fluid above display-2,
+     capped there on small screens. Only once per page. */
+  --t-hero: clamp(40px, 6vw, 56px);      /* @kind font */
+
+  /* Line heights from the same tokens */
+  --lh-display: 56px;  /* @kind font */
+  --lh-h1: 56px;       /* @kind font */
+  --lh-h2: 44px;       /* @kind font */
+  --lh-h3: 40px;       /* @kind font */
+  --lh-h4: 36px;       /* @kind font */
+  --lh-h5: 32px;       /* @kind font */
+  --lh-h6: 28px;       /* @kind font */
+
+  --lh-tight: 1.05;  /* @kind font */
+  --lh-snug:  1.2;   /* @kind font */
+  --lh-base:  1.5;   /* @kind font */ /* body md 16/24 */
+  --lh-loose: 1.56;  /* @kind font */ /* body lg 18/28 */
+
+  --tr-tight: -0.02em;
+  --tr-snug:  -0.01em;
+  --tr-base:   0;      /* @kind font */
+  --tr-wide:   0.04em;
+  --tr-eyebrow: 0.16em;
+
+  /* ─────────────────────────────────────────────────────────
+   * SPACING / SIZING / RADII / MOTION
+   * ──────────────────────────────────────────────────────── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  24px;
+  --space-6:  32px;
+  --space-7:  48px;
+  --space-8:  64px;
+  --space-9:  96px;
+  --space-10: 128px;
+
+  /* Icon sizes — MingCute UI icons, 24px grid */
+  --icon-xs: 14px;
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
+  --icon-xl: 32px;
+
+  /* Chrome */
+  --nav-h:    72px;
+  --ribbon-h: 40px;
+
+  --radius-0: 0;
+  --radius-1: 2px;
+  --radius-2: 6px;
+  --radius-3: 10px;
+  --radius-4: 16px;
+  --radius-5: 24px;      /* image plates, hero cards, calendar shell */
+  --radius-pill: 999px;
+
+  /* AAIF is a flat system — no drop shadows. Depth comes from 1px
+     hairlines, surface tinting, and inset strokes over imagery. */
+  --shadow-1: 0 0 0 1px var(--line);
+  --shadow-2: 0 0 0 1px var(--line-2);
+  --shadow-3: 0 0 0 1px var(--ink);
+  --shadow-inset: inset 0 0 0 1px var(--line);
+  --shadow-inset-inv: inset 0 0 0 1px var(--line-inv-2);
+
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);   /* @kind other */
+  --ease-in-out: cubic-bezier(0.6, 0, 0.2, 1);  /* @kind other */
+  --dur-fast: 120ms;      /* @kind other */
+  --dur-base: 220ms;      /* @kind other */
+  --dur-slow: 420ms;      /* @kind other */
+  --dur-marquee: 40s;     /* @kind other */ /* photo + card marquees */
+
+  /* Layout */
+  --container: 1240px;
+  --container-wide: 1440px;   /* full-bleed plates cap here */
+  --container-narrow: 880px;
+  --grid-gutter: 32px;
+}
+
+@font-face {
+  font-family: 'Instrument Sans Fallback';
+  src: local('Arial');
+  ascent-override: 94.42%;
+  descent-override: 24.33%;
+  line-gap-override: 0%;
+  size-adjust: 102.74%;
+}

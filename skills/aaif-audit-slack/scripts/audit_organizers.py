@@ -693,7 +693,7 @@ def rooms_to_create(audit):
             and not c["public_how"].startswith(("planned:", "held-private:"))]
 
 
-def render(audit, orphans, dupes, today):
+def render_body(audit, orphans, dupes, today):
     allp = [p for c in audit for p in c["accepted"]]
     S = {
         "chapters": len(audit),
@@ -986,7 +986,7 @@ complete.</div>
       <div class="chips">{''.join('<span class="chip">%s · %d</span>' % (e(c["city"]), len(c["accepted"])) for c in unreachable)}</div>
       <p class="note">They may be in Slack under a different address — which is itself the finding,
       because nothing ties the intake identity to the Slack one.</p></div>
-    <div class="card"><h3>{len(empty_room)} chapters have a room and nobody in it</h3>
+    <div class="card"><h3>{len(empty_room)} chapter{"" if len(empty_room) == 1 else "s"} {"has" if len(empty_room) == 1 else "have"} a room and nobody in it</h3>
       <p class="sub">Channel exists; zero accepted organizers are members</p>
       <div class="chips">{''.join('<span class="chip">#%s</span>' % e(c["public"]) for c in empty_room)}</div>
       <p class="note">The cheapest fixes here — the channel already exists and already has
@@ -1051,6 +1051,24 @@ btns.forEach(b=>b.addEventListener('click',()=>{
   });
 }));
 """
+    return body, js
+
+
+def strip_controls(body):
+    """Remove the interactive filter row from a report body.
+
+    For the combined PDF (summarize_audits.py), which drops the script that
+    drives these buttons because its `tbody tr` query is global and would reach
+    into the other appendices. Dropping the script alone leaves controls that
+    look interactive and do nothing, so the markup goes too.
+    """
+    return re.sub(r'<div class="controls".*?</div>', "", body, flags=re.S)
+
+
+def render(audit, orphans, dupes, today):
+    """The standalone document. `render_body` is the seam the combined
+    single-PDF summary composes from — see summarize_audits.py."""
+    body, js = render_body(audit, orphans, dupes, today)
     return rs.page("Slack Organizers Audit", body, script=js)
 
 

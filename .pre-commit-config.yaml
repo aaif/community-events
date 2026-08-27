@@ -12,9 +12,16 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # design/aaif-design-system.html is a VENDORED self-extracting bundle:
+      # its markup, fonts and images are base64/JSON blobs on very long lines.
+      # Reformatting it is at best churn on a file we do not author and at
+      # worst corruption of a payload, so the byte-level fixers skip it. It is
+      # replaced wholesale, never edited. See DESIGN.md.
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]   # keep intentional Markdown hard breaks
+        exclude: '^design/aaif-design-system\.html$'
       - id: end-of-file-fixer
+        exclude: '^design/aaif-design-system\.html$'
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-added-large-files
@@ -83,6 +90,19 @@ repos:
         language: python
         pass_filenames: false
         files: '\.py$'
+  # --- Generated design tokens must match the design system -------------------
+  # design/aaif-tokens.css is derived from design/aaif-design-system.html. A
+  # stale copy is worse than none: reports keep rendering, and keep looking
+  # almost-right, long after the system moved. See DESIGN.md.
+  - repo: local
+    hooks:
+      - id: check-design-tokens
+        name: design tokens match the design system
+        entry: python3 scripts/extract_design_tokens.py --check
+        language: python
+        pass_filenames: false
+        files: '^(design/.*|scripts/extract_design_tokens\.py)$'
+
   # --- Workflows must not leak secrets/PII (public repo) ----------------------
   - repo: local
     hooks:

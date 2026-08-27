@@ -1,25 +1,64 @@
 ---
 name: aaif-audit-slack
-description: Audit the community Slack workspace, from either side. The organizer engine checks, for every chapter on the Chapters List, whether it has a public city channel and a private organizers channel, whether the organizers we accepted are actually in them, and who is in each organizers channel that we never accepted. The member engine reports channel counts, sizes, descriptions and lifecycle, plus how many accounts behind the headline member count are active, deactivated, guests or bots. Each produces a self-contained HTML report and a PDF. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in the -organizers channels, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
-argument-hint: '[organizers|members|both] [--refresh] [--out NAME] [--no-pdf]'
+description: Audit the community Slack workspace, from either side. The organizer engine checks, for every chapter on the Chapters List, whether it has a public city channel and a private organizers channel, whether the organizers we accepted are actually in them, and who is in each organizers channel that we never accepted. The topics engine reports on the subject-matter channels — which subjects have gone quiet, which rooms overlap, which are carried by one poster, and which show a newcomer nothing — from a human-curated Topics tab. The member engine reports channel counts, sizes, descriptions and lifecycle, plus how many accounts behind the headline member count are active, deactivated, guests or bots. Each engine can produce a standalone HTML report, but the deliverable is ONE combined PDF. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in the -organizers channels, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
+argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME] [--no-pdf]'
 ---
 
 # AAIF Slack Audit
 
 Three engines over one workspace, same house rules — **everything is read-only**.
 
-| Engine | Script | Answers |
+**Three reports, one measurement layer.**
+
+| Report | Script | Answers |
 |---|---|---|
 | Organizers | `audit_organizers.py` | does each chapter have a home, and are the people we accepted in it? |
+| Topics | `audit_topics.py` | are the subjects the community organises around still alive, and can a newcomer find them? |
 | Members | `audit_members.py` | what does the workspace look like to an ordinary member? |
-| Activity | `audit_activity.py` | who is actually talking, where — last human message and message volume per channel |
 
-Run whichever the user asked for. "Audit Slack" with no side named means **both**
-of the first two — run the organizer engine first; it is the one with decisions
-attached. The activity engine needs a history-scoped token (see the ceiling
-below) and answers questions about dead channels, engagement and posting volume;
-its cache also feeds the member report's "posted recently" figure, so run it
-before the member engine when both are wanted.
+| Measurement layer | Script | Supplies |
+|---|---|---|
+| Activity | `audit_activity.py` | last human message, message volume, distinct posters per channel — feeds the topics and member reports |
+
+| Deliverable | Script | Produces |
+|---|---|---|
+| Where to focus | `summarize_audits.py` | **the single PDF you hand over** — the ranked focus page, with all three reports behind it as appendices |
+
+Run whichever the user asked for. "Audit Slack" with no side named means **all
+three reports**. Order is fixed: **organizers → activity → topics → members.**
+The organizer engine goes first because it is the one with decisions attached.
+Activity must precede topics and members because its cache is what supplies the
+topic report's dormancy figures and the member report's "posted recently" line —
+run either first and those numbers are missing from a report you have already
+handed over. Topics additionally reads the organizer engine's `audit.json` to
+exclude chapter rooms from its unclassified list, so it goes after organizers.
+
+**The output is ONE PDF.** Run the four collectors with `--no-pdf` — they exist
+to fill the cache and to be run standalone when someone wants just one side —
+then `summarize_audits.py` composes the deliverable:
+
+```bash
+for s in organizers activity topics members; do
+  python3 ${CLAUDE_SKILL_DIR}/scripts/audit_$s.py --no-pdf
+done
+python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py   # -> slack-full-audit.pdf
+rm -f slack-*-audit.html                                  # scaffolding, holds PII
+```
+
+Do not hand over four PDFs. Four files drift out of step with each other the
+moment one is re-run, and the person reading them has to work out the ranking
+that `summarize_audits.py` already did. It deletes its own intermediate HTML for
+the same reason the caches are 0600 — a second copy of every member name and
+address in the working directory is a liability, not a convenience
+(`--keep-html` if you genuinely need it).
+
+**Activity is not opt-in.** Asking for the organizer or member side alone still
+runs it, because its numbers are the only measured engagement in this skill and
+every other activity signal here is a proxy the reports refuse to use. Skip it
+only when the token lacks `channels:history` (the engine says so and exits) or
+the user explicitly asks you not to. It needs a history-scoped token — see the
+ceiling below — and answers questions about dead channels, engagement and
+posting volume.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -248,7 +287,64 @@ numbers. Delete that block once they are checked.
 
 ---
 
-# 2. Member engine
+# 2. Topics engine
+
+The subject-matter rooms — `#kubernetes`, `#coding-agents`, `#llmops` — as
+opposed to the chapter rooms (engine 1) and the plumbing (`#general`, `#random`,
+`#job-posts`). Touches no Drive file except to **read** the classification.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/audit_topics.py
+```
+
+Writes `slack-topics-audit.html` + `.pdf`.
+
+Sections: where the subjects sit by theme · quiet and dead topics by last
+**human** message · proposed overlapping rooms · rooms carried by one or two
+posters · rooms with no purpose set · unclassified rooms · the limits.
+
+## The classification lives on the Chapters List
+
+Same decision as the channel map, for the same reason: whether `#be-shameless`
+is a subject or plumbing is a **human judgement**, and the people who can say are
+the people with the spreadsheet. It is a **`Topics` tab**, `Channel | Kind |
+Theme | Notes`, one row per channel someone has classified — anything live and
+public without a row is reported as *unclassified*, never guessed at.
+
+| Column | Means |
+|---|---|
+| `Channel` | the slug; a leading `#` is tolerated and stripped |
+| `Kind` | `topic`, `vendor`, `cloud` — the **subject** rooms, which is what the report measures — or `geo`, `community`, `ops`, which are filed as deliberately *not* topics |
+| `Theme` | the grouping the report charts and clusters by (`LLMs & agents`, `Data & pipelines`, …) |
+| `Notes` | free text for the human |
+
+**The engine never infers a topic.** A channel with no row is reported as
+*unclassified* — an answer someone will notice — and is counted in nothing else.
+`geo`/`community`/`ops` rows exist so that "not a topic" is a filed decision
+rather than an absence, exactly as `none` does in the channel map.
+
+- **A blank or misspelled `Kind` aborts the run.** Silently dropping a row would
+  remove a room from every number on the page.
+- **A channel on the tab that no longer resolves aborts** — renamed or archived,
+  same class of configuration bug the chapter map aborts on.
+- **Chapter, organizer and country rooms are excluded** from *unclassified* by
+  reading the organizer engine's `audit.json`. Without that file the list is
+  inflated, and the page says so on its face rather than under-reporting.
+
+## Reading the results
+
+- **Quiet is not the same as archive-me.** A 3,000-member room silent for a year
+  is a decision to make — revive it with a prompt, or retire it deliberately —
+  not an automatic cleanup. The report ranks by members precisely so the cost of
+  getting it wrong is visible.
+- **Overlaps are proposals, never actions.** Merging two rooms destroys history
+  and splits a membership. The page names the pair and why; a human decides.
+- **Membership is not readership.** The concentration section is the honest
+  number: a room with 6,000 members and two posters is two people talking.
+
+---
+
+# 3. Member engine
 
 Structural audit of channels and accounts. Touches no Drive file.
 
@@ -278,7 +374,7 @@ email-domain breakdown · the limits, restated on the page.
 
 ---
 
-# 3. Activity engine
+# 4. Activity engine — the measurement layer
 
 Per live channel: last *human* message (plumbing subtypes and bots excluded),
 message volume, distinct posters and join noise over a trailing window
@@ -338,6 +434,40 @@ refuse to start unless their cache and output paths would be safe from `git add
 publish the workspace directory irreversibly. It covers already-tracked files
 too, which `.gitignore` alone does not, and it allows paths outside any
 repository — there is nothing to commit them to.
+
+# 5. The single-PDF deliverable
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py
+```
+
+Writes `slack-full-audit.pdf`, deleting the intermediate HTML it renders from
+(`--keep-html` retains it; `--no-pdf` writes only the HTML and no PDF).
+
+It **measures nothing new**: it reads the four caches the engines wrote and
+aborts naming the engine whose cache is missing, empty, or stamped with a
+different workspace, rather than estimating a number nobody measured. It does
+re-read the **Topics tab** over `gws` — the classification is config, not a
+measurement, and is not cached — and it re-runs `classify`/`attach_activity`
+once so the focus page and Appendix B select from the *same* records. They used
+to derive separately and immediately disagreed about how many rooms were quiet. The focus page
+ranks findings by what it costs to leave them alone (a public organizers channel
+outranks everything; a quiet topic room outranks a missing purpose line), and
+each appendix is the engine's own report body, unmodified.
+
+The seam is `render_body` / `build_body` in the three engines: they return the
+page fragment, and their `render` / `build_report` wrap it for standalone use.
+Keep both paths — a change to a report body must show up in the combined PDF and
+the standalone one at once, which is the whole point of composing fragments
+rather than stitching generated HTML.
+
+The organizer report's filter buttons are removed from the combined document on
+purpose — **both** the script and the markup. The script hides rows via a global
+`tbody tr` query and would reach into the other appendices; dropping it alone
+left five controls that look interactive and do nothing, so
+`audit_organizers.strip_controls()` takes the markup too.
+
+---
 
 # House rules
 
