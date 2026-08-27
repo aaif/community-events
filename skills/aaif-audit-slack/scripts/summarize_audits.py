@@ -252,6 +252,7 @@ def build(o, t, directory, today, ages):
     ]) for s in sorted(t["alive"], key=lambda s: -s["act"].get("human_msgs", 0))[:8])
 
     body = """
+%(masthead)s
 <h1>Slack: where to focus</h1>
 <p class="lede">One page over three audits — organizers, topics and members —
 ranked by what it costs to leave alone. Every figure is carried through from the
@@ -310,6 +311,7 @@ subject because someone wrote it on the Topics tab.</li>
 <footer>Built %(today)s from: organizer audit (%(a_org)s), activity sweep
 (%(a_act)s), channel list (%(a_chan)s), user directory (%(a_users)s).
 Read-only throughout; no message text was retained.</footer>
+%(closing)s
 """ % {
         "pub_org": len(o["pub_org"]),
         "quiet": len(t["quiet"]),
@@ -351,6 +353,12 @@ Read-only throughout; no message text was retained.</footer>
         "alive_rows": alive_rows,
         "ngaps": len(o["gaps"]),
         "gap_rows": gap_rows,
+        "masthead": rs.masthead(
+            "Slack audit",
+            "Slack audit \u00b7 %s" % today.strftime("%d %B %Y")),
+        "closing": rs.closing(
+            "Take your seat in what comes next.",
+            "aaif.io \u00b7 internal \u2014 contains member data"),
         "today": e(today.strftime("%Y-%m-%d")),
         "a_org": e(ages["audit"]), "a_act": e(ages["activity"]),
         "a_chan": e(ages["channels"]), "a_users": e(ages["users"]),

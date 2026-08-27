@@ -235,6 +235,27 @@ h3{font-size:1.1rem}
 code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
   background:var(--sunken); border:1px solid var(--line-soft); border-radius:5px;
   padding:1px 6px; color:var(--ink-1); white-space:nowrap}
+/* Masthead + closing band — the design system's own document furniture. */
+.masthead{display:flex; align-items:center; justify-content:space-between;
+  gap:24px; flex-wrap:wrap; padding-bottom:20px;
+  border-bottom:1px solid var(--line-hard)}
+.masthead .mark{width:150px; height:auto; display:block}
+.masthead .mark-text{font-weight:600; font-size:1.3rem; letter-spacing:-.02em}
+/* The mark is solid black artwork; on the dark surface it must invert. */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .masthead .mark{filter:invert(1)}
+}
+:root[data-theme="dark"] .masthead .mark{filter:invert(1)}
+.mh-meta{font-family:var(--font-mono,ui-monospace,Menlo,monospace);
+  font-size:12px; text-transform:uppercase;
+  letter-spacing:var(--tr-eyebrow,.16em); color:var(--ink-faint)}
+.closing{display:flex; align-items:center; justify-content:space-between;
+  gap:24px; flex-wrap:wrap; background:var(--void,#000); color:#FFF;
+  border-radius:var(--radius-3,10px); padding:26px 30px; margin-top:8px}
+.closing .cl-line{font-size:1.05rem; font-weight:500; letter-spacing:-.01em}
+.closing .cl-meta{font-family:var(--font-mono,ui-monospace,Menlo,monospace);
+  font-size:12px; text-transform:uppercase;
+  letter-spacing:var(--tr-eyebrow,.16em); color:#8A8A86}
 .nil{color:var(--ink-faint)}
 /* Used by every report for de-emphasised cell text and empty-table
    placeholders ("no purpose set", "Nothing quiet."). It was referenced in ten
@@ -407,6 +428,47 @@ footer{color:var(--ink-faint); font-size:.8rem; border-top:1px solid var(--line-
   a{color:inherit}
 }
 """
+
+
+#: The AAIF wordmark, lifted from the design system bundle. Inlined as a data
+#: URI for the same reason the fonts are: these render to PDF offline, and a
+#: missing logo is the kind of thing nobody notices until the document is in
+#: front of a board.
+_MARK = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), "assets", "aaif-mark.svg")
+
+
+@functools.lru_cache(maxsize=1)
+def mark_data_uri():
+    """The wordmark as a data: URI, or "" when the asset is missing."""
+    try:
+        with open(_MARK, "rb") as fh:
+            return ("data:image/svg+xml;base64,"
+                    + base64.b64encode(fh.read()).decode("ascii"))
+    except OSError:
+        return ""
+
+
+def masthead(title, eyebrow=""):
+    """The document furniture every AAIF report opens with.
+
+    Tokens alone are not a brand: the design system's own one-pager opens on a
+    logo lockup over a mono metadata rule, and closes on a black band. Reports
+    that carried only the palette read as a tool's output rather than as
+    something the foundation issued — which is what they are.
+    """
+    src = mark_data_uri()
+    logo = ('<img class="mark" alt="AAIF" src="%s">' % src) if src else (
+        '<span class="mark-text">AAIF</span>')
+    return ('<header class="masthead">%s<span class="mh-meta">%s</span></header>'
+            % (logo, html.escape(str(eyebrow or title))))
+
+
+def closing(line="Take your seat in what comes next.", meta="aaif.io"):
+    """The black closing band, matching the design system's one-pager."""
+    return ('<footer class="closing"><span class="cl-line">%s</span>'
+            '<span class="cl-meta">%s</span></footer>'
+            % (html.escape(str(line)), html.escape(str(meta))))
 
 
 def page(title, body, extra_css="", script=""):
