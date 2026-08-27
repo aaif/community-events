@@ -101,14 +101,15 @@ _REF_RE = re.compile(r"(\$?)([A-Z]{1,3})(\$?)(\d+)")
 
 #: A cross-sheet reference the remapper CAN rewrite — ONE definition, used both
 #: to do the rewriting (remap_formula) and to find what it did not claim
-#: (guide_misses). Two regexes encoding the same knowledge would drift: teach
+#: (unrewritten_refs). Two regexes encoding the same knowledge would drift: teach
 #: one a new form and the other reports it as unfixed, a false alarm in the
 #: single output a human is meant to act on by hand.
-#: The leading lookbehind is load-bearing in BOTH directions: without it a
-#: sheet whose name merely ENDS in the CRM sheet's name — `PastAttendees!D2`,
-#: `Old_Attendees!A:A` — matches on the substring, so the rewriter would
-#: renumber a reference to somebody else's tab and the reporter would raise a
-#: phantom "fix by hand" line about it.
+#: The leading lookbehind stops a sheet whose name merely ENDS in the CRM
+#: sheet's name — `PastAttendees!D2`, `Old_Attendees!A:A` — from matching on
+#: the substring and having somebody else's tab renumbered. That was live in
+#: the shipped rewriter until 2026-08-27. (_SHEET_MENTION carries its own copy
+#: for the mirror-image reason: without it, the same reference raises a phantom
+#: "fix by hand" line.)
 _HANDLED_REF = re.compile(
     r"(?<![A-Za-z0-9_])(%s!)((?:\$?[A-Z]{1,3}\$?\d+)(?::\$?[A-Z]{1,3}(?:\$?\d+)?)?)"
     % re.escape(CRM_SHEET))
@@ -117,7 +118,14 @@ _HANDLED_REF = re.compile(
 #: The complement of _HANDLED_REF over this is the report, which is what makes
 #: the check closed: a form nobody has thought of is reported rather than
 #: silently left pointing at the pre-move layout.
-_SHEET_MENTION = re.compile(r"(?<![A-Za-z0-9_])'?%s'?\s*!" % re.escape(CRM_SHEET))
+#: The apostrophe has three spellings in the estate — literal, `&apos;` and
+#: `&#39;`. migrate_interested_in._both_quotings documents the same trap one
+#: character over for `"` vs `&quot;`; older third-party-written workbooks
+#: escape differently, and a mention this pattern cannot see is neither
+#: rewritten nor reported, which is the one outcome the design rules out.
+_Q = r"(?:'|&apos;|&#39;)?"
+_SHEET_MENTION = re.compile(
+    r"(?<![A-Za-z0-9_])%s%s%s\s*!" % (_Q, re.escape(CRM_SHEET), _Q))
 
 
 def remap_ref(ref, mapping):
@@ -304,8 +312,55 @@ def unmovable(att):
     return out
 
 
-def guide_misses(parts):
-    """Every mention of the CRM sheet that `remap_formula` does NOT claim.
+#: What a snippet may contain. Bounded to characters that can be part of an A1
+#: reference, deliberately: the previous version took a raw 24-char window,
+#: and `xl/sharedStrings.xml` is the workbook-GLOBAL string table. A CRM cell
+#: reading "Great turnout, loved the Attendees! Ada L, ada@x.com is co-hosting"
+#: printed as `Attendees! Ada L, ada@x.` — a member's name and a truncated
+#: email, echoed to the operator's terminal under a "Fix by hand" heading, from
+#: a script with no --redact flag. Stopping at whitespace and separators makes
+#: that structurally impossible while keeping `Attendees!L:L` and
+#: `'Attendees'!D2` fully actionable.
+#: `&` is NOT excluded — the entity spellings of the apostrophe (`&apos;`,
+#: `&#39;`) start with one, and excluding it made those snippets empty, which
+#: is the least actionable possible report line. Prose spill is bounded by the
+#: WHITESPACE exclusion, not by `&`.
+_SNIPPET_CHARS = re.compile(r"[^\s<>,()\"]{0,32}")
+
+
+def _snippet(raw, at):
+    return _SNIPPET_CHARS.match(raw, at).group(0)
+
+
+#: After the `!`, a real reference starts with a column letter or a `$`. A `"`
+#: means the reference is being BUILT as a string (`INDIRECT("Attendees!" & x)`)
+#: — unanalyzable by construction, so it must be reported too. Anything else is
+#: prose: "See the Attendees! tab for the roster" is a sentence, not a
+#: reference, and a fix-by-hand list padded with sentence fragments is a list
+#: operators stop reading — which would make every finding below it invisible.
+_REF_STARTS = re.compile(r'[$A-Z"]')
+
+
+def scan_parts(parts):
+    """Every zip part that can hold a reference to the CRM sheet.
+
+    WIDER than guide_parts on purpose. guide_parts is what the rewriter edits;
+    this is what the reporter reads, and a reporter has no reason to be narrow.
+    A chapter's own "Stats" tab holding `COUNTA(Attendees!L2:L1000)`, or a
+    `<definedName>` in workbook.xml (which is how Sheets exports a named
+    range), is rewritten by nothing here — and was reported by nothing either,
+    so the column moved out from under it in silence. `unmovable()` does not
+    cover it: that counts `<f>` on the Attendees sheet alone.
+    """
+    out = [n for n in parts if n.startswith("xl/worksheets/") and n.endswith(".xml")]
+    for extra in ("xl/workbook.xml", "xl/sharedStrings.xml"):
+        if extra in parts:
+            out.append(extra)
+    return sorted(out)
+
+
+def unrewritten_refs(parts):
+    """Every mention of the CRM sheet that will NOT be correctly rewritten.
 
     Derived, not enumerated. The first version of this listed the two shapes
     known to slip through (`Attendees!L:L`, `'Attendees'!D2`) in a second
@@ -323,19 +378,33 @@ def guide_misses(parts):
     the pre-move layout looks exactly like a correctly migrated one, and the
     verify only ever compares Attendees cell values.
 
-    NOTE `xl/sharedStrings.xml` is workbook-global, so a reference living on
-    some other tab is reported here too. That is the honest direction — the
-    rewriter edits that same global table.
+    A part the rewriter does not touch at all (any sheet but Guide, and
+    workbook.xml) has EVERY mention reported, claimed or not — being claimable
+    is irrelevant when nothing will run the rewrite over it.
+
+    NOT closed, and the docstring must not pretend otherwise. `_SHEET_MENTION`
+    is case-sensitive and literal, so a lowercase `attendees!`, a name built by
+    concatenation (`"Attend"&"ees!"`), or an R1C1-style `Attendees!R2C4` are
+    still neither rewritten nor reported. What this does close is every form
+    spelled the ordinary way, in every part that can hold one.
     """
     out = set()
-    for part in guide_parts(parts):
+    rewritable = set(guide_parts(parts))
+    for part in scan_parts(parts):
         raw = parts[part].decode("utf-8", "replace")
-        claimed = {m.start() for m in _HANDLED_REF.finditer(raw)}
+        # Anchored on the BANG, not on either match's start. The two patterns
+        # do not always begin at the same character — an unbalanced leading
+        # quote (`X('Attendees!D2)`) puts _SHEET_MENTION one earlier — so
+        # comparing starts reported a reference the rewriter had just fixed.
+        # The `!` is the one position both patterns must agree on.
+        claimed = ({m.start(1) + len(CRM_SHEET) for m in _HANDLED_REF.finditer(raw)}
+                   if part in rewritable else set())
         for m in _SHEET_MENTION.finditer(raw):
-            if m.start() not in claimed:
-                # Enough trailing text to name the column, so the report line
-                # is actionable rather than just "something, somewhere".
-                out.add(raw[m.start():m.start() + 24].split("<")[0].strip())
+            if m.end() - 1 in claimed:
+                continue
+            if not _REF_STARTS.match(raw, m.end()):
+                continue                      # prose, not a reference
+            out.add(_snippet(raw, m.start()))
     return sorted(out)
 
 
@@ -434,6 +503,12 @@ def _run(args, workdir):
             skipped.append((folder["name"], why))
             print("  %-18s SKIPPED — %s" % (folder["name"], why))
             continue
+        # Scanned BEFORE the unmovable gate: a workbook refused for a merged
+        # cell can also carry an unrewritable reference, and skipping the scan
+        # meant that chapter contributed nothing to the verdict at all.
+        misses = unrewritten_refs(book["parts"])
+        if misses:
+            guide_gaps.append((folder["name"], misses))
         blockers = unmovable(book["att"])
         if blockers:
             skipped.append((folder["name"],
@@ -442,9 +517,6 @@ def _run(args, workdir):
                             % " and ".join(blockers)))
             print("  %-18s SKIPPED — %s" % (folder["name"], skipped[-1][1]))
             continue
-        misses = guide_misses(book["parts"])
-        if misses:
-            guide_gaps.append((folder["name"], sorted({r for _, r in misses})))
         mapping = move_mapping(book["att"].headers)
         if mapping is None:
             continue
@@ -465,9 +537,15 @@ def _run(args, workdir):
             print("  %-28s %s" % (name, why))
     if not touched:
         if skipped or guide_gaps:
-            print("\nNo column move is due — but %d chapter(s) were SKIPPED and %d "
-                  "have a reference this move cannot rewrite. Nothing here will "
-                  "fix them." % (len(skipped), len(guide_gaps)))
+            # Name only the conditions that actually occurred — printing
+            # "0 have a reference this move cannot rewrite" alongside a real
+            # skip invites the reader to scan for a gap section that isn't there.
+            why = [w for w, n in (("SKIPPED", len(skipped)),
+                                  ("carry a reference this move cannot rewrite",
+                                   len(guide_gaps))) if n]
+            print("\nNo column move is due — but %d chapter(s) %s. Nothing here "
+                  "will fix them."
+                  % (len(skipped) + len(guide_gaps), " and ".join(why)))
             return 1
         print("\nNothing to do — %r already sits before %r everywhere."
               % (MOVE, BEFORE))
@@ -475,7 +553,13 @@ def _run(args, workdir):
     if not args.write:
         print("\n%d workbook(s) would change. Re-run with --write to apply."
               % len(touched))
-        return 1 if guide_gaps else 2
+        # Still 2, not 1. 2 means "work is pending, re-run with --write"; 1 is
+        # failure. A gap cannot be cleared by --write, so folding it into 1
+        # here would abort a wrapper on a condition --write does not address —
+        # and one unrewritable reference anywhere in the estate would then mask
+        # every real column move behind it. The gap is loud in the text above
+        # and reaches the verdict on the paths where nothing else is pending.
+        return 2
 
     print("\nWriting %d workbook(s)..." % len(touched))
     backup_dir = backup_root("crm-order-before")
@@ -535,22 +619,22 @@ def _run(args, workdir):
                 r for r in before if before[r] != after.get(r)]
             stale.append((folder["name"], "%d row(s) changed value across the "
                           "move — DATA MOVED, restore from the backup" % len(rows)))
-    if failed or stale or changed:
+    # `skipped` belongs here too: a chapter refused before the move is not
+    # written, not verified, and not fixed — reporting "Verified" and exiting 0
+    # over it is the same false success this whole section exists to prevent.
+    if failed or stale or changed or skipped or guide_gaps:
         if failed or stale:
             print("VERIFY FAILED:")
             for name, why in failed + stale:
                 print("  %s — %s" % (name, why))
-        return 1
-    if guide_gaps:
-        # A gap is real and unfixed whether or not any column moved, so it must
-        # reach the verdict on BOTH paths. It used to change the exit code only
-        # when nothing was due — so a run that moved columns printed a clean
-        # "Verified" over a list of chapters whose Guide still points at the
-        # pre-move layout, and any wrapper reading the code saw success.
-        print("Verified: every written workbook has %r before %r, and every row "
-              "holds exactly the values it held before — but %d chapter(s) carry "
-              "a reference listed above that was NOT rewritten."
-              % (MOVE, BEFORE, len(guide_gaps)))
+        # A gap or a skip is real and unfixed whether or not any column moved,
+        # so both reach the verdict. Without this a run that moved columns
+        # printed a clean "Verified" over a list of chapters that were never
+        # written, and a wrapper reading the code saw success.
+        if skipped or guide_gaps:
+            print("NOT fully migrated: %d chapter(s) SKIPPED, %d carrying a "
+                  "reference this move cannot rewrite — see above."
+                  % (len(skipped), len(guide_gaps)))
         return 1
     print("Verified: every written workbook has %r before %r, and every row "
           "holds exactly the values it held before." % (MOVE, BEFORE))

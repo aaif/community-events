@@ -506,7 +506,12 @@ def guide_parts(parts):
     """
     out = []
     part = sheet_part(parts, "Guide")
-    if part:
+    # `part in parts` as well as `part`: sheet_part resolves through
+    # workbook.xml.rels and returns whatever Target says, without checking the
+    # zip actually holds it. Callers index parts[part] directly, so a workbook
+    # whose rel points at a missing part would raise KeyError in the middle of
+    # an 83-workbook loop instead of being skipped.
+    if part and part in parts:
         out.append(part)
     if "xl/sharedStrings.xml" in parts:
         out.append("xl/sharedStrings.xml")
