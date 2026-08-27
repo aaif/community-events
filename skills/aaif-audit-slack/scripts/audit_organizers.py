@@ -66,6 +66,11 @@ INTAKE_TAB = "Organizers"
 #: "Existing" alone would miss every MLOps row, so keep the full value.
 ACCEPTED = ("Accepted", "Existing (from MLOps)")
 
+#: Intake statuses that are a decided NO. Someone in an organizers room carrying
+#: one of these is not "awaiting a decision" — the decision was made, and their
+#: presence in a private channel is the thing to look at.
+DECIDED_NO = ("Denied", "Inactive", "Duplicate")
+
 e = html.escape
 
 
@@ -264,6 +269,23 @@ def read_intake():
     idx = header_index(headers, INTAKE_TAB, "Status", "Full name", "Email",
                        "City (Existing)", "City (New)", "Chapter")
     people, seen, dupes, saw = [], set(), 0, set()
+    # Every intake row by email, ACCEPTED OR NOT. The audit's job is to explain
+    # who is in an organizers room, and "we never accepted them" collapses two
+    # very different people into one line: a stranger, and someone who applied
+    # and is waiting on us. The second is the actionable case — they are in the
+    # private room doing the work, and because acceptance is what triggers the
+    # Drive grant, they are locked out of their own chapter's folder.
+    # Bengaluru 2026-08-27 was exactly this: the chapter's de-facto lead, first
+    # invited the minute the room was created, sitting at Prospect and asking
+    # in-channel why he got an access-denied page.
+    applicants = {}
+    for row in rows[1:]:
+        e_any = cell(row, idx["Email"]).lower()
+        if e_any:
+            applicants.setdefault(e_any, {
+                "status": cell(row, idx["Status"]),
+                "name": cell(row, idx["Full name"]),
+                "city": cell(row, idx["Chapter"]) or cell(row, idx["City (New)"])})
     for row in rows[1:]:
         status = cell(row, idx["Status"])
         if status:
@@ -298,7 +320,7 @@ def read_intake():
             "design, so a trailing space or a new label breaks it."
             % (len(rows) - 1, INTAKE_TAB, list(ACCEPTED),
                ", ".join(sorted(saw)) or "(none)"))
-    return people, dupes
+    return people, dupes, applicants
 
 
 # --------------------------------------------------------------------------
@@ -577,13 +599,19 @@ def check_membership_floor(membership, chans, chans_cached, refetch, note=print)
     return chans
 
 
-def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
+def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
+                applicants=None):
     """Join the sheet data to the Slack data, per chapter.
 
     Each chapter record gains `accepted` (people, each with `slack_id`,
     `slack_account`, `in_public`, `in_organizers`) and `unaccounted` (everyone in
     the organizers channel we never accepted, each with `is_staff` and
-    `unresolved`). Every key from match_channels() survives unchanged.
+    `unresolved`, and — when their email matches an intake row — `intake_status`
+    and `intake_city`). Every key from match_channels() survives unchanged.
+
+    `intake_status` is what separates "a stranger is in the private room" from
+    "someone we are still deciding on is in the private room, doing the work,
+    and locked out of the Drive folder because acceptance is what grants it".
     """
     lookup = {}
     for r in rows:
@@ -628,13 +656,18 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain):
                 # rather than filing them under a group whose label asserts a
                 # judgement we never made about them.
                 extras.append({"id": uid, "name": uid, "email": "",
-                               "is_staff": False, "unresolved": True})
+                               "is_staff": False, "unresolved": True,
+                               "intake_status": "", "intake_city": ""})
                 continue
+            addr = (u.get("email") or "").lower()
+            app = (applicants or {}).get(addr) or {}
             extras.append({"id": uid,
                            "name": u.get("real_name") or u.get("name") or uid,
                            "email": u.get("email", ""),
-                           "is_staff": (u.get("email") or "").endswith("@" + staff_domain),
-                           "unresolved": False})
+                           "is_staff": addr.endswith("@" + staff_domain),
+                           "unresolved": False,
+                           "intake_status": app.get("status", ""),
+                           "intake_city": app.get("city", "")})
         out.append({**r, "accepted": accepted, "unaccounted": extras})
     return out, dict(orphans)
 
@@ -729,13 +762,24 @@ def render(audit, orphans, dupes, today):
         absent = [p for p in c["accepted"] if not p["in_organizers"]]
         unresolved = [x for x in c["unaccounted"] if x["unresolved"]]
         staff = [x for x in c["unaccounted"] if not x["unresolved"] and x["is_staff"]]
+        # Split the not-accepted into two, because they call for opposite
+        # actions. Someone with a live intake row APPLIED and is waiting on a
+        # decision — they are in the private room doing the work and, since
+        # acceptance is what grants Drive, locked out of their own folder.
+        # Someone with no intake row at all is a stranger in a private channel.
+        # One line reading "not an accepted organizer" hid both.
+        pending = [x for x in c["unaccounted"]
+                   if not x["unresolved"] and not x["is_staff"]
+                   and x.get("intake_status") and x["intake_status"] not in DECIDED_NO]
         others = [x for x in c["unaccounted"]
-                  if not x["unresolved"] and not x["is_staff"]]
+                  if not x["unresolved"] and not x["is_staff"] and x not in pending]
         groups = []
         for items, pill, label, cls in (
                 (present, "ok", "accepted organizer", ""),
                 (staff, "mute", "staff", "plist-x"),
-                (others, "warn", "not an accepted organizer", "plist-x"),
+                (pending, "warn", "APPLIED — awaiting a decision, no Drive access",
+                 "plist-x"),
+                (others, "warn", "no intake row at all", "plist-x"),
                 (absent, "bad", "accepted but absent", "plist-x"),
                 # Distinct from "not an accepted organizer": we could not look
                 # these accounts up, so we know nothing about them. Saying so is
@@ -1048,7 +1092,7 @@ def main():
     # reintroduced JSON table could not shadow what the chapters' own rows say.
     chapters, tables = read_chapters()
     cfg.update(tables)
-    people, dupes = read_intake()
+    people, dupes, applicants = read_intake()
     print("  %d chapters, %d accepted organizers (%d duplicate rows dropped)"
           % (len(chapters), len(people), dupes))
     print("  channel map from the sheet: %d own, %d organizers, %d regional"
@@ -1162,7 +1206,7 @@ def main():
                      ", ".join(sorted({err for _, err in failed}))), file=sys.stderr)
 
     audit, orphans = build_audit(rows, people, slack_ids, membership, directory,
-                                 cfg["staff_email_domain"])
+                                 cfg["staff_email_domain"], applicants)
     write_cache(os.path.join(args.cache, "audit.json"),
                 {"chapters": audit, "orphan_cities": orphans, "duplicates": dupes},
                 team_id)

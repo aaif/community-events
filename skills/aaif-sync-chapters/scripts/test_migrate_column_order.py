@@ -8,7 +8,8 @@ against. It is built from migrate_interested_in's own fixture, put through
 that migration, so the input here is literally what the previous script
 produces rather than a hand-written guess at it.
 """
-import os, re, sys
+import os, re, sys, tempfile
+from unittest import mock
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -115,11 +116,11 @@ for f, want in (("Attendees!$L$2:$L$1000", "Attendees!$D$2:$D$1000"),
                 ("Attendees!$A$1:$K$1",    "Attendees!$A$1:$L$1"),
                 ("Attendees!L2:L1000",     "Attendees!D2:D1000"),
                 ("Attendees!L2:L",         "Attendees!D2:D")):
-    got = mo.remap_formula(f, MAP, prefix="Attendees!")
+    got = mo.remap_formula(f, MAP, cross_sheet=True)
     check("absolute/relative range %-24r" % f, got, want)
 check("no remapped range ever spans two columns",
       [g for g in (mo.remap_formula("Attendees!$%s$2:$%s$1000" % (c, c), MAP,
-                                    prefix="Attendees!")
+                                    cross_sheet=True)
                    for c in "ABCDEFGHIJKL")
        if len(set(re.findall(r"\$([A-Z]+)\$", g))) != 1], [])
 
@@ -129,25 +130,25 @@ GUIDE_FILTER = ("=FILTER({Attendees!A2:A, Attendees!L2:L, Attendees!H2:H, "
                 '(Attendees!C2:C="Yes")+(Attendees!B2:B="High"), '
                 'Attendees!B2:B<>"Non-grata")')
 check("the live list is remapped, open-ended ranges included",
-      mo.remap_formula(GUIDE_FILTER, MAP, prefix="Attendees!"),
+      mo.remap_formula(GUIDE_FILTER, MAP, cross_sheet=True),
       "=FILTER({Attendees!A2:A, Attendees!D2:D, Attendees!I2:I, "
       "Attendees!J2:J, Attendees!L2:L, Attendees!B2:B, Attendees!F2:F}, "
       '(Attendees!C2:C="Yes")+(Attendees!B2:B="High"), '
       'Attendees!B2:B<>"Non-grata")')
 check("the dashboard tiles follow the column",
       mo.remap_formula('COUNTIF(Attendees!L2:L1000,"*Speaker*")', MAP,
-                       prefix="Attendees!"),
+                       cross_sheet=True),
       'COUNTIF(Attendees!D2:D1000,"*Speaker*")')
 check("an unrelated Attendees column is still remapped",
-      mo.remap_formula("COUNTA(Attendees!A2:A1000)", MAP, prefix="Attendees!"),
+      mo.remap_formula("COUNTA(Attendees!A2:A1000)", MAP, cross_sheet=True),
       "COUNTA(Attendees!A2:A1000)")
 # THE trap: the Guide has its own cells, and they must not move with the
 # Attendees layout. Without the prefix scope the dashboard rewrites itself.
 check("a Guide-LOCAL reference is left alone",
-      mo.remap_formula("B5+Attendees!E2", MAP, prefix="Attendees!"),
+      mo.remap_formula("B5+Attendees!E2", MAP, cross_sheet=True),
       "B5+Attendees!F2")
 check("...even when it names a column that moves",
-      mo.remap_formula("SUM(D2:D9)", MAP, prefix="Attendees!"), "SUM(D2:D9)")
+      mo.remap_formula("SUM(D2:D9)", MAP, cross_sheet=True), "SUM(D2:D9)")
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +330,58 @@ check("unmovable detects a chapter's own cell formula",
 
 
 # ---------------------------------------------------------------------------
+# Guide references the remapper cannot rewrite are REPORTED, not skipped
+# ---------------------------------------------------------------------------
+# remap_formula's prefix pass needs a bare `Attendees!` and a row number on the
+# first half. A whole-column ref or a quoted sheet name slips through — and a
+# Guide left pointing at the PRE-move layout looks exactly like one correctly
+# migrated, because the verify never reads the Guide at all. Unlike
+# migrate_interested_in.plan_guide, which reports an unrecognised formula, this
+# used to be completely silent.
+def _book_with_guide(text):
+    _n, _p = fx.make_pre_xlsx(guide=(
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetData><row r="1"><c r="B1" t="inlineStr"><is><t>%s</t></is></c></row>'
+        "</sheetData></worksheet>" % text))
+    return _p
+
+# The report is the RESIDUE of what remap_formula claims, not a list of shapes
+# someone predicted — so a form nobody has thought of is reported too.
+for text, hits in (("COUNTA(Attendees!L:L)", 1),          # whole-column ref
+                   ("COUNTA(Attendees!$L:$L)", 1),
+                   # Quoted sheet names ARE rewritten now — `_xlnm._FilterDatabase`
+                   # spells the sheet that way in every one of these workbooks —
+                   # so they must NOT appear in the report.
+                   ("SUM('Attendees'!D2:D9)", 0),
+                   ("SUM(&apos;Attendees&apos;!D2:D9)", 0),
+                   ("INDIRECT(\"Attendees!\" &amp; x)", 1),   # not predicted anywhere
+                   ("SUM(Attendees !D2)", 1),             # space before the bang
+                   # ...and every form it DOES handle must stay silent.
+                   ('COUNTIF(Attendees!D2:D1000,"x")', 0),
+                   ('COUNTIF(Attendees!$D$2:$D$1000,"x")', 0),
+                   ("FILTER({Attendees!A2:A, Attendees!L2:L})", 0),
+                   ("no references at all", 0)):
+    check("guide_misses %-40r -> %d" % (text[:38], hits),
+          len(mo.unrewritten_refs(_book_with_guide(text))), hits)
+check("a reported miss names the column, so it is actionable",
+      mo.unrewritten_refs(_book_with_guide("COUNTA(Attendees!L:L)"))[0].startswith("Attendees!L:L"),
+      True)
+# A sheet whose NAME merely ends in "Attendees" is not ours.
+check("a lookalike sheet name is not reported",
+      mo.unrewritten_refs(_book_with_guide("COUNTA(PastAttendees!L:L)")), [])
+# The shared-string table is searched too — five live chapters keep their Guide
+# text there rather than inline.
+_ps = _book_with_guide("clean")
+_ps["xl/sharedStrings.xml"] = b"<sst><si><t>COUNTA(Attendees!L:L)</t></si></sst>"
+check("...including the shared string table", len(mo.unrewritten_refs(_ps)), 1)
+# The invariant the whole design rests on: the two patterns cannot disagree.
+check("nothing remap_formula rewrites is ever reported as a miss",
+      [t for t in ("Attendees!D2", "Attendees!$D$2", "Attendees!D2:D9",
+                   "Attendees!D2:D", "Attendees!$D$2:$D$1000")
+       if mo.unrewritten_refs(_book_with_guide("X(%s)" % t))], [])
+
+
+# ---------------------------------------------------------------------------
 # The PREVIOUS migration must stay truthful about a reordered workbook
 # ---------------------------------------------------------------------------
 # migrate_interested_in derives the Guide's target formulas from the live header
@@ -348,6 +401,169 @@ check("...and its dropdown/colour checks still pass",
 check("the sync can open the reordered workbook", check_dropdowns(post), [])
 check("...and reads every column back by name",
       sorted(post.headers), sorted(WANTED))
+
+
+# The REWRITER half of the lookbehind. The lookalike test above uses a
+# whole-column ref, which _HANDLED_REF never matches — so removing the
+# lookbehind from _HANDLED_REF alone produced ZERO failures while corrupting
+# data: `PastAttendees!D2` was renumbered to `PastAttendees!E2`, silently
+# repointing a formula on somebody else's tab.
+check("a lookalike sheet's own reference is never renumbered",
+      mo.remap_formula("PastAttendees!D2+Old_Attendees!$L$2:$L$9", MAP, cross_sheet=True),
+      "PastAttendees!D2+Old_Attendees!$L$2:$L$9")
+check("...while the real sheet beside it still is",
+      mo.remap_formula("PastAttendees!D2+Attendees!D2", MAP, cross_sheet=True),
+      "PastAttendees!D2+Attendees!E2")
+
+# Parts the rewriter never edits. A chapter's own tab, or a Sheets-exported
+# named range, is rewritten by NOTHING here — so every mention in one is a
+# miss, claimable or not. Neither was scanned before; the column moved out from
+# under them in silence, and `unmovable` does not cover it (it counts <f> on
+# the Attendees sheet alone).
+def _book_with_extra_sheet(sheet3_xml, workbook_extra=""):
+    _n, _p = fx.make_pre_xlsx(headers=tuple(WANTED))
+    _p["xl/workbook.xml"] = _p["xl/workbook.xml"].decode().replace(
+        "<sheets>", "%s<sheets>" % workbook_extra).replace(
+        "</sheets>", '<sheet name="Stats" sheetId="3" r:id="rId5" /></sheets>').encode()
+    _p["xl/_rels/workbook.xml.rels"] = _p["xl/_rels/workbook.xml.rels"].decode().replace(
+        "</Relationships>",
+        '<Relationship Id="rId5" Target="worksheets/sheet3.xml" /></Relationships>').encode()
+    _p["xl/worksheets/sheet3.xml"] = sheet3_xml.encode()
+    return _p
+
+check("a formula on a chapter's own tab is reported",
+      mo.unrewritten_refs(_book_with_extra_sheet(
+          '<worksheet><sheetData><row r="2"><c r="B2">'
+          "<f>COUNTA(Attendees!L2:L1000)</f><v>7</v></c></row></sheetData></worksheet>")),
+      ["Attendees!L2:L1000"])
+check("...even though that shape IS one the rewriter could handle",
+      mo.remap_formula("COUNTA(Attendees!L2:L1000)", MAP, cross_sheet=True),
+      "COUNTA(Attendees!D2:D1000)")
+# workbook.xml is REWRITABLE (that is where `_xlnm._FilterDatabase` lives), so a
+# defined name in the handled shape is fixed rather than reported...
+check("a handled definedName is rewritten, not reported",
+      mo.unrewritten_refs(_book_with_extra_sheet(
+          "<worksheet><sheetData/></worksheet>",
+          '<definedName name="live">Attendees!$L$2:$L$1000</definedName>')), [])
+check("...and the rewrite is correct",
+      mo.remap_formula("'Attendees'!$A$1:$K$1", MAP, cross_sheet=True),
+      "'Attendees'!$A$1:$L$1")
+# ...while an UNhandled one still is.
+check("an unhandled definedName is reported",
+      mo.unrewritten_refs(_book_with_extra_sheet(
+          "<worksheet><sheetData/></worksheet>",
+          '<definedName name="live">Attendees!L:L</definedName>')),
+      ["Attendees!L:L"])
+
+# Prose is not a reference. A fix-by-hand list padded with sentence fragments
+# is a list operators stop reading, which would bury every real finding in it.
+for text, want in (("See the Attendees! tab for the roster", []),
+                   ("Great turnout, loved the Attendees! Ada L, ada@x.com", []),
+                   ("COUNTA(Attendees!L:L)", ["Attendees!L:L"]),
+                   # A reference BUILT as a string is unanalyzable, so it is
+                   # reported — the snippet stops at the quote, which is less
+                   # specific than a real ref but still points at the spot.
+                   ('INDIRECT("Attendees!" & col)', ["Attendees!"]),
+                   ("&apos;Attendees&apos;!D2", []),
+                   ("&#39;Attendees&#39;!D2", []),
+                   ("&apos;Attendees&apos;!L:L", ["&apos;Attendees&apos;!L:L"])):
+    check("prose/ref %-42r" % text[:40],
+          mo.unrewritten_refs(_book_with_guide(text)), want)
+
+# PII. xl/sharedStrings.xml is the workbook-GLOBAL string table — it holds
+# organizer names, emails and free-text survey answers. The snippet used to be
+# a raw 24-char window, which printed `Attendees! Ada L, ada@x.` under a
+# "Fix by hand" heading from a script that has no --redact flag.
+_pii = _book_with_guide("clean")
+_pii["xl/sharedStrings.xml"] = (
+    b"<sst><si><t>Loved the Attendees! Ada Lovelace ada@x.io joins as co-host</t>"
+    b"</si></sst>")
+check("a member's name and email can never reach the report",
+      [r for r in mo.unrewritten_refs(_pii) if "Ada" in r or "@" in r], [])
+
+# The two patterns must agree on where a reference begins. They do NOT always
+# start at the same character — an unbalanced leading quote puts the mention
+# one earlier — so the residue anchors on the `!`, which both must contain.
+check("an unbalanced quote is rewritten and NOT double-reported",
+      (mo.remap_formula("X('Attendees!D2)", MAP, cross_sheet=True),
+       mo.unrewritten_refs(_book_with_guide("X('Attendees!D2)"))),
+      ("X('Attendees!E2)", []))
+
+# The handled <-> reported invariant, over the cross product rather than five
+# hand-picked strings.
+_shapes = ["Attendees!%s%s%s" % (a, c, r)
+           for a in ("", "$") for c in ("A", "D", "L", "AAA") for r in ("2", "$2")]
+_shapes += ["Attendees!%s2:%s9" % (c, c) for c in ("A", "D", "L")]
+_shapes += ["Attendees!%s2:%s" % (c, c) for c in ("A", "D", "L")]
+check("handled <=> not reported, across %d reference shapes" % len(_shapes),
+      [t for t in _shapes if bool(mo.unrewritten_refs(_book_with_guide("X(%s)" % t)))], [])
+
+
+# ---------------------------------------------------------------------------
+# _run's report path — the layer that let a type change through untested
+# ---------------------------------------------------------------------------
+# guide_misses' return type changed from [(part, ref)] to [ref], and the caller
+# in _run kept unpacking pairs: `sorted({r for _, r in misses})`. Every direct
+# guide_misses test still passed, because none of them went through _run — so
+# the whole reporting path was dead, and would have raised ValueError on the
+# first real chapter carrying exactly the reference this PR exists to catch.
+# These drive _run itself with Drive stubbed.
+import contextlib as _ctx  # noqa: E402
+import io as _io  # noqa: E402
+
+
+def _run_report(guide_text):
+    """Run _run() in report mode over one stubbed chapter; return (code, stdout).
+
+    Headers are the POST-move order, so open_crm's strict reader succeeds and
+    move_mapping returns None — the chapter is already ordered and the ONLY
+    thing left to exercise is the gap report. `download` is patched in
+    migrate_column_order's namespace, not sync_chapters': open_crm calls the
+    name bound at import, so patching the source module leaves the real one in
+    place and every chapter reports as SKIPPED on a 404.
+    """
+    _n, _p = fx.make_pre_xlsx(
+        headers=tuple(WANTED),
+        guide=('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+               '<sheetData><row r="1"><c r="B1" t="inlineStr"><is><t>%s</t></is></c>'
+               "</row></sheetData></worksheet>" % guide_text))
+    raw = save_parts(_n, _p)
+    buf = _io.StringIO()
+    # A raise inside _run is a FAILURE, not a reason to abort the suite: the
+    # tuple-unpack bug this harness exists to catch propagated out of _run and
+    # killed the whole script, which hid every check after it. Turn it into a
+    # value the assertions can inspect.
+    try:
+        with mock.patch.object(mo, "list_chapter_folders",
+                               lambda: [{"id": "f1", "name": "Boston"}]), \
+             mock.patch.object(mo, "find_crm",
+                               lambda fid: ({"id": "c1", "name": "Boston CRM.xlsx"}, None)), \
+             mock.patch.object(mo, "download", lambda fid, path: raw), \
+             _ctx.redirect_stdout(buf):
+            code = mo._run(mock.Mock(city=None, write=False),
+                           tempfile.mkdtemp(prefix="t-"))
+    except Exception as e:
+        return "RAISED %s: %s" % (type(e).__name__, e), buf.getvalue()
+    return code, buf.getvalue()
+
+
+_code, _out = _run_report("COUNTA(Attendees!L:L)")
+check("_run does not raise on a workbook WITH a gap",
+      str(_code).startswith("RAISED"), False)
+check("the stub opens cleanly — no chapter is SKIPPED", "SKIPPED" in _out, False)
+check("_run survives a workbook WITH a miss (the ValueError regression)",
+      "Traceback" not in _out, True)
+check("...and names the unrewritable reference in the report",
+      "Attendees!L:L" in _out, True)
+check("...and says which chapter", "Boston" in _out, True)
+check("...and does not print a clean verdict over it",
+      "Nothing to do —" in _out, False)
+check("...and the gap reaches the exit code", _code, 1)
+
+_code2, _out2 = _run_report('COUNTIF(Attendees!D2:D1000,"x")')
+check("a workbook with NO miss is silent and exits 0",
+      (_code2, "cannot rewrite" in _out2, "Nothing to do —" in _out2),
+      (0, False, True))
 
 
 print()
