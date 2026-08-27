@@ -110,20 +110,28 @@ _REF_RE = re.compile(r"(\$?)([A-Z]{1,3})(\$?)(\d+)")
 #: the shipped rewriter until 2026-08-27. (_SHEET_MENTION carries its own copy
 #: for the mirror-image reason: without it, the same reference raises a phantom
 #: "fix by hand" line.)
-_HANDLED_REF = re.compile(
-    r"(?<![A-Za-z0-9_])(%s!)((?:\$?[A-Z]{1,3}\$?\d+)(?::\$?[A-Z]{1,3}(?:\$?\d+)?)?)"
-    % re.escape(CRM_SHEET))
-
-#: ANY mention of the CRM sheet, however spelled — quoted, spaced, whatever.
-#: The complement of _HANDLED_REF over this is the report, which is what makes
-#: the check closed: a form nobody has thought of is reported rather than
-#: silently left pointing at the pre-move layout.
 #: The apostrophe has three spellings in the estate — literal, `&apos;` and
 #: `&#39;`. migrate_interested_in._both_quotings documents the same trap one
 #: character over for `"` vs `&quot;`; older third-party-written workbooks
 #: escape differently, and a mention this pattern cannot see is neither
 #: rewritten nor reported, which is the one outcome the design rules out.
 _Q = r"(?:'|&apos;|&#39;)?"
+
+#: Group 1 is the whole prefix INCLUDING any quoting, kept verbatim; group 2 is
+#: the reference, which is what gets remapped. Quoted forms are handled because
+#: `_xlnm._FilterDatabase` — Excel's hidden record of the autoFilter range, which
+#: every one of these workbooks carries — spells the sheet name `'Attendees'!`.
+#: Leaving it unrewritten made the defined name disagree with the sheet's own
+#: <autoFilter ref> on all 83 chapters.
+_HANDLED_REF = re.compile(
+    r"(?<![A-Za-z0-9_])(%s%s%s!)"
+    r"((?:\$?[A-Z]{1,3}\$?\d+)(?::\$?[A-Z]{1,3}(?:\$?\d+)?)?)"
+    % (_Q, re.escape(CRM_SHEET), _Q))
+
+#: ANY mention of the CRM sheet, however spelled — quoted, spaced, whatever.
+#: The complement of _HANDLED_REF over this is the report, which is what makes
+#: the check closed: a form nobody has thought of is reported rather than
+#: silently left pointing at the pre-move layout.
 _SHEET_MENTION = re.compile(
     r"(?<![A-Za-z0-9_])%s%s%s\s*!" % (_Q, re.escape(CRM_SHEET), _Q))
 
@@ -383,13 +391,13 @@ def unrewritten_refs(parts):
     is irrelevant when nothing will run the rewrite over it.
 
     NOT closed, and the docstring must not pretend otherwise. `_SHEET_MENTION`
-    is case-sensitive and literal, so a lowercase `attendees!`, a name built by
+    is case-sensitive, so a lowercase `attendees!`, a name built by
     concatenation (`"Attend"&"ees!"`), or an R1C1-style `Attendees!R2C4` are
     still neither rewritten nor reported. What this does close is every form
     spelled the ordinary way, in every part that can hold one.
     """
     out = set()
-    rewritable = set(guide_parts(parts))
+    rewritable = set(rewritable_parts(parts))
     for part in scan_parts(parts):
         raw = parts[part].decode("utf-8", "replace")
         # Anchored on the BANG, not on either match's start. The two patterns
@@ -397,7 +405,10 @@ def unrewritten_refs(parts):
         # quote (`X('Attendees!D2)`) puts _SHEET_MENTION one earlier — so
         # comparing starts reported a reference the rewriter had just fixed.
         # The `!` is the one position both patterns must agree on.
-        claimed = ({m.start(1) + len(CRM_SHEET) for m in _HANDLED_REF.finditer(raw)}
+        # end(1)-1 is the bang: group 1 now has a variable-length prefix
+        # (quotes, and three spellings of them), so a fixed offset from the
+        # start would drift the moment a quoted form appeared.
+        claimed = ({m.end(1) - 1 for m in _HANDLED_REF.finditer(raw)}
                    if part in rewritable else set())
         for m in _SHEET_MENTION.finditer(raw):
             if m.end() - 1 in claimed:
@@ -408,14 +419,29 @@ def unrewritten_refs(parts):
     return sorted(out)
 
 
-def move_guide(parts, mapping):
-    """Rewrite `Attendees!<col>` references wherever the Guide keeps them.
+def rewritable_parts(parts):
+    """Parts move_refs edits: the Guide's two storage forms, plus workbook.xml.
 
-    Both storage forms again: the sheet part for inline strings and formulas,
-    and the shared string table for the workbooks that use one.
+    workbook.xml is here for `<definedName>` — a Sheets-exported named range,
+    and `_xlnm._FilterDatabase`, which every one of these workbooks carries.
+    Rewriting it cannot touch a sheet NAME: `<sheet name="Attendees">` has no
+    `!` after it, and _HANDLED_REF requires one.
+    """
+    out = list(guide_parts(parts))
+    if "xl/workbook.xml" in parts:
+        out.append("xl/workbook.xml")
+    return out
+
+
+def move_refs(parts, mapping):
+    """Rewrite `Attendees!<col>` references in every part we own.
+
+    Both Guide storage forms — the sheet part for inline strings and formulas,
+    and the shared string table for the workbooks that use one — plus the
+    workbook-level defined names.
     """
     changed = []
-    for part in guide_parts(parts):
+    for part in rewritable_parts(parts):
         raw = parts[part].decode("utf-8", "replace")
         out = remap_formula(raw, mapping, cross_sheet=True)
         if out != raw:
@@ -466,7 +492,7 @@ def apply_move(book, mapping):
     # headers must be re-derived before serialize() sizes the dimension.
     att.headers = {h: mapping.get(c, c) for h, c in att.headers.items()}
     att.serialize()
-    move_guide(book["parts"], mapping)
+    move_refs(book["parts"], mapping)
     return save_parts(book["names"], book["parts"]), before
 
 

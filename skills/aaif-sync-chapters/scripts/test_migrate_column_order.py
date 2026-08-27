@@ -349,7 +349,11 @@ def _book_with_guide(text):
 # someone predicted — so a form nobody has thought of is reported too.
 for text, hits in (("COUNTA(Attendees!L:L)", 1),          # whole-column ref
                    ("COUNTA(Attendees!$L:$L)", 1),
-                   ("SUM('Attendees'!D2:D9)", 1),         # quoted sheet name
+                   # Quoted sheet names ARE rewritten now — `_xlnm._FilterDatabase`
+                   # spells the sheet that way in every one of these workbooks —
+                   # so they must NOT appear in the report.
+                   ("SUM('Attendees'!D2:D9)", 0),
+                   ("SUM(&apos;Attendees&apos;!D2:D9)", 0),
                    ("INDIRECT(\"Attendees!\" &amp; x)", 1),   # not predicted anywhere
                    ("SUM(Attendees !D2)", 1),             # space before the bang
                    # ...and every form it DOES handle must stay silent.
@@ -435,11 +439,21 @@ check("a formula on a chapter's own tab is reported",
 check("...even though that shape IS one the rewriter could handle",
       mo.remap_formula("COUNTA(Attendees!L2:L1000)", MAP, cross_sheet=True),
       "COUNTA(Attendees!D2:D1000)")
-check("a definedName in workbook.xml is reported",
+# workbook.xml is REWRITABLE (that is where `_xlnm._FilterDatabase` lives), so a
+# defined name in the handled shape is fixed rather than reported...
+check("a handled definedName is rewritten, not reported",
       mo.unrewritten_refs(_book_with_extra_sheet(
           "<worksheet><sheetData/></worksheet>",
-          '<definedName name="live">Attendees!$L$2:$L$1000</definedName>')),
-      ["Attendees!$L$2:$L$1000"])
+          '<definedName name="live">Attendees!$L$2:$L$1000</definedName>')), [])
+check("...and the rewrite is correct",
+      mo.remap_formula("'Attendees'!$A$1:$K$1", MAP, cross_sheet=True),
+      "'Attendees'!$A$1:$L$1")
+# ...while an UNhandled one still is.
+check("an unhandled definedName is reported",
+      mo.unrewritten_refs(_book_with_extra_sheet(
+          "<worksheet><sheetData/></worksheet>",
+          '<definedName name="live">Attendees!L:L</definedName>')),
+      ["Attendees!L:L"])
 
 # Prose is not a reference. A fix-by-hand list padded with sentence fragments
 # is a list operators stop reading, which would bury every real finding in it.
@@ -450,8 +464,9 @@ for text, want in (("See the Attendees! tab for the roster", []),
                    # reported — the snippet stops at the quote, which is less
                    # specific than a real ref but still points at the spot.
                    ('INDIRECT("Attendees!" & col)', ["Attendees!"]),
-                   ("&apos;Attendees&apos;!D2", ["&apos;Attendees&apos;!D2"]),
-                   ("&#39;Attendees&#39;!D2", ["&#39;Attendees&#39;!D2"])):
+                   ("&apos;Attendees&apos;!D2", []),
+                   ("&#39;Attendees&#39;!D2", []),
+                   ("&apos;Attendees&apos;!L:L", ["&apos;Attendees&apos;!L:L"])):
     check("prose/ref %-42r" % text[:40],
           mo.unrewritten_refs(_book_with_guide(text)), want)
 
