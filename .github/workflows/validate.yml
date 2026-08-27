@@ -68,6 +68,8 @@ jobs:
         run: python -m pytest lib/aaif_events/tests -q
         env:
           PYTHONPATH: lib
+      - name: Design tokens match the design system
+        run: python scripts/extract_design_tokens.py --check
       - name: Skill script and repo-check tests
         run: |
           for t in skills/*/scripts/test_*.py scripts/test_*.py; do
