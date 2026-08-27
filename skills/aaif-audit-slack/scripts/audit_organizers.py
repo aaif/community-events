@@ -693,7 +693,7 @@ def rooms_to_create(audit):
             and not c["public_how"].startswith(("planned:", "held-private:"))]
 
 
-def render(audit, orphans, dupes, today):
+def render_body(audit, orphans, dupes, today):
     allp = [p for c in audit for p in c["accepted"]]
     S = {
         "chapters": len(audit),
@@ -1051,6 +1051,13 @@ btns.forEach(b=>b.addEventListener('click',()=>{
   });
 }));
 """
+    return body, js
+
+
+def render(audit, orphans, dupes, today):
+    """The standalone document. `render_body` is the seam the combined
+    single-PDF summary composes from — see summarize_audits.py."""
+    body, js = render_body(audit, orphans, dupes, today)
     return rs.page("Slack Organizers Audit", body, script=js)
 
 

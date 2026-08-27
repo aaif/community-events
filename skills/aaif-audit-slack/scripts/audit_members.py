@@ -63,7 +63,7 @@ def cached(path, build, refresh=False, label="", team_id=None):
     return data
 
 
-def build_report(chans, directory, today, activity=None):
+def build_body(chans, directory, today, activity=None):
     def age(epoch):
         if not epoch:
             return None
@@ -329,7 +329,14 @@ replies are invisible to the API, private channels are limited to the audit acco
 <code class="chan">users.list</code> ({len(directory):,} accounts).
 {activity_foot}</footer>
 """
-    return rs.page("Slack Members Audit", body)
+    return body
+
+
+def build_report(chans, directory, today, activity=None):
+    """The standalone document; `build_body` is the seam the combined summary
+    composes from — see summarize_audits.py."""
+    return rs.page("Slack Members Audit",
+                   build_body(chans, directory, today, activity))
 
 
 def main():
