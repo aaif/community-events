@@ -154,7 +154,7 @@ def test_status_filter_is_exact_after_stripping():
             ["Accepted ✅", "D", "d@x.com", "", "Boston", ""],
             ["Denied", "E", "e@x.com", "", "Boston", ""],
             ["Interviewing", "F", "f@x.com", "", "Boston", ""]]
-    people, _ = _intake(rows)
+    people, _, _ = _intake(rows)
     check("only exact statuses sync", sorted(p["name"] for p in people), ["A", "B", "C"])
 
 
@@ -164,7 +164,7 @@ def test_city_precedence_chapter_beats_new_beats_existing():
             ["Accepted", "B", "b@x.com", "Old", "New", ""],
             ["Accepted", "C", "c@x.com", "Old", "", ""],
             ["Accepted", "D", "d@x.com", "Other (please specify)", "", ""]]
-    people, _ = _intake(rows)
+    people, _, _ = _intake(rows)
     check("city precedence", [p["city"] for p in people],
           ["Assigned", "New", "Old", ""])
 
@@ -175,7 +175,7 @@ def test_duplicate_rows_dedupe_on_email_but_blanks_stay_distinct():
             ["Accepted", "A again", "a@x.com", "", "Boston", ""],
             ["Accepted", "No email 1", "", "", "Boston", ""],
             ["Accepted", "No email 2", "", "", "Boston", ""]]
-    people, dupes = _intake(rows)
+    people, dupes, _ = _intake(rows)
     check("emailless people are not collapsed",
           (sorted(p["name"] for p in people), dupes),
           (["A", "No email 1", "No email 2"], 1))
@@ -408,7 +408,53 @@ def test_folding_matches_accent_and_punctuation_variants():
 
 #: A floor, not a target. Without it, renaming the `test_` prefix or losing the
 #: functions in a bad merge prints "all checks passed" having run nothing.
-MIN_TESTS = 42
+def test_an_applicant_in_the_room_is_distinguished_from_a_stranger():
+    """"We never accepted them" collapsed two opposite situations into one line.
+
+    Bengaluru 2026-08-27: the chapter's de-facto lead — first invited the minute
+    the organizers room was created, running the venue/date planning since July
+    — sat at Prospect on the intake. Acceptance is what triggers the Drive
+    grant, so he was locked out of his own chapter's folder and said so in the
+    channel. The audit DID list him, under the same label as a total stranger.
+    """
+    rows = [_row("Boston", org="boston-organizers")]
+    directory = {"U7": {"real_name": "Ada", "email": "ada@x.io"},
+                 "U8": {"real_name": "Zed", "email": "zed@x.io"},
+                 "U9": {"real_name": "Cy", "email": "cy@x.io"}}
+    applicants = {"ada@x.io": {"status": "Prospect", "name": "Ada", "city": "Boston"},
+                  "cy@x.io": {"status": "Denied", "name": "Cy", "city": "Boston"}}
+    audit, _ = ao.build_audit(rows, [], {},
+                              {"boston-organizers": ["U7", "U8", "U9"]},
+                              directory, "staff.org", applicants)
+    by_email = {x["email"]: x for x in audit[0]["unaccounted"]}
+    check("an applicant carries their intake status",
+          by_email["ada@x.io"]["intake_status"], "Prospect")
+    check("a stranger carries none", by_email["zed@x.io"]["intake_status"], "")
+    check("a decided-no carries theirs too",
+          by_email["cy@x.io"]["intake_status"], "Denied")
+    # The render splits on exactly this, and a decided NO is not "awaiting".
+    pend = [x for x in audit[0]["unaccounted"]
+            if x.get("intake_status") and x["intake_status"] not in ao.DECIDED_NO]
+    check("only the live applicant counts as awaiting a decision",
+          [x["email"] for x in pend], ["ada@x.io"])
+    check("Denied is not awaiting", "cy@x.io" in [x["email"] for x in pend], False)
+
+
+def test_applicants_map_covers_every_row_not_just_accepted_ones():
+    """read_intake's third return is the whole sheet — the accepted filter is
+    what made a pending organizer indistinguishable from a stranger."""
+    rows = [["Status", "Full name", "Email", "City (Existing)", "City (New)", "Chapter"],
+            ["Accepted", "Ada", "ada@x.io", "", "", "Boston"],
+            ["Prospect", "Bo", "bo@x.io", "", "", "Boston"],
+            ["Denied", "Cy", "cy@x.io", "", "", "Boston"]]
+    people, _, applicants = _intake(rows)
+    check("only the accepted reach `people`", [p["email"] for p in people], ["ada@x.io"])
+    check("but every row reaches `applicants`",
+          sorted(applicants), ["ada@x.io", "bo@x.io", "cy@x.io"])
+    check("with its real status", applicants["bo@x.io"]["status"], "Prospect")
+
+
+MIN_TESTS = 45
 
 
 def test_regional_alias_that_no_longer_resolves_aborts():
