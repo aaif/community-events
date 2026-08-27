@@ -256,3 +256,129 @@ def test_restyling_a_conformant_fixture_changes_nothing(name, tmp_path):
         for part in z.namelist():
             data = z.read(part)
             assert ox.restyle_part(part, data) == data, "%s/%s changed" % (name, part)
+
+
+# ------------------------------------------------------- plate slides --------
+
+def _deck(tmp_path, bg='<p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg>'):
+    """A minimal but structurally real .pptx with two slides."""
+    path = str(tmp_path / "deck.pptx")
+    slide = ('<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+             "<p:cSld>%s<p:spTree/></p:cSld></p:sld>")
+    rels = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+            'openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="%s" Target="../slideLayouts/slideLayout1.xml"/>'
+            '<Relationship Id="rId2" Type="%s" Target="../notesSlides/notesSlide2.xml"/>'
+            "</Relationships>")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml",
+                   '<Types xmlns="ct"><Default ContentType="image/png" Extension="png"/>'
+                   '<Override ContentType="%s" PartName="/ppt/slides/slide1.xml"/>'
+                   '<Override ContentType="%s" PartName="/ppt/slides/slide2.xml"/></Types>'
+                   % (ox._SLIDE_CT, ox._SLIDE_CT))
+        z.writestr("ppt/presentation.xml",
+                   '<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst>'
+                   '<p:sldId id="256" r:id="rId5"/><p:sldId id="257" r:id="rId6"/>'
+                   '</p:sldIdLst><p:sldSz cy="5143500" cx="9144000"/></p:presentation>')
+        z.writestr("ppt/_rels/presentation.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId5" Type="%s" Target="slides/slide1.xml"/>'
+                   '<Relationship Id="rId6" Type="%s" Target="slides/slide2.xml"/>'
+                   "</Relationships>" % (ox._SLIDE_REL, ox._SLIDE_REL))
+        z.writestr("ppt/slides/slide1.xml", slide % "")
+        z.writestr("ppt/slides/slide2.xml", slide % bg)
+        for n in (1, 2):
+            z.writestr("ppt/slides/_rels/slide%d.xml.rels" % n,
+                       rels % (ox._SLIDE_REL, ox._NOTES_REL))
+    return path
+
+
+def _png(tmp_path, name="p.png"):
+    p = tmp_path / name
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40)
+    return str(p)
+
+
+def test_a_solid_background_becomes_the_plate(tmp_path):
+    deck = _deck(tmp_path)
+    assert ox.add_plate_slides(deck, [("dusk", _png(tmp_path))]) == ["dusk"]
+    with zipfile.ZipFile(deck) as z:
+        new = z.read("ppt/slides/slide3.xml").decode()
+        rels = z.read("ppt/slides/_rels/slide3.xml.rels").decode()
+    assert "a:blipFill" in new and "solidFill" not in new
+    assert "../media/image1.png" in rels
+
+
+def test_the_notes_relationship_is_dropped(tmp_path):
+    """A notes part cannot be shared between two slides, and a dangling
+    relationship is a file PowerPoint reports as corrupt."""
+    deck = _deck(tmp_path)
+    ox.add_plate_slides(deck, [("dusk", _png(tmp_path))])
+    with zipfile.ZipFile(deck) as z:
+        assert ox._NOTES_REL not in z.read("ppt/slides/_rels/slide3.xml.rels").decode()
+
+
+def test_the_deck_is_registered_everywhere_a_slide_must_be(tmp_path):
+    """Four places have to agree or the deck will not open: the part, its
+    content type, the presentation relationship, and the slide id list."""
+    deck = _deck(tmp_path)
+    ox.add_plate_slides(deck, [("dusk", _png(tmp_path))])
+    with zipfile.ZipFile(deck) as z:
+        assert "ppt/slides/slide3.xml" in z.namelist()
+        assert "/ppt/slides/slide3.xml" in z.read("[Content_Types].xml").decode()
+        assert "slides/slide3.xml" in z.read("ppt/_rels/presentation.xml.rels").decode()
+        presentation = z.read("ppt/presentation.xml").decode()
+        assert presentation.count("<p:sldId ") == 3
+
+
+def test_a_gif_plate_declares_its_content_type(tmp_path):
+    """The decks declare image/png already but never image/gif, and a part with
+    no declared content type makes PowerPoint call the whole file corrupt."""
+    deck = _deck(tmp_path)
+    gif = tmp_path / "p.gif"
+    gif.write_bytes(b"GIF89a" + b"\x00" * 20)
+    ox.add_plate_slides(deck, [("rail", str(gif))])
+    with zipfile.ZipFile(deck) as z:
+        assert 'Extension="gif"' in z.read("[Content_Types].xml").decode()
+
+
+def test_adding_plates_twice_adds_nothing_the_second_time(tmp_path):
+    """Without the marker, a sweep would append six more slides to every deck in
+    the estate on every run."""
+    deck = _deck(tmp_path)
+    plates = [("dusk", _png(tmp_path)), ("dawn", _png(tmp_path, "q.png"))]
+    assert sorted(ox.add_plate_slides(deck, plates)) == ["dawn", "dusk"]
+    assert ox.add_plate_slides(deck, plates) == []
+    assert ox.plate_labels(deck) == {"dusk", "dawn"}
+    with zipfile.ZipFile(deck) as z:
+        assert len([n for n in z.namelist() if n.startswith("ppt/slides/slide")]) == 4
+
+
+def test_a_deck_with_no_background_is_refused(tmp_path):
+    deck = _deck(tmp_path, bg="")
+    with pytest.raises(RuntimeError, match="no <p:bg>"):
+        ox.add_plate_slides(deck, [("dusk", _png(tmp_path))])
+
+
+def test_slide_size_is_read_by_attribute_name_not_position(tmp_path):
+    """These decks write cy BEFORE cx. Reading them positionally swaps width and
+    height, and the full-bleed test then silently never matches."""
+    deck = _deck(tmp_path)
+    ox.add_plate_slides(deck, [("dusk", _png(tmp_path))])   # would raise if swapped
+
+
+def test_cloned_text_moves_to_the_on_dark_ramp():
+    """The black-plate slide sets its eyebrow, subtitle and the wordmark of the
+    host lockup in the LIGHT ink ramp — invisible on its own black, and muddy
+    the moment a plate goes behind them."""
+    xml = ('<p:sld xmlns:p="p" xmlns:a="a"><a:rPr><a:solidFill>'
+           '<a:srgbClr val="%s"/></a:solidFill></a:rPr></p:sld>' % ox.token("ink-3"))
+    out = ox.to_on_dark(xml)
+    assert ox.token("ink-inv-2") in out
+
+
+def test_on_dark_leaves_non_text_colours_alone():
+    xml = ('<p:sld xmlns:p="p" xmlns:a="a"><p:spPr><a:solidFill>'
+           '<a:srgbClr val="%s"/></a:solidFill></p:spPr></p:sld>' % ox.token("ink"))
+    assert ox.to_on_dark(xml) == xml

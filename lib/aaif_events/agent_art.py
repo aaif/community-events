@@ -142,6 +142,14 @@ def plate(kind, aspect, frame=0.0):
     in white. A light plate would need a different text colour, i.e. a different
     slide, and the deck already has a white slide for that.
     """
+    if kind not in PLATES:
+        # Checked before the LEAD lookup, which would otherwise raise a bare
+        # KeyError naming a dict the caller has never heard of.
+        raise ValueError("unknown plate %r — expected one of %s"
+                         % (kind, ", ".join(PLATES)))
+    if aspect not in ASPECTS:
+        raise ValueError("unknown aspect %r — expected one of %s"
+                         % (aspect, ", ".join(sorted(ASPECTS))))
     w, h = ASPECTS[aspect]
     lead = LEAD[kind]
     sec = lead + 5           # the chapter-plate rule for a secondary hue
