@@ -14,8 +14,11 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   carries the **AAIF lockup** (AAIF hosts these events; the slot used to say
   `HOST VENUE CO.`), and unfilled slots are muted `LOGO 1`, `LOGO 2`, …
   placeholders rather than the misleading `MEMBER LOGO`. The lockup is drawn
-  from the mark image each slide already embeds for its own header, so it cannot
-  drift from it.
+  from the mark image each slide already embeds for its own header — identified
+  by name, not by being the first picture on the slide — so it cannot drift from
+  it. The templates live in Drive, so a chapter sees this only once the backfill
+  below has swept it, and new chapters only once the sweep has reached
+  TemplateCity.
 
 ### Added
 - **`skills/aaif-create-chapter/scripts/backfill_host_footer.py`** applies that

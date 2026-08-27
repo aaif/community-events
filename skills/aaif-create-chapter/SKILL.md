@@ -161,10 +161,12 @@ header**, plus the wordmark set in Space Grotesk bold. No media and no
 relationship is added, so the footer lockup cannot drift from the header's.
 
 Three cases the script keeps apart, and they are not interchangeable: an
-**unfilled slot** (`MEMBER LOGO`, `HOST VENUE CO.`) is renumbered `LOGO n` and
-muted; a **real name** (the carousel's founding-member grid) keeps its text, ink
-and position and its grid keeps its columns; the old **`AAIF · SF` badge** beside
-the host is dropped, because the lockup now says the same thing. The script's
+**unfilled slot** (`MEMBER LOGO`, `HOST VENUE CO.`, `VENUE NAME`, `SPONSOR`, or
+anything containing the word `LOGO`) is renumbered `LOGO n` and muted; a **real
+name** (the carousel's founding-member grid) keeps its text and ink always, and
+keeps its position too unless it sits in the host's own row, which is the one row
+re-packed; the old **`AAIF · SF` badge** beside the host is dropped, because the
+lockup now says the same thing. The script's
 own docstring explains why each rule is drawn where it is.
 
 Scope is **templates**, not the copies organizers have already made for a given
@@ -172,9 +174,12 @@ event: every `.pptx` under a folder matching `Event Templates…` / `Event Name`
 across all chapters, the online series, and the shared Templates folder. That set
 includes **TemplateCity** — the folder `create_chapter.py` clones for every new
 chapter — so a full sweep is what stops new chapters being minted on the old
-footer. A run that never reaches TemplateCity, or that finds a chapter folder
-contributing no template at all (what a folder rename looks like), prints an
-`ATTENTION` block and exits non-zero rather than reading as finished. A file
+footer. A full-estate run that never reaches TemplateCity, that finds a chapter
+folder contributing no template, that sees a `.pptx`-bearing folder the name
+regex declined (all three are what a rename looks like), or that removes a
+file's boxes without drawing its lockup, prints an `ATTENTION` block and exits
+non-zero rather than reading as finished. A `--chapter` run checks only that
+last one — it is scoped by design and cannot speak for the estate. A file
 whose footer has already been reworked has no chips left to find, so it is not
 re-uploaded and **re-running is a no-op**.
 

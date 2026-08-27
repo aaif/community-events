@@ -28,9 +28,9 @@ deck (`Event Template/Slides.pptx`). Fill the per-event slides from the tracker 
 
 **The logo footer is not yours to write.** On the cover and the welcome slide,
 `HOSTED BY` carries the fixed AAIF lockup — AAIF hosts these events — and the
-slots beside it read `LOGO 1`, `LOGO 2`. Those are placeholders an organizer
-replaces with a **logo image**; the words are just what an empty slot looks
-like, so do not treat them as copy to fill in. Never emit a host-venue name or
+slots beside it read `LOGO 1`, `LOGO 2`, …. Those are placeholders an organizer
+deletes and replaces with a **logo image**; the words are just what an empty
+slot looks like, so do not treat them as copy to fill in. Never emit a host-venue name or
 a member name for those slots, and never replace the lockup. The venue and the
 members get their credit in prose on **slide 12 (Thank you)**, which is where
 the `Host`/`Members` inputs belong.
