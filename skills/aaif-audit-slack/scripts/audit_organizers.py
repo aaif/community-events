@@ -1054,6 +1054,17 @@ btns.forEach(b=>b.addEventListener('click',()=>{
     return body, js
 
 
+def strip_controls(body):
+    """Remove the interactive filter row from a report body.
+
+    For the combined PDF (summarize_audits.py), which drops the script that
+    drives these buttons because its `tbody tr` query is global and would reach
+    into the other appendices. Dropping the script alone leaves controls that
+    look interactive and do nothing, so the markup goes too.
+    """
+    return re.sub(r'<div class="controls".*?</div>', "", body, flags=re.S)
+
+
 def render(audit, orphans, dupes, today):
     """The standalone document. `render_body` is the seam the combined
     single-PDF summary composes from — see summarize_audits.py."""

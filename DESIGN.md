@@ -8,7 +8,7 @@ any HTML report a skill writes — is drawn with the **AAIF design system**.
 | File | What it is |
 |---|---|
 | `design/aaif-design-system.html` | The design system itself. Open it in a browser. Self-extracting bundle: tokens, the agent motif, component specs, and a worked one-pager layout. |
-| `design/aaif-tokens.css` | **Generated.** The `:root` token block lifted out of the bundle so a stylesheet can `@import`-style consume it. Never hand-edit. |
+| `design/aaif-tokens.css` | **Generated.** The `:root` token block lifted out of the bundle so `report_style.py` can read it and prepend it verbatim. Never hand-edit. |
 | `scripts/extract_design_tokens.py` | Regenerates the above. `--check` fails CI when it is stale. |
 | `assets/fonts/` | Instrument Sans (OFL), the system's one typeface, embedded in every report. |
 
@@ -53,10 +53,20 @@ names. It:
 2. reads `design/aaif-tokens.css` at render time; and
 3. maps its own component vocabulary (`--ground`, `--ink-1`, `--accent`, `--ok`
    / `--warn` / `--bad`) onto those tokens, each with a fallback so a missing
-   tokens file degrades to legible greys instead of an unstyled page.
+   tokens file degrades to legible greys instead of an unstyled page — and the
+   rendered page then carries a visible note saying so, because a warning on
+   stderr dies with the terminal while the PDF outlives it.
 
-**Skill scripts never write colours, fonts or spacing of their own.** They emit
-markup that uses the shared component classes (`.stats`/`.stat`, `.tablewrap`,
+The fallback rule applies to `extra_css` in skill scripts too, not just to
+`BASE_CSS`. That is exactly where it was broken first: an appendix separator
+referenced an undefined `var(--rule)` with no fallback and simply never
+rendered.
+
+**Skill scripts never write colour or font values of their own**, and reach for
+a new component in `report_style.py` rather than an inline style. (A few legacy
+inline `margin-top`s survive in `audit_members.py` and `audit_organizers.py` —
+they are not a pattern to copy.) They emit markup that uses the shared component
+classes (`.stats`/`.stat`, `.tablewrap`,
 `.actions`, `.eyebrow`, `.caveat`, `rs.bars()`, `rs.actions()`) and call
 `rs.page()`. If a report needs something the vocabulary does not have, add it to
 `report_style.py` — a one-off inline style in a skill script is how one report

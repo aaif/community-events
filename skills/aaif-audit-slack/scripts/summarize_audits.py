@@ -14,6 +14,7 @@ this page says so rather than filling the gap.
 import argparse
 import datetime as dt
 import html
+import json
 import os
 import sys
 
@@ -26,20 +27,67 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import audit_members  # noqa: E402
 import audit_organizers  # noqa: E402
 import audit_topics  # noqa: E402
-from audit_topics import (QUIET_DAYS, SUBJECT_KINDS, load_topics,  # noqa: E402
-                          near_duplicates)
+from audit_topics import (NEVER, QUIET, QUIET_DAYS, UNKNOWN,  # noqa: E402
+                          UNMEASURED, load_topics, members_of,
+                          near_duplicates, state_of)
 
 e = html.escape
 
 
 def need(cache, name, engine):
-    data = jsoncache.read(os.path.join(cache, name), note=None)
+    """One engine's cache, or an abort naming the engine that writes it.
+
+    `note=print` matters: without it jsoncache swallows its own reason for
+    discarding a cache (wrong format, wrong workspace), and the abort below
+    reports a file as *missing* while it sits plainly on disk — sending the
+    operator after a filesystem problem that isn't there.
+    """
+    path = os.path.join(cache, name)
+    data = jsoncache.read(path, note=print)
     if data is None:
         raise SystemExit(
-            "ABORT: %s is missing from %s. Run %s first — this page ranks what "
-            "the engines measured and must never estimate a number they did not."
-            % (name, cache, engine))
+            "ABORT: %s is missing (or was discarded) from %s. Run %s first — "
+            "this page ranks what the engines measured and must never estimate "
+            "a number they did not." % (name, cache, engine))
+    if not data:
+        # Empty is not None, so the check above lets it through — and then a
+        # max() over it raises a bare ValueError traceback instead of this.
+        raise SystemExit(
+            "ABORT: %s is empty. Re-run %s — an empty cache cannot support any "
+            "number on this page." % (name, engine))
     return data
+
+
+def same_workspace(cache, names):
+    """Every cache must carry the same workspace stamp.
+
+    This is the ONE script that joins four caches, and the only one that makes
+    no Slack call — so it cannot pass a live `team_id` to jsoncache and its
+    per-read workspace check is a no-op. jsoncache's own docstring names the
+    consequence: "Joining one workspace's channels to another's members yields a
+    coherent, entirely wrong report." Comparing the four stamps to each other
+    needs no API call and closes the whole class.
+    """
+    stamps = {}
+    for name in names:
+        try:
+            with open(os.path.join(cache, name), encoding="utf-8") as fh:
+                stamps[name] = json.load(fh).get("team_id")
+        except (OSError, ValueError) as exc:
+            raise SystemExit("ABORT: cannot read %s to check its workspace "
+                             "stamp: %s" % (name, exc))
+    missing = sorted(n for n, t in stamps.items() if not t)
+    if missing:
+        raise SystemExit(
+            "ABORT: %s carry no workspace stamp, so they cannot be shown to "
+            "describe the same Slack. Re-run the engines that write them."
+            % ", ".join(missing))
+    if len(set(stamps.values())) > 1:
+        raise SystemExit(
+            "ABORT: these caches come from different workspaces — joining them "
+            "would produce a coherent and entirely wrong report:\n  %s"
+            % "\n  ".join("%s: %s" % kv for kv in sorted(stamps.items())))
+    return next(iter(stamps.values()))
 
 
 def org_findings(audit):
@@ -56,40 +104,56 @@ def org_findings(audit):
             if out:
                 gaps.append((c["city"], len(out), len(acc)))
     gaps.sort(key=lambda g: -g[1])
-    unacc = [(c["city"], u) for c in ch for u in (c["unaccounted"] or [])
-             if not u["is_staff"]]
-    no_row = [x for x in unacc if not x[1]["intake_status"]]
-    return {"chapters": len(ch), "pub_org": pub_org, "no_pub": no_pub, "no_org": no_org,
-            "zero": zero, "gaps": gaps, "unacc": unacc, "no_row": no_row}
+    # `unresolved` records are members whose directory lookup FAILED. The
+    # organizer engine reports them as "could not identify", explicitly not as
+    # unaccounted people, because filing them under "nobody reviewed them"
+    # asserts a judgement nobody made. Counting them here would do exactly that.
+    no_row = [(city, u) for c in ch for u in (c["unaccounted"] or [])
+              if not u["is_staff"] and not u.get("unresolved")
+              and not u["intake_status"]
+              for city in (c["city"],)]
+    return {"chapters": len(ch), "pub_org": pub_org, "no_pub": no_pub,
+            "no_org": no_org, "zero": zero, "gaps": gaps, "no_row": no_row}
 
 
-def topic_findings(cache, chans, act, today):
-    topics = load_topics()
-    by_name = {c["name"]: c for c in chans}
-    subj = []
-    for name, rec in topics.items():
-        if rec["kind"] not in SUBJECT_KINDS or name not in by_name:
-            continue
-        c = by_name[name]
-        a = act.get(c["id"]) or {}
-        ts = a.get("last_human_ts")
-        subj.append(dict(rec, chan=c, act=a, members=c["num_members"] or 0,
-                         quiet=(today - dt.datetime.fromtimestamp(
-                             ts, dt.timezone.utc)).days if ts else None))
-    quiet = [s for s in subj if s["quiet"] is None or s["quiet"] >= QUIET_DAYS]
-    alive = [s for s in subj if s["quiet"] is not None and s["quiet"] < QUIET_DAYS]
-    nopurp = [s for s in subj if not (s["chan"].get("purpose") or "").strip()]
-    dups = near_duplicates(subj)
-    return {"subj": subj, "quiet": quiet, "alive": alive, "nopurp": nopurp,
-            "dups": dups, "stranded": sum(s["members"] for s in quiet)}
+def topic_findings(subjects, today):
+    """Select from the records `audit_topics` already built. Derive nothing.
+
+    This function used to build its own parallel subject shape and re-read the
+    Topics tab, and it drifted immediately: it counted rooms the sweep never
+    reached as "quiet", so the focus page and Appendix B of the SAME PDF
+    reported different numbers and the inflated one was on the cover. Selecting
+    from `audit_topics`' own records through its own `state_of` makes that
+    divergence unwriteable.
+    """
+    by_state = {}
+    for s in subjects:
+        by_state.setdefault(state_of(s), []).append(s)
+    quiet = by_state.get(QUIET, [])
+    never = by_state.get(NEVER, [])
+    unmeasured = by_state.get(UNMEASURED, []) + by_state.get(UNKNOWN, [])
+
+    # Stranded membership counts MEASURED silence only, and only rooms whose
+    # size Slack actually reported — "not reported" is not "zero".
+    dormant = quiet + never
+    sizes = [members_of(x) for x in dormant]
+    return {"subj": subjects,
+            "quiet": dormant,
+            "alive": by_state.get("live", []),
+            "unmeasured": unmeasured,
+            "nopurp": [x for x in subjects
+                       if not (x["chan"].get("purpose") or "").strip()],
+            "dups": near_duplicates(subjects),
+            "stranded": sum(m for m in sizes if m is not None),
+            "stranded_unknown": sum(1 for m in sizes if m is None)}
 
 
-def build(o, t, chans, directory, today, ages):
+def build(o, t, directory, today, ages):
     humans = [u for u in directory
               if not u["is_bot"] and not u["is_app_user"] and u["id"] != "USLACKBOT"]
     active = [u for u in humans if not u["deleted"]]
 
-    top_quiet = sorted(t["quiet"], key=lambda s: -s["members"])[:8]
+    top_quiet = sorted(t["quiet"], key=lambda s: -(members_of(s) or 0))[:8]
     top_gaps = o["gaps"][:6]
 
     acts = []
@@ -164,9 +228,11 @@ def build(o, t, chans, directory, today, ages):
 
     quiet_rows = "".join(row([
         "<b>#%s</b>" % e(s["name"]), e(s["theme"]),
-        '<span class="n">%s</span>' % format(s["members"], ","),
-        e(("silent all window" if s["act"] else "not measured")
-          if s["quiet"] is None else "%d days" % s["quiet"]),
+        '<span class="n">%s</span>' % (
+            "?" if members_of(s) is None else format(members_of(s), ",")),
+        e({UNMEASURED: "not measured", UNKNOWN: "scan cap reached",
+           NEVER: "silent all window"}.get(state_of(s),
+                                           "%s days" % s["quiet_days"])),
     ]) for s in top_quiet)
 
     gap_rows = "".join(row([
@@ -175,8 +241,13 @@ def build(o, t, chans, directory, today, ages):
 
     alive_rows = "".join(row([
         "<b>#%s</b>" % e(s["name"]),
-        '<span class="n">%s</span>' % format(s["members"], ","),
-        '<span class="n">%s</span>' % format(s["act"].get("human_msgs", 0), ","),
+        '<span class="n">%s</span>' % (
+            "?" if members_of(s) is None else format(members_of(s), ",")),
+        # "+" marks a floor: the scan ran out before covering the window, so
+        # the count is a slice and must not be ranked as a total.
+        '<span class="n">%s%s</span>' % (
+            format(s["act"].get("human_msgs", 0), ","),
+            "+" if audit_topics.truncated(s) else ""),
         '<span class="n">%s</span>' % format(s["act"].get("posters", 0), ","),
     ]) for s in sorted(t["alive"], key=lambda s: -s["act"].get("human_msgs", 0))[:8])
 
@@ -199,14 +270,15 @@ engine that measured it; nothing on this page is estimated.</p>
 
 <h2>The three things behind that ranking</h2>
 
-<h3>1. One room is a live confidentiality problem</h3>
+<h3>1. %(pubhead)s</h3>
 <p>%(pubtext)s</p>
 
 <h3>2. The topic map has gone quiet under its own membership</h3>
 <p>%(quiet)s of %(subj)s subject channels have seen no human message in
 %(qd)d days or more, and %(stranded)s memberships sit inside them. This is the
 largest single finding in the audit and the least visible: nothing looks broken,
-the rooms simply do not move. Ranked by how many people are stranded:</p>
+the rooms simply do not move. %(unmeasured_note)s
+Ranked by how many people are stranded:</p>
 <table><thead><tr><th>Channel</th><th>Theme</th><th class="n">Members</th>
 <th>Last human message</th></tr></thead><tbody>%(quiet_rows)s</tbody></table>
 <p>For contrast, the rooms that <i>are</i> working — this is what a live subject
@@ -246,17 +318,35 @@ Read-only throughout; no message text was retained.</footer>
         "norow": len(o["no_row"]),
         "chapters": o["chapters"],
         "actions": rs.actions(acts),
+        # "?" not %d: organizers_channel_members is None when Slack did not
+        # report a size, and %d on None raises TypeError — which would kill the
+        # entire four-part render at the last step. audit_organizers guards the
+        # same field the same way.
         "pubtext": e(
-            "#%s is a public channel with %d members. Everything organizers say "
+            "#%s is a public channel with %s members. Everything organizers say "
             "there — venue costs, budgets, speaker problems, and anything said "
             "about a person — is readable by the entire workspace. Every other "
             "organizer room in the audit is private."
             % (o["pub_org"][0]["organizers_channel"],
-               o["pub_org"][0]["organizers_channel_members"]))
+               "an unreported number of"
+               if o["pub_org"][0]["organizers_channel_members"] is None
+               else format(o["pub_org"][0]["organizers_channel_members"], ",")))
         if o["pub_org"] else "No organizer channel is public. This was the "
                              "highest-severity class of finding and it is clear.",
+        "pubhead": e(
+            "No organizer room is public" if not o["pub_org"]
+            else ("One room is a live confidentiality problem"
+                  if len(o["pub_org"]) == 1
+                  else "%d rooms are a live confidentiality problem"
+                       % len(o["pub_org"]))),
         "qd": QUIET_DAYS,
-        "stranded": format(t["stranded"], ","),
+        "stranded": format(t["stranded"], ",") + (
+            " (plus %d room(s) whose size Slack did not report)"
+            % t["stranded_unknown"] if t["stranded_unknown"] else ""),
+        "unmeasured_note": e(
+            "%d further subject room(s) could not be measured at all and are "
+            "excluded from every figure above." % len(t["unmeasured"])
+        ) if t["unmeasured"] else "",
         "quiet_rows": quiet_rows,
         "alive_rows": alive_rows,
         "ngaps": len(o["gaps"]),
@@ -271,7 +361,7 @@ Read-only throughout; no message text was retained.</footer>
 #: Appendices carry their own <h1>, so each starts a fresh printed page and the
 #: PDF reads as four documents in one file rather than one long scroll.
 APPENDIX_CSS = """
-.appendix{break-before:page;page-break-before:always;border-top:2px solid var(--rule);
+.appendix{break-before:page;page-break-before:always;border-top:2px solid var(--line-hard,#CFCFC9);
   margin-top:3rem;padding-top:2rem}
 .appendix > .tag{display:inline-block;font-size:.72rem;letter-spacing:.08em;
   text-transform:uppercase;opacity:.6;margin-bottom:.4rem}
@@ -313,10 +403,19 @@ def main():
     directory = need(args.cache, "users.json", "audit_members.py")
     ages = {n: jsoncache.age(os.path.join(args.cache, n + ".json"))
             for n in ("audit", "activity", "channels", "users")}
+    team_id = same_workspace(args.cache, ("audit.json", "activity.json",
+                                          "channels.json", "users.json"))
 
     today = dt.datetime.now(dt.timezone.utc)
+    # load_topics() is a LIVE Sheets read. Doing it once matters twice over:
+    # two reads cost two round-trips, and they can straddle an edit, so the
+    # focus page and Appendix B could describe two different classifications.
+    claimed = audit_topics.chapter_claimed(args.cache, team_id)
+    subjects, filed_out, unfiled = audit_topics.classify(
+        chans, load_topics(), claimed)
+    measured = audit_topics.attach_activity(subjects, act, today)
     o = org_findings(audit)
-    t = topic_findings(args.cache, chans, act, today)
+    t = topic_findings(subjects, today)
     print("  %d chapters, %d subject rooms (%d quiet), %d organizer gaps"
           % (o["chapters"], len(t["subj"]), len(t["quiet"]), len(o["gaps"])))
 
@@ -324,22 +423,32 @@ def main():
     org_body, _ = audit_organizers.render_body(
         audit["chapters"], audit.get("orphan_cities") or {},
         audit.get("duplicates") or 0, today)
+    # The organizer body ships filter buttons driven by a script we deliberately
+    # drop (its `tbody tr` query is global and would reach into the other two
+    # appendices). Dropping the script alone left five dead controls in the PDF
+    # that look interactive; strip the markup too, so "nothing is lost" is true.
+    org_body = audit_organizers.strip_controls(org_body)
 
-    subjects, filed_out, unfiled = audit_topics.classify(
-        chans, load_topics(), audit_topics.chapter_claimed(args.cache))
-    measured = audit_topics.attach_activity(subjects, act, today)
+    # window_days is INDEXED, not .get(...,90): a record without the key is
+    # schema drift, and defaulting would mint the very number the page then
+    # prints as the measured window.
+    window = max(r["window_days"] for r in act.values())
     top_body = audit_topics.build_body(
         subjects, filed_out, unfiled, today, measured,
-        {"age": ages["activity"],
-         "days": max(r.get("window_days", 90) for r in act.values())})
+        {"age": ages["activity"], "days": window},
+        claimed_ok=claimed is not None)
 
     ids = {u for r in act.values() for u in r.get("poster_ids", ())}
-    activity = {"poster_ids": ids,
-                "days": max(r.get("window_days", 90) for r in act.values()),
+    activity = {"poster_ids": ids, "days": window,
                 "channels": len(act), "age": ages["activity"]} if ids else None
+    # The same completeness tripwire audit_members.main() runs. Calling
+    # build_body directly would publish a short user pull with no guard, and
+    # every count on Appendix C plus the member total in action #1 would
+    # understate without saying so.
+    audit_members.assert_directory_complete(chans, directory, note=print)
     mem_body = audit_members.build_body(chans, directory, today, activity)
 
-    doc = build_document(build(o, t, chans, directory, today, ages),
+    doc = build_document(build(o, t, directory, today, ages),
                          [("Appendix A — organizers", org_body),
                           ("Appendix B — topics", top_body),
                           ("Appendix C — members", mem_body)])

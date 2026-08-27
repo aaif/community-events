@@ -1,7 +1,7 @@
 ---
 name: aaif-audit-slack
-description: Audit the community Slack workspace, from either side. The organizer engine checks, for every chapter on the Chapters List, whether it has a public city channel and a private organizers channel, whether the organizers we accepted are actually in them, and who is in each organizers channel that we never accepted. The topics engine reports on the subject-matter channels — which subjects have gone quiet, which rooms overlap, which are carried by one poster, and which show a newcomer nothing — from a human-curated Topics tab. The member engine reports channel counts, sizes, descriptions and lifecycle, plus how many accounts behind the headline member count are active, deactivated, guests or bots. Each produces a self-contained HTML report and a PDF. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in the -organizers channels, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
-argument-hint: '[organizers|members|activity|all] [--refresh] [--out NAME] [--no-pdf]'
+description: Audit the community Slack workspace, from either side. The organizer engine checks, for every chapter on the Chapters List, whether it has a public city channel and a private organizers channel, whether the organizers we accepted are actually in them, and who is in each organizers channel that we never accepted. The topics engine reports on the subject-matter channels — which subjects have gone quiet, which rooms overlap, which are carried by one poster, and which show a newcomer nothing — from a human-curated Topics tab. The member engine reports channel counts, sizes, descriptions and lifecycle, plus how many accounts behind the headline member count are active, deactivated, guests or bots. Each engine can produce a standalone HTML report, but the deliverable is ONE combined PDF. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in the -organizers channels, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
+argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME] [--no-pdf]'
 ---
 
 # AAIF Slack Audit
@@ -308,7 +308,8 @@ posters · rooms with no purpose set · unclassified rooms · the limits.
 Same decision as the channel map, for the same reason: whether `#be-shameless`
 is a subject or plumbing is a **human judgement**, and the people who can say are
 the people with the spreadsheet. It is a **`Topics` tab**, `Channel | Kind |
-Theme | Notes`, one row per live public channel.
+Theme | Notes`, one row per channel someone has classified — anything live and
+public without a row is reported as *unclassified*, never guessed at.
 
 | Column | Means |
 |---|---|
@@ -440,9 +441,16 @@ repository — there is nothing to commit them to.
 python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py
 ```
 
-Writes `slack-full-audit.pdf` and nothing else. It **re-measures nothing** — it
-reads the four caches the engines wrote and aborts naming the missing engine if
-one is absent, rather than estimating a number nobody measured. The focus page
+Writes `slack-full-audit.pdf`, deleting the intermediate HTML it renders from
+(`--keep-html` retains it; `--no-pdf` writes only the HTML and no PDF).
+
+It **measures nothing new**: it reads the four caches the engines wrote and
+aborts naming the engine whose cache is missing, empty, or stamped with a
+different workspace, rather than estimating a number nobody measured. It does
+re-read the **Topics tab** over `gws` — the classification is config, not a
+measurement, and is not cached — and it re-runs `classify`/`attach_activity`
+once so the focus page and Appendix B select from the *same* records. They used
+to derive separately and immediately disagreed about how many rooms were quiet. The focus page
 ranks findings by what it costs to leave them alone (a public organizers channel
 outranks everything; a quiet topic room outranks a missing purpose line), and
 each appendix is the engine's own report body, unmodified.
@@ -453,9 +461,11 @@ Keep both paths — a change to a report body must show up in the combined PDF a
 the standalone one at once, which is the whole point of composing fragments
 rather than stitching generated HTML.
 
-The organizer report's filter buttons are dropped from the combined document on
-purpose: that script hides rows via a global `tbody tr` query and would reach
-into the other appendices. In a PDF they were never clickable.
+The organizer report's filter buttons are removed from the combined document on
+purpose — **both** the script and the markup. The script hides rows via a global
+`tbody tr` query and would reach into the other appendices; dropping it alone
+left five controls that look interactive and do nothing, so
+`audit_organizers.strip_controls()` takes the markup too.
 
 ---
 

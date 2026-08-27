@@ -339,6 +339,44 @@ def build_report(chans, directory, today, activity=None):
                    build_body(chans, directory, today, activity))
 
 
+def assert_directory_complete(chans, directory, note=lambda *_: None):
+    """Abort when the user pull is materially shorter than the workspace.
+
+    Every member is auto-joined to the default channel, so a directory smaller
+    than that channel means the paged pull came up short — and reporting it
+    would understate every count on the page.
+
+    Hoisted out of main() because summarize_audits.py calls build_body directly
+    to compose its appendix: without this the combined PDF was the one document
+    that could publish a short pull with no guard.
+
+    Three things this must get right, each of which it got wrong before: find
+    the channel by `is_general`, not by a name someone can rename; treat an
+    unreported size as "cannot check" and SAY so rather than skipping in
+    silence; and compare like with like — num_members counts only ACTIVE
+    members, so measuring it against all humans (deactivated included) would
+    pass a pull that had lost half the workspace.
+    """
+    general = next((c for c in chans if c.get("is_general")), None)
+    # is_app_user by bracket access, like build_body's partition: the key is
+    # guaranteed by slack.users(), so its absence is schema drift and must
+    # KeyError here — a .get() quietly counted app users as active humans,
+    # inflating exactly the number the 0.9 tripwire below compares.
+    active_humans = sum(1 for u in directory
+                        if not u["is_bot"] and not u["is_app_user"]
+                        and not u["deleted"] and u["id"] != "USLACKBOT")
+    if general is None or general["num_members"] is None:
+        note("  note: no default channel size available — the directory "
+             "completeness cross-check could not run.")
+        return
+    if active_humans < general["num_members"] * 0.9:
+        raise SystemExit(
+            "ABORT: the directory holds %d active humans but #%s reports %d "
+            "members. The user pull is short — reporting it would understate "
+            "every count on the page. Re-run with --refresh."
+            % (active_humans, general["name"], general["num_members"]))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="slack-members-audit",
@@ -384,23 +422,7 @@ def main():
     # silence; and compare like with like — num_members counts only ACTIVE
     # members, so measuring it against all humans (deactivated included) would
     # pass a pull that had lost half the workspace.
-    general = next((c for c in chans if c.get("is_general")), None)
-    # is_app_user by bracket access, like build_report's partition: the key is
-    # guaranteed by slack.users(), so its absence is schema drift and must
-    # KeyError here — a .get() quietly counted app users as active humans,
-    # inflating exactly the number the 0.9 tripwire below compares.
-    active_humans = sum(1 for u in directory
-                        if not u["is_bot"] and not u["is_app_user"]
-                        and not u["deleted"] and u["id"] != "USLACKBOT")
-    if general is None or general["num_members"] is None:
-        print("  note: no default channel size available — the directory "
-              "completeness cross-check could not run.")
-    elif active_humans < general["num_members"] * 0.9:
-        raise SystemExit(
-            "ABORT: the directory holds %d active humans but #%s reports %d "
-            "members. The user pull is short — reporting it would understate "
-            "every count on the page. Re-run with --refresh."
-            % (active_humans, general["name"], general["num_members"]))
+    assert_directory_complete(chans, directory, note=print)
 
     # Engagement, when audit_activity.py has run on a history-scoped token:
     # union its per-channel poster ids into "people seen posting". Entries

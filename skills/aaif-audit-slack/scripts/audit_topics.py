@@ -13,7 +13,8 @@ for the same reason: the people who can say are the people with the spreadsheet,
 not the people with the pull request.
 
 Everything here is read-only. No message text is read or retained — dormancy and
-volume come from audit_activity.py's cache, which stores timestamps and counts.
+volume come from audit_activity.py's cache, which stores timestamps, counts
+and poster IDs — no message text.
 """
 
 import argparse
@@ -43,7 +44,9 @@ TOPICS_TAB = "Topics"
 #: `Kind` values the tab may carry. The first three are subject rooms and are
 #: what the report measures; the rest are recorded so that "not a topic" is a
 #: filed human decision rather than an absence, exactly as `none` does in the
-#: channel map. A row is never silently ignored.
+#: channel map. A row carrying a channel name is never silently ignored;
+#: a wholly blank row (no Channel) is skipped, since that is a spreadsheet
+#: artefact rather than a half-finished decision.
 SUBJECT_KINDS = ("topic", "vendor", "cloud")
 OTHER_KINDS = ("geo", "community", "ops")
 KINDS = SUBJECT_KINDS + OTHER_KINDS
@@ -52,18 +55,22 @@ KINDS = SUBJECT_KINDS + OTHER_KINDS
 QUIET_DAYS = 90
 DEAD_DAYS = 365
 
-#: Name-similarity floor for proposing that two rooms overlap. Deliberately
-#: high: this proposes merges to a human, and a list padded with false pairs
-#: gets skimmed and then ignored.
+#: Floor on the STRING-SIMILARITY path only — the token-subset path in
+#: `near_duplicates` proposes pairs regardless of ratio. Deliberately high:
+#: this proposes merges to a human, and a list padded with false pairs gets
+#: skimmed and then ignored.
 SIMILAR = 0.72
 
 
 def load_topics(sheet_id=None):
     """Read the `Topics` tab: one row per classified channel.
 
-    Columns by header name, never by letter — the layouts change (repo rule).
+    Columns are located by header NAME, never by letter — the layouts change.
+    The read window is deliberately wide (A:Z) rather than A:D: a fixed window
+    is the half of "read by header name" that still breaks when someone inserts
+    a column, which is exactly how the Chapters restructure broke sync-chapters.
     """
-    rows = gws_values(sheet_id or CHAPTERS_ID, "'%s'!A:D" % TOPICS_TAB)
+    rows = gws_values(sheet_id or CHAPTERS_ID, "'%s'!A:Z" % TOPICS_TAB)
     if not rows:
         raise SystemExit(
             "ABORT: no %r tab on the Chapters List (or it is empty).\n"
@@ -77,8 +84,13 @@ def load_topics(sheet_id=None):
 
     out, seen, bad = {}, set(), []
     for n, row in enumerate(rows[1:], start=2):
-        name = cell(row, idx["Channel"]).lstrip("#").strip()
+        # Lowercased like Kind: the sheet is typed by hand, and `#Kubernetes`
+        # would otherwise miss the live-channel join and abort as "renamed or
+        # archived" — a confident misdiagnosis of a capitalisation typo.
+        name = cell(row, idx["Channel"]).lstrip("#").strip().lower()
         if not name:
+            if any(cell(row, i).strip() for i in range(len(row))):
+                bad.append("row %d: has values but no Channel" % n)
             continue
         kind = cell(row, idx["Kind"]).strip().lower()
         if kind not in KINDS:
@@ -106,17 +118,22 @@ def load_topics(sheet_id=None):
     return out
 
 
-def chapter_claimed(cache):
+def chapter_claimed(cache, team_id=None):
     """Channel names the organizer engine already accounts for.
 
-    Without this, every chapter city room lands in "unclassified" and the
-    Topics tab looks 80 rows short of complete — a made-up backlog that would
-    send someone off to file rooms another engine already owns. Absent
+    Without this, every chapter city room lands in "unclassified", inventing a
+    backlog the size of the chapter list — and sending someone off to file
+    rooms another engine already owns. Absent
     audit.json, nothing is excluded and the report SAYS the list is inflated
     rather than quietly under-reporting.
     """
-    audit = jsoncache.read(os.path.join(cache, "audit.json"), note=None)
-    if not audit:
+    # `is None`, not falsiness — jsoncache.read's docstring says so in bold.
+    # A present-but-empty payload means "the organizer engine ran and found no
+    # chapters", which is a measurement; treating it as "no cache" would print
+    # the inflated-list caveat over a list that is in fact exact.
+    audit = jsoncache.read(os.path.join(cache, "audit.json"), team_id=team_id,
+                           note=print)
+    if audit is None:
         return None
     return {c[k].lstrip("#") for c in audit.get("chapters", ())
             for k in ("public", "organizers_channel", "regional") if c.get(k)}
@@ -124,12 +141,18 @@ def chapter_claimed(cache):
 
 def classify(chans, topics, claimed=None):
     """Join the tab against live Slack. Returns (subjects, filed_out, unfiled)."""
-    by_name = {c["name"]: c for c in chans}
+    # LIVE channels only. An archived room resolving here would be counted as a
+    # subject, contribute its members to the totals, show no recent activity,
+    # and so be recommended for "decide the fate of" — a room someone already
+    # retired. The abort below promises "renamed or archived"; excluding them
+    # here is what makes archived actually take that path.
+    by_name = {c["name"]: c for c in chans if not c["is_archived"]}
     missing = sorted(n for n in topics if n not in by_name)
     if missing:
         raise SystemExit(
             "ABORT: %d channel(s) on the %r tab no longer resolve to a live "
-            "channel:\n  %s\nThe channel was renamed or archived. Fix the row — "
+            "channel:\n  %s\nThe channel was renamed or archived (an archived "
+            "room is deliberately not a live one). Fix the row, or drop it — "
             "left alone, the topic silently drops off the report."
             % (len(missing), TOPICS_TAB, "\n  ".join("#" + n for n in missing)))
 
@@ -165,6 +188,67 @@ def attach_activity(subjects, activity, today):
     return measured
 
 
+#: The states a subject room can be in, most-unknown first. `quiet_days` alone
+#: cannot distinguish them — it is None for THREE different reasons — and every
+#: consumer that re-derives the distinction gets it wrong sooner or later. It
+#: already happened: the focus page counted unmeasured rooms as quiet while the
+#: topics appendix did not, so one PDF reported two different numbers for the
+#: same thing and the larger one was on the cover.
+#:
+#: Read this, never `quiet_days`, to decide what a room *is*.
+UNMEASURED = "unmeasured"   # the sweep never reached it
+UNKNOWN = "unknown"         # scanned to the cap without finding a human message
+NEVER = "never"             # measured the whole window, nothing human in it
+QUIET = "quiet"             # last human message >= QUIET_DAYS ago
+LIVE = "live"               # someone spoke recently
+
+
+def dormancy(s):
+    """(state, days) for one subject room. `days` is None unless state is QUIET/LIVE.
+
+    UNKNOWN is the case the naive version misses and the one that misleads
+    hardest: `slack.history_activity` returns `last_human_ts=None` both when a
+    channel really was silent and when the scan hit `max_scan` first — and it
+    sets `last_human_unknown` to say which. A room that busy is the *opposite*
+    of silent, so reporting it as "silent all window" is a confident statement
+    of the reverse of the truth.
+    """
+    act = s.get("act")
+    if not act:
+        return UNMEASURED, None
+    if act.get("last_human_unknown"):
+        return UNKNOWN, None
+    days = s.get("quiet_days")
+    if days is None:
+        return NEVER, None
+    return (QUIET if days >= QUIET_DAYS else LIVE), days
+
+
+def state_of(s):
+    return dormancy(s)[0]
+
+
+def truncated(s):
+    """True when the scan ran out before covering the window.
+
+    `slack.history_activity`: the counts are then FLOORS, and "callers must say
+    so rather than rank a truncated channel below a fully-scanned one".
+    """
+    act = s.get("act") or {}
+    return bool(act) and not act.get("window_complete", True)
+
+
+def members_of(s):
+    """Membership, or None when Slack did not report it.
+
+    `slack.channels`: "not reported" is not "zero" — a consumer that conflates
+    them publishes an unknown-size channel as empty and drops it out of every
+    total. Callers sum with `sum(m for m in ... if m is not None)` and say how
+    many were unknown.
+    """
+    return s["chan"]["num_members"]
+
+
 def near_duplicates(subjects):
     """Propose overlapping rooms — same Theme, or closely similar names.
 
@@ -178,8 +262,15 @@ def near_duplicates(subjects):
             ratio = difflib.SequenceMatcher(None, an, bn).ratio()
             at, bt = set(an.split("-")), set(bn.split("-"))
             shared = at & bt
-            # A shared word is the stronger signal (#llm-security vs
-            # #security-n-privacy); raw string similarity catches the rest.
+            # Two paths, and only one of them is governed by SIMILAR:
+            #  · token SUBSET — one name's words are wholly contained in the
+            #    other's (#llmops vs #llmops-eu, #agents vs #coding-agents).
+            #    Fires regardless of ratio.
+            #  · raw string similarity, for the rest.
+            # NOT "any shared word": #llm-security vs #security-n-privacy share
+            # `security` and are deliberately NOT proposed (ratio .53, and
+            # neither token set contains the other). An earlier comment claimed
+            # that pair as its worked example; it never fired.
             if ratio >= SIMILAR or (shared and len(shared) >= min(len(at), len(bt))):
                 pairs.append((a, b, ratio, sorted(shared)))
     pairs.sort(key=lambda p: -(p[0]["chan"]["num_members"] or 0))
@@ -187,26 +278,39 @@ def near_duplicates(subjects):
 
 
 def build_body(subjects, filed_out, unfiled, today, measured, act_meta,
-               claimed_ok=True):
-    def num(c):
-        return c["chan"]["num_members"] or 0
+               claimed_ok=False):
+    """The topics report body.
+
+    `claimed_ok` defaults to FALSE — the over-cautious value. Forgetting to pass
+    it then prints a caveat that was not needed, instead of silently asserting a
+    precision nobody established.
+    """
+    def num(s):
+        return members_of(s) or 0
 
     subjects = sorted(subjects, key=lambda s: -num(s))
-    total_members = sum(num(s) for s in subjects)
+    known = [m for m in (members_of(s) for s in subjects) if m is not None]
+    total_members = sum(known)
+    unknown_size = len(subjects) - len(known)
 
-    quiet = [s for s in subjects if s["quiet_days"] is not None
-             and s["quiet_days"] >= QUIET_DAYS]
-    dead = [s for s in subjects if s["quiet_days"] is not None
-            and s["quiet_days"] >= DEAD_DAYS]
-    never = [s for s in subjects if s["act"] and not s["act"].get("last_human_ts")]
-    unmeasured = [s for s in subjects if not s["act"]]
+    by_state = defaultdict(list)
+    for s in subjects:
+        by_state[state_of(s)].append(s)
+    quiet = by_state[QUIET]
+    never = by_state[NEVER]
+    unknown = by_state[UNKNOWN]
+    unmeasured = by_state[UNMEASURED]
+    dead = [s for s in quiet if s["quiet_days"] >= DEAD_DAYS]
     no_purpose = [s for s in subjects if not (s["chan"].get("purpose") or "").strip()]
     dups = near_duplicates(subjects)
 
     # Concentration: how few people carry each room. A topic held up by one
-    # poster is one person's departure away from dead.
+    # poster is one person's departure away from dead — but ONLY when the scan
+    # covered the window. A truncated scan sees a slice, and two posters in a
+    # slice of a busy room is an artefact of the cap, not a fragile channel.
     thin = [s for s in subjects
-            if s["act"] and s["act"].get("human_msgs") and s["act"].get("posters", 0) <= 2]
+            if s["act"] and not truncated(s)
+            and s["act"].get("human_msgs") and s["act"].get("posters", 0) <= 2]
 
     by_theme = defaultdict(list)
     for s in subjects:
@@ -222,15 +326,12 @@ def build_body(subjects, filed_out, unfiled, today, measured, act_meta,
                    extra, e(rs.redact(p, 90)) if p else "<i>no purpose set</i>"))
 
     def quiet_label(s):
-        # Order matters: quiet_days is None BOTH when the sweep never reached
-        # the channel and when it reached it and found no human message. Test
-        # the record first, or a measured silence gets reported as a failure to
-        # measure — and the room drops off the list someone acts on.
-        if not s["act"]:
-            return "not measured"
-        if not s["act"].get("last_human_ts"):
-            return "silent all window"
-        return "%d days ago" % s["quiet_days"]
+        state, days = dormancy(s)
+        return {
+            UNMEASURED: "not measured",
+            UNKNOWN: "scan cap reached \u2014 not measured",
+            NEVER: "silent all window",
+        }.get(state, "%s days ago" % days)
 
     theme_rows = sorted(((t, sum(num(x) for x in v)) for t, v in by_theme.items()),
                         key=lambda r: -r[1])
@@ -261,7 +362,8 @@ organizer engine's business and are excluded here.</p>
 <div class="stats">
   <div class="stat"><span class="v">%(n_sub)s</span><span class="k">subject channels</span></div>
   <div class="stat"><span class="v">%(members)s</span><span class="k">memberships across them</span></div>
-  <div class="stat s-warn"><span class="v">%(n_quiet)s</span><span class="k">quiet %(qd)s+ days</span></div>
+  <div class="stat s-warn"><span class="v">%(n_quiet)s</span><span class="k">measured quiet</span></div>
+  <div class="stat"><span class="v">%(n_unmeasured)s</span><span class="k">not measured</span></div>
   <div class="stat s-bad"><span class="v">%(n_purpose)s</span><span class="k">no purpose set</span></div>
   <div class="stat"><span class="v">%(n_unfiled)s</span><span class="k">unclassified rooms</span></div>
 </div>
@@ -271,9 +373,13 @@ organizer engine's business and are excluded here.</p>
 <p class="mute">%(kinds)s</p>
 
 <h2>Quiet and dead topics</h2>
-<p>Last <i>human</i> message, bots and join noise excluded. A quiet room is not
-automatically a room to archive — it is a room to either revive with a prompt or
-retire deliberately. %(dead_note)s</p>
+<p>Last <i>human</i> message, bots and join noise excluded. &ldquo;Quiet&rdquo;
+means the last human message was at least %(qd)d days ago, or the whole
+%(window)d-day sweep window held none &mdash; whichever the sweep could
+establish. Rooms it could <i>not</i> establish are listed here too and labelled
+as such; they are not counted as quiet. A quiet room is not automatically a room
+to archive &mdash; it is a room to either revive with a prompt or retire
+deliberately. %(dead_note)s</p>
 <table><thead><tr><th>Channel</th><th>Theme</th><th class="n">Members</th>
 <th>Last human message</th><th>Purpose</th></tr></thead><tbody>%(quiet_rows)s</tbody></table>
 
@@ -319,20 +425,28 @@ because someone wrote it on the %(tab)s tab; the engine never inferred one.</li>
         "n_sub": format(len(subjects), ","),
         "members": format(total_members, ","),
         "n_quiet": format(len(quiet) + len(never), ","),
+        "n_unmeasured": format(len(unknown) + len(unmeasured), ","),
         "qd": QUIET_DAYS,
+        "window": act_meta["days"] if act_meta else 0,
         "n_purpose": format(len(no_purpose), ","),
         "n_unfiled": format(len(unfiled), ","),
         "themes": rs.bars(theme_rows[:14]),
         "kinds": e("Kinds on the tab: " + ", ".join(
             "%s %d" % (k, n) for k, n in kinds.most_common())
-            + " · filed as not-a-topic: %d · unmeasured for activity: %d"
-            % (len(filed_out), len(unmeasured))),
+            + " · filed as not-a-topic: %d · never swept: %d"
+              " · scan cap reached: %d · size not reported by Slack: %d"
+            % (len(filed_out), len(unmeasured), len(unknown), unknown_size)),
         "dead_note": e("%d have been silent for a year or more." % len(dead))
                      if dead else "",
-        "quiet_rows": "".join(chan_row(s, e(quiet_label(s)))
-                              for s in sorted(quiet + never,
-                                              key=lambda x: -(x["quiet_days"] or 10**6))
-                              ) or '<tr><td colspan="5" class="mute">Nothing quiet.</td></tr>',
+        # never/unknown/unmeasured sort above the day-counted rooms, and the
+        # key uses an explicit None test — `or 10**6` sent a room last spoken
+        # in TODAY (0 days) to the top of the dead list.
+        "quiet_rows": "".join(
+            chan_row(s, e(quiet_label(s)))
+            for s in sorted(quiet + never + unknown + unmeasured,
+                            key=lambda x: (x["quiet_days"] is not None,
+                                           -(x["quiet_days"] or 0)))
+        ) or '<tr><td colspan="5" class="mute">Nothing quiet.</td></tr>',
         "dups": dup_html,
         "thin_rows": "".join(
             chan_row(s, e("%d poster(s), %d msgs" % (s["act"]["posters"],
@@ -404,7 +518,7 @@ def main():
         print("  reusing cached channel list (%d, %s)"
               % (len(chans), jsoncache.age(chan_path)))
 
-    claimed = chapter_claimed(args.cache)
+    claimed = chapter_claimed(args.cache, team_id)
     if claimed is None:
         print("  NOTE: no audit.json — chapter rooms cannot be excluded, so the "
               "unclassified list is inflated. Run audit_organizers.py first.")

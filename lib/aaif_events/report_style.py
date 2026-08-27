@@ -1,6 +1,6 @@
 """Shared page chrome for the Slack audit reports.
 
-One token system, two documents, so the member and organizer reports read as a
+One token system, four documents, so every report reads as a
 set. Everything is inlined into a single self-contained HTML file — no CDN, no
 webfont fetch — because the pages are published as Artifacts under a strict CSP
 and printed to PDF offline.
@@ -102,19 +102,37 @@ def font_css():
     is still correct, just off-brand. A missing font must never stop an audit
     from being written.
     """
-    rules = []
+    rules, absent = [], []
     for name, unicode_range in _FONT_SUBSETS:
         path = os.path.join(_FONT_DIR, name)
         try:
             with open(path, "rb") as fh:
                 b64 = base64.b64encode(fh.read()).decode("ascii")
-        except OSError:
+        except OSError as exc:
+            absent.append("%s (%s)" % (name, exc.strerror or exc))
             continue
         rules.append(
             "@font-face{font-family:'Instrument Sans';font-style:normal;"
             "font-weight:400 700;font-display:block;"
             "src:url(data:font/woff2;base64,%s) format('woff2');"
             "unicode-range:%s}" % (b64, unicode_range))
+
+    if absent and rules:
+        # PARTIAL is the dangerous case and the silent one. If `latin` loads and
+        # `latin-ext` does not, the report renders in Instrument Sans except for
+        # accented glyphs — so "München", "Zürich", "España" change face
+        # mid-word. Nobody diagnoses that from a PDF. A partial set is never
+        # intentional, so refuse it and fall back wholly to the system stack.
+        print("WARNING: only %d of %d font subsets loaded (%s) — falling back "
+              "to the system sans entirely rather than rendering accented "
+              "names in a second face."
+              % (len(rules), len(_FONT_SUBSETS), "; ".join(absent)),
+              file=sys.stderr)
+        return ""
+    if absent:
+        print("note: no embedded fonts found in %s (%s) — reports will render "
+              "in the system sans." % (_FONT_DIR, "; ".join(absent)),
+              file=sys.stderr)
     return "".join(rules)
 
 
@@ -147,7 +165,9 @@ def design_tokens():
 #: The report vocabulary, mapped onto the AAIF tokens. These names are what the
 #: components below and every skill's report markup use; the right-hand side is
 #: the only place that knows an AAIF token name, so a rename in the design
-#: system is a change here and nowhere else.
+#: system is a change here and nowhere else — with three typography exceptions
+#: used directly in the component rules below, listed so the claim stays honest:
+#: `--tr-tight` (heading tracking), `--font-mono` and `--tr-eyebrow` (eyebrows).
 #:
 #: Note what the accent is: **black**. The design system is explicit that
 #: "primary actions are black", and the spectrum hues are accents *within* a
@@ -216,6 +236,10 @@ code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
   background:var(--sunken); border:1px solid var(--line-soft); border-radius:5px;
   padding:1px 6px; color:var(--ink-1); white-space:nowrap}
 .nil{color:var(--ink-faint)}
+/* Used by every report for de-emphasised cell text and empty-table
+   placeholders ("no purpose set", "Nothing quiet."). It was referenced in ten
+   places before it existed, so those cells rendered at full ink weight. */
+.mute{color:var(--ink-faint)}
 .bad{color:var(--bad); font-weight:650}
 .caveat{background:var(--warn-bg); border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);
   border-radius:10px; padding:16px 20px; color:var(--ink-1); font-size:.9rem}
@@ -393,10 +417,17 @@ def page(title, body, extra_css="", script=""):
     encoding of pages that legitimately contain `españa`, `Montréal` and `—`.
     Write the result with `encoding="utf-8"`, never the locale default.
     """
+    # A stderr note dies with the terminal; the PDF outlives it. A reader
+    # holding an off-palette document otherwise has no way to know why.
+    tokens = design_tokens()
+    marker = "" if tokens else (
+        '<footer><b>Note:</b> the AAIF design tokens were not available when '
+        'this document was rendered, so it is shown in fallback colours. '
+        'Run scripts/extract_design_tokens.py and re-render.</footer>')
     return ('<!doctype html>\n<meta charset="utf-8">\n'
             '<title>%s</title>\n<style>%s%s</style>\n<div class="wrap">%s</div>%s\n'
             % (html.escape(str(title)),
-               font_css() + design_tokens() + BASE_CSS, extra_css, body,
+               font_css() + tokens + BASE_CSS, extra_css, body + marker,
                ("\n<script>%s</script>" % script) if script else ""))
 
 
