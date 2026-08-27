@@ -986,7 +986,7 @@ complete.</div>
       <div class="chips">{''.join('<span class="chip">%s · %d</span>' % (e(c["city"]), len(c["accepted"])) for c in unreachable)}</div>
       <p class="note">They may be in Slack under a different address — which is itself the finding,
       because nothing ties the intake identity to the Slack one.</p></div>
-    <div class="card"><h3>{len(empty_room)} chapters have a room and nobody in it</h3>
+    <div class="card"><h3>{len(empty_room)} chapter{"" if len(empty_room) == 1 else "s"} {"has" if len(empty_room) == 1 else "have"} a room and nobody in it</h3>
       <p class="sub">Channel exists; zero accepted organizers are members</p>
       <div class="chips">{''.join('<span class="chip">#%s</span>' % e(c["public"]) for c in empty_room)}</div>
       <p class="note">The cheapest fixes here — the channel already exists and already has

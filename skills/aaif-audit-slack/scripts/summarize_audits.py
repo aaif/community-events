@@ -361,8 +361,16 @@ Read-only throughout; no message text was retained.</footer>
 #: Appendices carry their own <h1>, so each starts a fresh printed page and the
 #: PDF reads as four documents in one file rather than one long scroll.
 APPENDIX_CSS = """
-.appendix{break-before:page;page-break-before:always;border-top:2px solid var(--line-hard,#CFCFC9);
+/* The appendix must re-create .wrap's vertical rhythm. .wrap is a flex column
+   whose 44px gap reaches its DIRECT children only, and an appendix nests its
+   whole report one level down — so every heading, table and card row inside it
+   lost the spacing the same markup has when rendered standalone, and the
+   appendices came out visibly cramped against the focus page. */
+.appendix{display:flex;flex-direction:column;gap:44px;
+  break-before:page;page-break-before:always;
+  border-top:2px solid var(--line-hard,#CFCFC9);
   margin-top:3rem;padding-top:2rem}
+.appendix > .tag{margin-bottom:-32px}
 .appendix > .tag{display:inline-block;font-size:.72rem;letter-spacing:.08em;
   text-transform:uppercase;opacity:.6;margin-bottom:.4rem}
 """

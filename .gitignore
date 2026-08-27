@@ -21,6 +21,12 @@ __pycache__/
 # it may ever be committed; a single `git add -A` would publish it irreversibly.
 .slack-audit-cache/
 slack-*-audit.*
+# Browser-automation artifacts. Driving a rendered report through Playwright or
+# Chrome writes accessibility snapshots and screenshots of the page — i.e. every
+# member name and email on it — next to the repo by default. Ignored, but the
+# rule from AGENTS.md still applies: delete them when the run is done.
+.playwright-mcp/
+.test-output/
 
 # Nightly sync runner output (aaif-sync-chapters nightly.py). Same rule as above:
 # the per-engine logs hold the full reports — names, emails, per-person diffs —
