@@ -59,6 +59,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sync_chapters import download, fold_city, fresh_if_unchanged, upload  # noqa: E402
+from migrate_interested_in import guide_parts  # noqa: E402
 from sync_crm import (CRM_SHEET, NEW_COLUMN, X, XLSX,  # noqa: E402
                       Attendees, backup_root, cell_ref, cleanup_workdir,
                       col_of, find_crm, list_chapter_folders, load_parts,
@@ -66,8 +67,6 @@ from sync_crm import (CRM_SHEET, NEW_COLUMN, X, XLSX,  # noqa: E402
 
 #: The column being moved, and the one it must sit immediately before.
 MOVE, BEFORE = NEW_COLUMN, "Status"
-
-GUIDE_SHEET = "Guide"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +99,26 @@ def move_mapping(headers, move=MOVE, before=BEFORE):
 # ---------------------------------------------------------------------------
 _REF_RE = re.compile(r"(\$?)([A-Z]{1,3})(\$?)(\d+)")
 
+#: A cross-sheet reference the remapper CAN rewrite — ONE definition, used both
+#: to do the rewriting (remap_formula) and to find what it did not claim
+#: (guide_misses). Two regexes encoding the same knowledge would drift: teach
+#: one a new form and the other reports it as unfixed, a false alarm in the
+#: single output a human is meant to act on by hand.
+#: The leading lookbehind is load-bearing in BOTH directions: without it a
+#: sheet whose name merely ENDS in the CRM sheet's name — `PastAttendees!D2`,
+#: `Old_Attendees!A:A` — matches on the substring, so the rewriter would
+#: renumber a reference to somebody else's tab and the reporter would raise a
+#: phantom "fix by hand" line about it.
+_HANDLED_REF = re.compile(
+    r"(?<![A-Za-z0-9_])(%s!)((?:\$?[A-Z]{1,3}\$?\d+)(?::\$?[A-Z]{1,3}(?:\$?\d+)?)?)"
+    % re.escape(CRM_SHEET))
+
+#: ANY mention of the CRM sheet, however spelled — quoted, spaced, whatever.
+#: The complement of _HANDLED_REF over this is the report, which is what makes
+#: the check closed: a form nobody has thought of is reported rather than
+#: silently left pointing at the pre-move layout.
+_SHEET_MENTION = re.compile(r"(?<![A-Za-z0-9_])'?%s'?\s*!" % re.escape(CRM_SHEET))
+
 
 def remap_ref(ref, mapping):
     """'D2:D1000' -> 'E2:E1000'. Preserves $ anchors and the row numbers."""
@@ -112,10 +131,10 @@ def remap_ref(ref, mapping):
     return _REF_RE.sub(one, ref)
 
 
-def remap_formula(text, mapping, prefix=""):
+def remap_formula(text, mapping, cross_sheet=False):
     """Rewrite A1-style column letters in a formula.
 
-    `prefix` scopes the rewrite to cross-sheet references ("Attendees!"): on the
+    `cross_sheet` scopes the rewrite to `Attendees!`-prefixed references: on the
     Guide tab a bare `B5` is a cell of the GUIDE and must not move, while
     `Attendees!B2:B` must. Without the scope the dashboard's own layout would be
     rewritten along with the references it makes.
@@ -124,7 +143,7 @@ def remap_formula(text, mapping, prefix=""):
     handled too — the trailing bare column has no row number, so it needs its
     own pass.
     """
-    if not prefix:
+    if not cross_sheet:
         return _REF_RE.sub(lambda m: remap_ref(m.group(0), mapping), text)
 
     def one(m):
@@ -148,8 +167,7 @@ def remap_formula(text, mapping, prefix=""):
         return m.group(1) + body
 
     # One reference at a time, each still carrying its sheet prefix.
-    return re.sub(r"(%s)((?:\$?[A-Z]{1,3}\$?\d+)(?::\$?[A-Z]{1,3}(?:\$?\d+)?)?)"
-                  % re.escape(prefix), one, text)
+    return _HANDLED_REF.sub(one, text)
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +304,41 @@ def unmovable(att):
     return out
 
 
+def guide_misses(parts):
+    """Every mention of the CRM sheet that `remap_formula` does NOT claim.
+
+    Derived, not enumerated. The first version of this listed the two shapes
+    known to slip through (`Attendees!L:L`, `'Attendees'!D2`) in a second
+    regex — which duplicated the rewriter's own knowledge of what a handled
+    reference looks like, and still left the class open: a THIRD shape nobody
+    had thought of would be neither rewritten nor reported, which is precisely
+    the silent failure this check exists to prevent.
+
+    Now `_HANDLED_REF` is the single definition of "handled", and this is its
+    residue over `_SHEET_MENTION`. The day the rewriter learns a new form, it
+    drops out of this report on its own; a form it never learns shows up here
+    without anyone having to predict it.
+
+    A miss matters because it is invisible otherwise: a Guide left pointing at
+    the pre-move layout looks exactly like a correctly migrated one, and the
+    verify only ever compares Attendees cell values.
+
+    NOTE `xl/sharedStrings.xml` is workbook-global, so a reference living on
+    some other tab is reported here too. That is the honest direction — the
+    rewriter edits that same global table.
+    """
+    out = set()
+    for part in guide_parts(parts):
+        raw = parts[part].decode("utf-8", "replace")
+        claimed = {m.start() for m in _HANDLED_REF.finditer(raw)}
+        for m in _SHEET_MENTION.finditer(raw):
+            if m.start() not in claimed:
+                # Enough trailing text to name the column, so the report line
+                # is actionable rather than just "something, somewhere".
+                out.add(raw[m.start():m.start() + 24].split("<")[0].strip())
+    return sorted(out)
+
+
 def move_guide(parts, mapping):
     """Rewrite `Attendees!<col>` references wherever the Guide keeps them.
 
@@ -293,11 +346,9 @@ def move_guide(parts, mapping):
     and the shared string table for the workbooks that use one.
     """
     changed = []
-    targets = [p for p in (sheet_part(parts, GUIDE_SHEET), "xl/sharedStrings.xml")
-               if p and p in parts]
-    for part in targets:
+    for part in guide_parts(parts):
         raw = parts[part].decode("utf-8", "replace")
-        out = remap_formula(raw, mapping, prefix="%s!" % CRM_SHEET)
+        out = remap_formula(raw, mapping, cross_sheet=True)
         if out != raw:
             parts[part] = out.encode()
             changed.append(part)
@@ -376,7 +427,7 @@ def _run(args, workdir):
             sys.exit("ABORT: no chapter folder matches %r." % args.city)
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
-    touched, skipped = [], []
+    touched, skipped, guide_gaps = [], [], []
     for folder in folders:
         book, why = open_crm(folder, workdir)
         if book is None:
@@ -391,6 +442,9 @@ def _run(args, workdir):
                             % " and ".join(blockers)))
             print("  %-18s SKIPPED — %s" % (folder["name"], skipped[-1][1]))
             continue
+        misses = guide_misses(book["parts"])
+        if misses:
+            guide_gaps.append((folder["name"], sorted({r for _, r in misses})))
         mapping = move_mapping(book["att"].headers)
         if mapping is None:
             continue
@@ -399,14 +453,21 @@ def _run(args, workdir):
                  re.sub(r"\d+$", "", cell_ref(mapping[book["att"].headers[MOVE]], 1))))
         touched.append({"book": book, "mapping": mapping})
 
+    if guide_gaps:
+        print("\nReference(s) to the %s sheet this move cannot rewrite — they "
+              "still point at the PRE-move layout and are NOT corrected. Fix by "
+              "hand:" % CRM_SHEET)
+        for name, refs in guide_gaps:
+            print("  %-28s %s" % (name, ", ".join(refs)))
     if skipped:
         print("\nChapters SKIPPED — not reordered, fix the workbook and re-run:")
         for name, why in skipped:
             print("  %-28s %s" % (name, why))
     if not touched:
-        if skipped:
-            print("\nNothing due for the chapters that could be opened — but %d "
-                  "was/were SKIPPED above." % len(skipped))
+        if skipped or guide_gaps:
+            print("\nNo column move is due — but %d chapter(s) were SKIPPED and %d "
+                  "have a reference this move cannot rewrite. Nothing here will "
+                  "fix them." % (len(skipped), len(guide_gaps)))
             return 1
         print("\nNothing to do — %r already sits before %r everywhere."
               % (MOVE, BEFORE))
@@ -414,7 +475,7 @@ def _run(args, workdir):
     if not args.write:
         print("\n%d workbook(s) would change. Re-run with --write to apply."
               % len(touched))
-        return 2
+        return 1 if guide_gaps else 2
 
     print("\nWriting %d workbook(s)..." % len(touched))
     backup_dir = backup_root("crm-order-before")
@@ -479,6 +540,17 @@ def _run(args, workdir):
             print("VERIFY FAILED:")
             for name, why in failed + stale:
                 print("  %s — %s" % (name, why))
+        return 1
+    if guide_gaps:
+        # A gap is real and unfixed whether or not any column moved, so it must
+        # reach the verdict on BOTH paths. It used to change the exit code only
+        # when nothing was due — so a run that moved columns printed a clean
+        # "Verified" over a list of chapters whose Guide still points at the
+        # pre-move layout, and any wrapper reading the code saw success.
+        print("Verified: every written workbook has %r before %r, and every row "
+              "holds exactly the values it held before — but %d chapter(s) carry "
+              "a reference listed above that was NOT rewritten."
+              % (MOVE, BEFORE, len(guide_gaps)))
         return 1
     print("Verified: every written workbook has %r before %r, and every row "
           "holds exactly the values it held before." % (MOVE, BEFORE))

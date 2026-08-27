@@ -115,11 +115,11 @@ for f, want in (("Attendees!$L$2:$L$1000", "Attendees!$D$2:$D$1000"),
                 ("Attendees!$A$1:$K$1",    "Attendees!$A$1:$L$1"),
                 ("Attendees!L2:L1000",     "Attendees!D2:D1000"),
                 ("Attendees!L2:L",         "Attendees!D2:D")):
-    got = mo.remap_formula(f, MAP, prefix="Attendees!")
+    got = mo.remap_formula(f, MAP, cross_sheet=True)
     check("absolute/relative range %-24r" % f, got, want)
 check("no remapped range ever spans two columns",
       [g for g in (mo.remap_formula("Attendees!$%s$2:$%s$1000" % (c, c), MAP,
-                                    prefix="Attendees!")
+                                    cross_sheet=True)
                    for c in "ABCDEFGHIJKL")
        if len(set(re.findall(r"\$([A-Z]+)\$", g))) != 1], [])
 
@@ -129,25 +129,25 @@ GUIDE_FILTER = ("=FILTER({Attendees!A2:A, Attendees!L2:L, Attendees!H2:H, "
                 '(Attendees!C2:C="Yes")+(Attendees!B2:B="High"), '
                 'Attendees!B2:B<>"Non-grata")')
 check("the live list is remapped, open-ended ranges included",
-      mo.remap_formula(GUIDE_FILTER, MAP, prefix="Attendees!"),
+      mo.remap_formula(GUIDE_FILTER, MAP, cross_sheet=True),
       "=FILTER({Attendees!A2:A, Attendees!D2:D, Attendees!I2:I, "
       "Attendees!J2:J, Attendees!L2:L, Attendees!B2:B, Attendees!F2:F}, "
       '(Attendees!C2:C="Yes")+(Attendees!B2:B="High"), '
       'Attendees!B2:B<>"Non-grata")')
 check("the dashboard tiles follow the column",
       mo.remap_formula('COUNTIF(Attendees!L2:L1000,"*Speaker*")', MAP,
-                       prefix="Attendees!"),
+                       cross_sheet=True),
       'COUNTIF(Attendees!D2:D1000,"*Speaker*")')
 check("an unrelated Attendees column is still remapped",
-      mo.remap_formula("COUNTA(Attendees!A2:A1000)", MAP, prefix="Attendees!"),
+      mo.remap_formula("COUNTA(Attendees!A2:A1000)", MAP, cross_sheet=True),
       "COUNTA(Attendees!A2:A1000)")
 # THE trap: the Guide has its own cells, and they must not move with the
 # Attendees layout. Without the prefix scope the dashboard rewrites itself.
 check("a Guide-LOCAL reference is left alone",
-      mo.remap_formula("B5+Attendees!E2", MAP, prefix="Attendees!"),
+      mo.remap_formula("B5+Attendees!E2", MAP, cross_sheet=True),
       "B5+Attendees!F2")
 check("...even when it names a column that moves",
-      mo.remap_formula("SUM(D2:D9)", MAP, prefix="Attendees!"), "SUM(D2:D9)")
+      mo.remap_formula("SUM(D2:D9)", MAP, cross_sheet=True), "SUM(D2:D9)")
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +326,54 @@ _p3["xl/worksheets/sheet1.xml"] = _d3.encode()
 _a3 = Attendees(_p3, sheet_part(_p3, "Attendees"), require=mig.PRE_SPLIT_HEADERS)
 check("unmovable detects a chapter's own cell formula",
       mo.unmovable(_a3), ["1 cell formula(s)"])
+
+
+# ---------------------------------------------------------------------------
+# Guide references the remapper cannot rewrite are REPORTED, not skipped
+# ---------------------------------------------------------------------------
+# remap_formula's prefix pass needs a bare `Attendees!` and a row number on the
+# first half. A whole-column ref or a quoted sheet name slips through — and a
+# Guide left pointing at the PRE-move layout looks exactly like one correctly
+# migrated, because the verify never reads the Guide at all. Unlike
+# migrate_interested_in.plan_guide, which reports an unrecognised formula, this
+# used to be completely silent.
+def _book_with_guide(text):
+    _n, _p = fx.make_pre_xlsx(guide=(
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetData><row r="1"><c r="B1" t="inlineStr"><is><t>%s</t></is></c></row>'
+        "</sheetData></worksheet>" % text))
+    return _p
+
+# The report is the RESIDUE of what remap_formula claims, not a list of shapes
+# someone predicted — so a form nobody has thought of is reported too.
+for text, hits in (("COUNTA(Attendees!L:L)", 1),          # whole-column ref
+                   ("COUNTA(Attendees!$L:$L)", 1),
+                   ("SUM('Attendees'!D2:D9)", 1),         # quoted sheet name
+                   ("INDIRECT(\"Attendees!\" &amp; x)", 1),   # not predicted anywhere
+                   ("SUM(Attendees !D2)", 1),             # space before the bang
+                   # ...and every form it DOES handle must stay silent.
+                   ('COUNTIF(Attendees!D2:D1000,"x")', 0),
+                   ('COUNTIF(Attendees!$D$2:$D$1000,"x")', 0),
+                   ("FILTER({Attendees!A2:A, Attendees!L2:L})", 0),
+                   ("no references at all", 0)):
+    check("guide_misses %-40r -> %d" % (text[:38], hits),
+          len(mo.guide_misses(_book_with_guide(text))), hits)
+check("a reported miss names the column, so it is actionable",
+      mo.guide_misses(_book_with_guide("COUNTA(Attendees!L:L)"))[0].startswith("Attendees!L:L"),
+      True)
+# A sheet whose NAME merely ends in "Attendees" is not ours.
+check("a lookalike sheet name is not reported",
+      mo.guide_misses(_book_with_guide("COUNTA(PastAttendees!L:L)")), [])
+# The shared-string table is searched too — five live chapters keep their Guide
+# text there rather than inline.
+_ps = _book_with_guide("clean")
+_ps["xl/sharedStrings.xml"] = b"<sst><si><t>COUNTA(Attendees!L:L)</t></si></sst>"
+check("...including the shared string table", len(mo.guide_misses(_ps)), 1)
+# The invariant the whole design rests on: the two patterns cannot disagree.
+check("nothing remap_formula rewrites is ever reported as a miss",
+      [t for t in ("Attendees!D2", "Attendees!$D$2", "Attendees!D2:D9",
+                   "Attendees!D2:D", "Attendees!$D$2:$D$1000")
+       if mo.guide_misses(_book_with_guide("X(%s)" % t))], [])
 
 
 # ---------------------------------------------------------------------------
