@@ -13,4 +13,5 @@ line-length = 100
 select = ["F", "E9"]
 
 [tool.codespell]
-ignore-words-list = "aaif,luma,lu,ba,tre"
+# "lins" is codespell reading the OOXML attribute lIns (a text body's left inset).
+ignore-words-list = "aaif,luma,lu,ba,tre,lins"
