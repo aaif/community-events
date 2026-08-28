@@ -274,6 +274,18 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --contrast
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
     --fix-contrast --write
 
+# Retire the hand-made plate the decks were built with, replacing every
+# background this toolkit did not generate with the AAIF soft plate:
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+    --retire-plates --fix-contrast --plates /tmp/plates --write
+
+# Give every chapter its own agent (plus the ten generic ones) as animated
+# GIFs in an Agents/ folder. NOT done by create_chapter: cloning TemplateCity
+# would hand a new chapter TemplateCity's agent instead of its own.
+python3 -c "import sys; sys.path.insert(0,'lib'); \
+    from aaif_events import agent_art as a; a.build_agents('/tmp/agents', NAMES)"
+python3 ${CLAUDE_SKILL_DIR}/scripts/upload_agents.py --art /tmp/agents --write
+
 # Run the engine on a local file, no Drive at all:
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
     --restyle-local ./Slides.pptx

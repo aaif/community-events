@@ -53,6 +53,7 @@ Usage:
 """
 import argparse
 import datetime
+import hashlib
 import os
 import re
 import shutil
@@ -200,6 +201,36 @@ def _archive(entry, src, backup_dir):
     return dst
 
 
+#: The plate that replaces a retired legacy background. `soft-plate` and not the
+#: hero gradient on purpose: the replacement sits behind text that is ALREADY
+#: written and positioned, so the darkest plate in the set is the one that keeps
+#: it readable. Measured over the four affected deck types, swapping in the
+#: hero gradient leaves 50 runs below AA and the soft plate leaves 36 — against
+#: 61 with the legacy plate still in place.
+RETIREMENT_PLATE = "soft-plate"
+
+
+def _aspect_of(path):
+    """"wide" or "square" from the deck's own slide size."""
+    with zipfile.ZipFile(path) as z:
+        presentation_xml = z.read("ppt/presentation.xml").decode("utf-8", "replace")
+    m = re.search(r"<p:sldSz[^>]*/?>", presentation_xml)
+    dims = dict(re.findall(r'\b(cx|cy)="(\d+)"', m.group(0))) if m else {}
+    cx, cy = int(dims.get("cx", 9144000)), int(dims.get("cy", 5143500))
+    return "square" if abs(cx - cy) < cx * 0.02 else "wide"
+
+
+def _plate_digests(plate_dir):
+    """SHA-256 of every plate this toolkit generated, so retirement can tell
+    ours from a legacy one without having to recognise the legacy one."""
+    out = set()
+    for name in os.listdir(plate_dir):
+        if name.startswith("plate-"):
+            with open(os.path.join(plate_dir, name), "rb") as fh:
+                out.add(hashlib.sha256(fh.read()).hexdigest())
+    return out
+
+
 def _plates_for(entry, plate_dir):
     """`[(label, path), ...]` for this file, or [] if it takes no plates."""
     aspect = PLATED.get(entry["name"])
@@ -235,7 +266,7 @@ def contrast_report(entry, src):
 
 
 def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
-            contrast_only=False, fix_contrast=False):
+            contrast_only=False, fix_contrast=False, retire=False):
     """Restyle one file. Returns (entry, report, error or None).
 
     `report` is `{"parts": n, "before": [...], "after": [...]}` when the file
@@ -290,10 +321,18 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         # Legibility last: it measures the file as it will actually ship, so it
         # has to run after the restyle and after any plate has gone in behind
         # the text.
+        # Retire before repairing: the repair measures text against whatever is
+        # behind it, so it has to see the NEW plate, not the one being removed.
+        retired = []
+        if retire and plate_dir and entry["mime"] == cc.PPTX:
+            with open(os.path.join(plate_dir, "plate-%s-%s.png"
+                                   % (RETIREMENT_PLATE, _aspect_of(src))), "rb") as fh:
+                replacement = fh.read()
+            retired = ox.retire_plates(src, replacement, _plate_digests(plate_dir))
         rescued = (ox.improve_contrast(src)
                    if fix_contrast and entry["mime"] == cc.PPTX else (0, 0, 0))
         after = ox.audit(src)
-        if not parts and not plated and not rescued[0]:
+        if not parts and not plated and not rescued[0] and not retired:
             # Nothing changed. If we archived a file we are not going to upload,
             # take the copy back out so the archive means "these were replaced".
             if fresh and archived and os.path.exists(archived):
@@ -304,7 +343,8 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         if write:
             cc.gws_upload(entry["id"], src, entry["mime"])
         return entry, {"before": before, "parts": parts, "after": after,
-                       "plates": plated, "rescued": rescued}, None
+                       "plates": plated, "rescued": rescued,
+                       "retired": retired}, None
     except Exception as e:                # one bad file must not stop the run
         # Prefix the class: this catch spans the XML engine, the archive, and
         # both transfers, and a bare message makes a ValueError in the rewrite
@@ -347,6 +387,11 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--write", action="store_true",
                     help="Actually upload the restyled templates (default: plan only)")
+    ap.add_argument("--retire-plates", action="store_true", dest="retire",
+                    help="Replace every background image that this toolkit did "
+                         "not generate with the AAIF %s. Retires the hand-made "
+                         "plate the decks were built with. Needs --plates and "
+                         "--write." % RETIREMENT_PLATE)
     ap.add_argument("--fix-contrast", action="store_true", dest="fix_contrast",
                     help="Repair unreadable text as well as restyling: move runs "
                          "on a dark ground onto the inverse ramp, but only where "
@@ -376,6 +421,10 @@ def main():
 
     if args.restyle_local:
         return restyle_local(args.restyle_local)
+    if args.retire and not args.plates:
+        print("--retire-plates needs --plates DIR: the replacement comes from "
+              "there, and so does the list of plates that must NOT be replaced.")
+        return 2
     if (args.check or args.contrast) and args.write:
         print("--check and --contrast audit and never write; drop --write.")
         return 2
@@ -431,7 +480,8 @@ def main():
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for entry, report, err in pool.map(
                 lambda e: process(e, tmpdir, args.write, backup_dir, args.check,
-                                  args.plates, args.contrast, args.fix_contrast),
+                                  args.plates, args.contrast, args.fix_contrast,
+                                  args.retire),
                 entries):
             if err is not None:
                 failed += 1
@@ -469,6 +519,9 @@ def main():
                      _summarise(report["before"]) or "(already conformant)"))
             if report.get("plates"):
                 print("                 + plates: %s" % ", ".join(report["plates"]))
+            if report.get("retired"):
+                print("                 + retired legacy plate: %s"
+                      % ", ".join(os.path.basename(x) for x in report["retired"]))
             if report.get("rescued", (0,))[0]:
                 n, b, a = report["rescued"]
                 print("                 + legibility: %d run(s) rescued "

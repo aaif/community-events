@@ -684,3 +684,157 @@ def read_image(path):
     if ext == ".gif":
         return read_gif(path)
     raise ValueError("unsupported image type %s" % ext)
+
+
+# ---------------------------------------------------------- chapter agents ----
+#: The eight things the agent is shown doing. The design system chooses these
+#: over landmarks deliberately: eighty recognisable skylines would be eighty
+#: illustrations to draw, approve and maintain, whereas eight actions x four
+#: ridges x mirrored x ten hues covers every chapter from one small vocabulary.
+ACTIONS = ("signal", "relay", "carry", "flag", "scan", "stack", "orbit", "trail")
+
+
+def fnv1a(text):
+    """FNV-1a over UTF-8, 32-bit. The design system derives each chapter's hue,
+    action, ridge and mirror from a hash of its own NAME, so a chapter renders
+    the same scene every time and neighbours in a list never match. Unsigned
+    arithmetic matters: a signed shift gives a different scene per platform."""
+    h = 0x811C9DC5
+    for byte in text.encode("utf-8"):
+        h = ((h ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def chapter_scene(name):
+    """(hue, secondary, action, ridge, mirrored) for a chapter, from its name."""
+    h = fnv1a(name)
+    hue_i = (h % 5) + 1                 # a primary leads: --spec-1..5
+    action = ACTIONS[(h >> 3) % len(ACTIONS)]
+    ridge = (h >> 7) % 4
+    mirrored = bool((h >> 11) & 1)
+    return hue_i, hue_i + 5, action, ridge, mirrored
+
+
+def _action_marks(action, x, y, size, colour):
+    """At most three marks of action, in the secondary hue. The agent is the
+    subject; these say what it is doing without becoming a second character."""
+    u = size / 48.0
+    cx, cy = x + size / 2, y + size / 2
+    s = ('stroke="%s" stroke-width="%f" fill="none" stroke-linecap="round"'
+         % (colour, 2.2 * u))
+    if action == "signal":
+        return "".join(
+            '<path d="M %f %f a %f %f 0 0 1 0 %f" %s opacity="%.2f"/>'
+            % (cx + (10 + i * 5) * u, y - 2 * u, (7 + i * 4) * u, (7 + i * 4) * u,
+               14 * u, s, 0.9 - i * 0.25)
+            for i in range(3))
+    if action == "relay":
+        return "".join('<circle cx="%f" cy="%f" r="%f" fill="%s" opacity="%.2f"/>'
+                       % (cx + (16 + i * 9) * u, cy - 6 * u, 2.6 * u, colour,
+                          0.9 - i * 0.25) for i in range(3))
+    if action == "carry":
+        return ('<rect x="%f" y="%f" width="%f" height="%f" rx="%f" fill="%s"/>'
+                % (cx + 14 * u, cy - 2 * u, 13 * u, 11 * u, 2 * u, colour))
+    if action == "flag":
+        # Clear of the pod: at 18u the pole passes straight through it.
+        return ('<path d="M %f %f V %f" %s/><path d="M %f %f h %f v %f h %f Z" fill="%s"/>'
+                % (cx + 25 * u, y - 4 * u, y + size, s,
+                   cx + 25 * u, y - 4 * u, 12 * u, 8 * u, -12 * u, colour))
+    if action == "scan":
+        return ('<path d="M %f %f h %f" %s/>' % (cx + 13 * u, cy, 20 * u, s)
+                + "".join('<circle cx="%f" cy="%f" r="%f" fill="%s"/>'
+                          % (cx + (17 + i * 8) * u, cy - 7 * u, 1.8 * u, colour)
+                          for i in range(3)))
+    if action == "stack":
+        return "".join('<rect x="%f" y="%f" width="%f" height="%f" rx="%f" fill="%s"/>'
+                       % (cx + 14 * u, cy + (6 - i * 6) * u, 15 * u, 4 * u, 1.5 * u, colour)
+                       for i in range(3))
+    if action == "orbit":
+        return ('<ellipse cx="%f" cy="%f" rx="%f" ry="%f" %s opacity="0.75"/>'
+                '<circle cx="%f" cy="%f" r="%f" fill="%s"/>'
+                % (cx, cy, size * 0.62, size * 0.30, s,
+                   cx + size * 0.62, cy, 2.8 * u, colour))
+    if action == "trail":
+        return "".join('<circle cx="%f" cy="%f" r="%f" fill="%s" opacity="%.2f"/>'
+                       % (x - (6 + i * 9) * u, cy + 12 * u, (3 - i * 0.6) * u,
+                          colour, 0.8 - i * 0.22) for i in range(3))
+    raise ValueError("unknown action %r" % action)
+
+
+def agent_scene(spec, secondary, action=None, ridge=0, mirrored=False,
+                size=512, frame=0.0, ground=None):
+    """One agent, on a ridge, doing one thing. `frame` runs 0..1 through the loop.
+
+    Motion is the system's own and stays small: a bob of one grid unit, and a
+    blink that closes the eyes for a fraction of the cycle. Nothing springs,
+    nothing scales.
+    """
+    w = h = size
+    bg = ground or paper()
+    # An ICON, not a 5:3 scene plate: the agent carries the frame here, so it
+    # is ~44% of the height rather than the 20-24% the system specifies for a
+    # background plate where type sits on top.
+    ridge_y = h * (0.78 + 0.025 * ridge)
+    body = _ridge(w, h, ridge_y, h * (0.028 + 0.010 * ridge), ink())
+    asz = h * 0.50
+    ax = w * (0.44 if mirrored else 0.12)
+    feet = _ridge_y(w, h, ridge_y, h * (0.03 + 0.012 * ridge), 0, ax + asz / 2)
+    # Bob: one grid unit up and back, constant speed, no easing overshoot.
+    bob = -(asz / 48.0) * (1 if 0.25 <= frame < 0.75 else 0)
+    top = feet - asz * FEET + bob
+    if action:
+        body += _action_marks(action, ax, top, asz, hue(secondary))
+    art = agent(ax, top, asz, spec=spec)
+    # Blink: the eyes flatten for one frame in the cycle. Scaling the circles
+    # about their own centres keeps the visor and the gaze position fixed.
+    if 0.86 <= frame < 0.94:
+        art = re.sub(r'<circle class="ag-eye"[^/]*/>', "", art)
+        art = art.replace(
+            '<circle cx="19.8" cy="22.5" r="2.45"',
+            '<ellipse cx="19.8" cy="22.5" rx="2.45" ry="0.3"').replace(
+            '<circle cx="28.2" cy="22.5" r="2.45"',
+            '<ellipse cx="28.2" cy="22.5" rx="2.45" ry="0.3"')
+    body += art
+    if mirrored:
+        body = '<g transform="translate(%d,0) scale(-1,1)">%s</g>' % (w, body)
+    return _svg(w, h, body, bg)
+
+
+def build_agents(out_dir, chapters, size=384, frames=8, verbose=False):
+    """Write one animated GIF per chapter plus the ten generic agents.
+
+    Returns {label: path}. The generic set is the same agent in each of the ten
+    spectrum hues doing nothing in particular — the motif itself, for an empty
+    state or a divider. The per-chapter files are the chapter-plate rule: hue,
+    action, ridge and mirror all derived from the chapter's own name.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    made = {}
+
+    def write(label, svgs, path):
+        shots = []
+        for i, svg in enumerate(svgs):
+            png = "%s-f%02d.png" % (path, i)
+            render_png(svg, png, (size, size))
+            shots.append(read_png(png))
+            os.remove(png)
+        made[label] = write_gif(shots, path, delay_cs=12)
+        if verbose:
+            print("  %-34s %6.1f KB" % (os.path.basename(path),
+                                        os.path.getsize(path) / 1024.0))
+
+    for i in range(1, 11):
+        label = "generic-%02d" % i
+        write(label,
+              [agent_scene(i, i + 5, action=None, ridge=1, size=size,
+                           frame=f / float(frames)) for f in range(frames)],
+              os.path.join(out_dir, "Agent %02d.gif" % i))
+
+    for name in chapters:
+        spec, sec, action, ridge, mirrored = chapter_scene(name)
+        safe = re.sub(r"[^\w .,-]", "_", name)
+        write(name,
+              [agent_scene(spec, sec, action, ridge, mirrored, size=size,
+                           frame=f / float(frames)) for f in range(frames)],
+              os.path.join(out_dir, "%s Agent.gif" % safe))
+    return made

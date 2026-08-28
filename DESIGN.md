@@ -108,6 +108,22 @@ about crossings, not about the numbers — requiring that no ratio drop at all
 rejects rescuing a 1.00:1 wordmark because `--ink-4` → `--ink-inv-3` moves
 already-passing runs from 5.89 to 5.71.
 
+### The agent, per chapter
+
+`agent_art.chapter_scene(name)` derives a chapter's hue, action, ridge and
+mirror from an FNV-1a hash of **its own name**, which is the design system's
+chapter-plate rule: a chapter renders the same scene every time and neighbours
+in a list never match. Eight actions x four ridges x mirrored x ten hues covers
+every chapter from one small vocabulary — the alternative, a landmark each,
+would be eighty illustrations to draw, approve and maintain.
+
+`skills/aaif-create-chapter/scripts/upload_agents.py` puts each chapter's own
+agent, plus the ten generic ones, into an `Agents/` folder in its Drive folder
+as animated GIFs. **`create_chapter.py` deliberately does not do this**: a new
+chapter is cloned from TemplateCity, and cloning would hand it TemplateCity's
+agent rather than one derived from its own name. Run the upload after creating
+a chapter — a full run names the chapters that are missing theirs.
+
 `lib/aaif_events/agent_art.py` draws the background plates and the agent motif
 from the same tokens, rasterising through headless Chrome and packing animation
 with its own GIF89a encoder. The rule about which plates may animate is

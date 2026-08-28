@@ -187,3 +187,54 @@ def test_flat_art_is_accepted(tmp_path):
     chosen, index, drift = aa._quantise(_frames(4))
     assert drift == 0.0
     assert len(chosen) == 2
+
+
+# ---------------------------------------------------------- chapter agents ----
+
+def test_fnv1a_matches_the_published_vectors():
+    """Unsigned 32-bit arithmetic. A signed shift gives a different scene per
+    platform, so a chapter would not render the same art twice."""
+    assert aa.fnv1a("") == 0x811C9DC5
+    assert aa.fnv1a("a") == 0xE40C292C
+    assert aa.fnv1a("foobar") == 0xBF9CF968
+
+
+def test_a_chapters_scene_is_stable_and_in_range():
+    for name in ("Boston", "Tokyo", "Lagos", "Madison, WI", "Montréal"):
+        once, twice = aa.chapter_scene(name), aa.chapter_scene(name)
+        assert once == twice
+        spec, sec, action, ridge, mirrored = once
+        assert 1 <= spec <= 5                  # a PRIMARY leads
+        assert sec == spec + 5                 # the secondary derives from it
+        assert action in aa.ACTIONS
+        assert 0 <= ridge <= 3
+        assert isinstance(mirrored, bool)
+
+
+def test_neighbouring_chapters_do_not_all_get_the_same_scene():
+    names = ["Boston", "Berlin", "Tokyo", "Lagos", "Paris", "Madrid",
+             "Seattle", "Denver", "Austin", "Chicago"]
+    scenes = {aa.chapter_scene(n) for n in names}
+    assert len(scenes) >= 8, scenes
+
+
+@pytest.mark.parametrize("action", aa.ACTIONS)
+def test_every_action_draws_and_stays_on_palette(action):
+    svg = aa.agent_scene(3, 8, action, ridge=1, size=384)
+    assert aa.offbrand_colours(svg) == []
+    assert "<svg" in svg and "</svg>" in svg
+
+
+def test_the_agent_blinks_and_bobs_within_the_loop():
+    frames = [aa.agent_scene(3, 8, "flag", size=384, frame=f / 8.0) for f in range(8)]
+    assert len(set(frames)) > 1, "the agent never moves"
+    # The blink replaces the eye circles with flattened ellipses for one frame.
+    assert any("<ellipse cx=\"19.8\"" in f for f in
+               [aa.agent_scene(3, 8, "flag", size=384, frame=f / 100.0)
+                for f in range(100)])
+
+
+def test_mirroring_changes_the_drawing():
+    a = aa.agent_scene(2, 7, "carry", ridge=1, mirrored=False, size=384)
+    b = aa.agent_scene(2, 7, "carry", ridge=1, mirrored=True, size=384)
+    assert a != b and "scale(-1,1)" in b

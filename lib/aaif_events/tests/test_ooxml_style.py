@@ -472,3 +472,93 @@ def test_escaping_the_invisible_band_counts_even_without_an_aa_crossing(tmp_path
     worst_after = min(f.ratio for f in ct.check_pptx(deck, include_passes=True))
     assert worst_after >= ct.AA_LARGE, worst_after
     assert worst_after > worst_before * 2
+
+
+# --------------------------------------------------------- retiring a plate ---
+
+def _bg_deck(tmp_path, images, name="r.pptx"):
+    """A deck whose slide N has media `images[N-1]` as its <p:bg> blip fill."""
+    from aaif_events.tests import test_contrast as tc
+    path = str(tmp_path / name)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ppt/presentation.xml",
+                   '<p:presentation xmlns:p="p"><p:sldSz cy="5143500" cx="9144000"/>'
+                   "</p:presentation>")
+        z.writestr("ppt/theme/theme1.xml", tc._THEME)
+        for i, blob in enumerate(images, 1):
+            z.writestr("ppt/media/image%d.png" % i, blob)
+            z.writestr("ppt/slides/slide%d.xml" % i,
+                       '<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+                       "<p:cSld><p:bg><p:bgPr><a:blipFill>"
+                       '<a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch>'
+                       "</a:blipFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sld>")
+            z.writestr("ppt/slides/_rels/slide%d.xml.rels" % i,
+                       '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                       'openxmlformats.org/package/2006/relationships">'
+                       '<Relationship Id="rId1" Type="%s" Target="../media/image%d.png"/>'
+                       "</Relationships>" % (ox._IMAGE_REL, i))
+    return path
+
+
+def test_only_the_unrecognised_background_is_retired(tmp_path):
+    """Ours is identified by hash and kept; whatever else is a background is
+    legacy by definition. Recognising the LEGACY plate instead would be fragile
+    and would fail open on a plate nobody has seen."""
+    import hashlib
+    ours, legacy = b"OURS-PLATE", b"LEGACY-PLATE"
+    deck = _bg_deck(tmp_path, [ours, legacy])
+    keep = {hashlib.sha256(ours).hexdigest()}
+    assert ox.retire_plates(deck, b"NEW", keep) == ["ppt/media/image2.png"]
+    with zipfile.ZipFile(deck) as z:
+        assert z.read("ppt/media/image1.png") == ours
+        assert z.read("ppt/media/image2.png") == b"NEW"
+
+
+def test_a_deck_with_only_our_plates_is_untouched(tmp_path):
+    import hashlib
+    ours = b"OURS"
+    deck = _bg_deck(tmp_path, [ours])
+    before = open(deck, "rb").read()
+    assert ox.retire_plates(deck, b"NEW", {hashlib.sha256(ours).hexdigest()}) == []
+    assert open(deck, "rb").read() == before
+
+
+def test_a_picture_is_not_a_background(tmp_path):
+    """The world map on the network slide is a <p:pic>, not a plate. Swapping
+    content for a gradient would be a very visible bug."""
+    from aaif_events.tests import test_contrast as tc
+    path = str(tmp_path / "pic.pptx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ppt/presentation.xml",
+                   '<p:presentation xmlns:p="p"><p:sldSz cy="5143500" cx="9144000"/>'
+                   "</p:presentation>")
+        z.writestr("ppt/theme/theme1.xml", tc._THEME)
+        z.writestr("ppt/media/image1.png", b"MAP")
+        z.writestr("ppt/slides/slide1.xml",
+                   '<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+                   "<p:cSld><p:spTree><p:pic><p:blipFill>"
+                   '<a:blip r:embed="rId1"/></p:blipFill><p:spPr><a:xfrm>'
+                   '<a:off x="0" y="0"/><a:ext cx="9144000" cy="5143500"/></a:xfrm>'
+                   "</p:spPr></p:pic></p:spTree></p:cSld></p:sld>")
+        z.writestr("ppt/slides/_rels/slide1.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="%s" Target="../media/image1.png"/>'
+                   "</Relationships>" % ox._IMAGE_REL)
+    assert ox.retire_plates(path, b"NEW", set()) == []
+    with zipfile.ZipFile(path) as z:
+        assert z.read("ppt/media/image1.png") == b"MAP"
+
+
+def test_one_media_part_shared_by_several_slides_is_retired_once(tmp_path):
+    """The legacy plate is the same file behind two slides of Slides.pptx.
+    Swapping the bytes fixes both in one move."""
+    deck = _bg_deck(tmp_path, [b"LEGACY"])
+    with zipfile.ZipFile(deck, "a") as z:
+        z.writestr("ppt/slides/slide9.xml", z.read("ppt/slides/slide1.xml"))
+        z.writestr("ppt/slides/_rels/slide9.xml.rels",
+                   z.read("ppt/slides/_rels/slide1.xml.rels"))
+    used = ox.background_media(deck)
+    assert used["ppt/media/image1.png"] == ["ppt/slides/slide1.xml",
+                                            "ppt/slides/slide9.xml"]
+    assert ox.retire_plates(deck, b"NEW", set()) == ["ppt/media/image1.png"]

@@ -29,6 +29,7 @@ re-prefix, or drop. `create_chapter.rebrand_part` takes the same approach for
 the same reason. The tokenizer below tracks the element stack so it can resolve
 a role without ever reconstructing the document.
 """
+import hashlib
 import os
 import re
 import zipfile
@@ -963,3 +964,74 @@ def _rewrite_zip_to(src, dst, transform):
             zi.compress_type = it.compress_type
             zi.external_attr = it.external_attr
             zout.writestr(zi, new)
+
+
+# ------------------------------------------------- retiring a legacy plate ----
+def background_media(path):
+    """{media part: [slide parts that use it as their background]}.
+
+    Only `<p:bg>` blip fills. A `<p:pic>` — the world map on the network slide,
+    a logo — is content, not a plate, and must not be swapped.
+    """
+    out = {}
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        for n in sorted(names):
+            if not re.match(r"ppt/slides/slide\d+\.xml$", n):
+                continue
+            xml = z.read(n).decode("utf-8", "replace")
+            bg = re.search(r"<p:bg>.*?</p:bg>", xml, re.S)
+            if not bg:
+                continue
+            embed = re.search(r'<a:blip[^>]*r:embed="([^"]+)"', bg.group(0))
+            if not embed:
+                continue
+            rels = "ppt/slides/_rels/%s.rels" % os.path.basename(n)
+            if rels not in names:
+                continue
+            rx = z.read(rels).decode("utf-8", "replace")
+            rel = re.search(r'<Relationship\b[^>]*Id="%s"[^>]*/>' % re.escape(embed.group(1)), rx)
+            if not rel:
+                continue
+            tgt = re.search(r'Target="([^"]+)"', rel.group(0))
+            if not tgt:
+                continue
+            part = os.path.normpath(os.path.join("ppt/slides", tgt.group(1)))
+            out.setdefault(part.replace(os.sep, "/"), []).append(n)
+    return out
+
+
+def retire_plates(path, replacement, keep_digests):
+    """Replace every background image that is NOT one of ours with `replacement`.
+
+    The estate's decks carry one hand-made plate — a teal/magenta/ochre gradient
+    that belongs to no AAIF palette — behind their colour title slide. Its text
+    was coloured for it, so it is also where almost all of the remaining
+    sub-AA contrast sits: recolouring the type can reach ~3.5:1 against it and
+    no further, because the plate itself is the problem.
+
+    Swapping the media part's BYTES retires it everywhere at once. Every slide
+    that referenced it keeps its layout, its relationships and its ids, and
+    simply has an AAIF plate behind it instead — no slide surgery, and the same
+    file shared by several slides is fixed in one move.
+
+    `keep_digests` are the SHA-256s of plates this toolkit generated, which must
+    survive. Identifying the legacy plate positively (by hash, by name) would be
+    fragile; identifying OURS and replacing whatever else is a background is
+    not, and it degrades safely — an unknown plate is treated as legacy, which
+    is what an unknown plate is.
+
+    Returns the media parts replaced.
+    """
+    used = background_media(path)
+    if not used:
+        return []
+    with zipfile.ZipFile(path) as z:
+        legacy = [part for part in used
+                  if hashlib.sha256(z.read(part)).hexdigest() not in keep_digests]
+    if not legacy:
+        return []
+    _rewrite_zip_to(path, path + ".new",
+                    lambda n, d: replacement if n in legacy else d)
+    os.replace(path + ".new", path)
+    return sorted(legacy)
