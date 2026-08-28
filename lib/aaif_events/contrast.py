@@ -387,6 +387,11 @@ def _geometry(block):
 
 _SP = re.compile(r"<p:sp>.*?</p:sp>", re.S)
 _GRPSP = re.compile(r"<p:grpSp>.*?</p:grpSp>", re.S)
+#: PowerPoint tables and charts live in a <p:graphicFrame>, not a <p:sp>, so the
+#: shape walk below never sees their text. That is the one gap that produced NO
+#: finding at all — not a failure, not an unchecked — so a deck whose only
+#: unreadable text is in a table reported "0 issues" and counted as clean.
+_GRAPHIC_FRAME = re.compile(r"<p:graphicFrame>.*?</p:graphicFrame>", re.S)
 _RUN = re.compile(r"<a:r>(.*?)</a:r>", re.S)
 #: An <a:rPr> is either self-closing or a container. Matching it as
 #: `<a:rPr\b.*?(?:/>|</a:rPr>)` looks right and is not: the non-greedy `/>`
@@ -466,6 +471,16 @@ def check_pptx(path, include_passes=False):
             for g in _GRPSP.finditer(xml):
                 for sp in _SP.finditer(g.group(0)):
                     grouped.add(sp.group(0))
+
+            # Count what this cannot measure, so "nothing wrong" and "did not
+            # look" stop being the same report.
+            for gf in _GRAPHIC_FRAME.finditer(xml):
+                text = "".join(re.findall(r"<a:t>(.*?)</a:t>", gf.group(0), re.S)).strip()
+                if text:
+                    findings.append(Finding(
+                        part=part, text=text[:60], ground=ground.source,
+                        note="text inside a <p:graphicFrame> (a table or chart) "
+                             "is not measured by this checker"))
 
             for sp in _SP.finditer(xml):
                 block = sp.group(0)

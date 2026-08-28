@@ -278,5 +278,175 @@ class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
         self.assertEqual(self.uploaded, [])
 
 
+
+class TestWalkEstate(unittest.TestCase):
+    """`walk_estate` decides what the whole sweep touches. Returning NOTHING is
+    caught by a print in main(); returning a SUBSET is caught by nothing at all
+    — the run says "Found N template file(s)" and exits 0 having swept a
+    fraction. Mutation testing confirmed a no-op left every suite green.
+
+    The tree below is the estate's real shape, faked one level at a time.
+    """
+
+    TREE = {
+        "root": [("chapters", "Chapters", True), ("online", "Online", True),
+                 ("shared", "Templates", True)],
+        "chapters": [("boston", "Boston", True), ("tc", "TemplateCity", True)],
+        "boston": [("f1", "About.docx", False), ("f2", "Boston CRM.xlsx", False),
+                   ("f3", "Web Banner.png", False),
+                   ("bt", "Event Templates (Copy for Each Event)", True),
+                   ("dated", "2026-09-01 Boston Night", True)],
+        "bt": [("f4", "Slides.pptx", False), ("f5", "#27 linkedin.pptx", False)],
+        "dated": [("f6", "Slides.pptx", False)],
+        "tc": [("f7", "About.docx", False)],
+        "online": [("ts", "TemplateSeries", True)],
+        "ts": [("f8", "Event Tracker.docx", False)],
+        "shared": [("f9", "Event Tracker (IRL).docx", False)],
+    }
+
+    MIME = {"docx": rd.cc.DOCX, "xlsx": rd.cc.XLSX, "pptx": rd.cc.PPTX}
+
+    def setUp(self):
+        def kids(fid):
+            out = []
+            for cid, name, is_folder in self.TREE.get(fid, []):
+                mime = rd.cc.FOLDER
+                if not is_folder:
+                    mime = self.MIME.get(name.rsplit(".", 1)[-1], "image/png")
+                out.append({"id": cid, "name": name, "mimeType": mime})
+            return out
+        real = rd.cc.list_children
+        rd.cc.list_children = kids
+        self.addCleanup(setattr, rd.cc, "list_children", real)
+
+    def walk(self):
+        return rd.walk_estate("root", jobs=2)
+
+    def test_it_finds_exactly_the_templates_and_no_more(self):
+        entries, _c, _s, _w, _skipped, _strays = self.walk()
+        got = {e["path"].replace("Community Events/", "", 1) for e in entries}
+        self.assertEqual(got, {
+            "Chapters/Boston/About.docx",
+            "Chapters/Boston/Boston CRM.xlsx",
+            "Chapters/Boston/Event Templates (Copy for Each Event)/Slides.pptx",
+            "Chapters/TemplateCity/About.docx",
+            "Online/TemplateSeries/Event Tracker.docx",
+            "Templates/Event Tracker (IRL).docx",
+        })
+
+    def test_an_organizers_dated_copy_is_counted_not_swept(self):
+        entries, _c, _s, _w, skipped, _strays = self.walk()
+        paths = {e["path"] for e in entries}
+        self.assertFalse(any("2026-09-01" in p for p in paths))
+        self.assertEqual(skipped, 1)
+
+    def test_a_non_template_in_a_template_folder_is_named_as_a_stray(self):
+        _e, _c, _s, _w, _skipped, strays = self.walk()
+        self.assertEqual(
+            [p.replace("Community Events/", "", 1) for p in strays],
+            ["Chapters/Boston/Event Templates (Copy for Each Event)/"
+             "#27 linkedin.pptx"])
+
+    def test_the_mint_folders_are_reached(self):
+        entries, _c, _s, _w, _skipped, _strays = self.walk()
+        paths = " ".join(e["path"] for e in entries)
+        for mint in rd.MINTS:
+            self.assertIn(mint, paths)
+
+    def test_a_file_reachable_twice_is_handed_out_once(self):
+        """The dedupe exists so two workers never share a scratch filename."""
+        self.TREE["shared"] = self.TREE["shared"] + [
+            ("f9", "Event Tracker (IRL).docx", False)]
+        entries, *_rest = self.walk()
+        ids = [e["id"] for e in entries]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_chapter_and_series_names_are_reported(self):
+        _e, chapters, series, _w, _skipped, _strays = self.walk()
+        self.assertEqual(chapters, {"Boston", "TemplateCity"})
+        self.assertEqual(series, {"TemplateSeries"})
+
+
+class TestRetirementScope(unittest.TestCase):
+    """retire_plates replaces ANY background that is not ours, so the decks it
+    is pointed at matter. Running it over every template .pptx would treat
+    designed art on a banner or the carousel as a legacy plate."""
+
+    def test_only_the_decks_that_take_a_plate_are_retired(self):
+        for name in ("Square Logo.pptx", "Banner 1.91.pptx", "Luma Banners.pptx",
+                     "LinkedIn Carousel.pptx", "Slides.pptx"):
+            self.assertNotIn(name, rd.PLATED, name)
+        self.assertEqual(set(rd.PLATED), {"Event-Hero.pptx",
+                                          "Event-Hero-Square.pptx"})
+
+    def test_every_plated_deck_names_an_aspect_that_exists(self):
+        import sys
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))), "lib"))
+        from aaif_events import agent_art as aa
+        for name, aspect in rd.PLATED.items():
+            self.assertIn(aspect, aa.ASPECTS, name)
+
+
+class TestPlateDigests(unittest.TestCase):
+    """`_plate_digests` is what tells retirement OURS from a legacy plate. If it
+    ever returns empty, retire_plates classifies every background we generated
+    as legacy and overwrites all of them — while reporting success."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_it_recognises_the_plates_the_generator_actually_writes(self):
+        import sys
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))), "lib"))
+        from aaif_events import agent_art as aa
+        # Write files named exactly as build() names them, without invoking
+        # Chrome: the naming contract is what is under test.
+        import hashlib
+        want = set()
+        for kind in aa.PLATES:
+            for aspect in aa.ASPECTS:
+                ext = "gif" if kind in aa.ANIMATED else "png"
+                p = os.path.join(self.tmp.name,
+                                 "plate-%s-%s.%s" % (kind, aspect, ext))
+                with open(p, "wb") as fh:
+                    fh.write(b"PLATE " + kind.encode())
+                want.add(hashlib.sha256(b"PLATE " + kind.encode()).hexdigest())
+        got = rd._plate_digests(self.tmp.name)
+        self.assertTrue(got, "no plate was recognised — retirement would "
+                             "overwrite every plate we generated")
+        self.assertTrue(want <= got, want - got)
+
+    def test_an_empty_directory_yields_no_digests(self):
+        self.assertEqual(rd._plate_digests(self.tmp.name), set())
+
+    def test_the_retirement_plate_is_one_of_ours_and_is_static(self):
+        """process() opens plate-<RETIREMENT_PLATE>-<aspect>.PNG by hand."""
+        import sys
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))), "lib"))
+        from aaif_events import agent_art as aa
+        self.assertIn(rd.RETIREMENT_PLATE, aa.PLATES)
+        self.assertNotIn(rd.RETIREMENT_PLATE, aa.ANIMATED)
+
+
 if __name__ == "__main__":
+    # Every TestCase in this module must actually be collected. Appending a
+    # class BELOW this guard defines it after unittest.main() has already run,
+    # so it is silently never executed — which has happened twice while writing
+    # these tests, both times leaving a real gap looking covered.
+    import inspect
+    defined = [n for n, o in list(globals().items())
+               if inspect.isclass(o) and issubclass(o, unittest.TestCase)]
+    loaded = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    collected = {type(t).__name__ for s_ in loaded for t in s_}
+    missing = sorted(set(defined) - collected)
+    if missing:
+        raise SystemExit("test classes defined but never collected: %s"
+                         % ", ".join(missing))
     unittest.main()

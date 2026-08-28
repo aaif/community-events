@@ -369,10 +369,15 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         # the text.
         # Retire before repairing: the repair measures text against whatever is
         # behind it, so it has to see the NEW plate, not the one being removed.
+        # Only the decks a plate belongs on. `retire_plates` replaces ANY
+        # background image that is not ours, so letting it loose on every
+        # template .pptx would treat designed art on a banner or the carousel
+        # as legacy — PLATED exists precisely to say which decks take a plate.
         retired = []
-        if retire and plate_dir and entry["mime"] == cc.PPTX:
+        if retire and plate_dir and entry["name"] in PLATED:
+            aspect = PLATED[entry["name"]]
             with open(os.path.join(plate_dir, "plate-%s-%s.png"
-                                   % (RETIREMENT_PLATE, _aspect_of(src))), "rb") as fh:
+                                   % (RETIREMENT_PLATE, aspect)), "rb") as fh:
                 replacement = fh.read()
             retired = ox.retire_plates(src, replacement, _plate_digests(plate_dir))
         rescued = (ox.improve_contrast(src)

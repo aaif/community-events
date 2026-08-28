@@ -471,3 +471,19 @@ def test_a_shape_with_no_geometry_over_an_image_is_unchecked(tmp_path):
     found = ct.check_pptx(deck)
     assert len(found) == 1 and found[0].ratio is None
     assert "no <a:off>" in found[0].note
+
+
+def test_table_text_is_counted_as_unchecked_not_ignored(tmp_path):
+    """A <p:graphicFrame> holds tables and charts, which the <p:sp> walk never
+    sees. Producing NO finding meant a deck whose only unreadable text was in a
+    table reported "0 issues" and counted as clean."""
+    frame = ('<p:graphicFrame><a:graphic><a:graphicData><a:tbl><a:tr><a:tc>'
+             "<a:txBody><a:p>%s</a:p></a:txBody></a:tc></a:tr></a:tbl>"
+             "</a:graphicData></a:graphic></p:graphicFrame>"
+             % _run("CELL", "0A0A0A"))
+    slide = ('<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+             "<p:cSld>%s<p:spTree>%s</p:spTree></p:cSld></p:sld>"
+             % (SOLID_BLACK, frame))
+    found = ct.check_pptx(_deck(tmp_path, slide))
+    assert len(found) == 1
+    assert found[0].ratio is None and "graphicFrame" in found[0].note

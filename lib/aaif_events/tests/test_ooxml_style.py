@@ -759,3 +759,82 @@ def test_a_face_that_is_still_referenced_is_kept(tmp_path):
     assert ox.prune_embedded_fonts(path) == ([], [])
     with zipfile.ZipFile(path) as z:
         assert "JetBrains Mono" in z.read("word/fontTable.xml").decode()
+
+
+# ------------------------------------------------ the audit must FIND drift ---
+# audit() underpins every "N off-system" number the sweep reports, and its only
+# other assertion is `== []` over fixtures this branch replaced with
+# post-restyle copies — the trivially-passing shape. Mutation testing showed
+# audit() -> [] leaves every suite green. These are the positive controls.
+
+_DRIFT_FACES = ("Space Grotesk", "Manrope", "Arial")
+_DRIFT_COLOUR = "1E2761"
+
+
+def _pptx_with_drift(tmp_path, name="d.pptx"):
+    path = str(tmp_path / name)
+    runs = "".join('<a:rPr><a:latin typeface="%s"/></a:rPr>' % f for f in _DRIFT_FACES)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ppt/slides/slide1.xml",
+                   '<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a">'
+                   "<p:spTree><p:sp><p:spPr><a:solidFill>"
+                   '<a:srgbClr val="%s"/></a:solidFill></p:spPr>%s</p:sp>'
+                   "</p:spTree></p:sld>" % (_DRIFT_COLOUR, runs))
+    return path
+
+
+def _docx_with_drift(tmp_path, name="d.docx"):
+    path = str(tmp_path / name)
+    fonts = "".join('<w:rFonts w:ascii="%s"/>' % f for f in _DRIFT_FACES)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:p><w:rPr>%s'
+                   '<w:color w:val="%s"/></w:rPr>'
+                   '<w:tcPr><w:shd w:fill="%s" w:val="clear"/></w:tcPr>'
+                   "</w:p></w:document>"
+                   % (fonts, _DRIFT_COLOUR.lower(), _DRIFT_COLOUR.lower()))
+    return path
+
+
+def _xlsx_with_drift(tmp_path, name="d.xlsx"):
+    path = str(tmp_path / name)
+    fonts = "".join('<font><name val="%s"/></font>' % f for f in _DRIFT_FACES)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("xl/styles.xml",
+                   '<?xml version="1.0"?><styleSheet><fonts>%s</fonts>'
+                   '<fills><fill><patternFill patternType="solid">'
+                   '<fgColor rgb="FF%s"/></patternFill></fill></fills>'
+                   "</styleSheet>" % (fonts, _DRIFT_COLOUR))
+    return path
+
+
+@pytest.mark.parametrize("build", [_pptx_with_drift, _docx_with_drift, _xlsx_with_drift],
+                         ids=["pptx", "docx", "xlsx"])
+def test_the_audit_names_the_drift_it_exists_to_find(tmp_path, build):
+    """Per DIALECT on purpose: `_is_restyled_part` decides which parts are
+    opened at all, and a filter that quietly stops matching one dialect is how
+    88 spreadsheets audited clean while full of Calibri and navy."""
+    hits = ox.audit(build(tmp_path))
+    assert hits, "audit found nothing in a file built to be full of drift"
+    fonts = {v for _p, kind, v in hits if kind == "font"}
+    colours = {v for _p, kind, v in hits if kind == "colour"}
+    for face in _DRIFT_FACES:
+        assert face in fonts, "%s not reported (got %s)" % (face, sorted(fonts))
+    assert _DRIFT_COLOUR in colours, sorted(colours)
+
+
+@pytest.mark.parametrize("build", [_pptx_with_drift, _docx_with_drift, _xlsx_with_drift],
+                         ids=["pptx", "docx", "xlsx"])
+def test_the_audit_is_silent_once_the_drift_is_gone(tmp_path, build):
+    """The other half of the pair: restyle the same file and the audit must
+    then report nothing. Without this, "found drift" could just mean "reports
+    everything"."""
+    import sys
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))),
+        "skills", "aaif-create-chapter", "scripts"))
+    import create_chapter as cc
+    path = build(tmp_path, name="r" + os.path.splitext(build(tmp_path))[1])
+    cc._rewrite_zip(path, ox.restyle_part)
+    assert ox.audit(path) == []
