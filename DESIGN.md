@@ -79,8 +79,11 @@ Three things about it are worth knowing before editing:
   `word/fontTable.xml` and may embed them under `word/fonts/`. Rewriting the
   document's font references without reconciling those leaves the file asking
   for a font it does not embed, still declaring the ones it no longer uses, and
-  carrying their bytes — which is where the trackers ended up, ~760KB of dead
-  font data each. `prune_embedded_fonts` fixes the table and drops the orphans.
+  carrying their bytes — which is where the trackers ended up. `prune_embedded_
+  fonts` reconciles the table against what the document actually references and
+  drops the orphans: a tracker goes from ~382KB to ~19KB, because once mono body
+  prose becomes the sans, JetBrains Mono is referenced nowhere and its four
+  embedded faces (~443KB) go too.
   The embedded bytes cannot simply be renamed along with the entry: they *are*
   Manrope, and calling them Instrument Sans makes Word render the old face
   under the new name, which is worse than substituting. **Instrument Sans is
@@ -126,7 +129,7 @@ already-passing runs from 5.89 to 5.71.
 `agent_art.chapter_scene(name)` derives a chapter's hue, action, ridge and
 mirror from an FNV-1a hash of **its own name**, which is the design system's
 chapter-plate rule: a chapter renders the same scene every time and neighbours
-in a list never match. Eight actions x four ridges x mirrored x ten hues covers
+in a list never match. Eight actions x four ridges x mirrored x five primary hues covers
 every chapter from one small vocabulary — the alternative, a landmark each,
 would be eighty illustrations to draw, approve and maintain.
 
@@ -143,8 +146,9 @@ a chapter — a full run names the chapters that are missing theirs.
 
 Brand assets live in `assets/`. `aaif-mark.svg` is the full black lock-up
 despite its name (it predates the others and `report_style.py` embeds it by
-that path); `aaif-logo-white.svg` is **derived** from it by flipping the fills
-rather than transcribed, so the two cannot drift apart, and
+that path); `aaif-logo-white.svg` was **derived** from it by flipping the fills
+rather than transcribed (nothing re-derives it on each build, so treat it as a
+checked-in artefact of that step), and
 `aaif-mark-square.svg` is the 203x203 mark on its own.
 
 `lib/aaif_events/agent_art.py` draws the background plates and the agent motif

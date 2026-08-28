@@ -690,3 +690,72 @@ def test_retiring_refuses_to_put_png_bytes_under_another_type(tmp_path):
                    "</Relationships>" % ox._IMAGE_REL)
     with pytest.raises(RuntimeError, match="declares another"):
         ox.retire_plates(path, b"PNGBYTES", set())
+
+
+def test_the_repair_will_not_push_readable_text_into_the_invisible_band(tmp_path):
+    """The asymmetry that mattered: escaping the invisible band counted as a
+    rescue, but FALLING into it did not count as a break — because `broke` only
+    tested an AA crossing, and a run already below AA cannot cross it again.
+
+    Here a mid-grey label is legible on a mid-grey ground and would be whitened
+    into near-invisibility, while a second run is genuinely rescued. The slide
+    must be rejected: one rescue does not buy one disappearance."""
+    from aaif_events.tests import test_contrast as tc
+    from aaif_events import contrast as ct
+    # A light-ish ground: ink-3 on it is legible, ink-inv-2 on it is not.
+    bg = ('<p:bg><p:bgPr><a:solidFill><a:srgbClr val="C9C9C5"/></a:solidFill>'
+          "</p:bgPr></p:bg>")
+    deck = _ct_deck(tmp_path, [(bg, [tc._run("LABEL", ox.token("ink-3")),
+                                     tc._run("HOST", ox.token("ink"))])])
+    before = {round(f.ratio, 2) for f in ct.check_pptx(deck, include_passes=True)}
+    assert ox.improve_contrast(deck)[0] == 0, "the slide should have been rejected"
+    after = {round(f.ratio, 2) for f in ct.check_pptx(deck, include_passes=True)}
+    assert before == after, "the file must be left untouched"
+
+
+def test_a_face_nothing_references_is_dropped_even_if_it_was_not_renamed(tmp_path):
+    """The table must agree with USAGE, not just with the rename map. Mono body
+    prose is rewritten to the sans, so JetBrains Mono stops being referenced at
+    all — and deduping by mapped name alone left it declared and shipping 443KB
+    of embedded faces in every tracker."""
+    path = str(tmp_path / "u.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml",
+                   '<Types xmlns="ct"><Override ContentType="font" '
+                   'PartName="/word/fonts/JetBrainsMono.ttf"/></Types>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="Instrument Sans"/></w:rPr></w:r></w:document>')
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="Instrument Sans"/>'
+                   '<w:font w:name="JetBrains Mono">'
+                   '<w:embedRegular r:id="rId1"/></w:font></w:fonts>')
+        z.writestr("word/_rels/fontTable.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="font" '
+                   'Target="fonts/JetBrainsMono.ttf"/></Relationships>')
+        z.writestr("word/fonts/JetBrainsMono.ttf", b"TTF" * 200)
+    removed, parts = ox.prune_embedded_fonts(path)
+    assert removed == ["JetBrains Mono"]
+    assert parts == ["word/fonts/JetBrainsMono.ttf"]
+    with zipfile.ZipFile(path) as z:
+        assert "word/fonts/JetBrainsMono.ttf" not in z.namelist()
+        assert "JetBrains Mono" not in z.read("word/fontTable.xml").decode()
+
+
+def test_a_face_that_is_still_referenced_is_kept(tmp_path):
+    """The control: pruning by usage must not strip a face in use."""
+    path = str(tmp_path / "k.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="JetBrains Mono"/></w:rPr></w:r></w:document>')
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="JetBrains Mono"/></w:fonts>')
+    assert ox.prune_embedded_fonts(path) == ([], [])
+    with zipfile.ZipFile(path) as z:
+        assert "JetBrains Mono" in z.read("word/fontTable.xml").decode()

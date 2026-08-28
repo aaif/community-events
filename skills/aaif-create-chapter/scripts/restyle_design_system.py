@@ -113,7 +113,10 @@ TEMPLATE_FILES = frozenset((
 #: The per-chapter CRM is named for its chapter ("Boston CRM.xlsx"), so it
 #: cannot be listed above. Only its styling is ever rewritten — cell values live
 #: in xl/worksheets/ and xl/sharedStrings.xml, which restyle_part never opens.
-CRM_RE = re.compile(r"^.+ CRM\.xlsx$")
+#: `[^/\\]+`, not `.+`: a Drive file name may legally contain a slash, and an
+#: unanchored `.+` would let "../../x CRM.xlsx" satisfy the allowlist and then
+#: escape the archive directory when that name is used to build a local path.
+CRM_RE = re.compile(r"^[^/\\]+ CRM\.xlsx$")
 
 
 def is_template(name):
@@ -181,14 +184,52 @@ def walk_estate(root, jobs=8):
     return unique, chapters, series, with_files, skipped, sorted(strays)
 
 
+#: Characters kept when a Drive name becomes part of a local path. Everything
+#: else — separators, "..", control characters — is replaced.
+_SAFE_SEGMENT = re.compile(r"[^\w .,()&+-]")
+
+
+def _archive_path(entry, backup_dir):
+    """Where this file's pre-change copy belongs, under `backup_dir`.
+
+    Every path segment comes from a **Drive folder or file name**, which any
+    organizer with editor access controls. Joining those onto a local directory
+    unsanitised lets a folder renamed to `../../..` walk the archive out of
+    `./backups/` and drop attacker-supplied bytes anywhere the operator can
+    write. So each segment is sanitised, and the result is then checked to be
+    inside `backup_dir` after resolution — belt and braces, because sanitising
+    alone is the kind of thing a later edit quietly weakens.
+    """
+    rel = entry["path"].replace("Community Events/", "", 1)
+    parts = []
+    for seg in rel.split("/"):
+        seg = _SAFE_SEGMENT.sub("_", seg)
+        # "." is kept by the character class above — file names need it — so a
+        # segment of nothing but dots survives sanitising and still walks up.
+        # Neutralise it here and let the containment check below stay a
+        # backstop for the case nobody thought of, rather than the only guard.
+        if set(seg) == {"."}:
+            seg = "_" * len(seg)
+        if seg:
+            parts.append(seg)
+    if not parts:
+        raise RuntimeError("cannot derive an archive path from %r" % entry["path"])
+    dst = os.path.realpath(os.path.join(backup_dir, *parts))
+    root = os.path.realpath(backup_dir)
+    if dst != root and not dst.startswith(root + os.sep):
+        raise RuntimeError(
+            "refusing to archive %r outside %s — a Drive name is trying to "
+            "escape the archive directory" % (entry["path"], root))
+    return dst
+
+
 def _archive(entry, src, backup_dir):
     """Copy the pre-change file into the archive, mirroring its Drive path.
 
     Raises on failure. An upload that proceeds after a failed archive is an
     unrecoverable edit to a file nobody has a copy of.
     """
-    rel = entry["path"].replace("Community Events/", "", 1)
-    dst = os.path.join(backup_dir, rel)
+    dst = _archive_path(entry, backup_dir)
     if os.path.exists(dst):
         # Never overwrite. Two runs sharing a --backup-dir would otherwise have
         # the second archive the ALREADY-RESTYLED file over the original, and
@@ -307,8 +348,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         # run must not remove it on a no-op below.
         archived, fresh = None, False
         if write:
-            existed = os.path.exists(os.path.join(
-                backup_dir, entry["path"].replace("Community Events/", "", 1)))
+            existed = os.path.exists(_archive_path(entry, backup_dir))
             archived = _archive(entry, src, backup_dir)
             fresh = not existed
 

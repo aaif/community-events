@@ -97,9 +97,104 @@ class TestTheArchiveIsNeverOverwritten(unittest.TestCase):
     def test_the_archive_mirrors_the_drive_path(self):
         backup = os.path.join(self.tmp.name, "bk")
         dst = rd._archive(self.entry, self._src(b"x"), backup)
-        self.assertEqual(os.path.relpath(dst, backup),
+        # realpath on both sides: _archive resolves its result so it can prove
+        # containment, and on macOS /var is a symlink to /private/var.
+        self.assertEqual(os.path.relpath(dst, os.path.realpath(backup)),
                          os.path.join("Chapters", "Boston", "About.docx"))
 
+
+class TestTheArchiveCannotEscapeItsDirectory(unittest.TestCase):
+    """Every segment of an archive path comes from a Drive folder or file name,
+    which any organizer with editor access controls. Joining those onto a local
+    directory unsanitised lets a folder renamed to `../../..` drop
+    attacker-supplied bytes anywhere the operator can write."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.backup = os.path.join(self.tmp.name, "bk")
+
+    def _path(self, drive_path):
+        return rd._archive_path({"path": drive_path}, self.backup)
+
+    def test_a_traversing_folder_name_cannot_leave_the_archive(self):
+        for evil in ("Community Events/Chapters/../../../../etc/x/About.docx",
+                     "Community Events/Chapters/../../../About.docx",
+                     "Community Events/Chapters/..%2f../About.docx"):
+            dst = self._path(evil)
+            root = os.path.realpath(self.backup)
+            self.assertTrue(dst.startswith(root + os.sep), (evil, dst))
+
+    def test_the_containment_check_is_a_real_backstop(self):
+        """Sanitising handles `..`; the realpath check is what catches what
+        sanitising cannot see. A SYMLINK already inside the archive is the
+        case: the name is perfectly ordinary, and only resolution reveals that
+        writing through it lands outside."""
+        outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(os.path.join(self.backup, "Chapters"))
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(self.backup, "Chapters", "Boston"))
+        with self.assertRaises(RuntimeError) as cm:
+            rd._archive_path(
+                {"path": "Community Events/Chapters/Boston/About.docx"},
+                self.backup)
+        self.assertIn("escape", str(cm.exception))
+
+    def test_separators_in_a_name_are_not_path_structure(self):
+        """A Drive NAME may contain a slash. It must become one segment, not
+        two, or the allowlist can be satisfied while the path escapes."""
+        dst = self._path("Community Events/Chapters/Boston/../../x CRM.xlsx")
+        self.assertTrue(os.path.realpath(dst).startswith(
+            os.path.realpath(self.backup) + os.sep))
+        self.assertNotIn("..", os.path.relpath(dst, os.path.realpath(self.backup)))
+
+    def test_an_ordinary_name_is_still_readable(self):
+        """Sanitising must not mangle the real estate: chapter names carry
+        commas, accents and parentheses."""
+        dst = self._path("Community Events/Chapters/Madison, WI/"
+                         "Event Templates (Copy for Each Event)/Slides.pptx")
+        rel = os.path.relpath(dst, os.path.realpath(self.backup))
+        self.assertEqual(rel, os.path.join(
+            "Chapters", "Madison, WI",
+            "Event Templates (Copy for Each Event)", "Slides.pptx"))
+
+    def test_the_crm_pattern_does_not_admit_a_separator(self):
+        """`^.+ CRM\\.xlsx$` would let "../../x CRM.xlsx" through the
+        allowlist; the anchored form must not."""
+        self.assertTrue(rd.is_template("Boston CRM.xlsx"))
+        self.assertFalse(rd.is_template("../../x CRM.xlsx"))
+        self.assertFalse(rd.is_template("a/b CRM.xlsx"))
+
+
+
+def _docx(font_table_faces, doc_font="Instrument Sans"):
+    """A minimal .docx: token-conformant in its document, but declaring
+    `font_table_faces` in its font table."""
+    import io
+    import zipfile as zf
+    buf = io.BytesIO()
+    entries = "".join('<w:font w:name="%s"/>' % f for f in font_table_faces)
+    with zf.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:p><w:r><w:rPr><w:rFonts '
+                   'w:ascii="%s"/></w:rPr><w:t>x</w:t></w:r></w:p>'
+                   "</w:document>" % doc_font)
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">%s'
+                   "</w:fonts>" % entries)
+    return buf.getvalue()
+
+
+def _conformant_docx_needing_a_prune():
+    """Token-audit clean, but its font table still names a retired face — i.e.
+    `before` is empty while the file is still about to change. That is exactly
+    the --fix-contrast-over-a-conformant-estate shape that broke the archive."""
+    return _docx(["Instrument Sans", "Space Grotesk"])
+
+
+def _already_conformant_docx():
+    return _docx(["Instrument Sans"])
 
 
 class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
@@ -110,17 +205,77 @@ class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
     `before` is empty for every file while every file is still about to be
     rewritten. Gating the archive on `before` silently produced exactly the
     dangerous combination: hundreds of decks replaced, nothing kept.
+
+    These are BEHAVIOURAL. The first version of this test read process()'s
+    source and asserted the string "if write:" appeared in it — which passes
+    just as happily when the `_archive(...)` call underneath has been deleted.
+    A test for a bug that already shipped, that the bug walks straight through,
+    is worse than no test: it reads like the case is covered.
     """
 
-    def test_the_archive_gate_is_the_write_flag_not_the_token_audit(self):
-        import inspect
-        src = inspect.getsource(rd.process)
-        gate = [ln.strip() for ln in src.splitlines()
-                if ln.strip().startswith("if write") and "backup" not in ln]
-        self.assertIn("if write:", gate,
-                      "process() must archive whenever it may write, not only "
-                      "when the token audit found something")
-        self.assertNotIn("if write and before:", gate)
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.backup = os.path.join(self.tmp.name, "bk")
+        self.uploaded = []
+        self.entry = {"id": "fid1", "name": "About.docx", "mime": rd.cc.DOCX,
+                      "path": "Community Events/Chapters/Boston/About.docx"}
+        # A .docx whose token audit is CLEAN but whose font table still needs
+        # pruning — i.e. `before` is empty while the file is still about to
+        # change. That combination is the whole point.
+        self.payload = _conformant_docx_needing_a_prune()
+
+        def fake_download(fid, out):
+            with open(out, "wb") as fh:
+                fh.write(self.payload)
+
+        def fake_upload(fid, path, mime):
+            with open(path, "rb") as fh:
+                self.uploaded.append((fid, fh.read()))
+
+        for name, fn in (("gws_download", fake_download), ("gws_upload", fake_upload)):
+            setattr(rd.cc, name, fn)
+            self.addCleanup(setattr, rd.cc, name, getattr(rd.cc, name))
+
+    def _run(self, write):
+        with tempfile.TemporaryDirectory() as work:
+            return rd.process(self.entry, work, write, self.backup, False)
+
+    def test_a_write_run_archives_the_bytes_that_were_in_drive(self):
+        _e, report, err = self._run(write=True)
+        self.assertIsNone(err)
+        self.assertTrue(report, "a file that changed must report what changed")
+        archived = rd._archive_path(self.entry, self.backup)
+        self.assertTrue(os.path.exists(archived), "nothing was archived")
+        with open(archived, "rb") as fh:
+            self.assertEqual(fh.read(), self.payload,
+                             "the archive must hold the PRE-change bytes")
+        self.assertEqual(len(self.uploaded), 1)
+        self.assertNotEqual(self.uploaded[0][1], self.payload,
+                            "the uploaded file should differ from the original")
+
+    def test_a_plan_run_neither_uploads_nor_archives(self):
+        self._run(write=False)
+        self.assertEqual(self.uploaded, [])
+        self.assertFalse(os.path.exists(rd._archive_path(self.entry, self.backup)))
+
+    def test_a_file_that_does_not_change_leaves_no_archive_entry(self):
+        """The archive means "these were replaced". A file that turned out to
+        need nothing must not leave a copy behind implying it was."""
+        self.payload = _already_conformant_docx()
+        _e, report, err = self._run(write=True)
+        self.assertIsNone(err)
+        self.assertEqual(self.uploaded, [])
+        self.assertFalse(os.path.exists(rd._archive_path(self.entry, self.backup)))
+
+    def test_a_download_that_is_not_ooxml_is_refused_before_any_rewrite(self):
+        """gws writes the response body to --output even when the API returned
+        an error at exit 0, so a JSON error page reaches the engine as bytes."""
+        self.payload = b'{"error": {"code": 401}}'
+        _e, _report, err = self._run(write=True)
+        self.assertIsNotNone(err)
+        self.assertIn("not OOXML", err)
+        self.assertEqual(self.uploaded, [])
 
 
 if __name__ == "__main__":

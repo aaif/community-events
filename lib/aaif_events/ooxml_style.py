@@ -682,11 +682,13 @@ def add_plate_slides(path, plates, src_index=2):
     positions, the footer lockup — so an organizer picking a different
     background gets the same, already-approved composition underneath it.
 
-    `src_index` defaults to the **black-plate** slide, not the image-backed one.
-    That matters: the black-plate slide already sets every run in the on-dark
-    ramp and uses the reversed logo, whereas the image-backed slide was coloured
-    for one specific picture and leaves its eyebrow, subtitle and footer
-    unreadable the moment a different plate goes behind them.
+    `src_index` defaults to the **black-plate** slide, not the image-backed one,
+    because its layout and its logos suit a dark ground. Its TYPE does not:
+    several runs — the eyebrow, the subtitle, the wordmark of the host lockup —
+    are still in the light ink ramp, near-black on near-black. That is why the
+    clone is put through `to_on_dark` below rather than copied as-is. The
+    image-backed slide is a worse start regardless: it was coloured for one
+    specific picture.
 
     Handles both background shapes — an existing `blipFill` has its target
     swapped, a `solidFill` is replaced by a `blipFill` with a new relationship.
@@ -835,13 +837,16 @@ def improve_contrast(path):
 
     That decision is made by measurement, not by slide index. For each slide
     this re-scores the whole slide with the remap applied and keeps it only if
-    the failures strictly drop and **no run gets worse** — so a slide with light
+    **at least one run is materially rescued and none crosses from passing to
+    failing, or from readable into the invisible band** — so a slide with light
     text on a light ground, or a plate with a bright region under some run, is
-    left alone instead of being whitened into a new bug.
+    left alone instead of being whitened into a new bug. Note that the AA
+    failure COUNT need not drop: a rescue from 1.19 to 4.48 against a 4.50
+    threshold is real and leaves that count unchanged.
 
     Returns `(rescued, before, after)`, where `before`/`after` count runs
     failing AA and `rescued` counts runs **materially improved** — an AA
-    crossing OR an escape from the invisible band.
+    crossing, or an escape from the invisible band to at least `AA_LARGE`.
 
     Those are two different numbers on purpose. A slide can be genuinely
     repaired without any AA crossing: lifting footer text from 1.19 to 4.48
@@ -856,9 +861,6 @@ def improve_contrast(path):
               if f.ratio is not None and f.ratio < f.threshold]
     if not before:
         return 0, 0, 0
-    # `fixed` counts runs that stop failing AA. Runs merely lifted out of the
-    # invisible band still fail and still show in the totals — the caller should
-    # not be told they are done.
 
     failing_parts = {f.part for f in before}
 
@@ -907,11 +909,20 @@ def improve_contrast(path):
             # So escaping the invisible band counts as a rescue in its own
             # right. Text nobody can see is a different problem from text that
             # is merely under AA, and it is worth fixing on its own terms.
+            # The invisible band is first-class in BOTH directions. Escaping it
+            # counts as a rescue, so falling into it has to count as a break —
+            # an earlier version tested `broke` only on an AA crossing, which
+            # meant a run already below its threshold could not be counted as
+            # broken however far it fell. A label at 4.40 (failing, but plainly
+            # legible) dropping to 1.10 (white on a bright disc, invisible)
+            # scored as no harm done, and the slide was kept and uploaded.
             broke = fixed = 0
             for (x, tx), (y, ty) in zip(b, a):
                 if x is None or y is None:
                     continue
-                if x >= tx and y < ty:
+                if x >= ct.INVISIBLE > y:
+                    broke += 1
+                elif x >= tx and y < ty:
                     broke += 1
                 elif x < tx <= y:
                     fixed += 1
@@ -1000,7 +1011,12 @@ _EMBED_ID = re.compile(r'r:id="([^"]+)"')
 
 
 def prune_embedded_fonts(path):
-    """Make `word/fontTable.xml` agree with the faces the document now uses.
+    """Make `word/fontTable.xml` agree with the faces the document actually uses.
+
+    Reconciled against USAGE, not just against the rename map: an entry is
+    dropped when its face was renamed away *or* when no content part references
+    it any more. Both happen here — `_MONO_IS_PROSE` rewrites mono body prose
+    to the sans, so JetBrains Mono stops being used at all.
 
     Renaming every face to Instrument Sans leaves a tracker in a worse state
     than it started: the document references a font the file does not embed,
@@ -1028,6 +1044,23 @@ def prune_embedded_fonts(path):
         table = z.read("word/fontTable.xml").decode("utf-8", "replace")
         rels_name = "word/_rels/fontTable.xml.rels"
         rels = z.read(rels_name).decode("utf-8", "replace") if rels_name in names else ""
+        # What the document ACTUALLY asks for. Deduping by mapped name alone
+        # leaves a face declared and embedded that nothing references: mono
+        # body prose is rewritten to the sans by `_MONO_IS_PROSE`, so a tracker
+        # kept JetBrains Mono in its table and shipped 443KB of it while using
+        # it zero times. The table has to be reconciled against usage, which is
+        # what this function's name has always claimed.
+        in_use = set()
+        for n in names:
+            if not n.startswith("word/") or n.endswith("fontTable.xml"):
+                continue
+            if not n.endswith(".xml"):
+                continue
+            xml = z.read(n).decode("utf-8", "replace")
+            for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+                in_use.update(re.findall(r'%s="([^"]+)"' % attr, xml))
+            in_use.update(re.findall(r'<w:latin[^>]*w:typeface="([^"]+)"', xml))
+            in_use.update(re.findall(r'<a:latin[^>]*typeface="([^"]+)"', xml))
 
     dropped_ids, removed, seen = set(), [], set()
     out, last = [], 0
@@ -1037,7 +1070,11 @@ def prune_embedded_fonts(path):
         new_face = FONT_MAP.get(face, face)
         out.append(table[last:m.start()])
         last = m.end()
-        if new_face != face:
+        # Unreferenced faces go too, not only renamed ones. `in_use` is empty
+        # only if the document has no font references at all, in which case
+        # nothing is dropped for lack of evidence.
+        unused = bool(in_use) and new_face not in in_use
+        if new_face != face or unused:
             removed.append(face)
             for e in _EMBED.finditer(block):
                 rid = _EMBED_ID.search(e.group(0))
@@ -1045,6 +1082,8 @@ def prune_embedded_fonts(path):
                     dropped_ids.add(rid.group(1))
             block = _EMBED.sub("", block)
             block = block.replace('w:name="%s"' % face, 'w:name="%s"' % new_face)
+        if unused:
+            continue                       # nothing references it; drop it
         if new_face in seen:
             continue                       # collapsed onto an entry we kept
         seen.add(new_face)

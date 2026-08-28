@@ -28,6 +28,7 @@ at its rest pose rather than mid-travel.
 import os
 import re
 import subprocess
+import tempfile
 import zlib
 
 from aaif_events.ooxml_style import TOKENS, token
@@ -39,7 +40,7 @@ ASPECTS = {"wide": (1920, 1080), "square": (1080, 1080)}
 PLATES = ("hero-gradient", "soft-plate", "night-ridge", "bracket",
           "disc-corner", "spectrum-rail")
 
-#: The two that move. See the module docstring for why these and not the others.
+#: The three that move. See the module docstring for why these and not the others.
 ANIMATED = ("spectrum-rail", "bracket", "disc-corner")
 
 #: One hue leads each plate. spec-1..5 are the primaries the system says lead a
@@ -301,15 +302,21 @@ def render_png(svg, out_path, size, ground="transparent"):
             "width:%dpx;height:%dpx;overflow:hidden}"
             "svg{display:block;width:%dpx;height:%dpx}</style>%s"
             % (ground, w, h, w, h, svg))
-    page = out_path + ".html"
-    with open(page, "w", encoding="utf-8") as fh:
-        fh.write(html)
+    # A scratch name derived from the output path is predictable, and Chrome is
+    # then pointed at it as file://. On a shared host someone can pre-create or
+    # symlink that name and choose the page Chrome renders — whose screenshot
+    # is embedded into every chapter deck. mkstemp gives an unpredictable name
+    # and 0600 in one atomic step.
+    fd, page = tempfile.mkstemp(suffix=".html",
+                                dir=os.path.dirname(os.path.abspath(out_path)))
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(html)
         subprocess.run([_chrome(), "--headless", "--disable-gpu", "--hide-scrollbars",
                         "--force-device-scale-factor=1",
                         "--screenshot=" + out_path,
                         "--window-size=%d,%d" % (w, h),
-                        "file://" + os.path.abspath(page)],
+                        "file://" + page],
                        check=True, capture_output=True, timeout=120)
     finally:
         if os.path.exists(page):
@@ -392,7 +399,7 @@ def read_png(path):
 
 # --------------------------------------------------------------- GIF encoder --
 def _quantise(frames, limit=256):
-    """(palette, {colour: index}) for the whole animation.
+    """(palette, {colour: index}, drifted-pixel percentage) for the animation.
 
     Flat vector art is still *antialiased*, so a plate drawn in six colours
     reaches the encoder as a few thousand: every edge pixel is a blend. The
@@ -439,7 +446,7 @@ _DRIFT_D2 = 24 ** 2
 #: drift — not the worst single colour. Antialiased edges are one pixel wide and
 #: a handful of them landing on a neighbouring palette entry is invisible; a
 #: smooth gradient drifts across whole regions and shows as banding. Measured on
-#: these plates: bracket 0.000%, spectrum-field 0.002%, hero-gradient 7.458%.
+#: these plates: bracket 0.000%, spectrum-rail 0.002%, hero-gradient 7.458%.
 #: The two cases are three orders of magnitude apart, so 1% sits nowhere near
 #: either and does not need retuning when a plate is edited.
 MAX_DRIFT_PCT = 1.0
@@ -541,8 +548,8 @@ def write_gif(frames, out_path, delay_cs=8):
 def build(out_dir, aspects=None, frames=8, verbose=False):
     """Render every plate for every aspect into `out_dir`.
 
-    Returns `{(kind, aspect): path}`. Static plates come out as `.png`, the two
-    animated ones as `.gif` whose first frame is the rest pose.
+    Returns `{(kind, aspect): path}`. Static plates come out as `.png`, the
+    three animated ones as `.gif` whose first frame is the rest pose.
     """
     os.makedirs(out_dir, exist_ok=True)
     made = {}
@@ -802,7 +809,6 @@ def agent_scene(spec, secondary, action=None, ridge=0, mirrored=False,
     # Blink: the eyes flatten for one frame in the cycle. Scaling the circles
     # about their own centres keeps the visor and the gaze position fixed.
     if 0.86 <= frame < 0.94:
-        art = re.sub(r'<circle class="ag-eye"[^/]*/>', "", art)
         art = art.replace(
             '<circle cx="19.8" cy="22.5" r="2.45"',
             '<ellipse cx="19.8" cy="22.5" rx="2.45" ry="0.3"').replace(
@@ -893,7 +899,12 @@ def build_logos(out_dir, width=1200):
         with open(src, encoding="utf-8") as fh:
             svg = fh.read()
         m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
-        vw, vh = (float(m.group(1)), float(m.group(2))) if m else (838.0, 203.0)
+        if not m:
+            # Guessing the aspect renders every logo at the wrong proportions
+            # into 80+ Drive folders. build_logos already raises two lines up
+            # for a missing asset; do the same for an unreadable one.
+            raise RuntimeError("no parsable viewBox in %s" % src)
+        vw, vh = float(m.group(1)), float(m.group(2))
         height = int(round(width * vh / vw))
         made[label] = render_png(svg, os.path.join(out_dir, "%s.png" % label),
                                  (width, height), ground=ground or "transparent")

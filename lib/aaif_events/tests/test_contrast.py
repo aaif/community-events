@@ -388,3 +388,86 @@ def test_a_single_master_deck_still_resolves_scheme_colours(tmp_path):
     deck = _deck(tmp_path, _slide(SOLID_BLACK, [_run("X", "tx1", scheme=True)]))
     found = ct.check_pptx(deck)
     assert len(found) == 1 and found[0].fg == (0x0A, 0x0A, 0x0A)
+
+
+def test_a_gradient_filled_shape_is_unchecked_not_scored_against_the_slide(tmp_path):
+    """An unscorable fill is NOT "no fill". Falling through to the slide scores
+    the run against something that is not behind it — a confident wrong ratio,
+    which improve_contrast then acts on. A white card on a black plate would
+    read as 1.00:1 and its readable black text would be whitened."""
+    slide = _sp_slide(SOLID_BLACK, [
+        _shape('<a:gradFill><a:gsLst><a:gs pos="0">'
+               '<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:gs>'
+               "</a:gsLst></a:gradFill>", [_run("CARD", "0A0A0A")])])
+    found = ct.check_pptx(_deck(tmp_path, slide))
+    assert len(found) == 1
+    assert found[0].ratio is None, "a gradient fill must not produce a ratio"
+    assert "gradFill" in found[0].note
+
+
+def test_a_translucent_shape_fill_is_unchecked(tmp_path):
+    slide = _sp_slide(SOLID_BLACK, [
+        _shape('<a:solidFill><a:srgbClr val="FFFFFF"><a:alpha val="40000"/>'
+               "</a:srgbClr></a:solidFill>", [_run("X", "0A0A0A")])])
+    found = ct.check_pptx(_deck(tmp_path, slide))
+    assert len(found) == 1 and found[0].ratio is None
+    assert "opaque" in found[0].note
+
+
+def test_a_shape_with_no_fill_still_falls_through_to_the_slide(tmp_path):
+    """The control: "unscorable" must not swallow the ordinary case."""
+    slide = _sp_slide(SOLID_BLACK, [_shape("<a:noFill/>", [_run("X", "0A0A0A")])])
+    found = ct.check_pptx(_deck(tmp_path, slide))
+    assert len(found) == 1 and found[0].ratio == 1.0
+
+
+@pytest.mark.parametrize("off,ext", [
+    ('<a:off x="0" y="0"/>', '<a:ext cx="4572000" cy="5143500"/>'),
+    ('<a:off y="0" x="0"/>', '<a:ext cy="5143500" cx="4572000"/>'),   # reordered
+    ('<a:off x="0" y="0" />', '<a:ext cx="4572000" cy="5143500" />'),  # spaced
+])
+def test_geometry_is_read_by_attribute_name_not_position(tmp_path, off, ext):
+    """Attribute order is not fixed in OOXML — this repo already reads
+    <p:sldSz> by name because these decks write cy before cx. A positional
+    pattern that stops matching does not fail: it falls back to a full-slide
+    box, so every run is scored against the AVERAGE of the whole plate and the
+    numbers still look plausible."""
+    import struct
+    import zlib
+    w = h = 8
+    raw = b""
+    for _y in range(h):
+        raw += b"\x00" + b"".join(
+            bytes((0, 0, 0)) if x < w // 2 else bytes((255, 255, 255))
+            for x in range(w))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+    slide = ('<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+             "<p:cSld>%s<p:spTree><p:sp><p:spPr><a:xfrm>%s%s</a:xfrm>"
+             "<a:noFill/></p:spPr><p:txBody><a:p>%s</a:p></p:txBody></p:sp>"
+             "</p:spTree></p:cSld></p:sld>"
+             % (IMAGE_BG, off, ext, _run("X", "0A0A0A")))
+    deck = _deck(tmp_path, slide, media={"ppt/media/image1.png": png})
+    found = ct.check_pptx(deck, include_passes=True)
+    assert len(found) == 1
+    # The run sits over the BLACK half. Sampled correctly it is ~1:1; sampled
+    # over the whole plate it would average to mid-grey and read as passing.
+    assert found[0].ratio is not None and found[0].ratio < 1.5, found[0]
+
+
+def test_a_shape_with_no_geometry_over_an_image_is_unchecked(tmp_path):
+    slide = ('<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+             "<p:cSld>%s<p:spTree><p:sp><p:spPr><a:noFill/></p:spPr>"
+             "<p:txBody><a:p>%s</a:p></p:txBody></p:sp>"
+             "</p:spTree></p:cSld></p:sld>" % (IMAGE_BG, _run("X", "0A0A0A")))
+    deck = _deck(tmp_path, slide,
+                 media={"ppt/media/image1.png": _png(8, 8, (10, 10, 10))})
+    found = ct.check_pptx(deck)
+    assert len(found) == 1 and found[0].ratio is None
+    assert "no <a:off>" in found[0].note

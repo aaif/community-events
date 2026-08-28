@@ -260,31 +260,49 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --write
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
     --chapter TemplateCity --write
 
-# Also give the two hero decks their background plates (idempotent):
-python3 -c "from aaif_events import agent_art; agent_art.build('/tmp/plates')"
+# ---- anything that needs generated art -------------------------------
+# Build it into a PRIVATE directory FIRST. A fixed /tmp path is world-writable
+# and predictable, so on a shared host someone else can pre-create it and choose
+# the bytes that then land in all 83 chapter decks.
+ART=$(mktemp -d)
+python3 -c "import sys; sys.path.insert(0, 'lib'); \
+    from aaif_events import agent_art as a; \
+    a.build('$ART'); a.build_logos('$ART')"
+
+# Give the two hero decks their background plates (idempotent):
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
-    --plates /tmp/plates --write
+    --plates "$ART" --write
+
+# Retire the hand-made plate the decks were built with, replacing every
+# background this toolkit did not generate with the AAIF soft plate. Repairs
+# the text against the NEW plate in the same pass, which is why --fix-contrast
+# rides along:
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+    --retire-plates --fix-contrast --plates "$ART" --write
 
 # Audit TEXT LEGIBILITY: every run below WCAG AA against what is behind it.
 # Catches what a token check cannot — black-on-black is two correct tokens.
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --contrast
 
-# Repair it, by measurement (only where a run crosses the threshold upward
-# and none crosses down):
+# Repair it, by measurement — a slide is kept only when at least one run is
+# materially rescued and none crosses from passing to failing (or from readable
+# into the invisible band):
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
     --fix-contrast --write
 
-# Retire the hand-made plate the decks were built with, replacing every
-# background this toolkit did not generate with the AAIF soft plate:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
-    --retire-plates --fix-contrast --plates /tmp/plates --write
-
-# Give every chapter its own agent (plus the ten generic ones) as animated
-# GIFs in an Agents/ folder. NOT done by create_chapter: cloning TemplateCity
-# would hand a new chapter TemplateCity's agent instead of its own.
-python3 -c "import sys; sys.path.insert(0,'lib'); \
-    from aaif_events import agent_art as a; a.build_agents('/tmp/agents', NAMES)"
-python3 ${CLAUDE_SKILL_DIR}/scripts/upload_agents.py --art /tmp/agents --write
+# Give every chapter its own agent, the ten generic ones and the AAIF logos, in
+# an Icons/ folder. build_agents needs the chapter NAMES, so read them from the
+# same estate walk the sweep uses. NOT done by create_chapter: cloning
+# TemplateCity would hand a new chapter TemplateCity's agent, not its own.
+python3 -c "import sys; sys.path.insert(0, 'lib'); \
+    sys.path.insert(0, '${CLAUDE_SKILL_DIR}/scripts'); \
+    import create_chapter as cc, restyle_design_system as rd; \
+    from aaif_events import agent_art as a; \
+    names=[c['name'] for k in cc.list_children(rd.COMMUNITY_ROOT) \
+           if k['name']==rd.CHAPTERS_FOLDER \
+           for c in cc.list_children(k['id']) if c['mimeType']==cc.FOLDER]; \
+    a.build_agents('$ART', names)"
+python3 ${CLAUDE_SKILL_DIR}/scripts/upload_agents.py --art "$ART" --write
 
 # Run the engine on a local file, no Drive at all:
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \

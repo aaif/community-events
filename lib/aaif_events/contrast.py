@@ -193,10 +193,26 @@ def shape_fill(sppr_xml, theme):
     body = re.sub(r"<a:ln\b[^>]*>.*?</a:ln>", "", sppr_xml, flags=re.S)
     body = re.sub(r"<a:ln\b[^>]*/>", "", body)
     m = re.search(r"<a:(%s)\b" % "|".join(_FILL_KINDS), body)
-    if not m or m.group(1) != "solidFill":
-        # noFill, or a gradient/picture/pattern fill this does not evaluate.
+    if not m or m.group(1) in ("noFill", "grpFill"):
+        # No fill of its own: the slide behind it IS what is behind the text.
         return None
-    return _solid_colour(body, theme)
+    if m.group(1) != "solidFill":
+        # A gradient, picture or pattern fill. This is NOT "no fill" — falling
+        # through to the slide would score the run against something that is
+        # not behind it, and produce a confident wrong ratio rather than the
+        # honest gap this module promises. Worse, improve_contrast acts on it.
+        return ("unscorable", "shape has a <a:%s>, which cannot be reduced to "
+                              "one colour" % m.group(1))
+    got = _solid_colour(body, theme)
+    if got is None:
+        return None
+    rgb, alpha, note = got
+    if rgb is None:
+        return ("unscorable", note or "shape fill is not a plain colour")
+    if alpha < 0.999:
+        return ("unscorable", "shape fill is %.0f%% opaque; what is behind the "
+                              "text depends on the backdrop" % (alpha * 100))
+    return got
 
 
 # ------------------------------------------------------------- backgrounds ---
@@ -356,6 +372,19 @@ def _threshold(size_pt, bold):
     return AA_NORMAL
 
 
+def _geometry(block):
+    """(x, y, cx, cy) in EMU for a shape, or None if it does not state one."""
+    off = re.search(r"<a:off\b[^>]*/>", block)
+    ext = re.search(r"<a:ext\b[^>]*/>", block)
+    if not (off and ext):
+        return None
+    o = dict(re.findall(r'\b(x|y)="(-?\d+)"', off.group(0)))
+    e = dict(re.findall(r'\b(cx|cy)="(\d+)"', ext.group(0)))
+    if not {"x", "y"} <= set(o) or not {"cx", "cy"} <= set(e):
+        return None
+    return int(o["x"]), int(o["y"]), int(e["cx"]), int(e["cy"])
+
+
 _SP = re.compile(r"<p:sp>.*?</p:sp>", re.S)
 _GRPSP = re.compile(r"<p:grpSp>.*?</p:grpSp>", re.S)
 _RUN = re.compile(r"<a:r>(.*?)</a:r>", re.S)
@@ -443,16 +472,21 @@ def check_pptx(path, include_passes=False):
                 in_group = block in grouped
                 sppr = re.search(r"<p:spPr>.*?</p:spPr>", block, re.S)
                 shape_ground = ground
+                unscorable_fill = None
                 if sppr:
                     got = shape_fill(sppr.group(0), theme)
-                    if got and got[0] is not None and got[1] >= 0.999:
+                    if got and got[0] == "unscorable":
+                        unscorable_fill = got[1]
+                    elif got:
                         shape_ground = _Ground(rgb=got[0], source="shape fill")
 
-                off = re.search(r'<a:off x="(-?\d+)" y="(-?\d+)"/>', block)
-                ext = re.search(r'<a:ext cx="(\d+)" cy="(\d+)"', block)
-                box = ((int(off.group(1)), int(off.group(2)),
-                        int(ext.group(1)), int(ext.group(2)))
-                       if off and ext else (0, 0, slide_wh[0], slide_wh[1]))
+                # By NAME, not by position. Attribute order is not fixed in
+                # OOXML and this very repo reads <p:sldSz> that way because
+                # these decks write cy before cx. A positional pattern that
+                # stops matching does not fail — it falls back to a full-slide
+                # box, so every run gets scored against the AVERAGE of the
+                # whole plate and the numbers look plausible.
+                box = _geometry(block)
 
                 for run in _RUN.finditer(block):
                     body = run.group(1)
@@ -497,13 +531,22 @@ def check_pptx(path, include_passes=False):
                                  "the backdrop" % (alpha * 100)))
                         continue
 
-                    if in_group and shape_ground.image is not None:
+                    if unscorable_fill:
+                        findings.append(Finding(
+                            part=part, text=text[:60], fg=fg, size_pt=size_pt,
+                            bold=bold, ground="shape fill",
+                            note=unscorable_fill))
+                        continue
+                    if shape_ground.image is not None and (in_group or box is None):
                         findings.append(Finding(
                             part=part, text=text[:60], fg=fg, size_pt=size_pt,
                             bold=bold, ground=shape_ground.source,
-                            note="run sits in a <p:grpSp>, whose offsets are in "
-                                 "the group's child coordinate space; the "
-                                 "background image cannot be sampled under it"))
+                            note=("run sits in a <p:grpSp>, whose offsets are "
+                                  "in the group's child coordinate space; the "
+                                  "background image cannot be sampled under it")
+                            if in_group else
+                            ("shape states no <a:off>/<a:ext>, so the "
+                             "background image cannot be sampled under it")))
                         continue
                     bg, bg_note = shape_ground.at(box, slide_wh)
                     if bg is None:
