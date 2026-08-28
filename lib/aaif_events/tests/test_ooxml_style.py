@@ -838,3 +838,134 @@ def test_the_audit_is_silent_once_the_drift_is_gone(tmp_path, build):
     path = build(tmp_path, name="r" + os.path.splitext(build(tmp_path))[1])
     cc._rewrite_zip(path, ox.restyle_part)
     assert ox.audit(path) == []
+
+
+# --------------------------------------------- the embedded metric fallback --
+
+def _docx_asking_for_the_sans(tmp_path, entry=None, name="fb.docx"):
+    path = str(tmp_path / name)
+    entry = entry or '<w:font w:name="%s"/>' % ox.SANS
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="%s"/></w:rPr></w:r></w:document>' % ox.SANS)
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">%s'
+                   "</w:fonts>" % entry)
+    return path
+
+
+def test_the_fallback_is_embedded_and_pointed_at_by_altname(tmp_path):
+    """Instrument Sans cannot be embedded from here, so the file must carry
+    something for Word to reach for — named through <w:altName>, which is the
+    OOXML mechanism for "use this when the requested face is missing"."""
+    deck = _docx_asking_for_the_sans(tmp_path)
+    assert ox.ensure_fallback_font(deck) is True
+    with zipfile.ZipFile(deck) as z:
+        table = z.read("word/fontTable.xml").decode()
+        names = z.namelist()
+    assert '<w:altName w:val="%s"/>' % ox.FALLBACK_FACE in table
+    assert table.count("<w:altName") == 1, "altName inserted more than once"
+    for _tag, filename in ox.FALLBACK_FILES:
+        assert "word/fonts/%s" % filename in names
+
+
+def test_the_fallback_is_not_relabelled_as_the_brand_face(tmp_path):
+    """The whole point. Embedding Manrope's bytes under the name Instrument
+    Sans would make Word render one face under another's name — worse than
+    substituting, because nothing downstream can tell."""
+    deck = _docx_asking_for_the_sans(tmp_path)
+    ox.ensure_fallback_font(deck)
+    with zipfile.ZipFile(deck) as z:
+        table = z.read("word/fontTable.xml").decode()
+    entries = re.findall(r'<w:font w:name="([^"]+)"', table)
+    assert ox.FALLBACK_FACE in entries, "the fallback keeps its own name"
+    assert ox.SANS in entries
+    # The embeds hang off the FALLBACK's entry, never the brand entry.
+    brand = re.search(r'<w:font w:name="%s".*?</w:font>' % re.escape(ox.SANS),
+                      table, re.S)
+    assert brand and "<w:embed" not in brand.group(0)
+
+
+def test_every_embed_resolves_to_a_part_that_exists(tmp_path):
+    deck = _docx_asking_for_the_sans(tmp_path)
+    ox.ensure_fallback_font(deck)
+    with zipfile.ZipFile(deck) as z:
+        names = set(z.namelist())
+        table = z.read("word/fontTable.xml").decode()
+        rels = z.read("word/_rels/fontTable.xml.rels").decode()
+        assert 'Extension="ttf"' in z.read("[Content_Types].xml").decode()
+    relmap = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
+    ids = re.findall(r'r:id="([^"]+)"', table)
+    assert ids
+    for rid in ids:
+        assert "word/" + relmap[rid] in names
+
+
+def test_it_is_idempotent(tmp_path):
+    deck = _docx_asking_for_the_sans(tmp_path)
+    assert ox.ensure_fallback_font(deck) is True
+    before = open(deck, "rb").read()
+    assert ox.ensure_fallback_font(deck) is False
+    assert open(deck, "rb").read() == before
+
+
+def test_a_container_entry_also_gets_the_altname(tmp_path):
+    """The brand entry may be self-closing or a container; both must work, and
+    neither may end up with the altName twice."""
+    deck = _docx_asking_for_the_sans(
+        tmp_path, entry='<w:font w:name="%s"><w:charset w:val="00"/></w:font>'
+                        % ox.SANS, name="c.docx")
+    assert ox.ensure_fallback_font(deck) is True
+    with zipfile.ZipFile(deck) as z:
+        table = z.read("word/fontTable.xml").decode()
+    assert table.count("<w:altName") == 1
+
+
+def test_a_document_that_does_not_ask_for_the_sans_is_untouched(tmp_path):
+    path = str(tmp_path / "other.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml", '<w:document xmlns:w="w"/>')
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w">'
+                   '<w:font w:name="Calibri"/></w:fonts>')
+    before = open(path, "rb").read()
+    assert ox.ensure_fallback_font(path) is False
+    assert open(path, "rb").read() == before
+
+
+def test_the_fallback_face_is_metrically_the_closest_of_the_candidates():
+    """Chosen by measurement. Instrument Sans's proportions are derived from
+    the design system's own metric-matched fallback (Arial, size-adjust
+    102.74%); the candidates are the faces these files already embedded."""
+    arial_xh, arial_cap = 1062 / 2048.0, 1467 / 2048.0
+    inst_xh, inst_cap = arial_xh * 1.0274, arial_cap * 1.0274
+    candidates = {"Manrope": (0.540, 0.720), "Space Grotesk": (0.486, 0.700)}
+    scored = {n: abs(xh - inst_xh) + abs(cap - inst_cap)
+              for n, (xh, cap) in candidates.items()}
+    assert min(scored, key=scored.get) == ox.FALLBACK_FACE
+
+
+def test_pruning_keeps_a_face_that_only_an_altname_references(tmp_path):
+    """The fallback is referenced by <w:altName>, never by a w:rFonts. Pruning
+    it as "unused" makes prune and ensure_fallback_font fight: one drops it,
+    the other re-adds it, and every sweep re-uploads every tracker forever."""
+    deck = _docx_asking_for_the_sans(tmp_path, name="alt.docx")
+    ox.ensure_fallback_font(deck)
+    assert ox.prune_embedded_fonts(deck) == ([], []), "the fallback was pruned"
+    with zipfile.ZipFile(deck) as z:
+        assert ox.FALLBACK_FACE in z.read("word/fontTable.xml").decode()
+
+
+def test_the_two_font_passes_converge(tmp_path):
+    """Run both, twice, in the order the sweep runs them. The second round must
+    change nothing at all — otherwise the estate never reaches a steady state."""
+    deck = _docx_asking_for_the_sans(tmp_path, name="conv.docx")
+    ox.prune_embedded_fonts(deck)
+    ox.ensure_fallback_font(deck)
+    settled = open(deck, "rb").read()
+    ox.prune_embedded_fonts(deck)
+    ox.ensure_fallback_font(deck)
+    assert open(deck, "rb").read() == settled

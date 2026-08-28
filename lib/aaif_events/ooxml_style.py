@@ -1069,6 +1069,12 @@ def prune_embedded_fonts(path):
                 in_use.update(re.findall(r'%s="([^"]+)"' % attr, xml))
             in_use.update(re.findall(r'<w:latin[^>]*w:typeface="([^"]+)"', xml))
             in_use.update(re.findall(r'<a:latin[^>]*typeface="([^"]+)"', xml))
+        # A face named by <w:altName> IS referenced — it is what Word reaches
+        # for when the requested one is missing, which is the whole reason the
+        # metric fallback is embedded. Without this, pruning drops it for being
+        # unused and ensure_fallback_font puts it straight back: the two fight
+        # forever and every sweep re-uploads every tracker.
+        in_use.update(re.findall(r'<w:altName w:val="([^"]+)"', table))
 
     dropped_ids, removed, seen = set(), [], set()
     out, last = [], 0
@@ -1076,12 +1082,23 @@ def prune_embedded_fonts(path):
         face = m.group(1) or m.group(2)
         block = m.group(0)
         new_face = FONT_MAP.get(face, face)
+        # The metric fallback keeps its OWN name. FONT_MAP renames it to the
+        # sans — correct where it is drift, wrong here, because an <w:altName>
+        # pointing at "Manrope" needs a "Manrope" entry to point AT. Renaming
+        # it also relabels its embedded bytes as the brand face, which is the
+        # one thing ensure_fallback_font exists to avoid.
+        if face == FALLBACK_FACE and face in in_use:
+            out.append(table[last:m.start()])
+            out.append(block)
+            last = m.end()
+            seen.add(face)
+            continue
         out.append(table[last:m.start()])
         last = m.end()
         # Unreferenced faces go too, not only renamed ones. `in_use` is empty
         # only if the document has no font references at all, in which case
         # nothing is dropped for lack of evidence.
-        unused = bool(in_use) and new_face not in in_use
+        unused = bool(in_use) and new_face not in in_use and face not in in_use
         if new_face != face or unused:
             removed.append(face)
             for e in _EMBED.finditer(block):
@@ -1330,3 +1347,128 @@ def update_plates(path, plates):
                     add=new_parts)
     os.replace(path + ".new", path)
     return sorted(set(changed))
+
+
+# ------------------------------------------------- the metric fallback -------
+#: Instrument Sans cannot be embedded from here — `assets/fonts` holds woff2,
+#: which OOXML has no way to use — so a tracker asks for a face it does not
+#: carry and Word substitutes whatever it likes on a machine without it.
+#:
+#: `<w:altName>` is the OOXML mechanism for exactly this: it names what to use
+#: when the requested face is missing. So the document keeps asking for
+#: Instrument Sans, and the file carries an embedded fallback for Word to reach
+#: for instead. The fallback is NOT relabelled as Instrument Sans — that would
+#: make Word render one face under another's name, which is worse than
+#: substituting because nothing downstream can tell.
+#:
+#: Manrope, chosen by measurement rather than by reputation. Against Instrument
+#: Sans's proportions — derived from the design system's own metric-matched
+#: fallback overrides on Arial, size-adjust 102.74% — the candidates already
+#: embedded in these files deviate by, in em:
+#:
+#:     Manrope         x-height +0.007  cap -0.016   total 0.023
+#:     Space Grotesk   x-height -0.047  cap -0.036   total 0.083
+#:
+#: JetBrains Mono ties Manrope numerically and is excluded anyway: it is
+#: monospaced, and this is body copy.
+FALLBACK_FACE = "Manrope"
+FALLBACK_FILES = (("embedRegular", "Manrope-regular.ttf"),
+                  ("embedBold", "Manrope-bold.ttf"))
+_FONT_ASSETS = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), "assets", "fonts")
+_TTF_CT = "application/vnd.openxmlformats-officedocument.obfuscatedFont"
+
+
+def ensure_fallback_font(path):
+    """Give a .docx an embedded metric fallback for Instrument Sans.
+
+    Adds a `<w:font w:name="Manrope">` entry carrying the embedded faces, and
+    points the Instrument Sans entry at it with `<w:altName>`. Idempotent, and
+    a no-op on a file that does not ask for Instrument Sans.
+
+    Returns True when the file changed.
+    """
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        if "word/fontTable.xml" not in names:
+            return False
+        table = z.read("word/fontTable.xml").decode("utf-8", "replace")
+        if SANS not in table:
+            return False
+        if re.search(r'<w:font w:name="%s"' % re.escape(FALLBACK_FACE), table):
+            return False                    # already carries the entry
+
+        rels_name = "word/_rels/fontTable.xml.rels"
+        rels = (z.read(rels_name).decode("utf-8", "replace") if rels_name in names
+                else '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                     '<Relationships xmlns="http://schemas.openxmlformats.org/'
+                     'package/2006/relationships"></Relationships>')
+        ct = z.read("[Content_Types].xml").decode("utf-8", "replace")
+
+    used = [int(n) for n in re.findall(r'Id="rId(\d+)"', rels)]
+    next_rid = (max(used) + 1) if used else 1
+    add, embeds, new_rels = {}, [], rels
+    for tag, filename in FALLBACK_FILES:
+        src = os.path.join(_FONT_ASSETS, filename)
+        if not os.path.exists(src):
+            raise RuntimeError(
+                "missing %s — the metric fallback cannot be embedded. See "
+                "DESIGN.md; add the OFL TTF to assets/fonts." % src)
+        with open(src, "rb") as fh:
+            add["word/fonts/%s" % filename] = fh.read()
+        rid = "rId%d" % next_rid
+        next_rid += 1
+        # fontKey all-zero: the bytes are a plain TTF, not Word's obfuscated
+        # .odttf. That is how these files already embedded their faces.
+        embeds.append('<w:%s r:id="%s" w:fontKey="{00000000-0000-0000-0000-'
+                      '000000000000}" w:subsetted="0"/>' % (tag, rid))
+        new_rels = new_rels.replace(
+            "</Relationships>",
+            '<Relationship Id="%s" Type="http://schemas.openxmlformats.org/'
+            'officeDocument/2006/relationships/font" Target="fonts/%s"/>'
+            "</Relationships>" % (rid, filename))
+
+    entry = ('<w:font w:name="%s">%s</w:font>' % (FALLBACK_FACE, "".join(embeds)))
+    table = table.replace("</w:fonts>", entry + "</w:fonts>")
+    # Point Instrument Sans at it. altName is what Word consults when the named
+    # face is absent, so this is a statement about substitution, not a rename.
+    # One insertion, not two. Converting the self-closing form to a container
+    # and THEN matching containers inserts the altName twice — the first regex
+    # creates exactly what the second is looking for.
+    alt = '<w:altName w:val="%s"/>' % FALLBACK_FACE
+    selfclosing = re.compile(r'<w:font w:name="%s"[^>]*/>' % re.escape(SANS))
+    if selfclosing.search(table):
+        table = selfclosing.sub(
+            '<w:font w:name="%s">%s</w:font>' % (SANS, alt), table, count=1)
+    else:
+        table = re.sub(r'(<w:font w:name="%s"[^>]*(?<!/)>)' % re.escape(SANS),
+                       lambda m: m.group(1) + alt, table, count=1)
+
+    if ('Extension="ttf"' not in ct) and ("/word/fonts/" not in ct):
+        default = '<Default ContentType="%s" Extension="ttf"/>' % _TTF_CT
+        if "</Types>" in ct:
+            ct = ct.replace("</Types>", default + "</Types>")
+        else:
+            # A self-closing <Types/> — replacing "</Types>" silently does
+            # nothing, and the embedded parts then have no declared content
+            # type, which is a corrupt file rather than a missing nicety.
+            ct = re.sub(r"(<Types\b[^>]*)/>",
+                        lambda m: m.group(1) + ">" + default + "</Types>", ct, count=1)
+        if default not in ct:
+            raise RuntimeError(
+                "could not declare the ttf content type in [Content_Types].xml")
+
+    def tx(name, data):
+        if name == "word/fontTable.xml":
+            return table.encode("utf-8")
+        if name == rels_name:
+            return new_rels.encode("utf-8")
+        if name == "[Content_Types].xml":
+            return ct.encode("utf-8")
+        return data
+
+    if rels_name not in names:
+        add[rels_name] = new_rels.encode("utf-8")
+    _rewrite_zip_to(path, path + ".new", tx, add=add)
+    os.replace(path + ".new", path)
+    return True

@@ -359,6 +359,12 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         # now actually asks for.
         pruned = (ox.prune_embedded_fonts(src)
                   if entry["mime"] == cc.DOCX else ([], []))
+        # Pruning leaves the document asking for a face it does not carry.
+        # Give it an embedded metric fallback to reach for, so a .docx opened
+        # on a machine without Instrument Sans still sets in something close
+        # rather than whatever Word picks.
+        fallback = (ox.ensure_fallback_font(src)
+                    if entry["mime"] == cc.DOCX else False)
         # Plates are appended after the restyle so the slide they are cloned
         # from is already conformant — otherwise every new slide would carry a
         # copy of the drift this run just removed.
@@ -387,7 +393,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
                    if fix_contrast and entry["mime"] == cc.PPTX else (0, 0, 0))
         after = ox.audit(src)
         if not parts and not plated and not rescued[0] and not retired \
-                and not pruned[0] and not pruned[1]:
+                and not pruned[0] and not pruned[1] and not fallback:
             # Nothing changed. If we archived a file we are not going to upload,
             # take the copy back out so the archive means "these were replaced".
             if fresh and archived and os.path.exists(archived):
@@ -399,7 +405,8 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             cc.gws_upload(entry["id"], src, entry["mime"])
         return entry, {"before": before, "parts": parts, "after": after,
                        "plates": plated, "rescued": rescued,
-                       "retired": retired, "pruned": pruned}, None
+                       "retired": retired, "pruned": pruned,
+                       "fallback": fallback}, None
     except Exception as e:                # one bad file must not stop the run
         # Prefix the class: this catch spans the XML engine, the archive, and
         # both transfers, and a bare message makes a ValueError in the rewrite
@@ -580,6 +587,9 @@ def main():
                       "%s" % (", ".join(faces),
                               "; removed %d embedded face part(s)" % len(dropped)
                               if dropped else ""))
+            if report.get("fallback"):
+                print("                 + fonts: embedded the %s metric "
+                      "fallback for %s" % (ox.FALLBACK_FACE, ox.SANS))
             if report.get("retired"):
                 print("                 + retired legacy plate: %s"
                       % ", ".join(os.path.basename(x) for x in report["retired"]))

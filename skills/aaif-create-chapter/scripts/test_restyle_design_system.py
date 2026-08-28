@@ -194,7 +194,19 @@ def _conformant_docx_needing_a_prune():
 
 
 def _already_conformant_docx():
-    return _docx(["Instrument Sans"])
+    """A file with nothing left to do — produced by RUNNING the passes rather
+    than hand-built to look settled. Hand-building it got the fallback wrong
+    (an entry with no <w:altName> pointing at it, which prune then removes),
+    and the test failed for a reason that had nothing to do with the archive."""
+    import tempfile as tf
+    with tf.TemporaryDirectory() as d:
+        path = os.path.join(d, "settled.docx")
+        with open(path, "wb") as fh:
+            fh.write(_docx(["Instrument Sans"]))
+        rd.ox.prune_embedded_fonts(path)
+        rd.ox.ensure_fallback_font(path)
+        with open(path, "rb") as fh:
+            return fh.read()
 
 
 class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):

@@ -91,3 +91,15 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+--------------------------------------------------------------------------
+Manrope (Manrope-regular.ttf, Manrope-bold.ttf) — SIL Open Font License 1.1
+Copyright (c) 2018-2019 Mikhail Sharanda, 2019-2021 The Manrope Project Authors
+
+Kept as the METRIC FALLBACK embedded in the Word trackers, not as a brand
+face. Instrument Sans is the AAIF typeface and is what those documents ask
+for; Manrope is what Word reaches for when Instrument Sans is not installed,
+declared through <w:altName>. It was chosen by measurement — against
+Instrument Sans's proportions (derived from the design system's own
+metric-matched fallback overrides) Manrope deviates by 0.023 em on
+x-height + cap-height against Space Grotesk's 0.083.

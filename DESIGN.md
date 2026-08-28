@@ -87,10 +87,29 @@ Three things about it are worth knowing before editing:
   The embedded bytes cannot simply be renamed along with the entry: they *are*
   Manrope, and calling them Instrument Sans makes Word render the old face
   under the new name, which is worse than substituting. **Instrument Sans is
-  not embedded** as a result — `assets/fonts` holds woff2, which OOXML cannot
-  use — so a tracker resolves it from the system. That is fine where these
-  live (Google Docs has it) and a real gap for a `.docx` opened offline in
-  Word; embedding it needs a TTF added to `assets/fonts`.
+  not embedded** — `assets/fonts` holds woff2, which OOXML cannot use — so the
+  document asks for a face it does not carry. `ensure_fallback_font` closes
+  that with the OOXML mechanism meant for it: an embedded **metric fallback**
+  named through `<w:altName>`, which is what Word reaches for when the
+  requested face is missing. The fallback keeps its OWN name; relabelling its
+  bytes as Instrument Sans would make Word render one face under another's,
+  which is worse than substituting because nothing downstream can tell.
+
+  The face is **Manrope**, chosen by measurement. Against Instrument Sans's
+  proportions — derived from the design system's own metric-matched fallback
+  overrides on Arial (`size-adjust: 102.74%`) — the candidates already embedded
+  in these files deviate by, in em: Manrope `x-height +0.007, cap -0.016`
+  (total 0.023); Space Grotesk `-0.047, -0.036` (total 0.083). JetBrains Mono
+  ties Manrope numerically and is excluded as monospaced. Embedding Instrument
+  Sans itself still just needs its OFL TTF in `assets/fonts`.
+
+  **The two font passes have to agree.** `prune_embedded_fonts` drops faces
+  nothing references, and the fallback is referenced only by `<w:altName>` —
+  so an altName counts as a reference, and the fallback entry is exempt from
+  the rename map that would otherwise fold it into Instrument Sans. Without
+  both, prune removes it, `ensure_fallback_font` puts it back, and every sweep
+  re-uploads every tracker forever. A test runs both passes twice and asserts
+  the second round changes nothing.
 
 ### Legibility is a separate check from conformance
 
