@@ -246,17 +246,31 @@ class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
                 self.uploaded.append((fid, fh.read()))
 
         for name, fn in (("gws_download", fake_download), ("gws_upload", fake_upload)):
+            # Capture the ORIGINAL before patching. Reading it back out after
+            # the setattr — as this did — hands addCleanup the fake, so cleanup
+            # "restores" the fake and rd.cc stays patched for the rest of the
+            # process. Harmless while no later class called these; a live trap
+            # for the --check/--contrast tests below, which do.
+            real = getattr(rd.cc, name)
             setattr(rd.cc, name, fn)
-            self.addCleanup(setattr, rd.cc, name, getattr(rd.cc, name))
+            self.addCleanup(setattr, rd.cc, name, real)
 
-    def _run(self, write):
+    def _run(self, write, **kw):
         with tempfile.TemporaryDirectory() as work:
-            return rd.process(self.entry, work, write, self.backup, False)
+            return rd.process(self.entry, work, write, self.backup,
+                              kw.pop("check_only", False), **kw)
 
     def test_a_write_run_archives_the_bytes_that_were_in_drive(self):
-        _e, report, err = self._run(write=True)
+        _e, changes, err = self._run(write=True)
         self.assertIsNone(err)
-        self.assertTrue(report, "a file that changed must report what changed")
+        # `.conformant`, not `assertFalse(changes)`: a Changes is a namedtuple
+        # and is therefore ALWAYS truthy. When this was a dict, `{}` carried
+        # the clean/changed decision implicitly and a bare truth test caught
+        # it; against a record the same line passes unconditionally.
+        self.assertFalse(changes.conformant,
+                         "a file that changed must report what changed")
+        self.assertTrue(changes.wrote, "and must be recorded as written")
+        self.assertEqual(changes.pruned.faces, ("Space Grotesk",))
         archived = rd._archive_path(self.entry, self.backup)
         self.assertTrue(os.path.exists(archived), "nothing was archived")
         with open(archived, "rb") as fh:
@@ -275,8 +289,11 @@ class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
         """The archive means "these were replaced". A file that turned out to
         need nothing must not leave a copy behind implying it was."""
         self.payload = _already_conformant_docx()
-        _e, report, err = self._run(write=True)
+        _e, changes, err = self._run(write=True)
         self.assertIsNone(err)
+        self.assertTrue(changes.conformant,
+                        "a file that needed nothing must report nothing")
+        self.assertFalse(changes.wrote, "and must not be recorded as written")
         self.assertEqual(self.uploaded, [])
         self.assertFalse(os.path.exists(rd._archive_path(self.entry, self.backup)))
 
@@ -335,7 +352,7 @@ class TestWalkEstate(unittest.TestCase):
         return rd.walk_estate("root", jobs=2)
 
     def test_it_finds_exactly_the_templates_and_no_more(self):
-        entries, _c, _s, _w, _skipped, _strays = self.walk()
+        entries = self.walk().entries
         got = {e["path"].replace("Community Events/", "", 1) for e in entries}
         self.assertEqual(got, {
             "Chapters/Boston/About.docx",
@@ -347,20 +364,20 @@ class TestWalkEstate(unittest.TestCase):
         })
 
     def test_an_organizers_dated_copy_is_counted_not_swept(self):
-        entries, _c, _s, _w, skipped, _strays = self.walk()
-        paths = {e["path"] for e in entries}
+        estate = self.walk()
+        paths = {e["path"] for e in estate.entries}
         self.assertFalse(any("2026-09-01" in p for p in paths))
-        self.assertEqual(skipped, 1)
+        self.assertEqual(estate.skipped, 1)
 
     def test_a_non_template_in_a_template_folder_is_named_as_a_stray(self):
-        _e, _c, _s, _w, _skipped, strays = self.walk()
+        strays = self.walk().strays
         self.assertEqual(
             [p.replace("Community Events/", "", 1) for p in strays],
             ["Chapters/Boston/Event Templates (Copy for Each Event)/"
              "#27 linkedin.pptx"])
 
     def test_the_mint_folders_are_reached(self):
-        entries, _c, _s, _w, _skipped, _strays = self.walk()
+        entries = self.walk().entries
         paths = " ".join(e["path"] for e in entries)
         for mint in rd.MINTS:
             self.assertIn(mint, paths)
@@ -369,14 +386,168 @@ class TestWalkEstate(unittest.TestCase):
         """The dedupe exists so two workers never share a scratch filename."""
         self.TREE["shared"] = self.TREE["shared"] + [
             ("f9", "Event Tracker (IRL).docx", False)]
-        entries, *_rest = self.walk()
-        ids = [e["id"] for e in entries]
+        ids = [e["id"] for e in self.walk().entries]
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_chapter_and_series_names_are_reported(self):
-        _e, chapters, series, _w, _skipped, _strays = self.walk()
-        self.assertEqual(chapters, {"Boston", "TemplateCity"})
-        self.assertEqual(series, {"TemplateSeries"})
+        estate = self.walk()
+        self.assertEqual(estate.chapters, {"Boston", "TemplateCity"})
+        self.assertEqual(estate.series, {"TemplateSeries"})
+
+    def test_owners_holding_office_files_are_reported(self):
+        """`with_files` is the DENOMINATOR of the "contributed none" coverage
+        check — the thing that catches a renamed template folder. It was the
+        ignored `_w` of the old 6-tuple and no test ever named it; a scan that
+        stopped populating it would silently disable that check.
+
+        The shared Templates folder counts as an owner too, which is why the
+        field is documented as owners rather than chapters."""
+        estate = self.walk()
+        self.assertIn("Boston", estate.with_files)
+        self.assertIn("TemplateSeries", estate.with_files)
+        self.assertTrue(estate.with_files <= (estate.chapters | estate.series
+                                              | {rd.SHARED_TEMPLATES}),
+                        "an owner appeared that is neither chapter, series, "
+                        "nor the shared Templates folder: %s" % estate.with_files)
+
+
+class TestTheTwoPredicates(unittest.TestCase):
+    """`conformant` and `wrote` carry the whole clean/changed and
+    upload/skip decision, and every term of them was individually unpinned:
+    replacing any single disjunct with False left the suite green, because the
+    two tests that touched the predicate had four terms true at once.
+
+    Dropping `before` alone, for instance, makes a `--check` run — which
+    returns `Changes(before=..., after=...)` with `parts=0` — report nothing
+    and exit 0 forever. That is the exact failure the record exists to stop.
+    """
+
+    #: (label, a Changes that must be NON-conformant on the strength of one field)
+    ONE_TERM = [
+        ("before", rd.Changes(before=("drift",))),
+        ("after", rd.Changes(after=("residue",))),
+        ("parts", rd.Changes(parts=1)),
+        ("plates", rd.Changes(plates=("plate-a",))),
+        ("retired", rd.Changes(retired=("bg1.png",))),
+        ("fallback", rd.Changes(fallback=True)),
+        ("contrast", rd.Changes(contrast=("finding",))),
+        ("unchecked", rd.Changes(unchecked=("finding",))),
+        ("pruned.faces", rd.Changes(pruned=rd.ox.Pruned(faces=("Arial",)))),
+        ("pruned.parts", rd.Changes(pruned=rd.ox.Pruned(parts=("f.ttf",)))),
+        ("rescued.runs", rd.Changes(rescued=rd.ox.Rescued(runs=1, before=1))),
+        ("rescued.before", rd.Changes(rescued=rd.ox.Rescued(runs=0, before=3, after=3))),
+    ]
+
+    def test_an_empty_record_is_conformant_and_unwritten(self):
+        self.assertTrue(rd.Changes().conformant)
+        self.assertFalse(rd.Changes().wrote)
+
+    def test_each_field_on_its_own_makes_the_record_non_conformant(self):
+        for label, ch in self.ONE_TERM:
+            with self.subTest(field=label):
+                self.assertFalse(ch.conformant,
+                                 "%s alone must earn a line" % label)
+
+    #: The fields that mean "bytes changed on disk" — a strict subset.
+    WROTE_FIELDS = {"parts", "plates", "retired", "fallback",
+                    "pruned.faces", "pruned.parts", "rescued.runs"}
+
+    def test_wrote_is_exactly_the_fields_that_change_bytes(self):
+        """`wrote` gates the upload and the archive, so a field that does NOT
+        change the file must not set it — otherwise a --check run would upload."""
+        for label, ch in self.ONE_TERM:
+            with self.subTest(field=label):
+                self.assertEqual(ch.wrote, label in self.WROTE_FIELDS, label)
+
+    def test_wrote_implies_non_conformant(self):
+        """Anything written must also be reported. The reverse does not hold."""
+        for label, ch in self.ONE_TERM:
+            if ch.wrote:
+                self.assertFalse(ch.conformant, label)
+
+    def test_a_deck_measured_unreadable_but_not_repaired_is_still_reported(self):
+        """The named regression. `improve_contrast` declines a remap that would
+        break other runs and returns Rescued(0, 12, 12) — nothing written, but
+        twelve runs measured below AA. Gating on `.runs` alone made
+        --fix-contrast answer "already conformant" over unreadable text."""
+        ch = rd.Changes(rescued=rd.ox.Rescued(runs=0, before=12, after=12))
+        self.assertFalse(ch.wrote, "nothing was written, so nothing to upload")
+        self.assertFalse(ch.conformant, "but it must NOT be counted clean")
+
+
+class TestCheckAndContrastModes(unittest.TestCase):
+    """Both branches of `process()` were rewritten and neither had a test.
+    `_run` hard-coded both flags False."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.entry = {"id": "fid1", "name": "About.docx", "mime": rd.cc.DOCX,
+                      "path": "Community Events/Chapters/Boston/About.docx"}
+        # doc_font, not just the font TABLE: `ox.audit` reports off-system
+        # values in the document, so a drifted table alone leaves `before`
+        # empty and the --check assertions below would pass vacuously.
+        self.payload = _docx(["Space Grotesk"], doc_font="Space Grotesk")
+        self.uploaded = []
+
+        def fake_download(fid, out):
+            with open(out, "wb") as fh:
+                fh.write(self.payload)
+
+        def fake_upload(fid, path, mime):
+            self.uploaded.append(fid)
+
+        for name, fn in (("gws_download", fake_download), ("gws_upload", fake_upload)):
+            real = getattr(rd.cc, name)
+            setattr(rd.cc, name, fn)
+            self.addCleanup(setattr, rd.cc, name, real)
+
+    def _process(self, check_only=False, **kw):
+        with tempfile.TemporaryDirectory() as work:
+            return rd.process(self.entry, work, False, self.tmp.name,
+                              check_only, **kw)
+
+    def test_check_reports_the_drift_and_writes_nothing(self):
+        r = self._process(check_only=True)
+        self.assertIsNone(r.error)
+        self.assertFalse(r.changes.conformant, "--check found nothing to say")
+        self.assertFalse(r.changes.wrote, "--check must never write")
+        self.assertEqual(self.uploaded, [])
+
+    def test_check_leaves_after_equal_to_before(self):
+        """Nothing is rewritten, so what the file holds afterwards is what it
+        held — the field doc says so and `main()` prints REMAINS from it."""
+        r = self._process(check_only=True)
+        self.assertEqual(r.changes.after, r.changes.before)
+        self.assertTrue(r.changes.before, "the fixture is off-system on purpose")
+
+    def test_a_conformant_file_under_check_says_nothing(self):
+        self.payload = _docx(["Instrument Sans"], doc_font="Instrument Sans")
+        r = self._process(check_only=True)
+        self.assertTrue(r.changes.conformant)
+
+    def test_contrast_on_a_docx_measures_nothing_and_is_conformant(self):
+        """Only .pptx has a slide background; a Word tracker's text sits on the
+        page, so `contrast_report` returns an empty Legibility."""
+        r = self._process(contrast_only=True)
+        self.assertIsNone(r.error)
+        self.assertEqual(r.changes.contrast, ())
+        self.assertEqual(r.changes.unchecked, ())
+        self.assertTrue(r.changes.conformant)
+
+    def test_contrast_report_on_a_non_pptx_equals_the_empty_record(self):
+        """Tuples, not lists: built as lists this is `[] != ()` and reads like
+        a logic bug in the caller."""
+        self.assertEqual(rd.contrast_report(self.entry, "ignored"),
+                         rd.Legibility())
+
+    def test_the_two_legibility_lists_are_not_interchangeable(self):
+        """A positional swap is silent and would make --contrast report
+        inherited-colour runs as AA failures and never exit 0."""
+        leg = rd.Legibility(bad=("f1",), unchecked=("f2", "f3"))
+        self.assertEqual(leg.bad, ("f1",))
+        self.assertEqual(leg.unchecked, ("f2", "f3"))
+        self.assertEqual(leg[0], leg.bad)
 
 
 class TestRetirementScope(unittest.TestCase):

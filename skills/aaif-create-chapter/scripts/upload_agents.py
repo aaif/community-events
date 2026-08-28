@@ -51,6 +51,7 @@ import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import create_chapter as cc      # noqa: E402
@@ -94,19 +95,46 @@ def art_for(art_dir, name):
     return want
 
 
+class Synced(NamedTuple):
+    """What one chapter's `Icons/` folder needed.
+
+    `uploaded` and `skipped` are both lists of filenames and were returned
+    positionally next to each other, which is a swap waiting to happen — and
+    the summary counts a chapter as clean on `not uploaded` alone, so a swap
+    would report a whole estate as current while uploading nothing.
+
+    `error` is beside them rather than raised: `sync_chapter` runs under a
+    `ThreadPoolExecutor.map`, and one chapter's Drive failure must not take the
+    other eighty down with it.
+    """
+    name: str
+    #: Filenames sent (or, in a plan run, that WOULD be sent).
+    uploaded: tuple = ()
+    #: Filenames already byte-identical in Drive and left alone.
+    skipped: tuple = ()
+    error: Optional[str] = None
+
+
 def sync_chapter(chapter_id, name, art_dir, write, tmpdir):
-    """(name, uploaded, skipped, error). Idempotent: a file whose bytes already
-    match is left alone, so a re-run after adding one chapter touches only it."""
-    want = art_for(art_dir, name)
-    if not any(f.endswith(" Agent.gif") for f, _p in want):
-        return name, [], [], "no agent art generated for this chapter"
+    """Bring one chapter's `Icons/` folder up to date. Returns a `Synced`.
+
+    Idempotent: a file whose bytes already match is left alone, so a re-run
+    after adding one chapter touches only it."""
     try:
+        # Inside the try: `art_for` does an `os.listdir`, and an art directory
+        # that vanishes or turns unreadable mid-run would otherwise raise
+        # straight out through `pool.map` and abandon every chapter that had
+        # not been reached yet — the exact failure this function returns its
+        # error rather than raising in order to avoid.
+        want = art_for(art_dir, name)
+        if not any(f.endswith(" Agent.gif") for f, _p in want):
+            return Synced(name, error="no agent art generated for this chapter")
         kids = cc.list_children(chapter_id)
         folder = next((k for k in kids if k["name"] == ICONS_FOLDER
                        and k["mimeType"] == cc.FOLDER), None)
         if folder is None:
             if not write:
-                return name, [f for f, _p in want], [], None
+                return Synced(name, uploaded=tuple(f for f, _p in want))
             folder_id = cc.create_folder(ICONS_FOLDER, chapter_id)
             existing = {}
         else:
@@ -138,9 +166,11 @@ def sync_chapter(chapter_id, name, art_dir, write, tmpdir):
                 else:
                     cc.gws_upload(hit["id"], path, mime)
             uploaded.append(fname)
-        return name, uploaded, skipped, None
+        return Synced(name, tuple(uploaded), tuple(skipped))
     except Exception as e:
-        return name, [], [], "%s: %s" % (type(e).__name__, str(e)[:200])
+        # Never a bare str(): an exception whose str() is empty would be falsy
+        # and main() would count the chapter as clean, printing nothing at all.
+        return Synced(name, error="%s: %s" % (type(e).__name__, str(e)[:200]))
 
 
 def main():
@@ -183,20 +213,38 @@ def main():
     missing = []
     with tempfile.TemporaryDirectory() as tmpdir, \
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for name, up, skip, err in pool.map(
+        for r in pool.map(
                 lambda t: sync_chapter(t[0], t[1], args.art, args.write, tmpdir), todo):
-            if err:
+            # `is not None`, not truthiness: `error` is a defaulted field now,
+            # and an empty string would fall through to `else: clean += 1` —
+            # the chapter counted "already current", nothing printed, exit 0.
+            if r.error is not None:
                 failed += 1
-                missing.append((name, err))
-                print("  FAILED  %s\n            %s" % (name, err))
-            elif up:
+                missing.append((r.name, r.error))
+                print("  FAILED  %s\n            %s" % (r.name, r.error))
+            elif r.uploaded:
                 uploaded += 1
                 print("  %s  %-26s %d file(s)"
-                      % ("UPLOADED" if args.write else "would add", name, len(up)))
+                      % ("UPLOADED" if args.write else "would add", r.name,
+                         len(r.uploaded)))
             else:
                 clean += 1
     print("\n%d chapter(s) %s, %d already current, %d failed."
           % (uploaded, "updated" if args.write else "would be updated", clean, failed))
+    # The module docstring promises "a full run reports which chapters are
+    # missing their agent, so a forgotten one shows up rather than staying
+    # invisible". `missing` was collected and never read, so that summary did
+    # not exist — the inline FAILED lines scroll past in an eighty-chapter run,
+    # which is exactly when the promise matters.
+    if missing:
+        print("\nCHAPTERS NEEDING ATTENTION (%d):" % len(missing))
+        for name, why in sorted(missing):
+            print("  - %-26s %s" % (name, why))
+        no_art = [n for n, why in missing if why.startswith("no agent art")]
+        if no_art:
+            print("\n%d of these have no generated agent. Rebuild the art for "
+                  "them before re-running:\n  %s"
+                  % (len(no_art), ", ".join(sorted(no_art))))
     if uploaded and not args.write:
         print("Re-run with --write to apply.")
     return 1 if failed else 0
