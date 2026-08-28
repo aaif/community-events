@@ -452,3 +452,23 @@ def test_a_clean_deck_is_not_rewritten(tmp_path):
     from aaif_events.tests import test_contrast as tc
     deck = _ct_deck(tmp_path, [(tc.SOLID_WHITE, [tc._run("BODY", "0A0A0A", size=2400)])])
     assert ox.improve_contrast(deck) == (0, 0, 0)
+
+
+def test_escaping_the_invisible_band_counts_even_without_an_aa_crossing(tmp_path):
+    """On the old plate the remap lifts text from 1.19 to 4.48 against a 4.50
+    threshold. An AA-crossing-only rule scores that as no improvement and leaves
+    the text unreadable, which is how 354 invisible runs survived the first
+    estate repair."""
+    from aaif_events.tests import test_contrast as tc
+    from aaif_events import contrast as ct
+    # A mid-purple ground, as the old plate is: ink-3 on it is 1.2:1, and
+    # ink-inv-2 on it is ~4.5 — right at the line.
+    bg = ('<p:bg><p:bgPr><a:solidFill><a:srgbClr val="6B4A6D"/></a:solidFill>'
+          "</p:bgPr></p:bg>")
+    deck = _ct_deck(tmp_path, [(bg, [tc._run("FOOTER", "4A4A4A")])])
+    worst_before = min(f.ratio for f in ct.check_pptx(deck, include_passes=True))
+    assert worst_before < ct.INVISIBLE
+    fixed, _b, _a = ox.improve_contrast(deck)
+    worst_after = min(f.ratio for f in ct.check_pptx(deck, include_passes=True))
+    assert worst_after >= ct.AA_LARGE, worst_after
+    assert worst_after > worst_before * 2

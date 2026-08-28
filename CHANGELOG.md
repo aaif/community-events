@@ -30,6 +30,21 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   recognises the legacy value so a deck the sweep has not reached stays
   findable.
 
+### Fixed
+- **Chapter CRMs were never actually restyled**, although the docs and the
+  sweep's own "0 off-system" result claimed they were. `xl/styles.xml` is
+  SpreadsheetML — `<font><name val="Calibri"/>`, `<patternFill><fgColor
+  rgb="FF1E2761"/>`, ARGB colours — and it was being handed to the DrawingML
+  pass, which found nothing to change and reported success. Workbooks now have
+  their own pass, and `audit()` can see them.
+- **The contrast checker read a shape's outline as its fill.** PowerPoint writes
+  `<a:ln><a:noFill/></a:ln>` on almost every filled shape; taking that as "the
+  shape has no fill" scored text on a filled card against the slide behind it.
+  On a dark slide that reads as a failure, and the repair would then whiten
+  readable black-on-white text into invisibility. Verified against all 352
+  repaired decks: no run went from passing to failing, so nothing needed
+  restoring.
+
 ### Added
 - **`lib/aaif_events/ooxml_style.py`** — the OOXML sibling of
   `report_style.py`, and the seam that ends the drift above: skill scripts never

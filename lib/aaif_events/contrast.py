@@ -167,6 +167,33 @@ def _solid_colour(block, theme):
     return (None, 1.0, "fill is not a plain colour")
 
 
+#: Fill elements that may appear as a direct child of <p:spPr>, in the order
+#: OOXML allows exactly one of them.
+_FILL_KINDS = ("noFill", "solidFill", "gradFill", "blipFill", "pattFill", "grpFill")
+
+
+def shape_fill(sppr_xml, theme):
+    """The shape's OWN fill colour, or None if it has none this can score.
+
+    The outline subtree has to come out first. PowerPoint writes
+    `<a:ln><a:noFill/></a:ln>` on almost every filled shape — that is the LINE
+    having no fill, not the shape — so a naive "is there a noFill anywhere in
+    spPr" test reads a white card as unfilled and scores its text against the
+    slide behind it. On a black slide that turns readable black-on-white into a
+    1.00:1 failure, and a repair driven by it then whitens the text and makes it
+    genuinely invisible. The mirror image is just as wrong: with the outline
+    left in, `_solid_colour` picks the first solidFill it finds, which for an
+    unfilled shape with a coloured border is the BORDER's colour.
+    """
+    body = re.sub(r"<a:ln\b[^>]*>.*?</a:ln>", "", sppr_xml, flags=re.S)
+    body = re.sub(r"<a:ln\b[^>]*/>", "", body)
+    m = re.search(r"<a:(%s)\b" % "|".join(_FILL_KINDS), body)
+    if not m or m.group(1) != "solidFill":
+        # noFill, or a gradient/picture/pattern fill this does not evaluate.
+        return None
+    return _solid_colour(body, theme)
+
+
 # ------------------------------------------------------------- backgrounds ---
 class _Ground(object):
     """Whatever is behind the text: a flat colour, or a picture to sample."""
@@ -325,6 +352,7 @@ def _threshold(size_pt, bold):
 
 
 _SP = re.compile(r"<p:sp>.*?</p:sp>", re.S)
+_GRPSP = re.compile(r"<p:grpSp>.*?</p:grpSp>", re.S)
 _RUN = re.compile(r"<a:r>(.*?)</a:r>", re.S)
 #: An <a:rPr> is either self-closing or a container. Matching it as
 #: `<a:rPr\b.*?(?:/>|</a:rPr>)` looks right and is not: the non-greedy `/>`
@@ -382,12 +410,25 @@ def check_pptx(path, include_passes=False):
             if ground is None:
                 ground = _Ground(rgb=(255, 255, 255), source="default white")
 
+            # Shapes inside a <p:grpSp> state their offsets in the GROUP's
+            # child coordinate space (a:chOff/a:chExt), not the slide's. Mapping
+            # those straight onto the slide samples the background somewhere
+            # unrelated to where the text actually sits — a confidently wrong
+            # ratio, which is worse than an honest gap. Transforming them
+            # properly means implementing the group transform; until that
+            # exists, a grouped run is reported unchecked.
+            grouped = set()
+            for g in _GRPSP.finditer(xml):
+                for sp in _SP.finditer(g.group(0)):
+                    grouped.add(sp.group(0))
+
             for sp in _SP.finditer(xml):
                 block = sp.group(0)
+                in_group = block in grouped
                 sppr = re.search(r"<p:spPr>.*?</p:spPr>", block, re.S)
                 shape_ground = ground
-                if sppr and "<a:noFill/>" not in sppr.group(0):
-                    got = _solid_colour(sppr.group(0), theme)
+                if sppr:
+                    got = shape_fill(sppr.group(0), theme)
                     if got and got[0] is not None and got[1] >= 0.999:
                         shape_ground = _Ground(rgb=got[0], source="shape fill")
 
@@ -431,6 +472,14 @@ def check_pptx(path, include_passes=False):
                                  "the backdrop" % (alpha * 100)))
                         continue
 
+                    if in_group and shape_ground.image is not None:
+                        findings.append(Finding(
+                            part=part, text=text[:60], fg=fg, size_pt=size_pt,
+                            bold=bold, ground=shape_ground.source,
+                            note="run sits in a <p:grpSp>, whose offsets are in "
+                                 "the group's child coordinate space; the "
+                                 "background image cannot be sampled under it"))
+                        continue
                     bg, bg_note = shape_ground.at(box, slide_wh)
                     if bg is None:
                         findings.append(Finding(

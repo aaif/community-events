@@ -97,6 +97,11 @@ FONT_MAP = {
     "Helvetica Neue": SANS,
     "Cambria": SANS,          # Word's stock heading face, via word/theme
     "Cambria Math": SANS,
+    # A spreadsheet's monospace column (ids, slugs) is metadata, which is what
+    # the system reserves mono for — so it becomes the embeddable mono rather
+    # than the sans.
+    "Consolas": MONO,
+    "Courier New": MONO,
 }
 # A `typeface` of "+mj-lt"/"+mn-lt" is a *reference* to the theme's major/minor
 # font, not a face. It is absent from FONT_MAP on purpose — such a run is
@@ -154,6 +159,20 @@ _ROLE_MAP = {
     "7A7F88": {"fill": "line-2", "stroke": "line-2", "text": "ink-4"},
     "1B7A48": {"fill": "paper-3", "stroke": "success", "text": "success"},
     "9A6A14": {"fill": "paper-3", "stroke": "warning", "text": "warning"},
+
+    # --- Excel's stock conditional-format styles --------------------------
+    # "Bad", "Neutral" and "Good": a saturated text colour on a pale tint. The
+    # tints all become --paper-3 and the meaning is carried by the text colour,
+    # which is what the design system does with status.
+    "9C0006": {"fill": "paper-3", "stroke": "danger", "text": "danger"},
+    "FFC7CE": {"fill": "paper-3", "stroke": "line", "text": "danger"},
+    "9C6500": {"fill": "paper-3", "stroke": "warning", "text": "warning"},
+    "FFEB9C": {"fill": "paper-3", "stroke": "line", "text": "warning"},
+    "C6EFCE": {"fill": "paper-3", "stroke": "line", "text": "success"},
+    # The CRM's own banding, borders and header tints.
+    "D9DBEC": {"fill": "paper-3", "stroke": "line", "text": "ink-3"},
+    "EAF0FD": {"fill": "paper-3", "stroke": "line", "text": "ink-3"},
+    "F2F2F4": {"fill": "paper-3", "stroke": "line", "text": "ink-3"},
 
     # --- the you-are-here dot on the network slide ------------------------
     # A 6px status dot is exactly, and only, what the design system reserves
@@ -271,7 +290,9 @@ def _attr(attrs, name):
 
 # ------------------------------------------------------------------ pptx ----
 def _restyle_pptx(xml, part_name):
-    is_theme = bool(re.match(r"ppt/theme/theme\d+\.xml$", part_name))
+    # Any theme part, not just a deck's: the workbook theme carries the same
+    # clrScheme and was missing the wholesale palette swap entirely.
+    is_theme = bool(re.match(r"(ppt|xl|word)/theme/theme\d+\.xml$", part_name))
 
     def handler(tag, attrs, stack):
         if tag in ("a:latin", "a:ea", "a:cs"):
@@ -365,6 +386,63 @@ def _restyle_word_theme(xml):
     return _scan(xml, handler)
 
 
+# ------------------------------------------------------------------ xlsx ----
+# A workbook is NOT DrawingML. `xl/styles.xml` is SpreadsheetML: fonts are
+# `<font><name val="Calibri"/><color rgb="FF1E2761"/></font>`, fills are
+# `<patternFill><fgColor rgb="..."/></patternFill>`, borders carry their own
+# `<color>`. Handing it to the pptx pass — which looks for `a:latin` and
+# `a:srgbClr` — silently changes nothing, and `audit()` then reports a workbook
+# full of Calibri and navy as clean. Every CRM in the estate was in that state.
+#
+# Colours here are **ARGB**: eight hex digits, alpha first. The alpha pair is
+# preserved and only the RGB half is remapped.
+_XLSX_TEXT_CTX = ("font",)
+_XLSX_FILL_CTX = ("patternFill",)
+_XLSX_STROKE_CTX = ("border",)
+
+
+def _argb(value):
+    """(alpha_prefix, rrggbb) for an ARGB or RGB attribute value."""
+    v = value.strip()
+    if len(v) == 8:
+        return v[:2], v[2:]
+    if len(v) == 6:
+        return "", v
+    return None, None
+
+
+def _restyle_xlsx(xml):
+    def role(stack):
+        if any(t in _XLSX_TEXT_CTX for t in stack):
+            return "text"
+        if any(t in _XLSX_FILL_CTX for t in stack):
+            return "fill"
+        if any(t in _XLSX_STROKE_CTX for t in stack):
+            return "stroke"
+        return None
+
+    def handler(tag, attrs, stack):
+        if tag == "name" and "font" in stack:
+            face = _attr(attrs, "val")
+            new = FONT_MAP.get(face)
+            return _rewrite_attr(attrs, "val", new) if new else None
+        if tag in ("color", "fgColor", "bgColor"):
+            raw = _attr(attrs, "rgb")
+            if not raw:
+                return None            # theme= or indexed=, left to the theme
+            alpha, rgb = _argb(raw)
+            if not rgb:
+                return None
+            r = role(stack)
+            if r is None:
+                return None
+            new = _mapped(rgb, r)
+            return _rewrite_attr(attrs, "rgb", alpha + new) if new else None
+        return None
+
+    return _scan(xml, handler)
+
+
 # ------------------------------------------------------------------- api ----
 _PPTX_PARTS = re.compile(
     r"ppt/(slides|slideLayouts|slideMasters|notesSlides|notesMasters"
@@ -398,15 +476,33 @@ def restyle_part(part_name, data):
         out = _restyle_docx(xml, part_name)
     elif re.match(r"word/theme/theme\d+\.xml$", part_name):
         out = _restyle_word_theme(xml)
-    elif re.match(r"xl/(styles|theme/theme\d+)\.xml$", part_name):
-        out = _restyle_pptx(xml, part_name)   # xlsx uses the same a: vocabulary
+    elif part_name == "xl/styles.xml":
+        out = _restyle_xlsx(xml)
+    elif re.match(r"xl/theme/theme\d+\.xml$", part_name):
+        # The workbook THEME is DrawingML like any other, so its clrScheme and
+        # fontScheme go through the same slot-wise swap the deck themes get.
+        out = _restyle_pptx(xml, part_name)
     else:
         return data
     return out.encode("utf-8") if out != xml else data
 
 
 # ----------------------------------------------------------------- audit ----
-_AUDIT_PARTS = re.compile(r"(ppt|word|xl)/.*\.xml$")
+def _is_restyled_part(name):
+    """Whether `restyle_part` would actually rewrite this part.
+
+    The audit is scoped to exactly that set. Reporting drift in a part the
+    sweep never touches — `word/numbering.xml`, `xl/worksheets/`, footnotes —
+    gives the operator a REMAINS line they cannot act on and makes `--check`
+    exit 1 forever. If one of those parts genuinely needs restyling, the answer
+    is to handle it in `restyle_part`, which puts it back in the audit here.
+    """
+    return (_PPTX_PARTS.match(name) is not None
+            or name in _PPTX_SINGLETONS
+            or name == "xl/styles.xml"
+            or re.match(r"(ppt|xl|word)/theme/theme\d+\.xml$", name) is not None
+            or name in ("word/document.xml", "word/styles.xml")
+            or re.match(r"word/(header|footer)\d+\.xml$", name) is not None)
 
 
 def audit(path):
@@ -420,7 +516,7 @@ def audit(path):
     known = set(TOKENS.values())
     with zipfile.ZipFile(path) as z:
         for n in z.namelist():
-            if not _AUDIT_PARTS.match(n):
+            if not _is_restyled_part(n):
                 continue
             try:
                 xml = z.read(n).decode("utf-8")
@@ -449,6 +545,15 @@ def audit(path):
                     v = _attr(attrs, "val")
                     if v and len(v) == 6:
                         hits.append((n, "colour", v.upper()))
+                elif tag == "name" and "font" in stack:
+                    f = _attr(attrs, "val")
+                    if f and f not in (SANS, MONO):
+                        hits.append((n, "font", f))
+                elif tag in ("color", "fgColor", "bgColor"):
+                    raw = _attr(attrs, "rgb")
+                    _a, rgb = _argb(raw) if raw else (None, None)
+                    if rgb:
+                        hits.append((n, "colour", rgb.upper()))
                 elif tag == "w:shd":
                     v = _attr(attrs, "w:fill")
                     if v and len(v) == 6:
@@ -732,7 +837,16 @@ def improve_contrast(path):
     text on a light ground, or a plate with a bright region under some run, is
     left alone instead of being whitened into a new bug.
 
-    Returns `(fixed, before, after)` counts of failing runs.
+    Returns `(rescued, before, after)`, where `before`/`after` count runs
+    failing AA and `rescued` counts runs **materially improved** — an AA
+    crossing OR an escape from the invisible band.
+
+    Those are two different numbers on purpose. A slide can be genuinely
+    repaired without any AA crossing: lifting footer text from 1.19 to 4.48
+    against a 4.50 threshold leaves the AA count unchanged while making text
+    readable that nobody could see before. Reporting only AA crossings would
+    call that "no change" — and the caller uses `rescued` to decide whether to
+    upload, so it would then quietly discard the repair it just made.
     """
     from aaif_events import contrast as ct
 
@@ -740,6 +854,9 @@ def improve_contrast(path):
               if f.ratio is not None and f.ratio < f.threshold]
     if not before:
         return 0, 0, 0
+    # `fixed` counts runs that stop failing AA. Runs merely lifted out of the
+    # invisible band still fail and still show in the totals — the caller should
+    # not be told they are done.
 
     failing_parts = {f.part for f in before}
 
@@ -770,19 +887,33 @@ def improve_contrast(path):
             b, a = base.get(part, []), after.get(part, [])
             if len(b) != len(a):
                 continue                       # runs moved; do not guess
-            # The test is CROSSING the threshold, not any change in the number.
-            # Requiring that no ratio drop at all rejects the whole repair over
-            # noise: remapping --ink-4 to --ink-inv-3 on a black plate moves a
-            # run from 5.89 to 5.71 — both far above AA, and the on-dark ramp is
-            # the correct one — while in the same slide it moves the invisible
-            # footer wordmark from 1.00 to 19.80.
+            # A slide is kept when nothing crosses DOWN and something is
+            # genuinely rescued. "Rescued" is deliberately two cases, because
+            # the threshold alone is too blunt in both directions:
+            #
+            #   * Requiring that no ratio drop at all rejects the repair over
+            #     noise — remapping --ink-4 to --ink-inv-3 on a black plate
+            #     moves a run from 5.89 to 5.71, both far above AA, while the
+            #     same remap takes the invisible footer wordmark to 19.80.
+            #
+            #   * Requiring an AA crossing rejects rescues that stop just short
+            #     of it. On the old plate the remap lifts text from 1.19 to
+            #     4.48 against a threshold of 4.50 — unreadable to plainly
+            #     readable, missed by two hundredths — and an earlier version of
+            #     this rule left that text at 1.19 because of it.
+            #
+            # So escaping the invisible band counts as a rescue in its own
+            # right. Text nobody can see is a different problem from text that
+            # is merely under AA, and it is worth fixing on its own terms.
             broke = fixed = 0
             for (x, tx), (y, ty) in zip(b, a):
                 if x is None or y is None:
                     continue
                 if x >= tx and y < ty:
                     broke += 1
-                elif x < tx and y >= ty:
+                elif x < tx <= y:
+                    fixed += 1
+                elif x < ct.INVISIBLE and y >= ct.AA_LARGE:
                     fixed += 1
             if fixed and not broke:
                 keep.add(part)
@@ -797,9 +928,23 @@ def improve_contrast(path):
                     lambda n, d: (to_on_dark(d.decode("utf-8")).encode("utf-8")
                                   if n in keep else d))
     os.replace(path + ".new", path)
+
+    # Count RUNS, positionally, against the same before-scores the decision
+    # used. Counting events instead — AA crossings plus invisible escapes —
+    # double-counts the run that does both, which is the common case: a
+    # wordmark going from 1.00 to 19.80 is one run rescued, not two.
+    final = score(path)
+    rescued = 0
+    for part, rows in base.items():
+        for (x, tx), (y, _ty) in zip(rows, final.get(part, [])):
+            if x is None or y is None:
+                continue
+            if (x < tx <= y) or (x < ct.INVISIBLE <= y and y >= ct.AA_LARGE):
+                rescued += 1
+
     after_all = [f for f in ct.check_pptx(path)
                  if f.ratio is not None and f.ratio < f.threshold]
-    return len(before) - len(after_all), len(before), len(after_all)
+    return rescued, len(before), len(after_all)
 
 
 def _rewrite_zip_to(src, dst, transform):

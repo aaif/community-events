@@ -10,13 +10,16 @@ Chrome route `DESIGN.md` already documents (never LibreOffice), and animation is
 packed into GIF89a by the encoder at the bottom of this file.
 
 **Which plates move, and why those.** The system licenses motion that is
-"constant-speed and small". Two plates are animated and they are deliberately
-the *flat* ones — the spectrum-disc field and the bracket plate. A GIF is
-palette-indexed, so it renders flat vector art exactly and a smooth gradient
-only approximately; animating the gradient plates would have meant either
-visible banding across a 1920×1080 background or a multi-megabyte file cloned
-into 83 chapter decks. The gradient plates stay static PNG, where they are
-pixel-perfect. Flat art moves, smooth art doesn't.
+"constant-speed and small". Three plates are animated — `spectrum-rail`,
+`bracket` and `disc-corner` — and all three are deliberately the *flat* ones. A
+GIF is palette-indexed, so it renders flat vector art exactly and a smooth
+gradient only approximately; animating the gradient plates would have meant
+either visible banding across a 1920x1080 background or a multi-megabyte file
+cloned into 83 chapter decks. `disc-corner` qualifies despite being the
+largest mark in the set because it is a flat disc on a flat ground — only its
+radius moves, and the quantiser measures that rather than trusting this
+paragraph. The gradient plates stay static PNG, where they are pixel-perfect.
+Flat art moves, smooth art doesn't.
 
 **Frame 1 has to stand alone.** The Slides API thumbnail, every PDF export, and
 the Luma/LinkedIn banner crops all show a single frame, so each animation starts

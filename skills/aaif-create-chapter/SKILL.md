@@ -226,8 +226,16 @@ genuinely new template gets noticed rather than silently missed — add it to
 `TEMPLATE_FILES` when that happens. Copies deeper in the tree are counted too,
 so "out of scope" never reads as "missed".
 
-Only a CRM's *styling* is ever rewritten: cell values live in `xl/worksheets/`
-and `xl/sharedStrings.xml`, which `restyle_part` never opens.
+Only a CRM's *styling* is ever rewritten — its `xl/styles.xml` and workbook
+theme. Cell values live in `xl/worksheets/` and `xl/sharedStrings.xml`, which
+`restyle_part` never opens.
+
+A workbook is **SpreadsheetML, not DrawingML**: fonts are `<font><name
+val="Calibri"/></font>`, fills are `<patternFill><fgColor rgb="FF1E2761"/>`,
+and colours are ARGB (eight digits, alpha first). Handing those to the deck
+pass changes nothing silently, which is exactly what happened until this was
+written — every CRM in the estate audited "clean" while full of Calibri and
+navy.
 
 It is read-only by default, and **archives every pre-change file** to
 `./backups/restyle-<UTC>/` before uploading it — `--write` refuses to start if

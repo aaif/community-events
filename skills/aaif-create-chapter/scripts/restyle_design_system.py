@@ -121,8 +121,10 @@ def is_template(name):
 #: Decks that get the background plates, and which aspect each one is drawn at.
 #: Only the hero decks: a plate is a title-card background, and the runbook deck
 #: and the banners have their own compositions.
-PLATED = {"Event-Hero.pptx": "wide", "Event-Hero-Square.pptx": "square",
-          "Copy of Event-Hero-Square.pptx": "square"}
+#: NOTE: no "Copy of ..." entries. `is_template()` rejects those names, so such
+#: a key would be dead — and worse, it would state the opposite of the allowlist
+#: that exists precisely to stop the sweep touching organizers' copies.
+PLATED = {"Event-Hero.pptx": "wide", "Event-Hero-Square.pptx": "square"}
 
 
 def walk_estate(root, jobs=8):
@@ -222,9 +224,14 @@ def contrast_report(entry, src):
     background and its text sits on the page.
     """
     if entry["mime"] != cc.PPTX:
-        return []
-    return [f for f in ctr.check_pptx(src)
-            if f.ratio is None or f.ratio < f.threshold]
+        return [], []
+    found = ctr.check_pptx(src)
+    # Unreadable and unchecked are DIFFERENT, and conflating them destroys the
+    # distinction the checker is built around: inherited-colour runs are common,
+    # so counting them as failures means --contrast can never exit 0 and its
+    # exit status stops meaning anything.
+    return ([f for f in found if f.ratio is not None and f.ratio < f.threshold],
+            [f for f in found if f.ratio is None])
 
 
 def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
@@ -249,8 +256,9 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             raise RuntimeError("download is not OOXML (%d bytes) — an error body, "
                                "not the template" % os.path.getsize(src))
         if contrast_only:
-            bad = contrast_report(entry, src)
-            return entry, ({"contrast": bad} if bad else {}), None
+            bad, unchecked = contrast_report(entry, src)
+            return entry, ({"contrast": bad, "unchecked": unchecked}
+                           if bad or unchecked else {}), None
         before = ox.audit(src)
         if check_only:
             return entry, ({"before": before, "parts": 0, "after": before,
@@ -418,7 +426,7 @@ def main():
     print()
 
     changed = clean = failed = 0
-    residue = []
+    residue, unchecked_only = [], []
     with tempfile.TemporaryDirectory() as tmpdir, \
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for entry, report, err in pool.map(
@@ -435,10 +443,18 @@ def main():
             changed += 1
             if args.contrast:
                 bad = report["contrast"]
+                unchecked = report.get("unchecked", [])
+                if not bad:
+                    unchecked_only.append((entry["path"], len(unchecked)))
+                    changed -= 1
+                    clean += 1
+                    continue
                 invisible = [f for f in bad if f.invisible]
-                print("  %-3d issue(s)%s  %s"
+                print("  %-3d issue(s)%s%s  %s"
                       % (len(bad), "  <-- %d INVISIBLE" % len(invisible)
-                         if invisible else "", entry["path"]))
+                         if invisible else "",
+                         "  (+%d unchecked)" % len(unchecked) if unchecked else "",
+                         entry["path"]))
                 for f in sorted(bad, key=lambda f: (f.ratio is not None, f.ratio or 0))[:6]:
                     print("        %s" % f)
                 if len(bad) > 6:
@@ -456,13 +472,19 @@ def main():
             if report.get("rescued", (0,))[0]:
                 n, b, a = report["rescued"]
                 print("                 + legibility: %d run(s) rescued "
-                      "(%d unreadable -> %d)" % (n, b, a))
+                      "(%d below AA -> %d)" % (n, b, a))
             if report["after"]:
                 print("                 REMAINS: %s" % _summarise(report["after"]))
 
     if args.contrast:
         print("\n%d file(s) hold unreadable text, %d clean, %d failed."
               % (changed, clean, failed))
+        if unchecked_only:
+            runs = sum(n for _p, n in unchecked_only)
+            print("%d file(s) are readable everywhere this can measure, but hold "
+                  "%d run(s) it will not score — inherited colours, translucent "
+                  "runs, or a background it could not read. Those are NOT "
+                  "counted as failures." % (len(unchecked_only), runs))
     elif args.check:
         print("\n%d file(s) off the design system, %d clean, %d failed."
               % (changed, clean, failed))

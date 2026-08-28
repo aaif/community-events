@@ -251,3 +251,97 @@ def test_summarise_counts_failures_invisibles_and_unchecked(tmp_path):
         '<a:r><a:rPr sz="1200"/><a:t>unchecked</a:t></a:r>'])
     fails, invisible, unchecked = ct.summarise(ct.check_pptx(_deck(tmp_path, slide)))
     assert (fails, invisible, unchecked) == (2, 1, 1)
+
+
+# ---------------------------------------------------- shape fill resolution ---
+# PowerPoint writes <a:ln><a:noFill/></a:ln> on almost every filled shape. A
+# checker that reads that as "the shape has no fill" scores the text against the
+# slide instead — and a repair driven by it then makes readable text invisible.
+
+_LN_NOFILL = "<a:ln><a:noFill/></a:ln>"
+
+
+def _shape(fill, runs, ln=_LN_NOFILL):
+    return ('<p:sp><p:spPr><a:xfrm><a:off x="0" y="0"/>'
+            '<a:ext cx="100" cy="100"/></a:xfrm>%s%s</p:spPr>'
+            "<p:txBody><a:p>%s</a:p></p:txBody></p:sp>"
+            % (fill, ln, "".join(runs)))
+
+
+def _sp_slide(bg, shapes):
+    return ('<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+            "<p:cSld>%s<p:spTree>%s</p:spTree></p:cSld></p:sld>"
+            % (bg, "".join(shapes)))
+
+
+def test_a_line_with_no_fill_does_not_hide_the_shapes_fill(tmp_path):
+    """The HIGH-severity case: a white card on a black slide. Read wrongly, its
+    black text scores 1.00:1 and a repair would whiten it into invisibility."""
+    slide = _sp_slide(SOLID_BLACK, [
+        _shape('<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>',
+               [_run("CARD", "0A0A0A")])])
+    found = ct.check_pptx(_deck(tmp_path, slide), include_passes=True)
+    assert len(found) == 1
+    assert found[0].bg == (255, 255, 255)
+    assert found[0].ratio > 15          # black on white, plainly readable
+    assert ct.check_pptx(_deck(tmp_path, slide, name="x.pptx")) == []
+
+
+def test_an_outline_colour_is_never_used_as_the_background(tmp_path):
+    """An unfilled shape with a coloured border: the border is not the ground."""
+    slide = _sp_slide(SOLID_BLACK, [
+        _shape("<a:noFill/>", [_run("X", "FFFFFF")],
+               ln='<a:ln><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:ln>')])
+    found = ct.check_pptx(_deck(tmp_path, slide), include_passes=True)
+    assert found[0].bg == (0x0A, 0x0A, 0x0A)     # the slide, not the outline
+    assert found[0].ratio > 15
+
+
+def test_an_explicit_nofill_falls_through_to_the_slide(tmp_path):
+    slide = _sp_slide(SOLID_BLACK, [_shape("<a:noFill/>", [_run("X", "0A0A0A")])])
+    found = ct.check_pptx(_deck(tmp_path, slide))
+    assert len(found) == 1 and found[0].ratio == 1.0
+
+
+def test_a_gradient_shape_fill_is_not_scored_as_a_colour(tmp_path):
+    """A gradient fill is not a single colour; falling through to the slide is
+    wrong too, but inventing one would be worse. It must not be read as the
+    first stop's colour."""
+    slide = _sp_slide(SOLID_BLACK, [
+        _shape('<a:gradFill><a:gsLst><a:gs pos="0">'
+               '<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:gs>'
+               "</a:gsLst></a:gradFill>", [_run("X", "0A0A0A")])])
+    found = ct.check_pptx(_deck(tmp_path, slide), include_passes=True)
+    assert found[0].bg != (255, 255, 255)
+
+
+def test_a_grouped_shape_over_an_image_is_unchecked_not_guessed(tmp_path):
+    """Offsets inside a <p:grpSp> are in the group's child coordinate space. Read
+    as slide coordinates they sample the plate somewhere else entirely, which
+    produces a confident wrong ratio rather than an honest gap."""
+    inner = ('<p:sp><p:spPr><a:xfrm><a:off x="10" y="10"/>'
+             '<a:ext cx="100" cy="100"/></a:xfrm><a:noFill/></p:spPr>'
+             "<p:txBody><a:p>%s</a:p></p:txBody></p:sp>" % _run("X", "0A0A0A"))
+    slide = ('<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+             "<p:cSld>%s<p:spTree><p:grpSp><p:grpSpPr><a:xfrm>"
+             '<a:off x="0" y="0"/><a:ext cx="9144000" cy="5143500"/>'
+             '<a:chOff x="0" y="0"/><a:chExt cx="1000" cy="1000"/>'
+             "</a:xfrm></p:grpSpPr>%s</p:grpSp></p:spTree></p:cSld></p:sld>"
+             % (IMAGE_BG, inner))
+    deck = _deck(tmp_path, slide, media={"ppt/media/image1.png": _png(8, 8, (10, 10, 10))})
+    found = ct.check_pptx(deck)
+    assert len(found) == 1
+    assert found[0].ratio is None and "grpSp" in found[0].note
+
+
+def test_a_grouped_shape_on_a_SOLID_ground_is_still_scored(tmp_path):
+    """Only sampling needs the geometry. On a flat colour the group's transform
+    is irrelevant, so refusing there would throw away a real answer."""
+    inner = ('<p:sp><p:spPr><a:xfrm><a:off x="10" y="10"/>'
+             '<a:ext cx="100" cy="100"/></a:xfrm><a:noFill/></p:spPr>'
+             "<p:txBody><a:p>%s</a:p></p:txBody></p:sp>" % _run("X", "0A0A0A"))
+    slide = ('<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a">'
+             "<p:cSld>%s<p:spTree><p:grpSp>%s</p:grpSp></p:spTree></p:cSld></p:sld>"
+             % (SOLID_BLACK, inner))
+    found = ct.check_pptx(_deck(tmp_path, slide))
+    assert len(found) == 1 and found[0].ratio == 1.0

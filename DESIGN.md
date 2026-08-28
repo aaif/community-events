@@ -69,7 +69,12 @@ Three things about it are worth knowing before editing:
   survive an XML round-trip. It also makes "did the bytes change" a correct
   upload test, so re-running the sweep over a clean estate uploads nothing.
 - **A colour with no rule is left alone and reported.** `audit()` lists what is
-  still off-system; silence would let new drift through unnoticed.
+  still off-system; silence would let new drift through unnoticed. It audits
+  exactly the parts `restyle_part` can rewrite — reporting drift somewhere the
+  sweep never touches would be a finding nobody can act on.
+- **A workbook is not a deck.** `xl/styles.xml` is SpreadsheetML with ARGB
+  colours, and needs its own pass; running the DrawingML one over it changes
+  nothing and reports clean.
 
 ### Legibility is a separate check from conformance
 
