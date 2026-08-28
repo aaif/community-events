@@ -12,9 +12,14 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   side never had a seam, so the brand lived in those files as literal font names
   and hex values and had drifted a long way from it — Space Grotesk and Manrope
   as display faces, Arial in every theme, Office's stock colour scheme
-  underneath, a warm-grey ramp half a shade off `--line-2`, a navy `1E2761` in
-  the trackers, and 205 runs of body prose set in JetBrains Mono when the system
-  reserves mono for metadata.
+  underneath, a warm-grey ramp half a shade off `--line-2`, and a navy `1E2761`
+  in the trackers. JetBrains Mono is deliberately *not* on that list: the
+  trackers' 205 mono runs are field labels, table headers, dates, statuses and
+  phase eyebrows — metadata, which is exactly what the system reserves mono
+  for — so they are left alone, and the orphaned Manrope/Space Grotesk embeds
+  are pruned around them. (An earlier revision of this sweep read those 205
+  runs as body prose and rewrote them to the sans; that was wrong and was
+  reverted before release.)
 - **The audit reports have no dark mode.** `report_style.py` shipped a light
   palette plus an inverted twin under `prefers-color-scheme` and
   `[data-theme]`. AAIF is a two-surface system where the *designer* chooses

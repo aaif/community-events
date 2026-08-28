@@ -61,7 +61,7 @@ import sys
 import tempfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import NamedTuple, Sequence
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import create_chapter as cc      # Drive plumbing + the shared zip rewriter
@@ -141,10 +141,12 @@ class Estate(NamedTuple):
     chapters: set
     #: Likewise for online series.
     series: set
-    #: Chapters/series that hold Office files at all — the denominator for the
-    #: "contributed none" coverage check.
+    #: Owners that hold Office files at all — the denominator for the
+    #: "contributed none" coverage check. Chapters and series, plus the shared
+    #: Templates folder, which `walk_estate` also treats as an owner.
     with_files: set
-    #: Organizers' event copies, deliberately left alone.
+    #: COUNT of organizers' event copies passed over — not the files
+    #: themselves. They are deliberately left alone and never collected.
     skipped: int
     #: Files sitting in a template folder that are not templates.
     strays: list
@@ -158,44 +160,86 @@ class Changes(NamedTuple):
     * **`{}` meant "already conformant"**, so `if not report` was the whole
       clean/changed decision. Every optional key then had to be fetched with a
       `.get` and a default that re-stated the empty case — `report.get(
-      "rescued", (0,))[0]` — and one such default being subtly wrong is how a
-      file that HAD changed printed nothing. `reportable` names that decision
-      once, and every field has a real default, so no call site invents one.
+      "rescued", (0,))[0]` — and a wrong default there would make a file that
+      HAD changed print nothing. (No such bug shipped; the enumeration was
+      kept correct by hand every time it changed. The point is that keeping it
+      correct was the author's job and nothing checked it.) `conformant` names
+      that decision once, and every field has a real default, so no call site
+      invents one.
     * **positional sub-tuples**: `report["pruned"][0]` and
       `report.get("rescued", (0,))[0]` are truth tests on an unnamed slot.
       Those are `ox.Pruned` and `ox.Rescued` now, so they read
       `changes.pruned.faces` and `changes.rescued.runs`.
+
+    The two questions this record answers are deliberately different, and both
+    are properties so the difference stays visible side by side: `wrote` gates
+    the upload, `conformant` gates the reporting. A file can be written without
+    being off-system (a plate, a contrast repair), and can be worth reporting
+    without being written (`--check`, `--contrast`, an unrepairable deck).
     """
-    #: Off-system values found before the pass, and after it. Anything left in
-    #: `after` is drift `ooxml_style` has no rule for, and is reported.
-    before: Sequence = ()
-    after: Sequence = ()
+    #: Off-system values `ox.audit` found before the pass, and after it. On the
+    #: write path anything left in `after` is drift `ooxml_style` has no rule
+    #: for. Under `--check` nothing is rewritten, so `after` IS `before` and
+    #: carries drift the rules would have handled.
+    before: tuple = ()
+    after: tuple = ()
     #: Zip parts rewritten.
     parts: int = 0
-    #: Plate slides added or refreshed, by label.
-    plates: Sequence = ()
-    #: Legacy background images replaced.
-    retired: Sequence = ()
+    #: Plate slide labels added or refreshed. `str`, and ", ".join-ed by the
+    #: caller — hence `tuple` and not `Sequence`, which a bare string satisfies
+    #: and would silently join per character.
+    plates: tuple = ()
+    #: Paths of legacy background images replaced. Joined the same way.
+    retired: tuple = ()
     pruned: ox.Pruned = ox.Pruned()
     #: Whether the metric fallback font was embedded.
     fallback: bool = False
     rescued: ox.Rescued = ox.Rescued()
-    #: `--contrast` only: runs failing AA, and runs that could not be scored.
-    contrast: Sequence = ()
-    unchecked: Sequence = ()
+    #: `--contrast` only: checker findings failing AA, and findings that could
+    #: not be scored. Never added together — see `Legibility`.
+    contrast: tuple = ()
+    unchecked: tuple = ()
 
     @property
-    def reportable(self):
-        """Whether this file earns a line in the run's output.
+    def wrote(self):
+        """Whether the file's bytes actually changed — the upload/archive gate.
 
-        False means "already conformant, and nothing to say" — the old `{}`.
-        A file can be reportable without having been WRITTEN: `--check` and
-        `--contrast` both report without touching Drive.
+        Narrower than "worth reporting": an off-system file that no rule
+        matched is worth a line but was not written, and a deck whose
+        legibility could not be repaired was measured but not touched.
+
+        This predicate used to be spelled out inline in `process()`, ~300 lines
+        from the reporting one, sharing seven of its terms with nothing saying
+        why they differed — so adding a field meant remembering an
+        unrelated-looking `if`. That is the hazard this whole record exists to
+        remove, so the two now sit adjacent where the difference is reviewable.
         """
-        return bool(self.before or self.after or self.parts or self.plates
+        return bool(self.parts or self.plates or self.retired or self.fallback
+                    or self.pruned.faces or self.pruned.parts
+                    or self.rescued.runs)
+
+    @property
+    def conformant(self):
+        """Nothing was found and nothing was done — the old `{}`.
+
+        Named for the state rather than for the output, because it is not
+        quite "earns a line": a `--contrast` file with only UNCHECKED findings
+        is non-conformant here and the caller still folds it back into the
+        clean count. Naming it `reportable` made that look like a bug in the
+        caller rather than the deliberate narrowing it is.
+
+        `rescued.before` is in here and NOT in `wrote`, which is the whole
+        point of separating them: a deck with runs failing AA that
+        `improve_contrast` could not repair is untouched on disk and must
+        still be reported. Gating that on `rescued.runs` meant `--fix-contrast`
+        answered "already conformant" over a deck it had just measured as
+        unreadable.
+        """
+        return not (self.before or self.after or self.parts or self.plates
                     or self.retired or self.fallback or self.contrast
                     or self.unchecked or self.pruned.faces
-                    or self.pruned.parts or self.rescued.runs)
+                    or self.pruned.parts or self.rescued.runs
+                    or self.rescued.before)
 
 
 def walk_estate(root, jobs=8):
@@ -249,6 +293,26 @@ def walk_estate(root, jobs=8):
             seen_ids.add(f["id"])
             unique.append(f)
     return Estate(unique, chapters, series, with_files, skipped, sorted(strays))
+
+
+class Outcome(NamedTuple):
+    """One file's whole result: which file, what happened, what went wrong.
+
+    Named for the same reason its leaves were. It is also the return that
+    actually carries the ordering hazard the leaves only describe: `changes` is
+    empty on failure and indistinguishable from a clean file, so a caller that
+    tests `changes.conformant` before `error` counts every failure as clean and
+    prints nothing at all.
+
+    Python gives no way to make that order impossible without a sum type and an
+    `isinstance` at each call site, which buys little in a repo with no type
+    checker. What it does buy: `for r in pool.map(...)` reading `r.error` /
+    `r.changes` matches the `Synced` loop in `upload_agents.py`, so the two
+    near-identical worker loops in this codebase stop using two idioms.
+    """
+    entry: dict
+    changes: Changes = Changes()
+    error: str = None
 
 
 #: Characters kept when a Drive name becomes part of a local path. Everything
@@ -357,11 +421,11 @@ def _plates_for(entry, plate_dir):
 
 class Legibility(NamedTuple):
     """`contrast_report`'s two lists, which must never be added together."""
-    #: Runs measured as failing WCAG AA against what is behind them.
-    bad: Sequence = ()
-    #: Runs that could not be scored — an inherited colour, a translucent run,
-    #: a background the checker could not read. NOT failures.
-    unchecked: Sequence = ()
+    #: Findings measured as failing WCAG AA against what is behind them.
+    bad: tuple = ()
+    #: Findings that could not be scored — an inherited colour, a translucent
+    #: run, a background the checker could not read. NOT failures.
+    unchecked: tuple = ()
 
 
 def contrast_report(entry, src):
@@ -378,15 +442,20 @@ def contrast_report(entry, src):
     # distinction the checker is built around: inherited-colour runs are common,
     # so counting them as failures means --contrast can never exit 0 and its
     # exit status stops meaning anything.
-    return Legibility([f for f in found if f.ratio is not None and f.ratio < f.threshold],
-                      [f for f in found if f.ratio is None])
+    # Tuples, so a no-findings result actually equals `Legibility()`. Building
+    # these as lists made `contrast_report(clean_deck, src) == Legibility()`
+    # False against a `()` default, which fails as `[] != ()` and reads like a
+    # logic bug.
+    return Legibility(
+        tuple(f for f in found if f.ratio is not None and f.ratio < f.threshold),
+        tuple(f for f in found if f.ratio is None))
 
 
 def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             contrast_only=False, fix_contrast=False, retire=False):
-    """Restyle one file. Returns `(entry, Changes, error or None)`.
+    """Restyle one file. Returns an `Outcome`.
 
-    The `Changes` is empty — `.reportable` False — when the file is already
+    The `Changes` is empty — `.conformant` True — when the file is already
     conformant and there is nothing to say about it. On error it is empty too,
     but the caller must test the error first: an empty record is indistinguish-
     able from a clean file, which is the point of returning the error beside it
@@ -408,13 +477,13 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
                                "not the template" % os.path.getsize(src))
         if contrast_only:
             legible = contrast_report(entry, src)
-            return entry, Changes(contrast=legible.bad,
-                                  unchecked=legible.unchecked), None
+            return Outcome(entry, Changes(contrast=legible.bad,
+                                          unchecked=legible.unchecked))
         before = ox.audit(src)
         if check_only:
             # `after` is `before`: nothing was rewritten, so what the file holds
             # afterwards is what it held.
-            return entry, Changes(before=before, after=before), None
+            return Outcome(entry, Changes(before=tuple(before), after=tuple(before)))
 
         # Archive BEFORE any rewrite: the archive must hold what Drive holds.
         # Gated on `write` ALONE, not on `before` — a file can be perfectly
@@ -434,9 +503,9 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
 
         parts = cc._rewrite_zip(src, ox.restyle_part)
         # Renaming the faces leaves a Word file referencing a font it does not
-        # embed, still declaring the faces nobody uses, and carrying ~760KB of
-        # their embedded bytes. Reconcile the font table with what the document
-        # now actually asks for.
+        # embed, still declaring the faces nobody uses, and carrying their
+        # embedded bytes (~321KB of Manrope and Space Grotesk). Reconcile the
+        # font table with what the document now actually asks for.
         pruned = (ox.prune_embedded_fonts(src)
                   if entry["mime"] == cc.DOCX else ox.Pruned())
         # Pruning leaves the document asking for a face it does not carry.
@@ -449,7 +518,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         # from is already conformant — otherwise every new slide would carry a
         # copy of the drift this run just removed.
         wanted = _plates_for(entry, plate_dir)
-        plated = ox.add_plate_slides(src, wanted) if wanted else []
+        plated = list(ox.add_plate_slides(src, wanted)) if wanted else []
         # Adding is idempotent by label, so a deck that already has its plates
         # needs its ARTWORK refreshed separately when the art itself changes.
         plated += ox.update_plates(src, wanted) if wanted else []
@@ -472,25 +541,35 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         rescued = (ox.improve_contrast(src)
                    if fix_contrast and entry["mime"] == cc.PPTX else ox.Rescued())
         after = ox.audit(src)
-        if not (parts or plated or rescued.runs or retired
-                or pruned.faces or pruned.parts or fallback):
-            # Nothing changed. If we archived a file we are not going to upload,
-            # take the copy back out so the archive means "these were replaced".
+        # Build the record FIRST and let it answer both questions. The
+        # "did anything change" test used to be spelled out here, ~300 lines
+        # from the near-identical reporting test on the record; see `wrote`.
+        changes = Changes(before=tuple(before), after=tuple(after), parts=parts,
+                          plates=tuple(plated), retired=tuple(retired),
+                          pruned=pruned, fallback=fallback, rescued=rescued)
+        if not changes.wrote:
+            # Nothing was written. If we archived a file we are not going to
+            # upload, take the copy back out so the archive keeps meaning
+            # "these were replaced".
             if fresh and archived and os.path.exists(archived):
                 os.remove(archived)
-            return entry, Changes(before=before, after=after), None
+            # `rescued` is carried even here, and this is the point of
+            # separating `wrote` from `conformant`: a deck whose failing runs
+            # `improve_contrast` declined to repair is untouched on disk but
+            # was MEASURED as unreadable, and dropping the record made
+            # --fix-contrast report it as already conformant.
+            return Outcome(entry, Changes(before=tuple(before), after=tuple(after),
+                                          rescued=rescued))
         if write:
             cc.gws_upload(entry["id"], src, entry["mime"])
-        return entry, Changes(before=before, after=after, parts=parts,
-                              plates=plated, retired=retired, pruned=pruned,
-                              fallback=fallback, rescued=rescued), None
+        return Outcome(entry, changes)
     except Exception as e:                # one bad file must not stop the run
         # Prefix the class: this catch spans the XML engine, the archive, and
         # both transfers, and a bare message makes a ValueError in the rewrite
         # read as a network blip. Never return a bare str() — an exception whose
         # str() is empty would be falsy and the caller would count the file as
         # clean, printing nothing at all.
-        return entry, Changes(), "%s: %s" % (type(e).__name__, str(e)[:200])
+        return Outcome(entry, error="%s: %s" % (type(e).__name__, str(e)[:200]))
     finally:
         if os.path.exists(src):
             os.remove(src)
@@ -618,19 +697,20 @@ def main():
     residue, unchecked_only = [], []
     with tempfile.TemporaryDirectory() as tmpdir, \
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for entry, changes, err in pool.map(
+        for r in pool.map(
                 lambda e: process(e, tmpdir, args.write, backup_dir, args.check,
                                   args.plates, args.contrast, args.fix_contrast,
                                   args.retire),
                 entries):
+            entry, changes, err = r.entry, r.changes, r.error
             # The error first: a failed file also comes back with an empty
-            # record, so testing `reportable` before `err` would count every
+            # record, so testing `conformant` before `err` would count every
             # failure as clean and print nothing.
             if err is not None:
                 failed += 1
                 print("  FAILED  %s\n            %s" % (entry["path"], err))
                 continue
-            if not changes.reportable:
+            if changes.conformant:
                 clean += 1
                 continue
             changed += 1
@@ -678,6 +758,15 @@ def main():
                       "(%d below AA -> %d)"
                       % (changes.rescued.runs, changes.rescued.before,
                          changes.rescued.after))
+            elif changes.rescued.before:
+                # Measured unreadable, and the repair declined it — every
+                # candidate remap would have pushed some other run below AA or
+                # into the invisible band. Without this arm the deck falls out
+                # of the run silently, and --fix-contrast answers "already
+                # conformant" over text nobody can read.
+                print("                 ! legibility: %d run(s) below AA and "
+                      "NOT repairable without breaking others — needs a design "
+                      "fix, not a remap" % changes.rescued.before)
             if changes.after:
                 print("                 REMAINS: %s" % _summarise(changes.after))
 

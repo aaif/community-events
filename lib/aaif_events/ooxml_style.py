@@ -33,7 +33,7 @@ import hashlib
 import os
 import re
 import zipfile
-from typing import NamedTuple, Sequence
+from typing import NamedTuple
 
 #: `design/aaif-tokens.css`, which is itself generated from the design system
 #: bundle by `scripts/extract_design_tokens.py`. Parsing it — rather than
@@ -83,7 +83,10 @@ SANS = "Instrument Sans"
 #: the metadata runs that resolve to `--font-mono` on the web. It stays, in
 #: every part and both formats: DESIGN.md reserves mono for "metadata and
 #: eyebrows", and a run already set in it is that reservation being honoured,
-#: not drift. It is absent from `FONT_MAP` for the same reason `+mj-lt` is.
+#: not drift. It is absent from `FONT_MAP` for the same reason `+mj-lt` is —
+#: neither is drift — though not by the same mechanism: `+mj-lt` is a theme
+#: reference that resolves correctly once the theme does, while mono is a
+#: literal face the system deliberately keeps.
 #:
 #: An earlier pass demoted mono to the sans throughout `word/document.xml`, on
 #: the reading that the trackers' 205 mono runs were body prose. They were not:
@@ -120,6 +123,38 @@ FONT_MAP = {
 # font, not a face. It is absent from FONT_MAP on purpose — such a run is
 # already correct once the theme is, and rewriting it to a literal would break
 # the indirection the theme exists to provide.
+
+
+# ---------------------------------------------------------------- records --
+class Pruned(NamedTuple):
+    """What `prune_embedded_fonts` took out of `word/fontTable.xml`.
+
+    A plain 2-tuple here was read positionally at three call sites and printed
+    through `report["pruned"][0]`, which is a truth test on a *list of face
+    names* — legible only if you already know the order. Named, `pruned.faces`
+    says what the index meant.
+    """
+    #: Face names dropped from the table.
+    faces: tuple = ()
+    #: `word/fonts/*.ttf` parts dropped with them.
+    parts: tuple = ()
+
+
+class Rescued(NamedTuple):
+    """What `improve_contrast` did to one file's legibility.
+
+    `runs` is deliberately not derivable from `before - after`: a run lifted
+    from 1.19 to 4.48 against a 4.50 threshold is materially rescued and leaves
+    the AA count unchanged. `report.get("rescued", (0,))[0]` was the reporting
+    gate for exactly that number, and nothing about the expression said so.
+    """
+    #: Runs materially improved — an AA crossing, or an escape from the
+    #: invisible band to at least `AA_LARGE`.
+    runs: int = 0
+    #: Runs failing AA before the repair.
+    before: int = 0
+    #: Runs failing AA after it.
+    after: int = 0
 
 
 # ------------------------------------------------------------------- colour --
@@ -1015,37 +1050,6 @@ _EMBED = re.compile(r"<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*/>")
 _EMBED_ID = re.compile(r'r:id="([^"]+)"')
 
 
-class Pruned(NamedTuple):
-    """What `prune_embedded_fonts` took out of `word/fontTable.xml`.
-
-    A plain 2-tuple here was read positionally at three call sites and printed
-    through `report["pruned"][0]`, which is a truth test on a *list of face
-    names* — legible only if you already know the order. Named, `pruned.faces`
-    says what the index meant.
-    """
-    #: Face names dropped from the table.
-    faces: Sequence = ()
-    #: `word/fonts/*.ttf` parts dropped with them.
-    parts: Sequence = ()
-
-
-class Rescued(NamedTuple):
-    """What `improve_contrast` did to one file's legibility.
-
-    `runs` is deliberately not derivable from `before - after`: a run lifted
-    from 1.19 to 4.48 against a 4.50 threshold is materially rescued and leaves
-    the AA count unchanged. `report.get("rescued", (0,))[0]` was the reporting
-    gate for exactly that number, and nothing about the expression said so.
-    """
-    #: Runs materially improved — an AA crossing, or an escape from the
-    #: invisible band to at least `AA_LARGE`.
-    runs: int = 0
-    #: Runs failing AA before the repair.
-    before: int = 0
-    #: Runs failing AA after it.
-    after: int = 0
-
-
 def prune_embedded_fonts(path):
     """Make `word/fontTable.xml` agree with the faces the document actually uses.
 
@@ -1056,8 +1060,11 @@ def prune_embedded_fonts(path):
 
     Renaming every face to Instrument Sans leaves a tracker in a worse state
     than it started: the document references a font the file does not embed,
-    the font table still declares the faces nobody uses any more, and ~760KB of
-    embedded TTFs for those faces ride along in every copy.
+    the font table still declares the faces nobody uses any more, and their
+    embedded TTFs ride along in every copy — ~321KB unpacked (~154KB in the
+    zip) across Manrope and Space Grotesk. (~760KB is the total of ALL the
+    embedded faces in a tracker; most of that is JetBrains Mono, which is in
+    use and stays.)
 
     The embeds cannot simply be renamed with the entries — their BYTES are
     Manrope and Space Grotesk, so calling them "Instrument Sans" would make
@@ -1066,10 +1073,15 @@ def prune_embedded_fonts(path):
     the table is deduplicated to the faces actually in use.
 
     That does mean the trackers no longer carry an embedded copy of their
-    display typeface. Instrument Sans is not embeddable from here — `assets/fonts` has
-    woff2, which OOXML cannot use — so this is honest rather than complete:
-    correct metadata and a smaller file, and the face resolves from the system
-    (Google Docs, where these live, has it). See DESIGN.md.
+    display typeface. Instrument Sans is not embeddable from here —
+    `assets/fonts` has woff2, which OOXML cannot use — so this is honest rather
+    than complete: correct metadata, and the face resolves from the system
+    (Google Docs, where these live, has it).
+
+    This pass alone makes the file smaller, but the sweep as a whole does not:
+    `ensure_fallback_font` adds the metric fallback afterwards, and a tracker
+    lands ABOVE where it started. See DESIGN.md — size is not what is being
+    optimised here.
 
     Returns a `Pruned`.
     """

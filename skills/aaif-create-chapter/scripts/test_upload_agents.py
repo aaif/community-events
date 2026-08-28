@@ -2,14 +2,14 @@
 """Unit tests for the per-chapter icon upload.
 
 This script was the last one in `aaif-create-chapter/scripts/` with no test
-beside it, and it is the one that writes the most files: eighty chapters times
-an agent, ten generics and six logo files. Two of its properties are the ones
-worth pinning, because both fail QUIETLY:
+beside it, and it is the one that writes the most files: every chapter in the
+estate times an agent, ten generics and six logo files. Two of its properties
+are the ones worth pinning, because both fail QUIETLY:
 
   (a) **it must be idempotent.** The whole reason it can be re-run after adding
       one chapter is that a file whose bytes already match is left alone. If
-      the digest comparison stops working, a full run silently re-uploads ~1400
-      files and every organizer sees their whole Icons folder change date.
+      the digest comparison stops working, a full run silently re-uploads the
+      whole estate and every organizer sees their Icons folder change date.
 
   (b) **a chapter with no generated art must FAIL, not upload a partial set.**
       `art_for` returns the generics and the logos for any chapter name, so a
@@ -188,7 +188,7 @@ class TestSyncingOneChapter(unittest.TestCase):
         drive = self._full_icons_folder()
         r = ua.sync_chapter("chap", "Boston", self.art, True, self.work)
         self.assertIsNone(r.error)
-        self.assertEqual(r.uploaded, [])
+        self.assertEqual(r.uploaded, ())
         self.assertEqual(len(r.skipped), 17)      # own agent + 10 + 6
         self.assertEqual(drive.uploaded, [])
         self.assertEqual(drive.created, [])
@@ -200,7 +200,7 @@ class TestSyncingOneChapter(unittest.TestCase):
         drive = self._full_icons_folder()
         drive.files["d-Agent 03.gif"] = ("Agent 03.gif", b"stale bytes")
         r = ua.sync_chapter("chap", "Boston", self.art, True, self.work)
-        self.assertEqual(r.uploaded, ["Agent 03.gif"])
+        self.assertEqual(r.uploaded, ("Agent 03.gif",))
         self.assertEqual([fid for fid, _d in drive.uploaded], ["d-Agent 03.gif"])
         self.assertEqual(drive.created, [], "no duplicate file was created")
 
@@ -209,7 +209,7 @@ class TestSyncingOneChapter(unittest.TestCase):
         drive.children["icons"] = [c for c in drive.children["icons"]
                                    if c != "d-AAIF Mark.svg"]
         r = ua.sync_chapter("chap", "Boston", self.art, True, self.work)
-        self.assertEqual(r.uploaded, ["AAIF Mark.svg"])
+        self.assertEqual(r.uploaded, ("AAIF Mark.svg",))
         self.assertEqual(drive.created, ["AAIF Mark.svg"])
         self.assertEqual(len(drive.uploaded), 1, "created, then its bytes sent")
 
@@ -300,11 +300,200 @@ class TestSyncingOneChapter(unittest.TestCase):
         self.assertEqual(os.listdir(self.work), [], "a scratch file was left behind")
 
 
+class TestTheWriteGate(unittest.TestCase):
+    """`--write` is the only thing between a plan and 80 chapters of uploads.
+
+    CLAUDE.md: "a script that writes on its default invocation is a bug." The
+    first version of this file did not actually pin that — mutating
+    `if write:` to `if True:` left all fifteen tests green, because the only
+    plan-run test used an EMPTY Drive and returned at the `folder is None`
+    early exit without ever reaching the upload loop. These drive the loop.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.art = os.path.join(self.tmp.name, "art")
+        self.work = os.path.join(self.tmp.name, "work")
+        os.makedirs(self.art)
+        os.makedirs(self.work)
+        _art_dir(self.art)
+
+    def _drifted_folder(self):
+        """An Icons folder that is current except for one stale file."""
+        children, files = {"chap": ["icons"]}, {"icons": ("Icons", None)}
+        kids = []
+        for fname, path in ua.art_for(self.art, "Boston"):
+            fid = "d-" + fname
+            with open(path, "rb") as fh:
+                files[fid] = (fname, fh.read())
+            kids.append(fid)
+        children["icons"] = kids
+        files["d-Agent 03.gif"] = ("Agent 03.gif", b"stale bytes")
+        return _FakeDrive(children, files).install(self)
+
+    def test_a_plan_run_over_an_existing_folder_names_the_drift_but_writes_none(self):
+        """The mutation-catching case: the upload loop IS entered, one file is
+        found to differ, and still nothing reaches Drive."""
+        drive = self._drifted_folder()
+        r = ua.sync_chapter("chap", "Boston", self.art, False, self.work)
+        self.assertIsNone(r.error)
+        self.assertEqual(r.uploaded, ("Agent 03.gif",), "the drift must be named")
+        self.assertEqual(drive.uploaded, [], "a plan run uploaded a file")
+        self.assertEqual(drive.created, [], "a plan run created a file")
+        self.assertEqual(drive.made_folders, [], "a plan run created a folder")
+
+    def test_the_same_run_with_write_does_reach_drive(self):
+        """The other half — without this, the test above passes if uploading
+        broke entirely."""
+        drive = self._drifted_folder()
+        ua.sync_chapter("chap", "Boston", self.art, True, self.work)
+        self.assertEqual([fid for fid, _d in drive.uploaded], ["d-Agent 03.gif"])
+
+    def test_a_plan_run_never_creates_the_icons_folder(self):
+        drive = _FakeDrive({"chap": []}, {}).install(self)
+        ua.sync_chapter("chap", "Boston", self.art, False, self.work)
+        self.assertEqual(drive.made_folders, [])
+
+    def test_the_icons_folder_is_created_by_name_under_the_chapter(self):
+        """`made_folders` was only ever asserted EMPTY, so the create path ran
+        untested: mutating the name to "Ikons", or the parent to the tree root,
+        left every test green and would scatter 80 stray folders."""
+        drive = _FakeDrive({"chap": []}, {}).install(self)
+        ua.sync_chapter("chap", "Boston", self.art, True, self.work)
+        self.assertEqual(drive.made_folders, [(ua.ICONS_FOLDER, "chap")])
+
+    def test_a_stray_file_named_icons_is_not_mistaken_for_the_folder(self):
+        """An organizer parking a file called "Icons" in their chapter folder
+        would otherwise have `list_children` called on a file id."""
+        drive = _FakeDrive({"chap": ["stray"]},
+                           {"stray": ("Icons", b"not a folder")}).install(self)
+        ua.sync_chapter("chap", "Boston", self.art, True, self.work)
+        self.assertEqual(drive.made_folders, [(ua.ICONS_FOLDER, "chap")],
+                         "the real folder must still be created alongside it")
+
+
+class TestMainSummary(unittest.TestCase):
+    """`main()` is where the misreport the `Synced` record exists to prevent
+    would actually surface, and it had no test at all."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.art = os.path.join(self.tmp.name, "art")
+        os.makedirs(self.art)
+        _art_dir(self.art)
+
+    def _run(self, results, argv_extra=()):
+        """Drive main() over canned Synced records; return (exit code, stdout)."""
+        import io
+        import contextlib
+        real_chapters, real_sync, real_argv = ua.chapters, ua.sync_chapter, sys.argv
+        ua.chapters = lambda: [("id-%s" % r.name, r.name) for r in results]
+        ua.sync_chapter = lambda cid, name, *a, **k: next(
+            r for r in results if r.name == name)
+        sys.argv = ["upload_agents.py", "--art", self.art] + list(argv_extra)
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = ua.main()
+            return code, buf.getvalue()
+        finally:
+            ua.chapters, ua.sync_chapter, sys.argv = real_chapters, real_sync, real_argv
+
+    def test_the_three_outcomes_are_counted_and_the_exit_code_follows(self):
+        code, out = self._run([
+            ua.Synced("Alpha", uploaded=("Agent 01.gif",)),
+            ua.Synced("Bravo"),                       # nothing to do
+            ua.Synced("Delta", error="RuntimeError: 403"),
+        ])
+        self.assertEqual(code, 1, "a failure must not exit 0")
+        self.assertIn("1 chapter(s) would be updated, 1 already current, 1 failed", out)
+
+    def test_a_failed_chapter_is_named_in_the_summary_not_only_inline(self):
+        """The docstring promises a run "reports which chapters are missing
+        their agent". `missing` was collected and never printed."""
+        _code, out = self._run([
+            ua.Synced("Delta", error="no agent art generated for this chapter"),
+        ])
+        self.assertIn("CHAPTERS NEEDING ATTENTION", out)
+        self.assertIn("Delta", out.split("CHAPTERS NEEDING ATTENTION")[1])
+        self.assertIn("Rebuild the art", out)
+
+    def test_an_all_clean_run_exits_zero_and_says_nothing_alarming(self):
+        code, out = self._run([ua.Synced("Alpha"), ua.Synced("Bravo")])
+        self.assertEqual(code, 0)
+        self.assertNotIn("CHAPTERS NEEDING ATTENTION", out)
+        self.assertIn("2 already current", out)
+
+    def test_a_chapter_filter_that_matches_nothing_is_an_error(self):
+        code, _out = self._run([ua.Synced("Alpha")], ("--chapter", "Nowhere"))
+        self.assertEqual(code, 1)
+
+    def test_the_chapter_filter_is_case_insensitive(self):
+        code, out = self._run([ua.Synced("Alpha", uploaded=("x.gif",))],
+                              ("--chapter", "alpha"))
+        self.assertEqual(code, 0)
+        self.assertIn("1 chapter(s)", out)
+
+    def test_an_incomplete_art_directory_is_refused_before_any_chapter(self):
+        os.remove(os.path.join(self.art, "Agent 01.gif"))
+        code, out = self._run([ua.Synced("Alpha")])
+        self.assertEqual(code, 2, "a short art set must not half-populate Drive")
+        self.assertIn("expected 10 generic agents", out)
+
+    def test_an_art_directory_with_no_logos_is_refused(self):
+        for f in LOGOS:
+            os.remove(os.path.join(self.art, f))
+        code, out = self._run([ua.Synced("Alpha")])
+        self.assertEqual(code, 2)
+        self.assertIn("no AAIF logos", out)
+
+
 class TestTheRecord(unittest.TestCase):
     def test_a_synced_defaults_to_no_work_and_no_error(self):
         r = ua.Synced("Boston")
         self.assertEqual((r.name, r.uploaded, r.skipped, r.error),
                          ("Boston", (), (), None))
+
+    def test_every_error_path_returns_empty_uploaded_and_skipped(self):
+        """`main()` relies on this: it reads `uploaded` only after finding no
+        error, so a record carrying both would be miscounted. The docstring
+        claims the invariant; nothing checked it."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        art, work = os.path.join(tmp.name, "a"), os.path.join(tmp.name, "w")
+        os.makedirs(art)
+        os.makedirs(work)
+        _art_dir(art)
+        _FakeDrive({"chap": []}, {}).install(self)
+
+        def boom(_folder_id):
+            raise RuntimeError("403")
+
+        cases = [("no art", lambda: ua.sync_chapter("chap", "Nowhere", art, True, work))]
+        cc.list_children = boom
+        cases.append(("drive down",
+                      lambda: ua.sync_chapter("chap", "Boston", art, True, work)))
+        for label, call in cases:
+            r = call()
+            self.assertIsNotNone(r.error, label)
+            self.assertEqual(r.uploaded, (), label)
+            self.assertEqual(r.skipped, (), label)
+
+    def test_an_unreadable_art_directory_is_returned_not_raised(self):
+        """`art_for` does an os.listdir and used to sit OUTSIDE the try, so a
+        vanished art dir raised through pool.map and abandoned every chapter
+        not yet reached."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        work = os.path.join(tmp.name, "w")
+        os.makedirs(work)
+        _FakeDrive({"chap": []}, {}).install(self)
+        r = ua.sync_chapter("chap", "Boston",
+                            os.path.join(tmp.name, "gone"), True, work)
+        self.assertIsNotNone(r.error, "it raised instead of reporting")
+        self.assertIn("FileNotFoundError", r.error)
 
 
 if __name__ == "__main__":
