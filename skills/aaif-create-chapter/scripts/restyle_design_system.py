@@ -504,7 +504,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         parts = cc._rewrite_zip(src, ox.restyle_part)
         # Renaming the faces leaves a Word file referencing a font it does not
         # embed, still declaring the faces nobody uses, and carrying their
-        # embedded bytes (~321KB of Manrope and Space Grotesk). Reconcile the
+        # embedded bytes (~760KB in a real tracker). Reconcile the
         # font table with what the document now actually asks for.
         pruned = (ox.prune_embedded_fonts(src)
                   if entry["mime"] == cc.DOCX else ox.Pruned())

@@ -267,21 +267,22 @@ def test_the_shipped_fixtures_are_conformant(name):
     Note what they CANNOT catch. Both were captured after a sweep that demoted
     every mono run to the sans, so neither holds a single JetBrains Mono run —
     and neither holds any `word/fonts/` part at all. They are ~19KB each
-    because of both absences, and a realistic tracker is ~430KB, which is not
-    worth carrying twice in a public repo. So:
+    because of both absences, while a real tracker lands at ~203KB. So:
 
     * **mono preservation** is pinned by
-      `test_mono_survives_the_sweep_in_every_word_part` on synthetic XML, and
-      the embed that follows from it by
-      `test_a_face_in_use_keeps_its_declaration_and_its_embed`;
+      `test_mono_survives_the_sweep_in_every_word_part` on synthetic XML, the
+      declared-but-not-embedded rule by
+      `test_a_face_in_use_keeps_its_declaration_but_loses_its_embed`, and the
+      interaction of all three passes by
+      `test_a_real_tracker_keeps_its_mono_through_the_whole_pipeline`;
     * **`ensure_fallback_font` is not covered here either** — this test calls
-      only `audit()`. Running the fallback pass on a shipped fixture takes it
-      19,769 -> 210,090 bytes on its own, so ~186KB of that ~430KB is Manrope,
-      not mono. Do not read the size gap as a mono figure.
+      only `audit()`. It is what makes a real tracker large: running it on a
+      shipped fixture alone takes it 19,769 -> 210,090. Effectively ALL of the
+      size gap is the fallback, not mono, which is embedded nowhere now.
 
-    The ~430KB is also softer than it looks: `ensure_fallback_font` writes its
-    two TTFs STORED, so deflating them would drop ~106KB and stale every
-    "~430KB" in this repo at once."""
+    That ~203KB is softer than it looks: `ensure_fallback_font` writes its two
+    TTFs STORED, so deflating them would drop ~106KB and stale every size
+    figure in this repo at once."""
     path = os.path.join(FIXTURES, name)
     assert ox.audit(path) == [], "off-system values in %s: %s" % (name, ox.audit(path))
 
@@ -344,16 +345,22 @@ def test_a_real_tracker_keeps_its_mono_through_the_whole_pipeline(tmp_path):
             _replace_part(path, name, out)
     pruned = ox.prune_embedded_fonts(path)
     ox.ensure_fallback_font(path)
+    # Mono is reported as having shed bytes, alongside the faces that lost
+    # their entries outright — the distinction is asserted on the table below.
+    assert ox.MONO in pruned.faces
+    assert "Space Grotesk" in pruned.faces
 
     after = _faces(path)
     assert after[ox.MONO] == 205, "restyle flattened the metadata runs"
     assert ox.SANS in after, "the display drift was not folded into the sans"
     assert "Space Grotesk" not in after and "Manrope" not in after
     # In use, so neither the table entry nor the embeds may be pruned.
-    assert ox.MONO not in pruned.faces, "the in-use face was pruned"
     with zipfile.ZipFile(path) as z:
-        names = z.namelist()
-    assert [n for n in names if "JetBrainsMono" in n], "the in-use embeds went"
+        names, table = z.namelist(), z.read("word/fontTable.xml").decode()
+    # Declared, because 205 runs ask for it; not embedded, because Google Docs
+    # resolves it — see NEVER_EMBED.
+    assert ox.MONO in table, "the in-use face lost its declaration"
+    assert not [n for n in names if "JetBrainsMono" in n], "mono was embedded"
     assert not [n for n in names if "SpaceGrotesk" in n]
     assert ox.audit(path) == [], "the swept tracker is still off-system"
 
@@ -701,7 +708,12 @@ def _docx_with_fonts(tmp_path, name="f.docx"):
 def test_the_font_table_ends_up_declaring_only_the_faces_in_use(tmp_path):
     deck = _docx_with_fonts(tmp_path)
     removed, parts = ox.prune_embedded_fonts(deck)
-    assert removed == ("Arial", "Georgia", "Manrope", "Space Grotesk")
+    # JetBrains Mono is in `removed` for a DIFFERENT reason than the others:
+    # they lost their entries, it only lost its embed. The channel is shared
+    # because both are "this face shed bytes"; the table below is what
+    # distinguishes them.
+    assert removed == ("Arial", "Georgia", "JetBrains Mono", "Manrope",
+                       "Space Grotesk")
     with zipfile.ZipFile(deck) as z:
         table = z.read("word/fontTable.xml").decode()
     assert sorted(set(re.findall(r'w:name="([^"]+)"', table))) == \
@@ -722,28 +734,35 @@ def test_the_renamed_faces_embedded_bytes_are_dropped_not_relabelled(tmp_path):
     render the OLD face under the new name, which is worse than substituting."""
     deck = _docx_with_fonts(tmp_path)
     _r, parts = ox.prune_embedded_fonts(deck)
-    assert parts == ("word/fonts/Manrope.ttf", "word/fonts/SpaceGrotesk.ttf")
+    # Mono's part is here too now — its bytes go for a different reason
+    # (NEVER_EMBED), but the caller deletes them all the same way.
+    assert parts == ("word/fonts/JetBrainsMono.ttf", "word/fonts/Manrope.ttf",
+                     "word/fonts/SpaceGrotesk.ttf")
     with zipfile.ZipFile(deck) as z:
         names = z.namelist()
-        # Kept — but NOT because it is in use: this fixture's document.xml
-        # names no faces at all, so `in_use` is empty and the no-evidence
-        # escape hatch keeps everything. The usage-driven retention that the
-        # real trackers rely on is pinned by
-        # `test_a_face_in_use_keeps_its_declaration_and_its_embed` below.
-        assert "word/fonts/JetBrainsMono.ttf" in names
+        table = z.read("word/fontTable.xml").decode()
+        # Its ENTRY survives — this fixture's document.xml names no faces, so
+        # `in_use` is empty and the no-evidence escape hatch keeps every
+        # declaration. Its EMBED does not, because NEVER_EMBED applies whether
+        # or not the face is provably in use.
+        assert ox.MONO in table
+        assert "word/fonts/JetBrainsMono.ttf" not in names
         assert "word/fonts/Manrope.ttf" not in names
         assert "Manrope.ttf" not in z.read("[Content_Types].xml").decode()
 
 
-def test_a_face_in_use_keeps_its_declaration_and_its_embed(tmp_path):
+def test_a_face_in_use_keeps_its_declaration_but_loses_its_embed(tmp_path):
     """The direction the real trackers take, and the one nothing tested.
 
     Removing `_MONO_IS_PROSE` means a tracker's 205 metadata runs stay in
-    JetBrains Mono, so the face is genuinely referenced and its four embedded
-    TTFs (~444KB unpacked) must survive the prune. The other mono test above
-    cannot show this — its document names no faces, so mono survives there for
-    the opposite reason. This one references mono AND embeds it, which is the
-    combination a real tracker has.
+    JetBrains Mono, so the face is genuinely referenced and its declaration
+    must survive the prune — a dropped entry would leave 205 runs asking for
+    a face the table does not name. Its EMBED must go anyway: `NEVER_EMBED`,
+    ~210KB a file, verified rendering in Google Docs without it.
+
+    The other mono test above cannot show this — its document names no faces,
+    so the declaration survives there for the opposite reason. This one
+    references mono AND embeds it, which is the combination a real tracker has.
     """
     path = str(tmp_path / "in-use.docx")
     with zipfile.ZipFile(path, "w") as z:
@@ -775,14 +794,20 @@ def test_a_face_in_use_keeps_its_declaration_and_its_embed(tmp_path):
         z.writestr("word/fonts/Manrope.ttf", b"MNR" * 200)
 
     pruned = ox.prune_embedded_fonts(path)
-    # The unused face goes; the one in use does not.
-    assert pruned.faces == ("Manrope",)
-    assert pruned.parts == ("word/fonts/Manrope.ttf",)
+    # Both faces shed bytes; only one loses its entry.
+    assert pruned.faces == ("JetBrains Mono", "Manrope")
+    assert pruned.parts == ("word/fonts/JetBrainsMono.ttf",
+                            "word/fonts/Manrope.ttf")
     with zipfile.ZipFile(path) as z:
         names, table = z.namelist(), z.read("word/fontTable.xml").decode()
-        assert "word/fonts/JetBrainsMono.ttf" in names, "the in-use embed was pruned"
         assert ox.MONO in table, "the in-use face lost its declaration"
+        assert "Manrope" not in table, "the unused face kept its declaration"
+        assert not [n for n in names if "JetBrainsMono" in n]
         assert "word/fonts/Manrope.ttf" not in names
+        # And the entry it kept must not point at a part that is gone.
+        rels = z.read("word/_rels/fontTable.xml.rels").decode()
+    assert set(re.findall(r'r:id="([^"]+)"', table)) <= set(
+        re.findall(r'Id="([^"]+)"', rels)), "a dangling embed reference"
 
 
 def test_no_embed_reference_is_left_dangling(tmp_path):

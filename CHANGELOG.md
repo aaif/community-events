@@ -16,8 +16,10 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   in the trackers. JetBrains Mono is deliberately *not* on that list: the
   trackers' 205 mono runs are field labels, table headers, dates, statuses and
   phase eyebrows — metadata, which is exactly what the system reserves mono
-  for — so they are left alone, and the orphaned Manrope/Space Grotesk embeds
-  are pruned around them. (An earlier revision of this sweep read those 205
+  for — so they are left alone. The face is declared but no longer embedded
+  (Google Docs resolves it, the same way it already resolves Instrument Sans),
+  and the orphaned Manrope/Space Grotesk embeds are pruned around it: a tracker
+  goes 392,784 -> 208,207 bytes, of which ~186KB is the metric fallback. (An earlier revision of this sweep read those 205
   runs as body prose and rewrote them to the sans; that was wrong and was
   reverted before release.)
 - **The audit reports have no dark mode.** `report_style.py` shipped a light
