@@ -256,12 +256,18 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             return entry, ({"before": before, "parts": 0, "after": before,
                             "plates": []} if before else {}), None
 
-        # Archive BEFORE the rewrite: the archive must hold what Drive holds.
+        # Archive BEFORE any rewrite: the archive must hold what Drive holds.
+        # Gated on `write` ALONE, not on `before` — a file can be perfectly
+        # conformant on tokens and still be about to change, because a contrast
+        # repair or a plate is also a change. Gating on `before` meant a
+        # --fix-contrast run over an already-conformant estate would rewrite
+        # every deck with no rollback at all.
+        #
         # `fresh` is False when an earlier run in the same --backup-dir already
         # archived this file; that copy is the pristine one and is kept, so this
         # run must not remove it on a no-op below.
         archived, fresh = None, False
-        if write and before:
+        if write:
             existed = os.path.exists(os.path.join(
                 backup_dir, entry["path"].replace("Community Events/", "", 1)))
             archived = _archive(entry, src, backup_dir)
@@ -285,7 +291,8 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             if fresh and archived and os.path.exists(archived):
                 os.remove(archived)
             return entry, ({"before": before, "parts": 0, "after": after,
-                            "plates": []} if before else {}), None
+                            "plates": [], "rescued": (0, 0, 0)}
+                           if before else {}), None
         if write:
             cc.gws_upload(entry["id"], src, entry["mime"])
         return entry, {"before": before, "parts": parts, "after": after,

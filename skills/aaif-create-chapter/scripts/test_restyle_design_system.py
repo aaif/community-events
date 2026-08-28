@@ -101,5 +101,27 @@ class TestTheArchiveIsNeverOverwritten(unittest.TestCase):
                          os.path.join("Chapters", "Boston", "About.docx"))
 
 
+
+class TestNothingIsWrittenWithoutAnArchive(unittest.TestCase):
+    """The archive is the rollback, so the gate on it has to be "am I about to
+    change this file", not "is this file off-token".
+
+    A --fix-contrast run happens over an estate that is ALREADY conformant, so
+    `before` is empty for every file while every file is still about to be
+    rewritten. Gating the archive on `before` silently produced exactly the
+    dangerous combination: hundreds of decks replaced, nothing kept.
+    """
+
+    def test_the_archive_gate_is_the_write_flag_not_the_token_audit(self):
+        import inspect
+        src = inspect.getsource(rd.process)
+        gate = [ln.strip() for ln in src.splitlines()
+                if ln.strip().startswith("if write") and "backup" not in ln]
+        self.assertIn("if write:", gate,
+                      "process() must archive whenever it may write, not only "
+                      "when the token audit found something")
+        self.assertNotIn("if write and before:", gate)
+
+
 if __name__ == "__main__":
     unittest.main()
