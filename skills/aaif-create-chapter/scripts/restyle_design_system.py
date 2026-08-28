@@ -364,6 +364,9 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         # copy of the drift this run just removed.
         wanted = _plates_for(entry, plate_dir)
         plated = ox.add_plate_slides(src, wanted) if wanted else []
+        # Adding is idempotent by label, so a deck that already has its plates
+        # needs its ARTWORK refreshed separately when the art itself changes.
+        plated += ox.update_plates(src, wanted) if wanted else []
         # Legibility last: it measures the file as it will actually ship, so it
         # has to run after the restyle and after any plate has gone in behind
         # the text.

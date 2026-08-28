@@ -9,17 +9,21 @@ Everything here is stdlib. Art is authored as SVG, rasterised with the headless
 Chrome route `DESIGN.md` already documents (never LibreOffice), and animation is
 packed into GIF89a by the encoder at the bottom of this file.
 
-**Which plates move, and why those.** The system licenses motion that is
-"constant-speed and small". Three plates are animated — `spectrum-rail`,
-`bracket` and `disc-corner` — and all three are deliberately the *flat* ones. A
-GIF is palette-indexed, so it renders flat vector art exactly and a smooth
-gradient only approximately; animating the gradient plates would have meant
-either visible banding across a 1920x1080 background or a multi-megabyte file
-cloned into 83 chapter decks. `disc-corner` qualifies despite being the
-largest mark in the set because it is a flat disc on a flat ground — only its
-radius moves, and the quantiser measures that rather than trusting this
-paragraph. The gradient plates stay static PNG, where they are pixel-perfect.
-Flat art moves, smooth art doesn't.
+**What moves, and what doesn't.** The backgrounds are still. An earlier pass
+animated the plates themselves — a lead stepping along a rail, a disc breathing
+— and behind a title that reads as restless rather than alive; it was cut.
+
+What moves now is the **agent**, on the three plates that carry one: it blinks
+and bobs by one grid unit in the corner, well clear of the type. That is motion
+with a subject, which is what the design system licenses the motif for, and it
+is small and constant-speed as the system requires.
+
+Those three are also the flat plates, which matters technically: a GIF is
+palette-indexed, so it renders flat vector art exactly and a smooth gradient
+only approximately. The gradient plates carry no agent and stay static PNG,
+where they are pixel-perfect — animating one would have meant either visible
+banding across a 1920x1080 background or a multi-megabyte file cloned into 83
+chapter decks.
 
 **Frame 1 has to stand alone.** The Slides API thumbnail, every PDF export, and
 the Luma/LinkedIn banner crops all show a single frame, so each animation starts
@@ -40,8 +44,13 @@ ASPECTS = {"wide": (1920, 1080), "square": (1080, 1080)}
 PLATES = ("hero-gradient", "soft-plate", "night-ridge", "bracket",
           "disc-corner", "spectrum-rail")
 
-#: The three that move. See the module docstring for why these and not the others.
-ANIMATED = ("spectrum-rail", "bracket", "disc-corner")
+#: The plates that carry an agent, and therefore the ones that move. Nothing
+#: else animates: the backgrounds themselves are still. Abstract motion in the
+#: plate — a stepping lead, a breathing disc — read as restless behind a title
+#: and was cut. The agent blinking and bobbing in the corner is motion with a
+#: subject, which is what the design system licenses the motif for.
+AGENT_PLATES = ("night-ridge", "disc-corner", "bracket")
+ANIMATED = AGENT_PLATES
 
 #: One hue leads each plate. spec-1..5 are the primaries the system says lead a
 #: surface; the plate's secondary marks derive as (primary + 5), which is the
@@ -194,6 +203,33 @@ def plate(kind, aspect, frame=0.0):
             hue(1), hue(1), hue(3), hue(3), w, h, w, h)
         return _svg(w, h, body, "#" + token("void-2"))
 
+    def _corner_agent(ridge_y, amp, seed=0):
+        """The agent in the bottom-right, standing on the ridge if there is one.
+
+        Bottom-right because the title stack runs down the LEFT from ~24% to
+        ~72% of the height, and the footer row sits at ~82%. This is the one
+        region of a hero slide that is reliably empty.
+        """
+        # Small, and BELOW the footer rule (~79% of the height), left of the
+        # "AAIF.IO / COMMUNITY" line that occupies the far bottom-right. Sized
+        # and placed to clear both: at 17% with its feet on the ridge the agent
+        # stood astride the rule, which read as a mistake rather than a mark.
+        asz = h * 0.12
+        ax = w * 0.70
+        if ridge_y is None:
+            feet = h * 0.955
+        else:
+            feet = _ridge_y(w, h, ridge_y, amp, seed, ax + asz / 2)
+        top = feet - asz * FEET - (asz / 48.0) * (1 if 0.25 <= frame < 0.75 else 0)
+        art = agent(ax, top, asz, spec=sec, on_dark=True)
+        if 0.86 <= frame < 0.94:
+            art = art.replace(
+                '<circle cx="19.8" cy="22.5" r="2.45"',
+                '<ellipse cx="19.8" cy="22.5" rx="2.45" ry="0.3"').replace(
+                '<circle cx="28.2" cy="22.5" r="2.45"',
+                '<ellipse cx="28.2" cy="22.5" rx="2.45" ry="0.3"')
+        return art
+
     if kind == "night-ridge":
         # The dune situation, inverted onto the black plate and pushed into the
         # bottom 18% so it sits under the footer rule rather than through the
@@ -205,6 +241,7 @@ def plate(kind, aspect, frame=0.0):
             body += ('<g opacity="%.2f">%s</g>'
                      % (op, _ridge(w, h, h * yf, h * 0.022, hue(lead), seed=h * 0.006 * i)))
         body += _ridge(w, h, h * 0.975, h * 0.012, "#" + token("void"))
+        body += _corner_agent(h * 0.955, h * 0.018)
         return _svg(w, h, body, void())
 
     if kind == "bracket":
@@ -223,27 +260,30 @@ def plate(kind, aspect, frame=0.0):
                     cx if sx > 0 else cx - u,
                     cy + sy * i * u * 1.7 - (0 if sy > 0 else u), u, u,
                     "#" + token("ink-inv"))
+        # The 2x2 dot grid, top right, STILL. Cycling a lit dot round it was
+        # the restless kind of motion this set no longer does.
         d = h * 0.030
         gap = d * 2.9
         gx, gy = w - pad - gap * 1.9, pad + gap * 1.9
-        lit = int(frame * 4) % 4
         for i, (dx, dy) in enumerate(((-1, -1), (1, -1), (-1, 1), (1, 1))):
             body += '<circle cx="%f" cy="%f" r="%f" fill="%s" opacity="%s"/>' % (
                 gx + dx * gap / 2, gy + dy * gap / 2, d,
-                hue(lead) if i == lit else "#" + token("ink-inv"),
-                "1" if i == lit else "0.5")
+                hue(lead) if i == 0 else "#" + token("ink-inv"),
+                "1" if i == 0 else "0.5")
+        body += _corner_agent(None, 0)
         return _svg(w, h, body, void())
 
     if kind == "disc-corner":
         # One hue disc bleeding off the top-right corner -- the single largest
-        # mark in the set, and the plate to use when the title is short. It
-        # breathes: the radius moves by a few percent over the loop, which is
-        # the smallest constant-speed motion the system's vocabulary contains.
-        r = h * (0.46 + 0.03 * abs(0.5 - frame) * 2)
+        # mark in the set, and the plate to use when the title is short. The
+        # disc is FIXED; an earlier pass had its radius breathe, which behind a
+        # title read as the background twitching.
+        r = h * 0.46
         body = '<circle cx="%f" cy="%f" r="%f" fill="%s"/>' % (w * 0.96, h * 0.06, r, hue(lead))
         body += ('<circle cx="%f" cy="%f" r="%f" fill="none" stroke="%s" '
                  'stroke-width="%f" opacity="0.35"/>'
                  % (w * 0.96, h * 0.06, r * 1.22, hue(sec), max(1.5, h * 0.0025)))
+        body += _corner_agent(None, 0)
         return _svg(w, h, body, void())
 
     if kind == "spectrum-rail":
@@ -255,14 +295,15 @@ def plate(kind, aspect, frame=0.0):
         # single frame every PDF and thumbnail shows is a finished composition.
         r = h * 0.020
         lane = h * 0.945
-        lead_i = int(frame * 10) % 10
+        # The lead is the FIRST disc and stays there. Stepping it along the
+        # rail was the most obviously restless thing in the set.
         body = ('<line x1="%f" y1="%f" x2="%f" y2="%f" stroke="%s" stroke-width="%f" '
                 'opacity="0.30"/>' % (w * 0.06, lane, w * 0.94, lane,
                                       "#" + token("ink-inv"), max(1, h * 0.0015)))
         for i in range(10):
             x = w * (0.06 + i * 0.0978)
             body += '<circle cx="%f" cy="%f" r="%f" fill="%s"/>' % (
-                x, lane, r * (1.9 if i == lead_i else 1.0), hue(i + 1))
+                x, lane, r * (1.9 if i == 0 else 1.0), hue(i + 1))
         return _svg(w, h, body, void())
 
     raise ValueError("unknown plate %r" % kind)

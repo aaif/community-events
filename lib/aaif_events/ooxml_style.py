@@ -960,9 +960,15 @@ def improve_contrast(path):
     return rescued, len(before), len(after_all)
 
 
-def _rewrite_zip_to(src, dst, transform, drop=()):
+def _rewrite_zip_to(src, dst, transform, drop=(), add=None):
     """`create_chapter._rewrite_zip`, but writing to a separate path so a trial
-    can be scored without disturbing the original, and able to DROP members.
+    can be scored without disturbing the original, and able to DROP and ADD
+    members.
+
+    `add` is `{name: bytes}` for parts that do not exist in `src`. Without it a
+    caller can point a relationship at a new part and never write it, leaving a
+    file whose rels reference a member that is not in the archive — which reads
+    as a successful rewrite and fails when something opens it.
 
     Validates the repack with `testzip()` and removes `dst` if anything goes
     wrong, exactly as `_rewrite_zip` does. That is not defensive padding: the
@@ -987,6 +993,8 @@ def _rewrite_zip_to(src, dst, transform, drop=()):
                 zi.compress_type = it.compress_type
                 zi.external_attr = it.external_attr
                 zout.writestr(zi, new)
+            for name, data in sorted((add or {}).items()):
+                zout.writestr(zipfile.ZipInfo(name), data)
         with zipfile.ZipFile(dst) as zt:
             if zt.testzip() is not None:
                 raise RuntimeError("repackaged zip failed validation: " + dst)
@@ -1202,3 +1210,123 @@ def retire_plates(path, replacement, keep_digests):
                     lambda n, d: replacement if n in legacy else d)
     os.replace(path + ".new", path)
     return sorted(legacy)
+
+
+def update_plates(path, plates):
+    """Refresh the artwork behind slides this toolkit already plated.
+
+    `add_plate_slides` is idempotent by LABEL — a deck that already has
+    `hero-gradient` is skipped — which is right for adding, and wrong for
+    changing the art. Retirement is no help either: it would see six unfamiliar
+    digests and replace all six with the single retirement plate.
+
+    So this matches on the label each generated slide carries in its
+    `<p:cSld name="AAIF plate · …">` and swaps that slide's background media
+    for the current file of the same name. Slides the toolkit did not generate
+    are untouched, and a deck whose art is already current comes back unchanged
+    so the caller does not re-upload it.
+
+    Returns the labels whose artwork changed.
+    """
+    by_label = dict(plates)
+    changed, media_for, retarget = [], {}, {}
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        for slide in sorted(n for n in names
+                            if re.match(r"ppt/slides/slide\d+\.xml$", n)):
+            xml = z.read(slide).decode("utf-8", "replace")
+            mark = re.search(r'<p:cSld[^>]*\bname="AAIF plate · ([^"]*)"', xml)
+            if not mark or mark.group(1) not in by_label:
+                continue
+            label = mark.group(1)
+            bg = re.search(r"<p:bg>.*?</p:bg>", xml, re.S)
+            embed = re.search(r'<a:blip[^>]*r:embed="([^"]+)"', bg.group(0)) if bg else None
+            if not embed:
+                continue
+            rels = "ppt/slides/_rels/%s.rels" % os.path.basename(slide)
+            if rels not in names:
+                continue
+            rel = re.search(r'<Relationship\b[^>]*Id="%s"[^>]*/>'
+                            % re.escape(embed.group(1)),
+                            z.read(rels).decode("utf-8", "replace"))
+            tgt = re.search(r'Target="([^"]+)"', rel.group(0)) if rel else None
+            if not tgt:
+                continue
+            part = os.path.normpath(
+                os.path.join("ppt/slides", tgt.group(1))).replace(os.sep, "/")
+            with open(by_label[label], "rb") as fh:
+                new = fh.read()
+            if z.read(part) == new:
+                continue                    # already current
+            want_ext = os.path.splitext(by_label[label])[1].lower()
+            if os.path.splitext(part)[1].lower() == want_ext:
+                media_for[part] = new
+            else:
+                # The plate changed TYPE — a still became animated, or the
+                # reverse. Bytes cannot be swapped under the old name, because
+                # the part's extension and its content type declare what it is.
+                # Point the relationship at a NEW part and drop the old one.
+                retarget[(slide, rels, embed.group(1), part)] = (label, new, want_ext)
+            changed.append(label)
+    if not media_for and not retarget:
+        return []
+
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+    next_media = 1 + max([int(m.group(1)) for m in
+                          (re.match(r"ppt/media/image(\d+)\.", n) for n in names)
+                          if m] or [0])
+    rel_edits, ct_adds, drop = {}, set(), set()
+    for (slide, rels, rid, part), (_label, new, ext) in sorted(retarget.items()):
+        newpart = "ppt/media/image%d%s" % (next_media, ext)
+        next_media += 1
+        media_for[newpart] = new
+        rel_edits.setdefault(rels, []).append((rid, os.path.basename(newpart)))
+        ct_adds.add(ext)
+        drop.add(part)
+
+    def tx(name, data):
+        if name in media_for:
+            return media_for[name]
+        if name in rel_edits:
+            xml = data.decode("utf-8", "replace")
+            for rid, base in rel_edits[name]:
+                xml = re.sub(
+                    r'(<Relationship\b[^>]*Id="%s"[^>]*Target=")[^"]*(")'
+                    % re.escape(rid),
+                    lambda m: m.group(1) + "../media/" + base + m.group(2), xml)
+            return xml.encode("utf-8")
+        if name == "[Content_Types].xml" and ct_adds:
+            xml = data.decode("utf-8", "replace")
+            for ext in ct_adds:
+                if ('Extension="%s"' % ext[1:]) not in xml:
+                    xml = xml.replace(
+                        "</Types>", '<Default ContentType="%s" Extension="%s"/>'
+                                    "</Types>" % (_MEDIA_CT[ext], ext[1:]))
+            return xml.encode("utf-8")
+        return data
+
+    # A dropped part may still be referenced by a slide this did not retarget —
+    # the same plate image can back more than one slide. Count the references
+    # that will REMAIN and keep any part something still points at.
+    retargeted = {rid for edits in rel_edits.values() for rid, _b in edits}
+    remaining = set()
+    with zipfile.ZipFile(path) as z:
+        for n in names:
+            if not n.endswith(".rels"):
+                continue
+            for rel in re.finditer(r"<Relationship\b[^>]*/>",
+                                   z.read(n).decode("utf-8", "replace")):
+                rid = re.search(r'Id="([^"]+)"', rel.group(0))
+                tgt = re.search(r'Target="\.\./media/([^"]+)"', rel.group(0))
+                if not tgt:
+                    continue
+                if n in rel_edits and rid and rid.group(1) in retargeted:
+                    continue          # this reference is being moved away
+                remaining.add("ppt/media/" + tgt.group(1))
+    new_parts = {k: v for k, v in media_for.items() if k not in names}
+    _rewrite_zip_to(path, path + ".new", tx,
+                    drop={d for d in drop if d not in remaining},
+                    add=new_parts)
+    os.replace(path + ".new", path)
+    return sorted(set(changed))
