@@ -5,14 +5,14 @@ set. Everything is inlined into a single self-contained HTML file — no CDN, no
 webfont fetch — because the pages are published as Artifacts under a strict CSP
 and printed to PDF offline.
 
-Colours are defined three times on purpose: bare `:root` carries the full light
-palette, and the dark values are repeated under both
-`@media (prefers-color-scheme: dark)` and `:root[data-theme="dark"]`. A viewer
-on the default "system" setting gets no `data-theme` stamp at all, so a colour
-defined only inside a `[data-theme]` block would never apply to them. The media
-block is additionally scoped to `:root:not([data-theme="light"])` so an explicit
-light choice still wins on a dark OS — do not simplify that selector to a bare
-`:root`, which silently breaks light-on-dark-OS with nothing to signal it.
+Colours are defined once, on bare `:root`, and the page is white. There is no
+dark mode and no `prefers-color-scheme` block: AAIF is a **two-surface** system —
+white editorial and a black plate — where the surface is chosen per component by
+the designer, not flipped wholesale by the viewer's OS. An earlier pass here
+shipped a light palette plus an inverted twin, which is a different design
+language wearing AAIF's tokens. Black still appears, but only where something is
+deliberately drawn on it (`.closing`), and those rules carry their own light-on-
+dark colours inline.
 
 Output files are written 0600 through a `<name>.<random>.partial` sibling that
 is `os.replace`d into place (`write_private`). A run killed between the two
@@ -176,7 +176,7 @@ def design_tokens():
 BASE_CSS = """
 :root{
   --ground:var(--paper,#FFFFFF); --surface:var(--paper,#FFFFFF);
-  --sunken:var(--paper-2,#F6F5F1); --inset:var(--paper-3,#ECEBE6);
+  --sunken:var(--paper-3,#ECEBE6); --inset:var(--paper-3,#ECEBE6);
   --ink-1:var(--ink,#0A0A0A); --ink-soft:var(--ink-2,#1A1A1A);
   --ink-mid:var(--ink-3,#4A4A4A); --ink-faint:var(--ink-4,#8C8C8C);
   --line-1:var(--line,#E5E5E2); --line-soft:var(--line,#E5E5E2);
@@ -185,35 +185,8 @@ BASE_CSS = """
   --accent-soft:var(--paper-3,#ECEBE6);
   --marker:var(--spec-2,#4D7CFE);
   --ok:var(--success,#2BB673); --ok-bg:var(--paper-3,#ECEBE6);
-  --warn:var(--warning,#E0A23A); --warn-bg:var(--paper-2,#F6F5F1);
-  --bad:var(--danger,#E26052); --bad-bg:var(--paper-2,#F6F5F1);
-}
-/* The design system is dark-entry, but its EDITORIAL surface is white and
-   these are editorial documents that get printed. Dark mode therefore uses the
-   system's own inverse surfaces rather than an invented dark palette. */
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]){
-    --ground:var(--void,#000000); --surface:var(--void-2,#0A0A0A);
-    --sunken:var(--void-3,#161616); --inset:var(--void-3,#161616);
-    --ink-1:var(--ink-inv,#FFFFFF); --ink-soft:var(--ink-inv-2,#C9C9C5);
-    --ink-mid:var(--ink-inv-2,#C9C9C5); --ink-faint:var(--ink-inv-3,#8A8A86);
-    --line-1:var(--line-inv,#262626); --line-soft:var(--line-inv,#262626);
-    --line-hard:var(--line-inv,#262626);
-    --accent:var(--ink-inv,#FFFFFF); --accent-soft:var(--void-3,#161616);
-    --ok-bg:var(--void-3,#161616); --warn-bg:var(--void-3,#161616);
-    --bad-bg:var(--void-3,#161616);
-  }
-}
-:root[data-theme="dark"]{
-  --ground:var(--void,#000000); --surface:var(--void-2,#0A0A0A);
-  --sunken:var(--void-3,#161616); --inset:var(--void-3,#161616);
-  --ink-1:var(--ink-inv,#FFFFFF); --ink-soft:var(--ink-inv-2,#C9C9C5);
-  --ink-mid:var(--ink-inv-2,#C9C9C5); --ink-faint:var(--ink-inv-3,#8A8A86);
-  --line-1:var(--line-inv,#262626); --line-soft:var(--line-inv,#262626);
-  --line-hard:var(--line-inv,#262626);
-  --accent:var(--ink-inv,#FFFFFF); --accent-soft:var(--void-3,#161616);
-  --ok-bg:var(--void-3,#161616); --warn-bg:var(--void-3,#161616);
-  --bad-bg:var(--void-3,#161616);
+  --warn:var(--warning,#E0A23A); --warn-bg:var(--paper-3,#ECEBE6);
+  --bad:var(--danger,#E26052); --bad-bg:var(--paper-3,#ECEBE6);
 }
 *{box-sizing:border-box}
 body{margin:0; background:var(--ground); color:var(--ink-soft);
@@ -241,11 +214,6 @@ code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
   border-bottom:1px solid var(--line-hard)}
 .masthead .mark{width:150px; height:auto; display:block}
 .masthead .mark-text{font-weight:600; font-size:1.3rem; letter-spacing:-.02em}
-/* The mark is solid black artwork; on the dark surface it must invert. */
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]) .masthead .mark{filter:invert(1)}
-}
-:root[data-theme="dark"] .masthead .mark{filter:invert(1)}
 .mh-meta{font-family:var(--font-mono,ui-monospace,Menlo,monospace);
   font-size:12px; text-transform:uppercase;
   letter-spacing:var(--tr-eyebrow,.16em); color:var(--ink-faint)}
@@ -388,15 +356,12 @@ footer{color:var(--ink-faint); font-size:.8rem; border-top:1px solid var(--line-
 @media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
 
 @media print{
-  /* A PDF is printed on paper, not in the viewer's theme — pin the light set. */
-  :root{
-    --ground:#FFFFFF; --surface:#FFFFFF; --sunken:#F4F1F7;
-    --ink:#1A1522; --ink-soft:#4A4356; --ink-faint:#6E6679;
-    --line:#CFC6DA; --line-soft:#E4DEEC;
-    --accent:#5A3D8C; --accent-soft:#EFE9F7;
-    --ok:#1F5F42; --ok-bg:#E4F2EB; --warn:#7A4E0A; --warn-bg:#F8EEDA;
-    --bad:#8C2634; --bad-bg:#F8E6E8;
-  }
+  /* No palette override here. This block used to pin a purple set that
+     predated AAIF (--accent:#5A3D8C), and because it redefined the DESIGN
+     SYSTEM's own names (--ink, --line) rather than the report vocabulary
+     (--ink-1, --line-1), every PDF printed in the old brand while the screen
+     rendered correctly. The page is white on screen and on paper now, so
+     there is nothing to pin — only geometry belongs in @media print. */
   @page{size:A4; margin:14mm 12mm}
   body{font-size:9.5pt; background:#fff}
   .wrap{max-width:none; padding:0; gap:22px}

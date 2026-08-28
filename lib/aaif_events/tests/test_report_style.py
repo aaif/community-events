@@ -10,6 +10,7 @@ escaping simply stops escaping — so neither is safe to leave un-pinned.
 """
 
 import os
+import re
 import subprocess
 
 import pytest
@@ -403,3 +404,60 @@ def test_write_private_keeps_a_pre_existing_file_when_replace_fails(tmp_path, mo
     with pytest.raises(OSError):
         rs.write_private(str(target), "x")
     assert target.read_text(encoding="utf-8") == "previous"
+
+
+# ---------------------------------------------------------- surface model ---
+# AAIF is a two-surface system: white editorial and a black plate, chosen per
+# component. It is NOT a light palette with an inverted dark twin, and the page
+# background is white — never the warm off-white, which the system reserves for
+# occasional section banding. Both of those were shipped here once and read as a
+# different design language wearing AAIF's tokens, so they are pinned.
+
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+
+
+def _css(text):
+    """BASE_CSS with comments stripped — a hex or a selector named only in prose
+    is documentation, not a rule, and must not fail these tests."""
+    return _CSS_COMMENT.sub("", text)
+
+
+def test_the_report_css_has_no_dark_mode():
+    css = _css(rs.BASE_CSS)
+    assert "prefers-color-scheme" not in css
+    assert "data-theme" not in css
+
+
+def test_the_page_ground_is_white():
+    css = _css(rs.BASE_CSS)
+    assert "--ground:var(--paper,#FFFFFF)" in css
+
+
+def test_the_warm_off_white_is_not_a_surface():
+    # --paper-2 (#F6F5F1) is section banding in the design system. A report that
+    # reaches for it as a default surface is the drift this guards against.
+    css = _css(rs.BASE_CSS)
+    assert "--paper-2" not in css
+    assert "F6F5F1" not in css.upper()
+
+
+def test_print_pins_no_palette():
+    # The print block used to redefine the design system's own token names, so
+    # every PDF came out in a pre-AAIF purple while the screen looked right.
+    css = _css(rs.BASE_CSS)
+    printblock = css[css.index("@media print"):]
+    for token in ("--accent:", "--ink:", "--line:", "--ground:", "--ok:", "--bad:"):
+        assert token not in printblock, "print must not pin %s" % token
+
+
+def test_every_colour_in_the_css_is_a_design_system_value():
+    """No literal hex may appear that the token file does not define. Every hex
+    in BASE_CSS is either a `var(--token,#fallback)` fallback or an inline
+    on-black colour, and both have to come from the system."""
+    tokens = open(rs._TOKENS, encoding="utf-8").read().upper()
+    stray = []
+    for h in set(re.findall(r"#([0-9A-Fa-f]{3,6})\b", _css(rs.BASE_CSS))):
+        full = "".join(c * 2 for c in h) if len(h) == 3 else h
+        if full.upper() not in tokens:
+            stray.append("#" + h)
+    assert not stray, "off-system colours in BASE_CSS: %s" % ", ".join(sorted(stray))

@@ -60,6 +60,22 @@ placeholder the organizer fills in).
   page is created manually at luma.com. Pass `--slug` to override.
 - Pages resolve at both `https://luma.com/aaif-<slug>` and `https://lu.ma/aaif-<slug>`.
 
+## Conforming the estate to the design system
+
+The online series' templates are swept by the same script as the chapters':
+
+```bash
+python3 skills/aaif-create-chapter/scripts/restyle_design_system.py --check
+python3 skills/aaif-create-chapter/scripts/restyle_design_system.py --write
+```
+
+It covers `Online/<Series>/` and its `Event Template` and `Banners (…)`
+subfolders, and asserts it reached **TemplateSeries** — the folder this skill
+clones — exiting non-zero if it did not. Read-only by default; every
+pre-change file is archived to `./backups/restyle-<UTC>/` before it is
+replaced. See `skills/aaif-create-chapter/SKILL.md` and `DESIGN.md` for the
+rules it applies.
+
 ## Procedure
 
 1. **Confirm the series display name and slug with the user.** Ask for the exact
