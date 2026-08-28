@@ -194,6 +194,7 @@ _ROLE_MAP = {
     "2E74B5": {"fill": "paper-3", "stroke": "line", "text": "ink"},
     "0000EE": {"fill": "paper-3", "stroke": "line", "text": "ink"},
     "1155CC": {"fill": "paper-3", "stroke": "line", "text": "ink"},
+    "0000FF": {"fill": "paper-3", "stroke": "line", "text": "ink"},   # Excel's
     "C7D2EC": {"fill": "paper-3", "stroke": "line", "text": "ink-3"},
     "666666": {"fill": "line-2", "stroke": "line-2", "text": "ink-3"},
     # Near-blacks that ride in on pasted content rather than from the template:
