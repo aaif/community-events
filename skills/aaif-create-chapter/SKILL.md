@@ -257,6 +257,15 @@ python3 -c "from aaif_events import agent_art; agent_art.build('/tmp/plates')"
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
     --plates /tmp/plates --write
 
+# Audit TEXT LEGIBILITY: every run below WCAG AA against what is behind it.
+# Catches what a token check cannot — black-on-black is two correct tokens.
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --contrast
+
+# Repair it, by measurement (only where a run crosses the threshold upward
+# and none crosses down):
+python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+    --fix-contrast --write
+
 # Run the engine on a local file, no Drive at all:
 python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
     --restyle-local ./Slides.pptx

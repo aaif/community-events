@@ -71,6 +71,38 @@ Three things about it are worth knowing before editing:
 - **A colour with no rule is left alone and reported.** `audit()` lists what is
   still off-system; silence would let new drift through unnoticed.
 
+### Legibility is a separate check from conformance
+
+A token check cannot catch unreadable text, because **black-on-black is two
+correct AAIF tokens in the wrong pairing**. That shipped: the black-plate title
+slide set its eyebrow, its subtitle and the wordmark of its host lockup in the
+light ink ramp, and the slide looked empty rather than wrong.
+
+`lib/aaif_events/contrast.py` measures pairings. For every run it resolves the
+colour actually drawn and the colour actually behind it — shape fill, then the
+slide's `<p:bg>`, then the layout's, then the master's — and scores WCAG AA
+(4.5:1, or 3:1 for text ≥18pt or ≥14pt bold). Where the background is an
+**image**, which is where the interesting text sits, the picture is decoded and
+sampled *under that run's own shape*, so text over a plate's dark corner and
+text over its bright disc get different answers.
+
+It reports rather than guesses. A run that inherits its colour through the
+placeholder/layout/master chain is `unchecked`, never passed, and so is a
+translucent run whose drawn colour depends on the backdrop. A confident wrong
+ratio would be worse than an honest gap: the value of the check is being able
+to trust a clean report.
+
+```bash
+python3 skills/aaif-create-chapter/scripts/restyle_design_system.py --contrast
+```
+
+`ooxml_style.improve_contrast` repairs what it finds, and decides by
+measurement: a slide is re-scored with the on-dark remap applied and kept only
+if a run **crosses** the threshold upward and none crosses down. The rule is
+about crossings, not about the numbers — requiring that no ratio drop at all
+rejects rescuing a 1.00:1 wordmark because `--ink-4` → `--ink-inv-3` moves
+already-passing runs from 5.89 to 5.71.
+
 `lib/aaif_events/agent_art.py` draws the background plates and the agent motif
 from the same tokens, rasterising through headless Chrome and packing animation
 with its own GIF89a encoder. The rule about which plates may animate is

@@ -32,6 +32,7 @@ same goes for a background this cannot pin down. An honest "unchecked" is worth
 more than a confident wrong ratio, because the whole point is to be able to
 trust a clean report.
 """
+import hashlib
 import os
 import re
 import zipfile
@@ -242,6 +243,54 @@ def _rels_of(z, part):
     return out
 
 
+#: Decoded backgrounds, keyed by the image's own bytes.
+#:
+#: The estate shares its plates: the same 1920x1080 PNG is embedded in every one
+#: of the hero decks. Decoding is pure-Python PNG unfiltering, so without this
+#: the check spends all its time decoding the same twelve pictures hundreds of
+#: times and an estate run does not finish.
+_CACHE = {}
+
+#: Longest side kept after decoding. Only regional MEANS are ever read off these
+#: images, and a mean does not need full resolution — this bounds both the time
+#: spent sampling and the memory held for a deck full of full-bleed plates.
+SAMPLE_MAX = 160
+
+
+def _shrink(image):
+    w, h, rows = image
+    step = max(1, (max(w, h) + SAMPLE_MAX - 1) // SAMPLE_MAX)
+    if step == 1:
+        return image
+    out = []
+    for y in range(0, h, step):
+        row = rows[y]
+        out.append(bytearray(b"".join(bytes(row[x * 3:x * 3 + 3])
+                                      for x in range(0, w, step))))
+    return (len(range(0, w, step)), len(out), out)
+
+
+def _decode(blob, suffix):
+    """A decoded, downsampled background image, or None if it cannot be read."""
+    key = hashlib.sha256(blob).digest()
+    if key in _CACHE:
+        return _CACHE[key]
+    import tempfile
+    result = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fh:
+            fh.write(blob)
+            tmp = fh.name
+        try:
+            result = _shrink(read_image(tmp))
+        finally:
+            os.remove(tmp)
+    except Exception:
+        result = None            # reported as unchecked wherever it is used
+    _CACHE[key] = result
+    return result
+
+
 # ------------------------------------------------------------------ finding --
 class Finding(object):
     __slots__ = ("part", "text", "fg", "bg", "ratio", "size_pt", "bold",
@@ -309,22 +358,10 @@ def check_pptx(path, include_passes=False):
         master_xml = read(masters[0]) if masters else ""
         theme = Theme(scheme, _parse_clrmap(master_xml))
 
-        # Decode every embedded image once; a plate is shared by several slides.
         media = {}
         for n in names:
             if re.match(r"ppt/media/.*\.(png|gif)$", n, re.I):
-                try:
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(
-                            suffix=os.path.splitext(n)[1], delete=False) as fh:
-                        fh.write(z.read(n))
-                        tmp = fh.name
-                    try:
-                        media[n] = read_image(tmp)
-                    finally:
-                        os.remove(tmp)
-                except Exception:
-                    media[n] = None      # reported as unchecked where it is used
+                media[n] = _decode(z.read(n), os.path.splitext(n)[1])
 
         master_bg = (_background_of(master_xml, _rels_of(z, masters[0]), media,
                                     theme, "master")
