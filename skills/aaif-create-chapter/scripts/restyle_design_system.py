@@ -313,6 +313,12 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             fresh = not existed
 
         parts = cc._rewrite_zip(src, ox.restyle_part)
+        # Renaming the faces leaves a Word file referencing a font it does not
+        # embed, still declaring the faces nobody uses, and carrying ~760KB of
+        # their embedded bytes. Reconcile the font table with what the document
+        # now actually asks for.
+        pruned = (ox.prune_embedded_fonts(src)
+                  if entry["mime"] == cc.DOCX else ([], []))
         # Plates are appended after the restyle so the slide they are cloned
         # from is already conformant — otherwise every new slide would carry a
         # copy of the drift this run just removed.
@@ -332,7 +338,8 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         rescued = (ox.improve_contrast(src)
                    if fix_contrast and entry["mime"] == cc.PPTX else (0, 0, 0))
         after = ox.audit(src)
-        if not parts and not plated and not rescued[0] and not retired:
+        if not parts and not plated and not rescued[0] and not retired \
+                and not pruned[0] and not pruned[1]:
             # Nothing changed. If we archived a file we are not going to upload,
             # take the copy back out so the archive means "these were replaced".
             if fresh and archived and os.path.exists(archived):
@@ -344,7 +351,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
             cc.gws_upload(entry["id"], src, entry["mime"])
         return entry, {"before": before, "parts": parts, "after": after,
                        "plates": plated, "rescued": rescued,
-                       "retired": retired}, None
+                       "retired": retired, "pruned": pruned}, None
     except Exception as e:                # one bad file must not stop the run
         # Prefix the class: this catch spans the XML engine, the archive, and
         # both transfers, and a bare message makes a ValueError in the rewrite
@@ -519,6 +526,12 @@ def main():
                      _summarise(report["before"]) or "(already conformant)"))
             if report.get("plates"):
                 print("                 + plates: %s" % ", ".join(report["plates"]))
+            if report.get("pruned") and report["pruned"][0]:
+                faces, dropped = report["pruned"]
+                print("                 + fonts: dropped %s from the font table"
+                      "%s" % (", ".join(faces),
+                              "; removed %d embedded face part(s)" % len(dropped)
+                              if dropped else ""))
             if report.get("retired"):
                 print("                 + retired legacy plate: %s"
                       % ", ".join(os.path.basename(x) for x in report["retired"]))

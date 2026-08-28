@@ -949,21 +949,137 @@ def improve_contrast(path):
     return rescued, len(before), len(after_all)
 
 
-def _rewrite_zip_to(src, dst, transform):
+def _rewrite_zip_to(src, dst, transform, drop=()):
     """`create_chapter._rewrite_zip`, but writing to a separate path so a trial
-    can be scored without disturbing the original."""
-    with zipfile.ZipFile(src) as zin, \
-            zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
-        for it in zin.infolist():
-            data = zin.read(it.filename)
-            try:
-                new = transform(it.filename, data)
-            except UnicodeDecodeError:
-                new = data
-            zi = zipfile.ZipInfo(it.filename, date_time=it.date_time)
-            zi.compress_type = it.compress_type
-            zi.external_attr = it.external_attr
-            zout.writestr(zi, new)
+    can be scored without disturbing the original, and able to DROP members.
+
+    Validates the repack with `testzip()` and removes `dst` if anything goes
+    wrong, exactly as `_rewrite_zip` does. That is not defensive padding: the
+    callers here `os.replace` this file over the good one and the sweep then
+    uploads it to Drive, so a truncated repack would silently replace the
+    original and ship it. An earlier version skipped both the check and the
+    cleanup.
+    """
+    ok = False
+    try:
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+            for it in zin.infolist():
+                if it.filename in drop:
+                    continue
+                data = zin.read(it.filename)
+                try:
+                    new = transform(it.filename, data)
+                except UnicodeDecodeError:
+                    new = data
+                zi = zipfile.ZipInfo(it.filename, date_time=it.date_time)
+                zi.compress_type = it.compress_type
+                zi.external_attr = it.external_attr
+                zout.writestr(zi, new)
+        with zipfile.ZipFile(dst) as zt:
+            if zt.testzip() is not None:
+                raise RuntimeError("repackaged zip failed validation: " + dst)
+        ok = True
+    finally:
+        if not ok and os.path.exists(dst):
+            os.remove(dst)
+
+
+# ------------------------------------------------- embedded Word fonts -------
+#: A font entry is either self-closing or a container, and the SELF-CLOSING
+#: alternative has to come first. With the container form first, `[^>]*>`
+#: happily consumes the `/` of `<w:font w:name="Arial"/>` and then `.*?` runs on
+#: to the NEXT entry's `</w:font>` — so one match swallows three entries and the
+#: two in the middle are never rewritten. The `(?<!/)` on the container form
+#: stops it matching a self-closing tag from the other direction.
+_FONT_ENTRY = re.compile(
+    r"<w:font\b[^>]*w:name=\"([^\"]+)\"[^>]*/>"
+    r"|<w:font\b[^>]*w:name=\"([^\"]+)\"[^>]*(?<!/)>.*?</w:font>", re.S)
+_EMBED = re.compile(r"<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*/>")
+_EMBED_ID = re.compile(r'r:id="([^"]+)"')
+
+
+def prune_embedded_fonts(path):
+    """Make `word/fontTable.xml` agree with the faces the document now uses.
+
+    Renaming every face to Instrument Sans leaves a tracker in a worse state
+    than it started: the document references a font the file does not embed,
+    the font table still declares the faces nobody uses any more, and ~760KB of
+    embedded TTFs for those faces ride along in every copy.
+
+    The embeds cannot simply be renamed with the entries — their BYTES are
+    Manrope and Space Grotesk, so calling them "Instrument Sans" would make
+    Word render the old face under the new name, which is worse than
+    substituting. So the embeds go, the orphaned font parts go with them, and
+    the table is deduplicated to the faces actually in use.
+
+    That does mean the trackers no longer carry an embedded copy of their
+    typeface. Instrument Sans is not embeddable from here — `assets/fonts` has
+    woff2, which OOXML cannot use — so this is honest rather than complete:
+    correct metadata and a smaller file, and the face resolves from the system
+    (Google Docs, where these live, has it). See DESIGN.md.
+
+    Returns (faces removed, parts dropped).
+    """
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        if "word/fontTable.xml" not in names:
+            return [], []
+        table = z.read("word/fontTable.xml").decode("utf-8", "replace")
+        rels_name = "word/_rels/fontTable.xml.rels"
+        rels = z.read(rels_name).decode("utf-8", "replace") if rels_name in names else ""
+
+    dropped_ids, removed, seen = set(), [], set()
+    out, last = [], 0
+    for m in _FONT_ENTRY.finditer(table):
+        face = m.group(1) or m.group(2)
+        block = m.group(0)
+        new_face = FONT_MAP.get(face, face)
+        out.append(table[last:m.start()])
+        last = m.end()
+        if new_face != face:
+            removed.append(face)
+            for e in _EMBED.finditer(block):
+                rid = _EMBED_ID.search(e.group(0))
+                if rid:
+                    dropped_ids.add(rid.group(1))
+            block = _EMBED.sub("", block)
+            block = block.replace('w:name="%s"' % face, 'w:name="%s"' % new_face)
+        if new_face in seen:
+            continue                       # collapsed onto an entry we kept
+        seen.add(new_face)
+        out.append(block)
+    out.append(table[last:])
+    new_table = "".join(out)
+
+    parts, new_rels = [], rels
+    for rm in re.finditer(r"<Relationship\b[^>]*/>", rels):
+        rid = re.search(r'Id="([^"]+)"', rm.group(0))
+        tgt = re.search(r'Target="([^"]+)"', rm.group(0))
+        if rid and tgt and rid.group(1) in dropped_ids:
+            parts.append(os.path.normpath(
+                os.path.join("word", tgt.group(1))).replace(os.sep, "/"))
+            new_rels = new_rels.replace(rm.group(0), "")
+
+    if not removed and not parts:
+        return [], []
+
+    def tx(name, data):
+        if name == "word/fontTable.xml":
+            return new_table.encode("utf-8")
+        if name == rels_name:
+            return new_rels.encode("utf-8")
+        if name == "[Content_Types].xml":
+            ct = data.decode("utf-8", "replace")
+            for part in parts:
+                ct = re.sub(r'<Override[^>]*PartName="/%s"[^>]*/>' % re.escape(part),
+                            "", ct)
+            return ct.encode("utf-8")
+        return data
+
+    _rewrite_zip_to(path, path + ".new", tx, drop=set(parts))
+    os.replace(path + ".new", path)
+    return sorted(set(removed)), sorted(parts)
 
 
 # ------------------------------------------------- retiring a legacy plate ----
@@ -1031,6 +1147,18 @@ def retire_plates(path, replacement, keep_digests):
                   if hashlib.sha256(z.read(part)).hexdigest() not in keep_digests]
     if not legacy:
         return []
+    # The bytes are swapped in place under the part's existing NAME, so the
+    # replacement has to be the type that name declares. Writing a PNG into
+    # ppt/media/imageN.jpeg leaves the part contradicting its content type —
+    # PowerPoint may refuse it, and the contrast checker, which decodes only
+    # .png and .gif, would quietly call the slide unreadable-background rather
+    # than repairing it.
+    wrong = [p for p in legacy if not p.lower().endswith(".png")]
+    if wrong:
+        raise RuntimeError(
+            "cannot retire %s with PNG bytes: the part name declares another "
+            "type. Rename the part and its content-type override, or supply a "
+            "replacement of that type." % ", ".join(wrong))
     _rewrite_zip_to(path, path + ".new",
                     lambda n, d: replacement if n in legacy else d)
     os.replace(path + ".new", path)

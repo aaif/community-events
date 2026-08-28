@@ -345,3 +345,46 @@ def test_a_grouped_shape_on_a_SOLID_ground_is_still_scored(tmp_path):
              % (SOLID_BLACK, inner))
     found = ct.check_pptx(_deck(tmp_path, slide))
     assert len(found) == 1 and found[0].ratio == 1.0
+
+
+def test_an_outlined_run_is_scored_by_its_fill_not_its_outline(tmp_path):
+    """DrawingML writes <a:rPr><a:ln><a:solidFill>…</a:ln><a:solidFill>… for
+    outlined text. Taking the first solidFill reads the OUTLINE as the text
+    colour — and improve_contrast keeps or discards a whole slide on that."""
+    run = ('<a:r><a:rPr sz="1200">'
+           '<a:ln><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:ln>'
+           '<a:solidFill><a:srgbClr val="0A0A0A"/></a:solidFill>'
+           "</a:rPr><a:t>X</a:t></a:r>")
+    found = ct.check_pptx(_deck(tmp_path, _slide(SOLID_BLACK, [run])),
+                          include_passes=True)
+    assert len(found) == 1
+    assert found[0].fg == (0x0A, 0x0A, 0x0A)      # the fill, not the outline
+    assert found[0].ratio == 1.0
+
+
+def test_a_multi_master_deck_will_not_resolve_scheme_colours(tmp_path):
+    """Each slide resolves scheme colours through its OWN master and theme.
+    Answering from the first of each would be confidently wrong, which is the
+    one outcome this module refuses."""
+    path = str(tmp_path / "multi.pptx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ppt/presentation.xml",
+                   '<p:presentation xmlns:p="p"><p:sldSz cy="5143500" cx="9144000"/>'
+                   "</p:presentation>")
+        z.writestr("ppt/theme/theme1.xml", _THEME)
+        z.writestr("ppt/theme/theme2.xml", _THEME.replace("0A0A0A", "FF0000"))
+        z.writestr("ppt/slideMasters/slideMaster1.xml", _MASTER)
+        z.writestr("ppt/slideMasters/slideMaster2.xml", _MASTER)
+        z.writestr("ppt/slides/slide1.xml",
+                   _slide(SOLID_BLACK, [_run("X", "tx1", scheme=True)]))
+    found = ct.check_pptx(path)
+    assert len(found) == 1
+    assert found[0].ratio is None
+    assert "themes" in found[0].note
+
+
+def test_a_single_master_deck_still_resolves_scheme_colours(tmp_path):
+    """The control: the guard must not switch itself on for a normal deck."""
+    deck = _deck(tmp_path, _slide(SOLID_BLACK, [_run("X", "tx1", scheme=True)]))
+    found = ct.check_pptx(deck)
+    assert len(found) == 1 and found[0].fg == (0x0A, 0x0A, 0x0A)

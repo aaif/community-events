@@ -16,6 +16,7 @@ relationship ids; the engine's whole premise is that it edits attributes in
 place and copies everything else through untouched.
 """
 import os
+import re
 import zipfile
 
 import pytest
@@ -562,3 +563,130 @@ def test_one_media_part_shared_by_several_slides_is_retired_once(tmp_path):
     assert used["ppt/media/image1.png"] == ["ppt/slides/slide1.xml",
                                             "ppt/slides/slide9.xml"]
     assert ox.retire_plates(deck, b"NEW", set()) == ["ppt/media/image1.png"]
+
+
+# ------------------------------------------------------- embedded Word fonts --
+
+def _docx_with_fonts(tmp_path, name="f.docx"):
+    """A .docx shaped like the real trackers: a mix of self-closing and
+    container <w:font> entries, three of them carrying embedded faces."""
+    path = str(tmp_path / name)
+    table = ('<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+             '<w:font w:name="Georgia"/>'
+             '<w:font w:name="Arial"/>'
+             '<w:font w:name="Manrope"><w:embedRegular r:id="rId1"/></w:font>'
+             '<w:font w:name="JetBrains Mono"><w:embedRegular r:id="rId2"/></w:font>'
+             '<w:font w:name="Space Grotesk"><w:embedRegular r:id="rId3"/></w:font>'
+             "</w:fonts>")
+    rels = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+            'openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="font" Target="fonts/Manrope.ttf"/>'
+            '<Relationship Id="rId2" Type="font" Target="fonts/JetBrainsMono.ttf"/>'
+            '<Relationship Id="rId3" Type="font" Target="fonts/SpaceGrotesk.ttf"/>'
+            "</Relationships>")
+    ct = ('<Types xmlns="ct">'
+          '<Override ContentType="font" PartName="/word/fonts/Manrope.ttf"/>'
+          '<Override ContentType="font" PartName="/word/fonts/JetBrainsMono.ttf"/>'
+          '<Override ContentType="font" PartName="/word/fonts/SpaceGrotesk.ttf"/>'
+          "</Types>")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", ct)
+        z.writestr("word/document.xml", '<w:document xmlns:w="w"/>')
+        z.writestr("word/fontTable.xml", table)
+        z.writestr("word/_rels/fontTable.xml.rels", rels)
+        for f in ("Manrope", "JetBrainsMono", "SpaceGrotesk"):
+            z.writestr("word/fonts/%s.ttf" % f, b"TTF" * 100)
+    return path
+
+
+def test_the_font_table_ends_up_declaring_only_the_faces_in_use(tmp_path):
+    deck = _docx_with_fonts(tmp_path)
+    removed, parts = ox.prune_embedded_fonts(deck)
+    assert removed == ["Arial", "Georgia", "Manrope", "Space Grotesk"]
+    with zipfile.ZipFile(deck) as z:
+        table = z.read("word/fontTable.xml").decode()
+    assert sorted(set(re.findall(r'w:name="([^"]+)"', table))) == \
+        ["Instrument Sans", "JetBrains Mono"]
+
+
+def test_a_self_closing_entry_does_not_swallow_the_next_one(tmp_path):
+    """`<w:font w:name="Arial"/>` followed by a container entry: with the
+    alternation the wrong way round, one match spans three entries and the two
+    in the middle are silently never rewritten."""
+    deck = _docx_with_fonts(tmp_path)
+    removed, _p = ox.prune_embedded_fonts(deck)
+    assert "Arial" in removed and "Manrope" in removed
+
+
+def test_the_renamed_faces_embedded_bytes_are_dropped_not_relabelled(tmp_path):
+    """Manrope's bytes must not end up called Instrument Sans — Word would then
+    render the OLD face under the new name, which is worse than substituting."""
+    deck = _docx_with_fonts(tmp_path)
+    _r, parts = ox.prune_embedded_fonts(deck)
+    assert sorted(parts) == ["word/fonts/Manrope.ttf", "word/fonts/SpaceGrotesk.ttf"]
+    with zipfile.ZipFile(deck) as z:
+        names = z.namelist()
+        assert "word/fonts/JetBrainsMono.ttf" in names     # still used, kept
+        assert "word/fonts/Manrope.ttf" not in names
+        assert "Manrope.ttf" not in z.read("[Content_Types].xml").decode()
+
+
+def test_no_embed_reference_is_left_dangling(tmp_path):
+    """A relationship pointing at a part that is gone is a corrupt file."""
+    deck = _docx_with_fonts(tmp_path)
+    ox.prune_embedded_fonts(deck)
+    with zipfile.ZipFile(deck) as z:
+        names = set(z.namelist())
+        table = z.read("word/fontTable.xml").decode()
+        rels = z.read("word/_rels/fontTable.xml.rels").decode()
+    relmap = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
+    for rid in set(re.findall(r'r:id="([^"]+)"', table)):
+        target = relmap.get(rid)
+        assert target, "embed %s has no relationship" % rid
+        assert "word/" + target in names, "embed %s points at a missing part" % rid
+
+
+def test_pruning_is_idempotent(tmp_path):
+    deck = _docx_with_fonts(tmp_path)
+    ox.prune_embedded_fonts(deck)
+    assert ox.prune_embedded_fonts(deck) == ([], [])
+
+
+def test_a_bad_repack_never_replaces_the_original(tmp_path):
+    """_rewrite_zip_to writes over the good file and the sweep uploads it, so a
+    failed repack must leave both the original and the filesystem untouched."""
+    deck = _docx_with_fonts(tmp_path)
+    before = open(deck, "rb").read()
+
+    def boom(name, data):
+        raise RuntimeError("disk says no")
+
+    with pytest.raises(RuntimeError):
+        ox._rewrite_zip_to(deck, deck + ".new", boom)
+    assert open(deck, "rb").read() == before
+    assert not os.path.exists(deck + ".new")
+
+
+def test_retiring_refuses_to_put_png_bytes_under_another_type(tmp_path):
+    """Swapping bytes in place keeps the part NAME, so the replacement has to
+    match the type that name declares."""
+    path = str(tmp_path / "j.pptx")
+    from aaif_events.tests import test_contrast as tc
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ppt/presentation.xml",
+                   '<p:presentation xmlns:p="p"><p:sldSz cy="5143500" cx="9144000"/>'
+                   "</p:presentation>")
+        z.writestr("ppt/theme/theme1.xml", tc._THEME)
+        z.writestr("ppt/media/image1.jpeg", b"JPEGBYTES")
+        z.writestr("ppt/slides/slide1.xml",
+                   '<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r">'
+                   "<p:cSld><p:bg><p:bgPr><a:blipFill>"
+                   '<a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch>'
+                   "</a:blipFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sld>")
+        z.writestr("ppt/slides/_rels/slide1.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="%s" Target="../media/image1.jpeg"/>'
+                   "</Relationships>" % ox._IMAGE_REL)
+    with pytest.raises(RuntimeError, match="declares another"):
+        ox.retire_plates(path, b"PNGBYTES", set())

@@ -75,6 +75,19 @@ Three things about it are worth knowing before editing:
 - **A workbook is not a deck.** `xl/styles.xml` is SpreadsheetML with ARGB
   colours, and needs its own pass; running the DrawingML one over it changes
   nothing and reports clean.
+- **Renaming a face is not free in Word.** A `.docx` declares its faces in
+  `word/fontTable.xml` and may embed them under `word/fonts/`. Rewriting the
+  document's font references without reconciling those leaves the file asking
+  for a font it does not embed, still declaring the ones it no longer uses, and
+  carrying their bytes — which is where the trackers ended up, ~760KB of dead
+  font data each. `prune_embedded_fonts` fixes the table and drops the orphans.
+  The embedded bytes cannot simply be renamed along with the entry: they *are*
+  Manrope, and calling them Instrument Sans makes Word render the old face
+  under the new name, which is worse than substituting. **Instrument Sans is
+  not embedded** as a result — `assets/fonts` holds woff2, which OOXML cannot
+  use — so a tracker resolves it from the system. That is fine where these
+  live (Google Docs has it) and a real gap for a `.docx` opened offline in
+  Word; embedding it needs a TTF added to `assets/fonts`.
 
 ### Legibility is a separate check from conformance
 

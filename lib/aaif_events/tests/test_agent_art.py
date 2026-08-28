@@ -11,6 +11,7 @@ because `lib` is stdlib-only, they are the kind of code whose bugs look like
 would notice: a mis-encoded plate lands in 83 chapter decks looking fine in the
 thumbnail.
 """
+import re
 import struct
 import zlib
 
@@ -238,3 +239,20 @@ def test_mirroring_changes_the_drawing():
     a = aa.agent_scene(2, 7, "carry", ridge=1, mirrored=False, size=384)
     b = aa.agent_scene(2, 7, "carry", ridge=1, mirrored=True, size=384)
     assert a != b and "scale(-1,1)" in b
+
+
+@pytest.mark.parametrize("ridge", [0, 1, 2, 3])
+def test_the_agent_stands_on_the_ridge_at_every_profile(ridge):
+    """The ridge was drawn with one amplitude and the foot position solved with
+    another, so the agent floated above or sank into it — the exact failure the
+    solved-height helper exists to prevent, and invisible in review because both
+    expressions look plausible."""
+    size = 384
+    svg = aa.agent_scene(3, 8, "flag", ridge=ridge, size=size)
+    ridge_y = size * (0.78 + 0.025 * ridge)
+    amp = size * (0.028 + 0.010 * ridge)
+    asz = size * 0.50
+    ax = size * 0.12
+    want_top = aa._ridge_y(size, size, ridge_y, amp, 0, ax + asz / 2) - asz * aa.FEET
+    got = float(re.search(r"translate\([\d.]+,([\d.-]+)\)", svg).group(1))
+    assert abs(got - want_top) < 0.5, (got, want_top)

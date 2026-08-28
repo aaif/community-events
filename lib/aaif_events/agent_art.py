@@ -784,10 +784,15 @@ def agent_scene(spec, secondary, action=None, ridge=0, mirrored=False,
     # is ~44% of the height rather than the 20-24% the system specifies for a
     # background plate where type sits on top.
     ridge_y = h * (0.78 + 0.025 * ridge)
-    body = _ridge(w, h, ridge_y, h * (0.028 + 0.010 * ridge), ink())
+    # ONE amplitude, used to draw the ridge and to solve the foot position.
+    # Drawing with one value and solving with another is exactly the "standing
+    # near the ridge rather than on it" that _ridge_y exists to prevent — and
+    # it is invisible in code review because both expressions look plausible.
+    amp = h * (0.028 + 0.010 * ridge)
+    body = _ridge(w, h, ridge_y, amp, ink())
     asz = h * 0.50
     ax = w * (0.44 if mirrored else 0.12)
-    feet = _ridge_y(w, h, ridge_y, h * (0.03 + 0.012 * ridge), 0, ax + asz / 2)
+    feet = _ridge_y(w, h, ridge_y, amp, 0, ax + asz / 2)
     # Bob: one grid unit up and back, constant speed, no easing overshoot.
     bob = -(asz / 48.0) * (1 if 0.25 <= frame < 0.75 else 0)
     top = feet - asz * FEET + bob

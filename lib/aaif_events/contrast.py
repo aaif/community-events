@@ -115,7 +115,11 @@ class Theme(object):
         self.scheme = scheme
         self.clrmap = clrmap
 
+    ambiguous = None
+
     def resolve(self, name):
+        if self.ambiguous:
+            return None
         name = self.clrmap.get(name, name)
         return self.scheme.get(name)
 
@@ -162,7 +166,8 @@ def _solid_colour(block, theme):
     if scheme:
         rgb = theme.resolve(scheme.group(1))
         if rgb is None:
-            return (None, 1.0, "scheme colour %r not in the theme" % scheme.group(1))
+            return (None, 1.0, theme.ambiguous
+                    or "scheme colour %r not in the theme" % scheme.group(1))
         return (_apply_mods(rgb, inner), _alpha(inner), None)
     return (None, 1.0, "fill is not a plain colour")
 
@@ -381,10 +386,21 @@ def check_pptx(path, include_passes=False):
         slide_wh = (int(dims.get("cx", 9144000)), int(dims.get("cy", 5143500)))
 
         themes = [n for n in names if re.match(r"ppt/theme/theme\d+\.xml$", n)]
-        scheme = _parse_theme(read(themes[0])) if themes else {}
         masters = [n for n in names if re.match(r"ppt/slideMasters/slideMaster\d+\.xml$", n)]
+        # A deck with several masters resolves each slide's scheme colours
+        # through ITS OWN master and theme. Taking the first of each would
+        # answer confidently against the wrong palette — the one thing this
+        # module refuses to do — so a multi-master deck reports its scheme
+        # colours as unchecked instead. Every deck in this estate has one.
+        ambiguous = len(themes) > 1 or len(masters) > 1
+        scheme = _parse_theme(read(themes[0])) if themes and not ambiguous else {}
         master_xml = read(masters[0]) if masters else ""
-        theme = Theme(scheme, _parse_clrmap(master_xml))
+        theme = Theme(scheme, _parse_clrmap(master_xml) if not ambiguous else {})
+        if ambiguous:
+            theme.ambiguous = ("deck has %d themes and %d masters; a scheme "
+                               "colour cannot be resolved without following "
+                               "each slide's own chain"
+                               % (len(themes), len(masters)))
 
         media = {}
         for n in names:
@@ -449,7 +465,16 @@ def check_pptx(path, include_passes=False):
                     size_pt = int(sz_m.group(1)) / 100.0 if sz_m else None
                     bold = bool(re.search(r'\bb="1"', rpr_xml))
 
-                    got = _solid_colour(rpr_xml, theme)
+                    # Strip the outline first, for the same reason shape_fill
+                    # does: DrawingML writes <a:rPr><a:ln><a:solidFill>…</a:ln>
+                    # for outlined text, and taking the first solidFill would
+                    # then score the run using its OUTLINE colour as its text
+                    # colour. improve_contrast keeps or discards a whole slide
+                    # on these ratios, so a wrong reading either whitens
+                    # readable text or throws away a real repair.
+                    got = _solid_colour(
+                        re.sub(r"<a:ln\b[^>]*>.*?</a:ln>|<a:ln\b[^>]*/>", "",
+                               rpr_xml, flags=re.S), theme)
                     if got is None:
                         findings.append(Finding(
                             part=part, text=text[:60], size_pt=size_pt, bold=bold,

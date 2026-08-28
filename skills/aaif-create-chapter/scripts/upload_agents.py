@@ -8,9 +8,13 @@ Every chapter gets an `Icons/` folder holding:
   chapter renders the same scene every time and neighbours never match; and
 * **the ten generic agents** — the same motif in each spectrum hue, doing
   nothing in particular, for an empty state, a divider or a loading frame; and
-* **the AAIF logos** — the lock-up in black and reverse, the square mark, and
-  the Linux Foundation Projects ribbon, as both SVG (the source, for print and
-  for anything that scales) and PNG (for the places that will not take an SVG).
+* **the AAIF logos** — the lock-up in black and reverse and the square mark, as
+  both SVG (the source, for print and for anything that scales) and PNG (for
+  the places that will not take an SVG). The Linux Foundation Projects ribbon
+  is deliberately NOT here: it is LF's mark rather than AAIF's, and shipping a
+  hand-transcribed copy of another organisation's trademark into eighty folders
+  is not something to do casually. Add it from the design system if it is
+  wanted.
   They are here so an organizer reaching for a logo finds the right one in the
   same place as everything else, rather than pulling a stale copy off a slide.
 
@@ -58,7 +62,7 @@ GIF = "image/gif"
 GENERIC_RE = re.compile(r"^Agent \d\d\.gif$")
 #: The AAIF logos, likewise shared. Matched by name so a chapter's own agent —
 #: the only per-chapter file — is never mistaken for one of them.
-LOGO_RE = re.compile(r"^AAIF .*\.(svg|png)$|^Linux Foundation Projects\.(svg|png)$")
+LOGO_RE = re.compile(r"^AAIF .*\.(svg|png)$")
 
 MIME_BY_EXT = {".gif": "image/gif", ".svg": "image/svg+xml", ".png": "image/png"}
 
