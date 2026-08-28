@@ -118,11 +118,21 @@ every chapter from one small vocabulary — the alternative, a landmark each,
 would be eighty illustrations to draw, approve and maintain.
 
 `skills/aaif-create-chapter/scripts/upload_agents.py` puts each chapter's own
-agent, plus the ten generic ones, into an `Agents/` folder in its Drive folder
-as animated GIFs. **`create_chapter.py` deliberately does not do this**: a new
+agent and the ten generic ones — animated GIFs — into an `Icons/` folder in its
+Drive folder, together with the **AAIF logos** in SVG and PNG. The logos are
+there so an organizer reaching for one finds the right file in the same place
+as everything else, rather than pulling a stale copy off an old slide; that is
+how a black wordmark ended up sitting invisibly on a black plate in the first
+place. **`create_chapter.py` deliberately does not do this**: a new
 chapter is cloned from TemplateCity, and cloning would hand it TemplateCity's
 agent rather than one derived from its own name. Run the upload after creating
 a chapter — a full run names the chapters that are missing theirs.
+
+Brand assets live in `assets/`. `aaif-mark.svg` is the full black lock-up
+despite its name (it predates the others and `report_style.py` embeds it by
+that path); `aaif-logo-white.svg` is **derived** from it by flipping the fills
+rather than transcribed, so the two cannot drift apart, and
+`aaif-mark-square.svg` is the 203x203 mark on its own.
 
 `lib/aaif_events/agent_art.py` draws the background plates and the agent motif
 from the same tokens, rasterising through headless Chrome and packing animation

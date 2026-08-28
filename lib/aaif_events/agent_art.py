@@ -279,19 +279,28 @@ def _chrome():
     return exe
 
 
-def render_png(svg, out_path, size):
+def render_png(svg, out_path, size, ground="transparent"):
     """Rasterise an SVG string to a PNG with headless Chrome.
 
     Chrome screenshots the viewport, so the SVG is wrapped in a page whose body
-    has zero margin and exactly the target size — otherwise the plate lands
-    inset by the default 8px body margin, which is invisible until the deck is
+    has zero margin and exactly the target size — otherwise the art lands inset
+    by the default 8px body margin, which is invisible until the deck is
     projected.
+
+    The svg is forced to fill that viewport. An SVG carrying its own `width`
+    and `height` attributes — every one of the brand assets does — otherwise
+    renders at its natural size in the corner of a larger page, which looks
+    like a correctly-rendered logo with a stripe of background beside it.
+
+    `ground` paints the PAGE, not the svg's box, so a reverse lock-up sits on
+    ink to its edges instead of leaving white where the artwork stops.
     """
     w, h = size
     html = ("<!doctype html><meta charset='utf-8'>"
-            "<style>html,body{margin:0;padding:0;background:transparent;"
-            "width:%dpx;height:%dpx;overflow:hidden}svg{display:block}</style>%s"
-            % (w, h, svg))
+            "<style>html,body{margin:0;padding:0;background:%s;"
+            "width:%dpx;height:%dpx;overflow:hidden}"
+            "svg{display:block;width:%dpx;height:%dpx}</style>%s"
+            % (ground, w, h, w, h, svg))
     page = out_path + ".html"
     with open(page, "w", encoding="utf-8") as fh:
         fh.write(html)
@@ -837,4 +846,51 @@ def build_agents(out_dir, chapters, size=384, frames=8, verbose=False):
               [agent_scene(spec, sec, action, ridge, mirrored, size=size,
                            frame=f / float(frames)) for f in range(frames)],
               os.path.join(out_dir, "%s Agent.gif" % safe))
+    return made
+
+
+# ------------------------------------------------------------------- logos ----
+#: The AAIF marks, shipped alongside the agents so an organizer reaching for a
+#: logo finds the right one in the same place as everything else — rather than
+#: pulling a stale copy off an old slide, which is how the estate ended up with
+#: a black wordmark sitting invisibly on a black plate.
+#:
+#: Both an SVG and a PNG of each: the SVG is the source and scales, and the PNG
+#: is for the many places that will not take an SVG (Luma, most social uploads,
+#: a Google Slides paste).
+LOGOS = (
+    ("AAIF Logo Black", "aaif-mark.svg", None),
+    ("AAIF Logo White", "aaif-logo-white.svg", "#0A0A0A"),
+    ("AAIF Mark", "aaif-mark-square.svg", None),
+)
+
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), "assets")
+
+
+def build_logos(out_dir, width=1200):
+    """Copy the logo SVGs into `out_dir` and render a PNG beside each.
+
+    The reverse lock-up is rendered on `--ink`, not on transparency: a white
+    logo on a transparent ground looks like an empty file in every thumbnail
+    and preview, which is exactly the kind of thing someone then re-exports
+    wrongly.
+    """
+    import shutil
+    os.makedirs(out_dir, exist_ok=True)
+    made = {}
+    for label, filename, ground in LOGOS:
+        src = os.path.join(ASSETS, filename)
+        if not os.path.exists(src):
+            raise RuntimeError("missing brand asset %s — see DESIGN.md" % src)
+        svg_out = os.path.join(out_dir, "%s.svg" % label)
+        shutil.copyfile(src, svg_out)
+        with open(src, encoding="utf-8") as fh:
+            svg = fh.read()
+        m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
+        vw, vh = (float(m.group(1)), float(m.group(2))) if m else (838.0, 203.0)
+        height = int(round(width * vh / vw))
+        made[label] = render_png(svg, os.path.join(out_dir, "%s.png" % label),
+                                 (width, height), ground=ground or "transparent")
+        made[label + " (svg)"] = svg_out
     return made
