@@ -98,6 +98,23 @@ SANS = "Instrument Sans"
 #: other branch.
 MONO = "JetBrains Mono"
 
+#: Faces that may be DECLARED but must never be EMBEDDED.
+#:
+#: Instrument Sans is already in this state by accident of supply — `assets/
+#: fonts` has woff2, which OOXML cannot use — and it renders fine, because
+#: these documents live in Google Docs and Google Docs has the face. JetBrains
+#: Mono is a Google Font on exactly the same terms, so embedding it buys
+#: nothing and costs ~210KB a file: 35.8MB across the .docx estate, measured.
+#:
+#: Verified before this rule was written, not after: one tracker was restored
+#: with mono declared and not embedded, and Google Docs resolved it — labels,
+#: table headers, dates and statuses all rendered in mono.
+#:
+#: The metric fallback is deliberately NOT here. It is the one face that has to
+#: travel, because it exists precisely for the reader that does NOT have
+#: Instrument Sans; see `ensure_fallback_font`.
+NEVER_EMBED = (MONO,)
+
 #: Every face found across the estate that is not one of the two above. Calibri
 #: and Arial arrive as Office defaults (mostly on `endParaRPr`, i.e. invisible
 #: trailing-paragraph state) rather than as a design decision; Space Grotesk and
@@ -1061,10 +1078,8 @@ def prune_embedded_fonts(path):
     Renaming every face to Instrument Sans leaves a tracker in a worse state
     than it started: the document references a font the file does not embed,
     the font table still declares the faces nobody uses any more, and their
-    embedded TTFs ride along in every copy — ~321KB unpacked (~154KB in the
-    zip) across Manrope and Space Grotesk. (~760KB is the total of ALL the
-    embedded faces in a tracker; most of that is JetBrains Mono, which is in
-    use and stays.)
+    embedded TTFs ride along in every copy — a real tracker carried ~760KB of
+    them across Manrope, Space Grotesk and JetBrains Mono.
 
     The embeds cannot simply be renamed with the entries — their BYTES are
     Manrope and Space Grotesk, so calling them "Instrument Sans" would make
@@ -1078,10 +1093,11 @@ def prune_embedded_fonts(path):
     than complete: correct metadata, and the face resolves from the system
     (Google Docs, where these live, has it).
 
-    This pass alone makes the file smaller, but the sweep as a whole does not:
-    `ensure_fallback_font` adds the metric fallback afterwards, and a tracker
-    lands ABOVE where it started. See DESIGN.md — size is not what is being
-    optimised here.
+    Measured on a real tracker: 392,784 bytes in, 17,888 out — every embed
+    gone, including mono's, which is kept as a DECLARATION only (`NEVER_EMBED`).
+    `ensure_fallback_font` then puts ~186KB back for the one face that has to
+    travel, landing at 208,207. Size is a consequence of getting the font table
+    honest, not the thing being optimised; see DESIGN.md.
 
     Returns a `Pruned`.
     """
@@ -1101,7 +1117,9 @@ def prune_embedded_fonts(path):
         #
         # JetBrains Mono is the case that goes the OTHER way and is why this is
         # usage-driven rather than a drop-list: the trackers' metadata runs
-        # genuinely are set in it, so it stays declared and stays embedded.
+        # genuinely are set in it, so its ENTRY stays. Its embed does not —
+        # see `NEVER_EMBED`. Declared-but-not-embedded is a normal OOXML state
+        # and is what Instrument Sans has always been in here.
         in_use = set()
         for n in names:
             if not n.startswith("word/") or n.endswith("fontTable.xml"):
@@ -1155,6 +1173,21 @@ def prune_embedded_fonts(path):
             continue                       # nothing references it; drop it
         if new_face in seen:
             continue                       # collapsed onto an entry we kept
+        # In use, so the entry is kept — but a NEVER_EMBED face keeps only the
+        # entry. Stripping the embeds here rather than in the `unused` branch
+        # above is the whole point: this face IS referenced, and the document
+        # must go on asking for it.
+        if new_face in NEVER_EMBED:
+            for e in _EMBED.finditer(block):
+                rid = _EMBED_ID.search(e.group(0))
+                if rid:
+                    dropped_ids.add(rid.group(1))
+            stripped = _EMBED.sub("", block)
+            if stripped != block:
+                # Report it: an operator watching a sweep shed 210KB a file
+                # should see which face went, and `faces` is that channel.
+                removed.append(face)
+                block = stripped
         seen.add(new_face)
         out.append(block)
     out.append(table[last:])
