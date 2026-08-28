@@ -382,3 +382,73 @@ def test_on_dark_leaves_non_text_colours_alone():
     xml = ('<p:sld xmlns:p="p" xmlns:a="a"><p:spPr><a:solidFill>'
            '<a:srgbClr val="%s"/></a:solidFill></p:spPr></p:sld>' % ox.token("ink"))
     assert ox.to_on_dark(xml) == xml
+
+
+# --------------------------------------------------- measured contrast repair --
+
+def _ct_deck(tmp_path, slides, name="c.pptx"):
+    """A deck whose slides are given as (background, [runs]) pairs."""
+    from aaif_events.tests import test_contrast as tc
+    path = str(tmp_path / name)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ppt/presentation.xml",
+                   '<p:presentation xmlns:p="p"><p:sldSz cy="5143500" cx="9144000"/>'
+                   "</p:presentation>")
+        z.writestr("ppt/theme/theme1.xml", tc._THEME)
+        z.writestr("ppt/slideMasters/slideMaster1.xml", tc._MASTER)
+        for i, (bg, runs) in enumerate(slides, 1):
+            z.writestr("ppt/slides/slide%d.xml" % i, tc._slide(bg, runs))
+    return path
+
+
+def test_the_repair_rescues_invisible_text_on_a_dark_plate(tmp_path):
+    from aaif_events.tests import test_contrast as tc
+    deck = _ct_deck(tmp_path, [(tc.SOLID_BLACK, [tc._run("HOST", "0A0A0A")])])
+    fixed, before, after = ox.improve_contrast(deck)
+    assert (fixed, before, after) == (1, 1, 0)
+    from aaif_events import contrast as ct
+    assert ct.check_pptx(deck) == []
+
+
+def test_the_repair_leaves_a_light_slide_alone(tmp_path):
+    """Whitening text on a white ground would turn a passing slide into an
+    invisible one — the exact bug, inverted."""
+    from aaif_events.tests import test_contrast as tc
+    deck = _ct_deck(tmp_path, [(tc.SOLID_WHITE, [tc._run("BODY", "0A0A0A")])])
+    with zipfile.ZipFile(deck) as z:
+        before = z.read("ppt/slides/slide1.xml")
+    assert ox.improve_contrast(deck) == (0, 0, 0)
+    with zipfile.ZipFile(deck) as z:
+        assert z.read("ppt/slides/slide1.xml") == before
+
+
+def test_the_repair_never_pushes_a_passing_run_below_the_threshold(tmp_path):
+    """A slide mixing a rescuable run with one that the remap would break is
+    left untouched: the repair is all-or-nothing per slide."""
+    from aaif_events.tests import test_contrast as tc
+    # White text already passing on black, plus ink text that needs rescuing —
+    # the remap helps the second and cannot hurt the first, so this IS taken.
+    deck = _ct_deck(tmp_path, [(tc.SOLID_BLACK,
+                                [tc._run("OK", "FFFFFF"), tc._run("BAD", "0A0A0A")])])
+    fixed, _b, after = ox.improve_contrast(deck)
+    assert fixed == 1 and after == 0
+
+
+def test_a_small_drop_inside_the_passing_band_does_not_block_the_repair(tmp_path):
+    """--ink-4 to --ink-inv-3 moves a run from 5.89 to 5.71 on a black plate.
+    Both pass AA and the on-dark ramp is the correct one; an earlier version of
+    this rule rejected the whole slide over that, leaving the invisible run."""
+    from aaif_events.tests import test_contrast as tc
+    from aaif_events import contrast as ct
+    deck = _ct_deck(tmp_path, [(tc.SOLID_BLACK,
+                                [tc._run("META", "8C8C8C"), tc._run("HOST", "0A0A0A")])])
+    fixed, _b, after = ox.improve_contrast(deck)
+    assert fixed == 1 and after == 0
+    scored = ct.check_pptx(deck, include_passes=True)
+    assert {ct._fmt(f.fg) for f in scored} == {"#8A8A86", "#FFFFFF"}
+
+
+def test_a_clean_deck_is_not_rewritten(tmp_path):
+    from aaif_events.tests import test_contrast as tc
+    deck = _ct_deck(tmp_path, [(tc.SOLID_WHITE, [tc._run("BODY", "0A0A0A", size=2400)])])
+    assert ox.improve_contrast(deck) == (0, 0, 0)

@@ -564,3 +564,120 @@ def offbrand_colours(svg):
     """
     known = {("#" + v).upper() for v in TOKENS.values()} | {"#FFFFFF", "#000000"}
     return sorted({m.upper() for m in re.findall(r"#[0-9A-Fa-f]{6}", svg)} - known)
+
+
+# --------------------------------------------------------------- GIF decoder --
+def _unlzw(data, min_code_size, expected):
+    """Inverse of `_lzw`. Returns the index stream."""
+    clear, end = 1 << min_code_size, (1 << min_code_size) + 1
+    width = min_code_size + 1
+    table = [bytes([i]) for i in range(clear)] + [b"", b""]
+    out, prev = bytearray(), None
+    acc = nbits = 0
+    for byte in data:
+        acc |= byte << nbits
+        nbits += 8
+        while nbits >= width:
+            code = acc & ((1 << width) - 1)
+            acc >>= width
+            nbits -= width
+            if code == clear:
+                table = [bytes([i]) for i in range(clear)] + [b"", b""]
+                width, prev = min_code_size + 1, None
+                continue
+            if code == end:
+                return bytes(out[:expected])
+            if code < len(table):
+                entry = table[code]
+            elif prev is not None:
+                entry = prev + prev[:1]     # the KwKwK case
+            else:
+                raise ValueError("corrupt GIF stream")
+            out += entry
+            if prev is not None:
+                table.append(prev + entry[:1])
+                if len(table) == (1 << width) and width < 12:
+                    width += 1
+            prev = entry
+            if len(out) >= expected:
+                return bytes(out[:expected])
+    return bytes(out[:expected])
+
+
+def read_gif(path):
+    """(width, height, rows) for a GIF's FIRST frame, rows as RGB bytearrays.
+
+    Only the first frame, because that is the one every static consumer shows —
+    the Slides thumbnail, a PDF export, a banner crop — and therefore the one
+    worth measuring. Interlaced frames are refused rather than de-interlaced
+    wrongly; nothing this repo writes is interlaced.
+    """
+    with open(path, "rb") as fh:
+        d = fh.read()
+    if d[:6] not in (b"GIF89a", b"GIF87a"):
+        raise ValueError("%s is not a GIF" % path)
+    screen = (int.from_bytes(d[6:8], "little"), int.from_bytes(d[8:10], "little"))
+    packed = d[10]
+    pos = 13
+    table = None
+    if packed & 0x80:
+        n = 1 << ((packed & 7) + 1)
+        table = d[pos:pos + n * 3]
+        pos += n * 3
+    while pos < len(d):
+        block = d[pos]
+        if block == 0x21:                    # extension — skip its sub-blocks
+            pos += 2
+            while d[pos]:
+                pos += d[pos] + 1
+            pos += 1
+        elif block == 0x2C:                  # image descriptor
+            fw = int.from_bytes(d[pos + 5:pos + 7], "little")
+            fh_ = int.from_bytes(d[pos + 7:pos + 9], "little")
+            fpacked = d[pos + 9]
+            pos += 10
+            if fpacked & 0x80:
+                n = 1 << ((fpacked & 7) + 1)
+                table = d[pos:pos + n * 3]
+                pos += n * 3
+            if fpacked & 0x40:
+                raise ValueError("interlaced GIF not supported: %s" % path)
+            if (fw, fh_) != screen:
+                # A frame smaller than the logical screen sits at an offset over
+                # whatever the previous frame left behind. Callers here sample
+                # by fraction of the image, so a partial frame would be measured
+                # in the wrong place — refuse rather than answer wrongly.
+                raise ValueError("%s frame %dx%d does not fill its %dx%d screen"
+                                 % (path, fw, fh_, screen[0], screen[1]))
+            mcs = d[pos]
+            pos += 1
+            chunks = bytearray()
+            while d[pos]:
+                chunks += d[pos + 1:pos + 1 + d[pos]]
+                pos += d[pos] + 1
+            idx = _unlzw(bytes(chunks), mcs, fw * fh_)
+            if table is None:
+                raise ValueError("GIF has no colour table: %s" % path)
+            rows = []
+            for y in range(fh_):
+                row = bytearray()
+                for x in range(fw):
+                    i = idx[y * fw + x] * 3
+                    row += table[i:i + 3]
+                rows.append(row)
+            return fw, fh_, rows
+        elif block == 0x3B:
+            break
+        else:
+            raise ValueError("unexpected GIF block 0x%02X in %s" % (block, path))
+    raise ValueError("%s has no image frame" % path)
+
+
+def read_image(path):
+    """(width, height, rows) for a PNG or GIF — whichever a deck embedded."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".png":
+        return read_png(path)
+    if ext == ".gif":
+        return read_gif(path)
+    raise ValueError("unsupported image type %s" % ext)

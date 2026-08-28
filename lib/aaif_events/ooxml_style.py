@@ -714,3 +714,106 @@ def add_plate_slides(path, plates, src_index=2):
         if os.path.exists(tmp):
             os.remove(tmp)
     return added
+
+
+# --------------------------------------------------- measured contrast repair --
+def improve_contrast(path):
+    """Move unreadable text onto the inverse ramp, but only where that helps.
+
+    The failures in this estate are one shape: a slide drawn on a dark ground —
+    the black plate, or a background image whose mean is dark — carrying runs
+    still set in the LIGHT ink ramp. `to_on_dark` is exactly the remap those
+    runs need, and it is already written; what was missing is deciding *which*
+    slides get it.
+
+    That decision is made by measurement, not by slide index. For each slide
+    this re-scores the whole slide with the remap applied and keeps it only if
+    the failures strictly drop and **no run gets worse** — so a slide with light
+    text on a light ground, or a plate with a bright region under some run, is
+    left alone instead of being whitened into a new bug.
+
+    Returns `(fixed, before, after)` counts of failing runs.
+    """
+    from aaif_events import contrast as ct
+
+    before = [f for f in ct.check_pptx(path)
+              if f.ratio is not None and f.ratio < f.threshold]
+    if not before:
+        return 0, 0, 0
+
+    failing_parts = {f.part for f in before}
+
+    def score(p):
+        """{part: [ratio, ...]} in document order.
+
+        Positional, NOT keyed by the run's text. Keying by text collapses the
+        two runs that both read "Agentic AI" — the header lockup, which is fine,
+        and the footer lockup, which is the invisible one — into a single entry,
+        and the comparison then silently comes out wrong for exactly the slide
+        that needs fixing.
+        """
+        out = {}
+        for f in ct.check_pptx(p, include_passes=True):
+            out.setdefault(f.part, []).append((f.ratio, f.threshold))
+        return out
+
+    base = score(path)
+    keep = set()
+    for part in sorted(failing_parts):
+        # Try the remap on this part alone.
+        trial = path + ".trial"
+        _rewrite_zip_to(path, trial,
+                        lambda n, d, _p=part: (to_on_dark(d.decode("utf-8")).encode("utf-8")
+                                               if n == _p else d))
+        try:
+            after = score(trial)
+            b, a = base.get(part, []), after.get(part, [])
+            if len(b) != len(a):
+                continue                       # runs moved; do not guess
+            # The test is CROSSING the threshold, not any change in the number.
+            # Requiring that no ratio drop at all rejects the whole repair over
+            # noise: remapping --ink-4 to --ink-inv-3 on a black plate moves a
+            # run from 5.89 to 5.71 — both far above AA, and the on-dark ramp is
+            # the correct one — while in the same slide it moves the invisible
+            # footer wordmark from 1.00 to 19.80.
+            broke = fixed = 0
+            for (x, tx), (y, ty) in zip(b, a):
+                if x is None or y is None:
+                    continue
+                if x >= tx and y < ty:
+                    broke += 1
+                elif x < tx and y >= ty:
+                    fixed += 1
+            if fixed and not broke:
+                keep.add(part)
+        finally:
+            if os.path.exists(trial):
+                os.remove(trial)
+
+    if not keep:
+        return 0, len(before), len(before)
+
+    _rewrite_zip_to(path, path + ".new",
+                    lambda n, d: (to_on_dark(d.decode("utf-8")).encode("utf-8")
+                                  if n in keep else d))
+    os.replace(path + ".new", path)
+    after_all = [f for f in ct.check_pptx(path)
+                 if f.ratio is not None and f.ratio < f.threshold]
+    return len(before) - len(after_all), len(before), len(after_all)
+
+
+def _rewrite_zip_to(src, dst, transform):
+    """`create_chapter._rewrite_zip`, but writing to a separate path so a trial
+    can be scored without disturbing the original."""
+    with zipfile.ZipFile(src) as zin, \
+            zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+        for it in zin.infolist():
+            data = zin.read(it.filename)
+            try:
+                new = transform(it.filename, data)
+            except UnicodeDecodeError:
+                new = data
+            zi = zipfile.ZipInfo(it.filename, date_time=it.date_time)
+            zi.compress_type = it.compress_type
+            zi.external_attr = it.external_attr
+            zout.writestr(zi, new)

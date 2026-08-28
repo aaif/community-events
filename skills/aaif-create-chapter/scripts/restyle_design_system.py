@@ -68,6 +68,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))), "lib"))
 from aaif_events import ooxml_style as ox    # noqa: E402  (after the path shim)
 from aaif_events import agent_art as aa      # noqa: E402
+from aaif_events import contrast as ctr      # noqa: E402
 
 COMMUNITY_ROOT = "1Z1M-xk0S16sksS1IBNm9OG6Ia22Yql6f"   # "Community Events"
 CHAPTERS_FOLDER = "Chapters"
@@ -213,7 +214,21 @@ def _plates_for(entry, plate_dir):
     return out
 
 
-def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None):
+def contrast_report(entry, src):
+    """Text in this file that fails WCAG AA against what is behind it.
+
+    A token check cannot find this: black-on-black is two correct AAIF tokens in
+    the wrong pairing. Only .pptx is measured — a Word tracker has no slide
+    background and its text sits on the page.
+    """
+    if entry["mime"] != cc.PPTX:
+        return []
+    return [f for f in ctr.check_pptx(src)
+            if f.ratio is None or f.ratio < f.threshold]
+
+
+def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
+            contrast_only=False, fix_contrast=False):
     """Restyle one file. Returns (entry, report, error or None).
 
     `report` is `{"parts": n, "before": [...], "after": [...]}` when the file
@@ -233,6 +248,9 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None):
         if not zipfile.is_zipfile(src):
             raise RuntimeError("download is not OOXML (%d bytes) — an error body, "
                                "not the template" % os.path.getsize(src))
+        if contrast_only:
+            bad = contrast_report(entry, src)
+            return entry, ({"contrast": bad} if bad else {}), None
         before = ox.audit(src)
         if check_only:
             return entry, ({"before": before, "parts": 0, "after": before,
@@ -255,8 +273,13 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None):
         # copy of the drift this run just removed.
         wanted = _plates_for(entry, plate_dir)
         plated = ox.add_plate_slides(src, wanted) if wanted else []
+        # Legibility last: it measures the file as it will actually ship, so it
+        # has to run after the restyle and after any plate has gone in behind
+        # the text.
+        rescued = (ox.improve_contrast(src)
+                   if fix_contrast and entry["mime"] == cc.PPTX else (0, 0, 0))
         after = ox.audit(src)
-        if not parts and not plated:
+        if not parts and not plated and not rescued[0]:
             # Nothing changed. If we archived a file we are not going to upload,
             # take the copy back out so the archive means "these were replaced".
             if fresh and archived and os.path.exists(archived):
@@ -266,7 +289,7 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None):
         if write:
             cc.gws_upload(entry["id"], src, entry["mime"])
         return entry, {"before": before, "parts": parts, "after": after,
-                       "plates": plated}, None
+                       "plates": plated, "rescued": rescued}, None
     except Exception as e:                # one bad file must not stop the run
         # Prefix the class: this catch spans the XML engine, the archive, and
         # both transfers, and a bare message makes a ValueError in the rewrite
@@ -309,6 +332,15 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--write", action="store_true",
                     help="Actually upload the restyled templates (default: plan only)")
+    ap.add_argument("--fix-contrast", action="store_true", dest="fix_contrast",
+                    help="Repair unreadable text as well as restyling: move runs "
+                         "on a dark ground onto the inverse ramp, but only where "
+                         "measurement shows it fixes a failure and breaks none. "
+                         "Needs --write to upload.")
+    ap.add_argument("--contrast", action="store_true",
+                    help="Audit TEXT LEGIBILITY instead: report every run whose "
+                         "contrast against its background is below WCAG AA. "
+                         "Never writes; exit 1 if anything fails.")
     ap.add_argument("--check", action="store_true",
                     help="Audit only: report every off-system value and exit 1 if any. "
                          "Downloads nothing else and never writes.")
@@ -329,8 +361,11 @@ def main():
 
     if args.restyle_local:
         return restyle_local(args.restyle_local)
-    if args.check and args.write:
-        print("--check audits and never writes; drop one of --check / --write.")
+    if (args.check or args.contrast) and args.write:
+        print("--check and --contrast audit and never write; drop --write.")
+        return 2
+    if args.check and args.contrast:
+        print("--check and --contrast are different audits; run one at a time.")
         return 2
 
     backup_dir = args.backup_dir or os.path.join(
@@ -362,7 +397,8 @@ def main():
         print("No templates matched." if args.chapter else
               "No templates found — has the Community Events tree moved?")
         return 1
-    mode = ("AUDIT ONLY." if args.check else
+    mode = ("CONTRAST AUDIT ONLY." if args.contrast else
+            "AUDIT ONLY." if args.check else
             "" if args.write else "PLAN ONLY — nothing will be written.")
     print("Found %d template file(s); %d event copies left alone.  %s"
           % (len(entries), skipped, mode))
@@ -380,7 +416,8 @@ def main():
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for entry, report, err in pool.map(
                 lambda e: process(e, tmpdir, args.write, backup_dir, args.check,
-                                  args.plates), entries):
+                                  args.plates, args.contrast, args.fix_contrast),
+                entries):
             if err is not None:
                 failed += 1
                 print("  FAILED  %s\n            %s" % (entry["path"], err))
@@ -389,6 +426,17 @@ def main():
                 clean += 1
                 continue
             changed += 1
+            if args.contrast:
+                bad = report["contrast"]
+                invisible = [f for f in bad if f.invisible]
+                print("  %-3d issue(s)%s  %s"
+                      % (len(bad), "  <-- %d INVISIBLE" % len(invisible)
+                         if invisible else "", entry["path"]))
+                for f in sorted(bad, key=lambda f: (f.ratio is not None, f.ratio or 0))[:6]:
+                    print("        %s" % f)
+                if len(bad) > 6:
+                    print("        ... and %d more" % (len(bad) - 6))
+                continue
             if report["after"]:
                 residue.append((entry["path"], report["after"]))
             verb = ("off-system" if args.check else
@@ -398,10 +446,17 @@ def main():
                      _summarise(report["before"]) or "(already conformant)"))
             if report.get("plates"):
                 print("                 + plates: %s" % ", ".join(report["plates"]))
+            if report.get("rescued", (0,))[0]:
+                n, b, a = report["rescued"]
+                print("                 + legibility: %d run(s) rescued "
+                      "(%d unreadable -> %d)" % (n, b, a))
             if report["after"]:
                 print("                 REMAINS: %s" % _summarise(report["after"]))
 
-    if args.check:
+    if args.contrast:
+        print("\n%d file(s) hold unreadable text, %d clean, %d failed."
+              % (changed, clean, failed))
+    elif args.check:
         print("\n%d file(s) off the design system, %d clean, %d failed."
               % (changed, clean, failed))
     else:
@@ -441,9 +496,10 @@ def main():
         print("\nATTENTION — the sweep did not cover the whole estate:")
         for line in attention:
             print("  - %s" % line)
-    if changed and not args.write and not args.check:
+    if changed and not args.write and not args.check and not args.contrast:
         print("Re-run with --write to apply.")
-    return 1 if (failed or attention or (args.check and changed)) else 0
+    return 1 if (failed or attention
+                 or ((args.check or args.contrast) and changed)) else 0
 
 
 if __name__ == "__main__":
