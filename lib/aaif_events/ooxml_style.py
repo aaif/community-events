@@ -98,6 +98,49 @@ SANS = "Instrument Sans"
 #: other branch.
 MONO = "JetBrains Mono"
 
+#: Faces that may be DECLARED but must never be EMBEDDED.
+#:
+#: Instrument Sans is already in this state by accident of supply — `assets/
+#: fonts` has woff2, which OOXML cannot use — and it renders fine, because
+#: these documents live in Google Docs and Google Docs has the face. JetBrains
+#: Mono is a Google Font on the same terms, so embedding it costs ~215KB a
+#: file — 220,353 bytes measured, ~36MB across the 171 .docx in the estate.
+#:
+#: Verified before this rule was written, not after: one tracker was restored
+#: with mono declared and not embedded, and Google Docs resolved it — labels,
+#: table headers, dates and statuses all rendered in mono.
+#:
+#: **The scope of that evidence is Google Docs, and so is the scope of this
+#: rule.** Embedding did buy something — fidelity for a `.docx` opened in Word
+#: on a machine without the face — and this trades it away, knowingly, because
+#: the estate lives in Drive. Note the asymmetry that makes it a real decision
+#: rather than an obvious one: the metric fallback below is embedded precisely
+#: FOR the reader who lacks the brand face. That reader is admitted to exist
+#: for the sans and assumed away for mono. If these documents ever ship as
+#: standalone .docx for offline Word, revisit this first.
+#:
+#: The metric fallback is deliberately NOT here. It is the one face that has to
+#: travel, because it exists precisely for the reader that does NOT have
+#: Instrument Sans; see `ensure_fallback_font`.
+NEVER_EMBED = (MONO,)
+
+#: The metric fallback: the ONE face that must travel, because it exists for
+#: the reader who does not have Instrument Sans. Declared here beside the
+#: policy rather than beside `ensure_fallback_font` so the guard below can see
+#: both — it used to live 1,300 lines away, and its absence from `NEVER_EMBED`
+#: is the single most important fact about that tuple.
+FALLBACK_FACE = "Manrope"
+
+# Adding the fallback to NEVER_EMBED does NOT produce the noisy fight DESIGN.md
+# once described. `ensure_fallback_font` early-returns on the mere presence of
+# a <w:font w:name="Manrope"> ENTRY without checking its embeds, so prune would
+# strip the bytes, the fallback pass would decline to restore them, and the
+# estate would converge — silently — on trackers whose <w:altName> points at a
+# face nobody carries. That is the defect `ensure_fallback_font` exists to
+# close, so it must fail here and not a hundred sweeps later.
+assert FALLBACK_FACE not in NEVER_EMBED, (
+    "the metric fallback must stay embeddable — see ensure_fallback_font")
+
 #: Every face found across the estate that is not one of the two above. Calibri
 #: and Arial arrive as Office defaults (mostly on `endParaRPr`, i.e. invisible
 #: trailing-paragraph state) rather than as a design decision; Space Grotesk and
@@ -114,8 +157,10 @@ FONT_MAP = {
     "Cambria": SANS,          # Word's stock heading face, via word/theme
     "Cambria Math": SANS,
     # A spreadsheet's monospace column (ids, slugs) is metadata, which is what
-    # the system reserves mono for — so it becomes the embeddable mono rather
-    # than the sans.
+    # the system reserves mono for — so it maps to the mono rather than to the
+    # sans. (It used to say "the EMBEDDABLE mono". Mono is now the one face
+    # deliberately never embedded — see NEVER_EMBED — so that rationale is
+    # inverted; the mapping is right for the role, not for the bytes.)
     "Consolas": MONO,
     "Courier New": MONO,
 }
@@ -134,10 +179,17 @@ class Pruned(NamedTuple):
     names* — legible only if you already know the order. Named, `pruned.faces`
     says what the index meant.
     """
-    #: Face names dropped from the table.
+    #: Face names whose DECLARATION left the table — the face is gone.
     faces: tuple = ()
-    #: `word/fonts/*.ttf` parts dropped with them.
+    #: `word/fonts/*.ttf` parts deleted, by either mechanism below.
     parts: tuple = ()
+    #: Faces that KEPT their declaration and lost only their embedded bytes —
+    #: `NEVER_EMBED`. Separate from `faces` because the operator report says
+    #: "dropped from the font table", and for these that is false: 205 runs
+    #: still name the face and the table still declares it. Folding the two
+    #: together made a healthy sweep print the same line as the catastrophic
+    #: one where the declaration really did go.
+    unembedded: tuple = ()
 
 
 class Rescued(NamedTuple):
@@ -1046,7 +1098,14 @@ def _rewrite_zip_to(src, dst, transform, drop=(), add=None):
 _FONT_ENTRY = re.compile(
     r"<w:font\b[^>]*w:name=\"([^\"]+)\"[^>]*/>"
     r"|<w:font\b[^>]*w:name=\"([^\"]+)\"[^>]*(?<!/)>.*?</w:font>", re.S)
-_EMBED = re.compile(r"<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*/>")
+#: Both serialisations. Word writes self-closing; a container form
+#: (`<w:embedRegular ...></w:embedRegular>`) is legal OOXML and matching only
+#: the first made a whole face a silent no-op — stripped nowhere, reported as
+#: pruned, bytes still in the file.
+_EMBED = re.compile(
+    r"<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*/>"
+    r"|<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*(?<!/)>.*?"
+    r"</w:embed(?:Regular|Bold|Italic|BoldItalic)>", re.S)
 _EMBED_ID = re.compile(r'r:id="([^"]+)"')
 
 
@@ -1061,10 +1120,9 @@ def prune_embedded_fonts(path):
     Renaming every face to Instrument Sans leaves a tracker in a worse state
     than it started: the document references a font the file does not embed,
     the font table still declares the faces nobody uses any more, and their
-    embedded TTFs ride along in every copy — ~321KB unpacked (~154KB in the
-    zip) across Manrope and Space Grotesk. (~760KB is the total of ALL the
-    embedded faces in a tracker; most of that is JetBrains Mono, which is in
-    use and stays.)
+    embedded TTFs ride along in every copy — a real tracker carried ~764KB
+    unpacked (~365KB in the zip) across Manrope, Space Grotesk and JetBrains
+    Mono.
 
     The embeds cannot simply be renamed with the entries — their BYTES are
     Manrope and Space Grotesk, so calling them "Instrument Sans" would make
@@ -1078,10 +1136,18 @@ def prune_embedded_fonts(path):
     than complete: correct metadata, and the face resolves from the system
     (Google Docs, where these live, has it).
 
-    This pass alone makes the file smaller, but the sweep as a whole does not:
-    `ensure_fallback_font` adds the metric fallback afterwards, and a tracker
-    lands ABOVE where it started. See DESIGN.md — size is not what is being
-    optimised here.
+    Measured on the tracker this repo can actually reach — `git show
+    78a6599:lib/aaif_events/tests/fixtures/event_tracker_irl.docx`, which is
+    what the end-to-end test reads: **394,790 on disk, 394,482 after restyle,
+    19,804 after this pass** — every embed gone, mono's included, kept as a
+    DECLARATION only (`NEVER_EMBED`). `ensure_fallback_font` then puts ~186KB
+    back for the one face that has to travel, landing at **210,123**.
+
+    (An earlier revision quoted 392,784 -> 17,888 -> 208,207. Those reproduce
+    exactly too — from a `backups/` copy no reader has. Quote the fixture.)
+
+    Size is a consequence of getting the font table honest, not the thing being
+    optimised; see DESIGN.md.
 
     Returns a `Pruned`.
     """
@@ -1101,7 +1167,9 @@ def prune_embedded_fonts(path):
         #
         # JetBrains Mono is the case that goes the OTHER way and is why this is
         # usage-driven rather than a drop-list: the trackers' metadata runs
-        # genuinely are set in it, so it stays declared and stays embedded.
+        # genuinely are set in it, so its ENTRY stays. Its embed does not —
+        # see `NEVER_EMBED`. Declared-but-not-embedded is a normal OOXML state
+        # and is what Instrument Sans has always been in here.
         in_use = set()
         for n in names:
             if not n.startswith("word/") or n.endswith("fontTable.xml"):
@@ -1120,8 +1188,29 @@ def prune_embedded_fonts(path):
         # forever and every sweep re-uploads every tracker.
         in_use.update(re.findall(r'<w:altName w:val="([^"]+)"', table))
 
-    dropped_ids, removed, seen = set(), [], set()
+    dropped_ids, removed, unembedded, seen = set(), [], [], set()
     out, last = [], 0
+
+    def harvest(block, face):
+        """Collect `block`'s embed relationship ids into `dropped_ids`.
+
+        Called on EVERY path that removes or rewrites a block, because an
+        embed whose rid is never harvested leaves its relationship and its
+        TTF part behind — a package that opens, passes `testzip()` and audits
+        clean while carrying the bytes this function claims to have removed.
+        The `seen`-collapse path below used to skip this, which is exactly how
+        a Consolas entry colliding with a real mono entry orphaned two parts.
+        """
+        for e in _EMBED.finditer(block):
+            rid = _EMBED_ID.search(e.group(0))
+            if rid is None:
+                # Not skippable: an embed with no r:id is a malformed table,
+                # and swallowing it keeps the bytes while reporting removal.
+                raise RuntimeError(
+                    "%s: <w:embed*> with no r:id in word/fontTable.xml — "
+                    "malformed font table, refusing to report a removal that "
+                    "did not happen" % face)
+            dropped_ids.add(rid.group(1))
     for m in _FONT_ENTRY.finditer(table):
         face = m.group(1) or m.group(2)
         block = m.group(0)
@@ -1145,31 +1234,73 @@ def prune_embedded_fonts(path):
         unused = bool(in_use) and new_face not in in_use and face not in in_use
         if new_face != face or unused:
             removed.append(face)
-            for e in _EMBED.finditer(block):
-                rid = _EMBED_ID.search(e.group(0))
-                if rid:
-                    dropped_ids.add(rid.group(1))
+            harvest(block, face)
             block = _EMBED.sub("", block)
             block = block.replace('w:name="%s"' % face, 'w:name="%s"' % new_face)
         if unused:
             continue                       # nothing references it; drop it
         if new_face in seen:
+            # Harvest FIRST. This block is about to be discarded wholesale, and
+            # it may be the entry that actually held the embeds: FONT_MAP maps
+            # Consolas and Courier New onto MONO, so a table listing Consolas
+            # before a real JetBrains Mono entry collapses the mono entry here.
+            # Without this the TTFs and their relationships survived with
+            # nothing declaring them, and `Pruned` reported only "Consolas".
+            harvest(block, face)
             continue                       # collapsed onto an entry we kept
+        # In use, so the entry is kept — but a NEVER_EMBED face keeps only the
+        # entry. Stripping the embeds here rather than in the `unused` branch
+        # above is the whole point: this face IS referenced, and the document
+        # must go on asking for it.
+        if new_face in NEVER_EMBED:
+            stripped = _EMBED.sub("", block)
+            if stripped != block:
+                harvest(block, new_face)
+                # `unembedded`, NOT `removed`: this face keeps its declaration
+                # and the operator report says so. Folding it into `removed`
+                # made every sweep print "dropped JetBrains Mono from the font
+                # table" — the precise opposite of the invariant this rule
+                # exists to hold, and indistinguishable from the catastrophic
+                # case where the entry really did go.
+                #
+                # `new_face`, not `face`: the membership test above is on
+                # `new_face`, so a Consolas entry mapped onto mono would
+                # otherwise be reported under a name that is no longer in the
+                # table.
+                unembedded.append(new_face)
+                block = stripped
         seen.add(new_face)
         out.append(block)
     out.append(table[last:])
     new_table = "".join(out)
 
-    parts, new_rels = [], rels
+    def _target_part(tgt):
+        return os.path.normpath(os.path.join("word", tgt)).replace(os.sep, "/")
+
+    parts, new_rels, kept_targets = [], rels, set()
     for rm in re.finditer(r"<Relationship\b[^>]*/>", rels):
         rid = re.search(r'Id="([^"]+)"', rm.group(0))
         tgt = re.search(r'Target="([^"]+)"', rm.group(0))
-        if rid and tgt and rid.group(1) in dropped_ids:
-            parts.append(os.path.normpath(
-                os.path.join("word", tgt.group(1))).replace(os.sep, "/"))
+        if not (rid and tgt):
+            continue
+        if rid.group(1) in dropped_ids:
+            parts.append(_target_part(tgt.group(1)))
             new_rels = new_rels.replace(rm.group(0), "")
+        else:
+            kept_targets.add(_target_part(tgt.group(1)))
 
-    if not removed and not parts:
+    # Never delete a part a SURVIVING relationship still points at. Two
+    # <w:font> entries may share one TTF, and dropping it because one of them
+    # was unembedded leaves the other resolving through a live relationship to
+    # a member that is not in the archive — a package `testzip()` and `audit()`
+    # both pass and Word offers to repair.
+    parts = [p_ for p_ in parts if p_ not in kept_targets]
+    # Only report what the archive actually held. A Target naming a member that
+    # was never there (or an absolute "/word/..." that `join` collapses) would
+    # otherwise be announced as removed while nothing was.
+    parts = [p_ for p_ in parts if p_ in names]
+
+    if not removed and not unembedded and not parts:
         return Pruned()
 
     def tx(name, data):
@@ -1187,7 +1318,8 @@ def prune_embedded_fonts(path):
 
     _rewrite_zip_to(path, path + ".new", tx, drop=set(parts))
     os.replace(path + ".new", path)
-    return Pruned(tuple(sorted(set(removed))), tuple(sorted(parts)))
+    return Pruned(tuple(sorted(set(removed))), tuple(sorted(parts)),
+                  tuple(sorted(set(unembedded))))
 
 
 # ------------------------------------------------- retiring a legacy plate ----
@@ -1415,7 +1547,6 @@ def update_plates(path, plates):
 #:
 #: JetBrains Mono ties Manrope numerically and is excluded anyway: it is
 #: monospaced, and this is body copy.
-FALLBACK_FACE = "Manrope"
 FALLBACK_FILES = (("embedRegular", "Manrope-regular.ttf"),
                   ("embedBold", "Manrope-bold.ttf"))
 _FONT_ASSETS = os.path.join(os.path.dirname(os.path.dirname(
@@ -1429,6 +1560,19 @@ def ensure_fallback_font(path):
     Adds a `<w:font w:name="Manrope">` entry carrying the embedded faces, and
     points the Instrument Sans entry at it with `<w:altName>`. Idempotent, and
     a no-op on a file that does not ask for Instrument Sans.
+
+    **The TTFs go in STORED, not deflated** — `_rewrite_zip_to` adds them with
+    a bare `ZipInfo`, whose default is ZIP_STORED. That is load-bearing outside
+    this function: it is why the fallback is ~186KB of a ~205KB tracker and why
+    DESIGN.md and the fixture note both hedge their size figures by ~106KB, the
+    saving deflate would give. Compressing them is a fine change to make — just
+    re-measure everything that quotes those numbers.
+
+    Idempotence is on the ENTRY, not the embeds: if a `<w:font w:name="Manrope">`
+    is present this returns False without checking that its TTFs are still
+    there. That is why `FALLBACK_FACE` must never join `NEVER_EMBED` — prune
+    would strip the bytes and this would decline to restore them. See the
+    assertion beside `NEVER_EMBED`.
 
     Returns True when the file changed.
     """

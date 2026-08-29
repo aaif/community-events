@@ -82,25 +82,44 @@ Three things about it are worth knowing before editing:
   carrying their bytes — which is where the trackers ended up. `prune_embedded_
   fonts` reconciles the table against what the document actually references and
   drops the orphans: a tracker sheds Arial, Georgia, Manrope and Space Grotesk
-  from its table, and the four Manrope/Space Grotesk faces from `word/fonts/` —
-  measured, 153,600 bytes in the zip (~321KB unpacked), taking the file
-  394,482 → 240,252.
-  **JetBrains Mono is not among them, and that is the point of reconciling
-  against usage rather than against a drop-list.** A tracker's 205 mono runs are
-  its field labels, table headers, dates, statuses and phase eyebrows — mono
-  doing exactly what the "metadata and eyebrows" rule under *What the system
-  actually says* reserves it for — so the face is still referenced, stays
-  declared, and keeps its embed.
+  from its table along with their embedded TTFs.
+  **JetBrains Mono keeps its ENTRY and loses its EMBED, and the difference is
+  the point of reconciling against usage rather than against a drop-list.** A
+  tracker's 205 mono runs are its field labels, table headers, dates, statuses
+  and phase eyebrows — mono doing exactly what the "metadata and eyebrows" rule
+  under *What the system actually says* reserves it for — so 205 runs go on
+  asking for the face and the table must go on naming it. What it must not do
+  is carry it: see `NEVER_EMBED`.
 
-  A tracker therefore lands at **~430KB, slightly *above* where it started**,
-  because `ensure_fallback_font` adds the metric fallback on top: that pass
-  alone is ~186KB of the total, so most of the gap is Manrope rather than mono.
-  Treat ~430KB as soft — the fallback's two TTFs are written STORED, and
-  deflating them would drop ~106KB and stale every copy of this number at once.
-  An earlier pass reported ~19KB instead; it got there by rewriting every mono
-  run in `word/document.xml` to the sans, which read 205 metadata runs as body
-  prose and flattened the distinction this system is built on. Size is not the
-  thing being optimised here.
+  **Only the metric fallback is embedded.** Instrument Sans is not embeddable
+  from here (`assets/fonts` has woff2, which OOXML cannot use) and renders
+  anyway, because these documents live in Google Docs and Google Docs has it.
+  JetBrains Mono is a Google Font on the same terms — verified by restoring one
+  tracker with mono declared and unembedded and reading it back rendered — so
+  embedding it cost ~215KB a file (220,353 bytes measured), ~36MB across the
+  171 `.docx` in the estate. Manrope is the exception because it is the one
+  face that has to travel: it exists for the reader who does NOT have
+  Instrument Sans.
+
+  **That exception is also the honest limit of the rule.** Embedding mono did
+  buy something — fidelity in Word, offline, on a machine without the face —
+  and dropping it trades that away because this estate lives in Google Docs.
+  The fallback's whole purpose is the reader who lacks the brand face, so that
+  reader is admitted to exist for the sans and assumed away for mono. That
+  asymmetry is the decision; if these files ever ship as standalone `.docx`,
+  it is the first thing to revisit.
+
+  Measured end to end on the tracker anyone can reach — `git show
+  78a6599:lib/aaif_events/tests/fixtures/event_tracker_irl.docx`, the file the
+  end-to-end test reads: **394,790 on disk → 394,482 after restyle → 19,804
+  after prune → 210,123 once the fallback goes in.** Net ~180KB *smaller* than
+  it started, and ~186KB of what remains is the fallback, which is now the only
+  thing making these files large at all. Treat that number as soft —
+  `ensure_fallback_font` writes its two TTFs STORED, so deflating them would
+  drop ~106KB and stale every copy of it at once. An earlier pass reported
+  ~19KB by rewriting every mono run to the sans, which read 205 metadata runs
+  as body prose and flattened the distinction this system is built on. Size is
+  a consequence here, not the thing being optimised.
   The embedded bytes cannot simply be renamed along with the entry: they *are*
   Manrope, and calling them Instrument Sans makes Word render the old face
   under the new name, which is worse than substituting. **Instrument Sans is
