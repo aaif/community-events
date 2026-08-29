@@ -57,6 +57,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # Full history: the end-to-end OOXML test reads a pre-sweep tracker
+          # out of an old commit, and under the default depth-1 clone it
+          # SKIPPED — silently, and it was the only test covering a partial
+          # font-embed strip. A skip that looks like a pass is worse here than
+          # a slower checkout.
+          fetch-depth: 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.x"

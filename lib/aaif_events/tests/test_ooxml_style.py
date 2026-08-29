@@ -267,7 +267,8 @@ def test_the_shipped_fixtures_are_conformant(name):
     Note what they CANNOT catch. Both were captured after a sweep that demoted
     every mono run to the sans, so neither holds a single JetBrains Mono run —
     and neither holds any `word/fonts/` part at all. They are ~19KB each
-    because of both absences, while a real tracker lands at ~203KB. So:
+    because of both absences, while a real tracker lands at ~205KB (210,123
+    bytes; the figures in this file are KiB unless a byte count is given). So:
 
     * **mono preservation** is pinned by
       `test_mono_survives_the_sweep_in_every_word_part` on synthetic XML, the
@@ -280,7 +281,7 @@ def test_the_shipped_fixtures_are_conformant(name):
       shipped fixture alone takes it 19,769 -> 210,090. Effectively ALL of the
       size gap is the fallback, not mono, which is embedded nowhere now.
 
-    That ~203KB is softer than it looks: `ensure_fallback_font` writes its two
+    That ~205KB is softer than it looks: `ensure_fallback_font` writes its two
     TTFs STORED, so deflating them would drop ~106KB and stale every size
     figure in this repo at once."""
     path = os.path.join(FIXTURES, name)
@@ -327,7 +328,16 @@ def test_a_real_tracker_keeps_its_mono_through_the_whole_pipeline(tmp_path):
         ["git", "show", "78a6599:lib/aaif_events/tests/fixtures/event_tracker_irl.docx"],
         cwd=os.path.dirname(FIXTURES), capture_output=True)
     if blob.returncode != 0 or not blob.stdout:
-        pytest.skip("pre-sweep tracker not reachable from this checkout")
+        # In CI this must FAIL, not skip. It skipped silently for exactly as
+        # long as `validate.yml` checked out at depth 1, and it was the only
+        # test covering a partial embed strip — a green run that had quietly
+        # stopped testing the thing. `fetch-depth: 0` is the fix; this is the
+        # tripwire for anyone who removes it.
+        if os.environ.get("CI"):
+            raise AssertionError(
+                "pre-sweep tracker unreachable in CI — validate.yml needs "
+                "fetch-depth: 0 on the pytest job")
+        pytest.skip("pre-sweep tracker not reachable from this shallow checkout")
     path = str(tmp_path / "tracker.docx")
     with open(path, "wb") as fh:
         fh.write(blob.stdout)
@@ -347,14 +357,16 @@ def test_a_real_tracker_keeps_its_mono_through_the_whole_pipeline(tmp_path):
     ox.ensure_fallback_font(path)
     # Mono is reported as having shed bytes, alongside the faces that lost
     # their entries outright — the distinction is asserted on the table below.
-    assert ox.MONO in pruned.faces
+    # Two channels, two meanings: Space Grotesk lost its declaration, mono
+    # kept its and lost only its bytes.
+    assert ox.MONO in pruned.unembedded and ox.MONO not in pruned.faces
     assert "Space Grotesk" in pruned.faces
 
     after = _faces(path)
     assert after[ox.MONO] == 205, "restyle flattened the metadata runs"
     assert ox.SANS in after, "the display drift was not folded into the sans"
     assert "Space Grotesk" not in after and "Manrope" not in after
-    # In use, so neither the table entry nor the embeds may be pruned.
+    # In use, so the table entry must survive — the embeds must not.
     with zipfile.ZipFile(path) as z:
         names, table = z.namelist(), z.read("word/fontTable.xml").decode()
     # Declared, because 205 runs ask for it; not embedded, because Google Docs
@@ -707,13 +719,12 @@ def _docx_with_fonts(tmp_path, name="f.docx"):
 
 def test_the_font_table_ends_up_declaring_only_the_faces_in_use(tmp_path):
     deck = _docx_with_fonts(tmp_path)
-    removed, parts = ox.prune_embedded_fonts(deck)
-    # JetBrains Mono is in `removed` for a DIFFERENT reason than the others:
-    # they lost their entries, it only lost its embed. The channel is shared
-    # because both are "this face shed bytes"; the table below is what
-    # distinguishes them.
-    assert removed == ("Arial", "Georgia", "JetBrains Mono", "Manrope",
-                       "Space Grotesk")
+    pruned = ox.prune_embedded_fonts(deck)
+    # `faces` means exactly one thing again: the declaration went. Mono is not
+    # here — it kept its entry — and asserting that is what stops a future edit
+    # from dropping the declaration unnoticed.
+    assert pruned.faces == ("Arial", "Georgia", "Manrope", "Space Grotesk")
+    assert pruned.unembedded == (ox.MONO,)
     with zipfile.ZipFile(deck) as z:
         table = z.read("word/fontTable.xml").decode()
     assert sorted(set(re.findall(r'w:name="([^"]+)"', table))) == \
@@ -725,17 +736,17 @@ def test_a_self_closing_entry_does_not_swallow_the_next_one(tmp_path):
     alternation the wrong way round, one match spans three entries and the two
     in the middle are silently never rewritten."""
     deck = _docx_with_fonts(tmp_path)
-    removed, _p = ox.prune_embedded_fonts(deck)
-    assert "Arial" in removed and "Manrope" in removed
+    pruned = ox.prune_embedded_fonts(deck)
+    assert "Arial" in pruned.faces and "Manrope" in pruned.faces
 
 
 def test_the_renamed_faces_embedded_bytes_are_dropped_not_relabelled(tmp_path):
     """Manrope's bytes must not end up called Instrument Sans — Word would then
     render the OLD face under the new name, which is worse than substituting."""
     deck = _docx_with_fonts(tmp_path)
-    _r, parts = ox.prune_embedded_fonts(deck)
-    # Mono's part is here too now — its bytes go for a different reason
-    # (NEVER_EMBED), but the caller deletes them all the same way.
+    parts = ox.prune_embedded_fonts(deck).parts
+    # Mono's part is here too — its bytes go for a different reason
+    # (NEVER_EMBED), but `parts` is genuinely one meaning: bytes deleted.
     assert parts == ("word/fonts/JetBrainsMono.ttf", "word/fonts/Manrope.ttf",
                      "word/fonts/SpaceGrotesk.ttf")
     with zipfile.ZipFile(deck) as z:
@@ -758,7 +769,7 @@ def test_a_face_in_use_keeps_its_declaration_but_loses_its_embed(tmp_path):
     JetBrains Mono, so the face is genuinely referenced and its declaration
     must survive the prune — a dropped entry would leave 205 runs asking for
     a face the table does not name. Its EMBED must go anyway: `NEVER_EMBED`,
-    ~210KB a file, verified rendering in Google Docs without it.
+    ~215KB a file, verified rendering in Google Docs without it.
 
     The other mono test above cannot show this — its document names no faces,
     so the declaration survives there for the opposite reason. This one
@@ -794,8 +805,10 @@ def test_a_face_in_use_keeps_its_declaration_but_loses_its_embed(tmp_path):
         z.writestr("word/fonts/Manrope.ttf", b"MNR" * 200)
 
     pruned = ox.prune_embedded_fonts(path)
-    # Both faces shed bytes; only one loses its entry.
-    assert pruned.faces == ("JetBrains Mono", "Manrope")
+    # Both shed bytes; only one loses its entry, and the two are now reported
+    # on separate channels so the operator line can tell the truth.
+    assert pruned.faces == ("Manrope",)
+    assert pruned.unembedded == ("JetBrains Mono",)
     assert pruned.parts == ("word/fonts/JetBrainsMono.ttf",
                             "word/fonts/Manrope.ttf")
     with zipfile.ZipFile(path) as z:
@@ -804,25 +817,264 @@ def test_a_face_in_use_keeps_its_declaration_but_loses_its_embed(tmp_path):
         assert "Manrope" not in table, "the unused face kept its declaration"
         assert not [n for n in names if "JetBrainsMono" in n]
         assert "word/fonts/Manrope.ttf" not in names
-        # And the entry it kept must not point at a part that is gone.
-        rels = z.read("word/_rels/fontTable.xml.rels").decode()
-    assert set(re.findall(r'r:id="([^"]+)"', table)) <= set(
-        re.findall(r'Id="([^"]+)"', rels)), "a dangling embed reference"
+    # Mono has no surviving embed by design here, so `expect_embeds=False`:
+    # the point is the orphan-part and orphan-override directions, which do
+    # have something to say even when no embed survives.
+    assert_package_is_consistent(path, expect_embeds=False)
+
+
+def assert_package_is_consistent(path, expect_embeds=True):
+    """Every direction of the font-table <-> rels <-> parts <-> CT graph.
+
+    `expect_embeds` guards against the trap these checks fell into: once mono
+    stopped being embedded, the surviving-embed set went empty and every loop
+    below iterated nothing, so the checks PASSED BY CHECKING NOTHING. A caller
+    that expects at least one surviving embed must say so.
+    """
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        table = z.read("word/fontTable.xml").decode()
+        rels = (z.read("word/_rels/fontTable.xml.rels").decode()
+                if "word/_rels/fontTable.xml.rels" in names else "")
+        ct = z.read("[Content_Types].xml").decode()
+    embids = set(re.findall(r'r:id="([^"]+)"', table))
+    relmap = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
+    if expect_embeds:
+        assert embids, "this fixture no longer exercises anything — see docstring"
+    # embed -> rel -> part
+    for rid in embids:
+        target = relmap.get(rid)
+        assert target, "embed %s has no relationship" % rid
+        assert "word/" + target in names, "embed %s -> missing part" % rid
+    # rel -> part (a rel nothing declares is still a broken reference)
+    for rid, target in relmap.items():
+        assert "word/" + target in names, "rel %s -> missing part %s" % (rid, target)
+    # part -> rel: an orphan TTF is dead weight nothing can reach
+    reachable = {"word/" + t for t in relmap.values()}
+    for n in names:
+        if n.startswith("word/fonts/"):
+            assert n in reachable, "orphan font part left in the zip: %s" % n
+    # Content_Types must not name a part that is gone
+    for over in re.findall(r'<Override[^>]*PartName="/([^"]+)"', ct):
+        assert over in names, "Content_Types override -> missing part: %s" % over
+
+
+def test_all_four_embed_weights_are_stripped_not_just_the_regular(tmp_path):
+    """A real tracker embeds mono in four weights; every synthetic fixture in
+    this file embedded exactly one.
+
+    So a change reconciling only `<w:embedRegular>` — leaving Bold, Italic and
+    BoldItalic — passed the whole suite, and was caught ONLY by the end-to-end
+    tracker test, which skips whenever git history is unavailable (a shallow
+    CI checkout). Every tracker would have kept ~75% of its mono bytes and a
+    dangling relationship per weight, green all the way.
+
+    This fixture makes that regression fail without needing git."""
+    path = str(tmp_path / "weights.docx")
+    weights = ("Regular", "Bold", "Italic", "BoldItalic")
+    embeds = "".join('<w:embed%s r:id="rId%d"/>' % (w, i)
+                     for i, w in enumerate(weights, 1))
+    rels = "".join('<Relationship Id="rId%d" Type="font" '
+                   'Target="fonts/JBM-%s.ttf"/>' % (i, w)
+                   for i, w in enumerate(weights, 1))
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml",
+                   '<Types xmlns="ct">%s</Types>'
+                   % "".join('<Override ContentType="font" '
+                             'PartName="/word/fonts/JBM-%s.ttf"/>' % w
+                             for w in weights))
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="JetBrains Mono"/></w:rPr></w:r></w:document>')
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="JetBrains Mono">%s</w:font></w:fonts>' % embeds)
+        z.writestr("word/_rels/fontTable.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">%s'
+                   "</Relationships>" % rels)
+        for w in weights:
+            z.writestr("word/fonts/JBM-%s.ttf" % w, b"TTF" * 300)
+
+    pruned = ox.prune_embedded_fonts(path)
+    assert pruned.unembedded == (ox.MONO,)
+    assert len(pruned.parts) == 4, "only some weights were stripped: %s" % (
+        pruned.parts,)
+    with zipfile.ZipFile(path) as z:
+        names, table = z.namelist(), z.read("word/fontTable.xml").decode()
+    assert not [n for n in names if n.startswith("word/fonts/")]
+    assert ox.MONO in table, "the declaration must survive all four strips"
+    assert "<w:embed" not in table, "an embed element survived"
+    assert_package_is_consistent(path, expect_embeds=False)
+
+
+def test_a_container_form_embed_is_stripped_too(tmp_path):
+    """`<w:embedRegular ...></w:embedRegular>` is legal OOXML. Matching only
+    the self-closing form made such a face a total silent no-op: reported as
+    unembedded, bytes still in the file."""
+    path = str(tmp_path / "container.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="JetBrains Mono"/></w:rPr></w:r></w:document>')
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="JetBrains Mono">'
+                   '<w:embedRegular r:id="rId1"></w:embedRegular>'
+                   "</w:font></w:fonts>")
+        z.writestr("word/_rels/fontTable.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="font" Target="fonts/JBM.ttf"/>'
+                   "</Relationships>")
+        z.writestr("word/fonts/JBM.ttf", b"TTF" * 200)
+    pruned = ox.prune_embedded_fonts(path)
+    assert pruned.unembedded == (ox.MONO,)
+    with zipfile.ZipFile(path) as z:
+        assert "word/fonts/JBM.ttf" not in z.namelist()
+
+
+def test_a_face_outside_never_embed_keeps_its_embed(tmp_path):
+    """The membership test must MEAN something: replacing it with `if True:`
+    (strip every in-use face) has to fail.
+
+    The obvious fixture — the metric fallback — does NOT prove this, and the
+    first version of this test used it and passed under the mutant. Manrope
+    hits the fallback exemption several lines earlier and never reaches the
+    NEVER_EMBED branch at all, so it is shielded by the wrong guard. The face
+    has to be one that actually traverses the branch: in use, embedded, not
+    the fallback, and not in FONT_MAP (so `new_face is face`)."""
+    path = str(tmp_path / "outside.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="%s"/></w:rPr></w:r></w:document>' % ox.SANS)
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="%s"><w:embedRegular r:id="rId1"/>'
+                   "</w:font></w:fonts>" % ox.SANS)
+        z.writestr("word/_rels/fontTable.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="font" Target="fonts/IS.ttf"/>'
+                   "</Relationships>")
+        z.writestr("word/fonts/IS.ttf", b"TTF" * 200)
+    assert ox.SANS not in ox.NEVER_EMBED and ox.SANS != ox.FALLBACK_FACE
+    pruned = ox.prune_embedded_fonts(path)
+    assert pruned.unembedded == (), "a face outside NEVER_EMBED was unembedded"
+    with zipfile.ZipFile(path) as z:
+        assert "word/fonts/IS.ttf" in z.namelist(), \
+            "a face outside NEVER_EMBED lost its embed"
+
+
+def test_the_metric_fallback_is_never_in_never_embed():
+    """The one entry that must never join the tuple, pinned as an assertion
+    rather than as branch order.
+
+    Adding it does not produce a noisy fight: `ensure_fallback_font` returns
+    early on the mere presence of the ENTRY, so prune would strip the bytes,
+    the fallback pass would decline to restore them, and the estate would
+    converge silently on trackers whose <w:altName> points at a face nobody
+    carries. Today only statement ordering prevents it — hoisting the
+    NEVER_EMBED check three lines would reach it."""
+    assert ox.FALLBACK_FACE not in ox.NEVER_EMBED
 
 
 def test_no_embed_reference_is_left_dangling(tmp_path):
-    """A relationship pointing at a part that is gone is a corrupt file."""
+    """A relationship pointing at a part that is gone is a corrupt file.
+
+    `expect_embeds=False`: `_docx_with_fonts`' only embedded survivor was mono,
+    and mono is no longer embedded, so nothing survives here. That is exactly
+    why this test went quietly vacuous when `NEVER_EMBED` landed — the loop it
+    used to run now has an empty set. The orphan-part and orphan-override
+    directions still bite, and `test_a_surviving_embed_stays_fully_wired`
+    below covers the case where something IS left embedded."""
     deck = _docx_with_fonts(tmp_path)
     ox.prune_embedded_fonts(deck)
-    with zipfile.ZipFile(deck) as z:
-        names = set(z.namelist())
-        table = z.read("word/fontTable.xml").decode()
-        rels = z.read("word/_rels/fontTable.xml.rels").decode()
-    relmap = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
-    for rid in set(re.findall(r'r:id="([^"]+)"', table)):
-        target = relmap.get(rid)
-        assert target, "embed %s has no relationship" % rid
-        assert "word/" + target in names, "embed %s points at a missing part" % rid
+    assert_package_is_consistent(deck, expect_embeds=False)
+
+
+def test_a_surviving_embed_stays_fully_wired(tmp_path):
+    """The direction the fixtures above can no longer reach.
+
+    After `NEVER_EMBED`, the metric fallback is the only face that keeps an
+    embed — so it is the only fixture that can prove embed -> rel -> part still
+    holds end to end. Without this, every integrity assertion in the suite
+    iterates an empty set."""
+    path = _docx_asking_for_the_sans(tmp_path, name="wired.docx")
+    ox.ensure_fallback_font(path)
+    ox.prune_embedded_fonts(path)
+    assert_package_is_consistent(path, expect_embeds=True)
+
+
+def test_two_faces_sharing_one_ttf_do_not_leave_a_broken_reference(tmp_path):
+    """Dropping a part because ONE referrer was unembedded breaks the other.
+
+    `testzip()` passes (the remaining members are intact) and `audit()` passes
+    (no token drift), so nothing else in this suite would notice; Word offers
+    to repair the file."""
+    path = str(tmp_path / "shared.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="JetBrains Mono"/></w:rPr></w:r><w:r><w:rPr>'
+                   '<w:rFonts w:ascii="Manrope"/></w:rPr></w:r></w:document>')
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="JetBrains Mono">'
+                   '<w:embedRegular r:id="rId1"/></w:font>'
+                   '<w:font w:name="Manrope"><w:altName w:val="Manrope"/>'
+                   '<w:embedRegular r:id="rId2"/></w:font></w:fonts>')
+        z.writestr("word/_rels/fontTable.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="font" Target="fonts/Shared.ttf"/>'
+                   '<Relationship Id="rId2" Type="font" Target="fonts/Shared.ttf"/>'
+                   "</Relationships>")
+        z.writestr("word/fonts/Shared.ttf", b"TTF" * 200)
+    ox.prune_embedded_fonts(path)
+    assert_package_is_consistent(path, expect_embeds=True)
+    with zipfile.ZipFile(path) as z:
+        assert "word/fonts/Shared.ttf" in z.namelist(), \
+            "the part was dropped while a surviving embed still pointed at it"
+
+
+def test_a_collapsed_duplicate_entry_still_gives_up_its_embeds(tmp_path):
+    """`FONT_MAP` maps Consolas onto mono, so a table naming Consolas BEFORE a
+    real JetBrains Mono entry collapses the mono entry onto it.
+
+    That path `continue`s past the block, and it used to do so without
+    harvesting the block's embed r:ids — so the entry that actually HELD the
+    embeds vanished from the table while its TTFs and relationships stayed,
+    and `Pruned` reported only "Consolas". Two orphan parts, silently."""
+    path = str(tmp_path / "collapse.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="JetBrains Mono"/></w:rPr></w:r></w:document>')
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="Consolas"/>'
+                   '<w:font w:name="JetBrains Mono">'
+                   '<w:embedRegular r:id="rId1"/>'
+                   '<w:embedBold r:id="rId2"/></w:font></w:fonts>')
+        z.writestr("word/_rels/fontTable.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="font" Target="fonts/JBM-r.ttf"/>'
+                   '<Relationship Id="rId2" Type="font" Target="fonts/JBM-b.ttf"/>'
+                   "</Relationships>")
+        z.writestr("word/fonts/JBM-r.ttf", b"R" * 500)
+        z.writestr("word/fonts/JBM-b.ttf", b"B" * 500)
+    ox.prune_embedded_fonts(path)
+    assert_package_is_consistent(path, expect_embeds=False)
+    with zipfile.ZipFile(path) as z:
+        assert not [n for n in z.namelist() if n.startswith("word/fonts/")], \
+            "the collapsed entry's embeds were left behind"
 
 
 def test_pruning_is_idempotent(tmp_path):
@@ -919,9 +1171,10 @@ def test_a_face_nothing_references_is_dropped_even_if_it_was_not_renamed(tmp_pat
                    '<Relationship Id="rId1" Type="font" '
                    'Target="fonts/JetBrainsMono.ttf"/></Relationships>')
         z.writestr("word/fonts/JetBrainsMono.ttf", b"TTF" * 200)
-    removed, parts = ox.prune_embedded_fonts(path)
-    assert removed == ("JetBrains Mono",)
-    assert parts == ("word/fonts/JetBrainsMono.ttf",)
+    pruned = ox.prune_embedded_fonts(path)
+    assert pruned.faces == ("JetBrains Mono",)      # unused: declaration went
+    assert pruned.unembedded == ()                  # not the NEVER_EMBED path
+    assert pruned.parts == ("word/fonts/JetBrainsMono.ttf",)
     with zipfile.ZipFile(path) as z:
         assert "word/fonts/JetBrainsMono.ttf" not in z.namelist()
         assert "JetBrains Mono" not in z.read("word/fontTable.xml").decode()
@@ -1139,6 +1392,46 @@ def test_pruning_keeps_a_face_that_only_an_altname_references(tmp_path):
     assert ox.prune_embedded_fonts(deck) == ox.Pruned(), "the fallback was pruned"
     with zipfile.ZipFile(deck) as z:
         assert ox.FALLBACK_FACE in z.read("word/fontTable.xml").decode()
+
+
+def test_the_two_font_passes_converge_with_a_never_embed_face(tmp_path):
+    """The convergence test below uses a fixture declaring only the sans, so
+    the NEVER_EMBED branch never runs inside it. This one puts mono in the
+    file, which is the shape every real tracker has.
+
+    Two full rounds of prune+fallback must reach a fixed point: if they did
+    not, every sweep would re-upload every tracker forever."""
+    path = str(tmp_path / "converge-mono.docx")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", '<Types xmlns="ct"/>')
+        z.writestr("word/document.xml",
+                   '<w:document xmlns:w="w"><w:r><w:rPr><w:rFonts '
+                   'w:ascii="%s"/></w:rPr></w:r><w:r><w:rPr><w:rFonts '
+                   'w:ascii="%s"/></w:rPr></w:r></w:document>' % (ox.SANS, ox.MONO))
+        z.writestr("word/fontTable.xml",
+                   '<?xml version="1.0"?><w:fonts xmlns:w="w" xmlns:r="r">'
+                   '<w:font w:name="%s"/>'
+                   '<w:font w:name="%s"><w:embedRegular r:id="rId1"/>'
+                   "</w:font></w:fonts>" % (ox.SANS, ox.MONO))
+        z.writestr("word/_rels/fontTable.xml.rels",
+                   '<?xml version="1.0"?><Relationships xmlns="http://schemas.'
+                   'openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="font" Target="fonts/JBM.ttf"/>'
+                   "</Relationships>")
+        z.writestr("word/fonts/JBM.ttf", b"TTF" * 200)
+
+    ox.prune_embedded_fonts(path)
+    ox.ensure_fallback_font(path)
+    with open(path, "rb") as fh:
+        first = fh.read()
+    second_pruned = ox.prune_embedded_fonts(path)
+    second_fallback = ox.ensure_fallback_font(path)
+    with open(path, "rb") as fh:
+        second = fh.read()
+    assert second_pruned == ox.Pruned(), "the second prune found work to do"
+    assert second_fallback is False, "the fallback pass ran twice"
+    assert first == second, "the two passes do not converge"
+    assert_package_is_consistent(path, expect_embeds=True)
 
 
 def test_the_two_font_passes_converge(tmp_path):

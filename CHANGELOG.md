@@ -19,9 +19,11 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   for — so they are left alone. The face is declared but no longer embedded
   (Google Docs resolves it, the same way it already resolves Instrument Sans),
   and the orphaned Manrope/Space Grotesk embeds are pruned around it: a tracker
-  goes 392,784 -> 208,207 bytes, of which ~186KB is the metric fallback. (An earlier revision of this sweep read those 205
-  runs as body prose and rewrote them to the sans; that was wrong and was
-  reverted before release.)
+  goes from ~385KB to ~205KB, of which ~186KB is the metric fallback — the one
+  face still embedded, because it exists for the reader who lacks the brand
+  face. (An earlier revision of this sweep read those 205 runs as body prose
+  and rewrote them to the sans; that was wrong and was reverted before
+  release.)
 - **The audit reports have no dark mode.** `report_style.py` shipped a light
   palette plus an inverted twin under `prefers-color-scheme` and
   `[data-theme]`. AAIF is a two-surface system where the *designer* chooses

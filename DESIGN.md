@@ -96,13 +96,24 @@ Three things about it are worth knowing before editing:
   anyway, because these documents live in Google Docs and Google Docs has it.
   JetBrains Mono is a Google Font on the same terms — verified by restoring one
   tracker with mono declared and unembedded and reading it back rendered — so
-  embedding it bought nothing and cost ~210KB a file, 35.8MB across the estate.
-  Manrope is the exception because it is the one face that has to travel: it
-  exists for the reader who does NOT have Instrument Sans.
+  embedding it cost ~215KB a file (220,353 bytes measured), ~36MB across the
+  171 `.docx` in the estate. Manrope is the exception because it is the one
+  face that has to travel: it exists for the reader who does NOT have
+  Instrument Sans.
 
-  Measured end to end on a real tracker: **392,784 → 17,888 after restyle and
-  prune → 208,207 once the fallback goes in.** Net ~180KB *smaller* than it
-  started, and ~186KB of what remains is the fallback, which is now the only
+  **That exception is also the honest limit of the rule.** Embedding mono did
+  buy something — fidelity in Word, offline, on a machine without the face —
+  and dropping it trades that away because this estate lives in Google Docs.
+  The fallback's whole purpose is the reader who lacks the brand face, so that
+  reader is admitted to exist for the sans and assumed away for mono. That
+  asymmetry is the decision; if these files ever ship as standalone `.docx`,
+  it is the first thing to revisit.
+
+  Measured end to end on the tracker anyone can reach — `git show
+  78a6599:lib/aaif_events/tests/fixtures/event_tracker_irl.docx`, the file the
+  end-to-end test reads: **394,790 on disk → 394,482 after restyle → 19,804
+  after prune → 210,123 once the fallback goes in.** Net ~180KB *smaller* than
+  it started, and ~186KB of what remains is the fallback, which is now the only
   thing making these files large at all. Treat that number as soft —
   `ensure_fallback_font` writes its two TTFs STORED, so deflating them would
   drop ~106KB and stale every copy of it at once. An earlier pass reported

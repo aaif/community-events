@@ -216,7 +216,7 @@ class Changes(NamedTuple):
         """
         return bool(self.parts or self.plates or self.retired or self.fallback
                     or self.pruned.faces or self.pruned.parts
-                    or self.rescued.runs)
+                    or self.pruned.unembedded or self.rescued.runs)
 
     @property
     def conformant(self):
@@ -238,8 +238,8 @@ class Changes(NamedTuple):
         return not (self.before or self.after or self.parts or self.plates
                     or self.retired or self.fallback or self.contrast
                     or self.unchecked or self.pruned.faces
-                    or self.pruned.parts or self.rescued.runs
-                    or self.rescued.before)
+                    or self.pruned.parts or self.pruned.unembedded
+                    or self.rescued.runs or self.rescued.before)
 
 
 def walk_estate(root, jobs=8):
@@ -504,7 +504,8 @@ def process(entry, tmpdir, write, backup_dir, check_only, plate_dir=None,
         parts = cc._rewrite_zip(src, ox.restyle_part)
         # Renaming the faces leaves a Word file referencing a font it does not
         # embed, still declaring the faces nobody uses, and carrying their
-        # embedded bytes (~760KB in a real tracker). Reconcile the
+        # embedded bytes (~764KB unpacked, ~365KB in the zip, in a real
+        # tracker). Reconcile the
         # font table with what the document now actually asks for.
         pruned = (ox.prune_embedded_fonts(src)
                   if entry["mime"] == cc.DOCX else ox.Pruned())
@@ -747,6 +748,16 @@ def main():
                               "; removed %d embedded face part(s)"
                               % len(changes.pruned.parts)
                               if changes.pruned.parts else ""))
+            if changes.pruned.unembedded:
+                # Its OWN line, and the wording matters. Folded into the line
+                # above, every sweep read "dropped JetBrains Mono from the font
+                # table" — false, and identical to what a sweep would print if
+                # the declaration really had gone, leaving 205 runs naming a
+                # face the table does not. That line is the only audit trail
+                # an operator gets, so it has to distinguish the two.
+                print("                 + fonts: %s still declared, embed "
+                      "removed (resolves from the system)"
+                      % ", ".join(changes.pruned.unembedded))
             if changes.fallback:
                 print("                 + fonts: embedded the %s metric "
                       "fallback for %s" % (ox.FALLBACK_FACE, ox.SANS))
