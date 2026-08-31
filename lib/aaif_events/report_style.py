@@ -258,12 +258,17 @@ button.f[aria-pressed="true"]{background:var(--accent); border-color:var(--accen
 button.f:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
 .tablewrap{overflow-x:auto; border:1px solid var(--line-1); border-radius:0;
   background:var(--surface)}
-table{border-collapse:collapse; width:100%; font-size:.87rem; min-width:800px}
+/* width:max-content + min-width:100% (not a flat width:100%) so a table
+   with few columns still fills its wrapper, but one whose columns need more
+   room than that GROWS past it — which is what makes .tablewrap's
+   overflow-x:auto actually engage instead of squeezing every column down to
+   fit and clipping the last one's header text. */
+table{border-collapse:collapse; width:max-content; min-width:100%; font-size:.87rem}
 th,td{text-align:left; padding:9px 14px; border-bottom:1px solid var(--line-soft);
   vertical-align:top}
 thead th{position:sticky; top:0; background:var(--sunken); font-size:.7rem;
   text-transform:uppercase; letter-spacing:.08em; color:var(--ink-faint); font-weight:650;
-  border-bottom:1px solid var(--line-1)}
+  border-bottom:1px solid var(--line-1); white-space:nowrap}
 tbody th{font-weight:600; white-space:nowrap}
 tbody tr:last-child th,tbody tr:last-child td{border-bottom:none}
 tbody tr:hover th,tbody tr:hover td{background:var(--sunken)}
@@ -288,33 +293,28 @@ td.n{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
   background:var(--sunken); border:1px solid var(--line-soft); border-radius:0;
   padding:2px 7px}
 .chap{border:1px solid var(--line-1); border-radius:0; background:var(--surface);
-  padding:18px 22px}
+  padding:18px 22px; min-width:0}
 .chap h3{display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; margin-bottom:12px}
 .chapchans{display:flex; gap:6px; flex-wrap:wrap}
-.grid-chaps{display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px}
-.grid-rosters{display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:16px}
-ul.plist{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px}
-ul.plist li{display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline;
-  padding-bottom:9px; border-bottom:1px dashed var(--line-soft)}
-ul.plist li:last-child{border-bottom:none; padding-bottom:0}
-ul.plist li.none{color:var(--ink-faint); font-size:.85rem; font-style:italic}
-.pname{font-weight:600; font-size:.9rem}
-.pmail{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.72rem;
-  color:var(--ink-faint); word-break:break-all}
-.pills{display:flex; gap:5px; flex-wrap:wrap; margin-left:auto}
+/* Full-width, one chapter per row — a 2-up card grid squeezed a 9-column
+   table into ~360px and truncated it. Each chapter is its own subsection,
+   not a card competing for horizontal room with its neighbour. */
+.stack-chaps{display:flex; flex-direction:column; gap:28px}
 .pill{font-size:.66rem; padding:2px 8px; border-radius:99px; white-space:nowrap;
   font-weight:650}
 .pill-ok{background:var(--ok-bg); color:var(--ok)}
 .pill-warn{background:var(--warn-bg); color:var(--warn)}
 .pill-bad{background:var(--bad-bg); color:var(--bad)}
 .pill-mute{background:var(--sunken); color:var(--ink-faint)}
-.cnt{background:var(--accent-soft); color:var(--accent); border-radius:99px; padding:1px 7px;
-  font-size:.68rem; font-weight:700}
-.plist-x li{opacity:.82}
-.roster h3{align-items:center; font-family:ui-monospace,"SF Mono",Menlo,monospace;
-  font-size:.95rem}
-.rgrps{display:flex; flex-direction:column; gap:14px}
-.rgrp h4{display:flex; gap:8px; align-items:center; margin-bottom:8px; font-size:.8rem}
+/* A row with at least one Issues entry — tinted so a scan of the table finds
+   it without reading every cell, using the same restrained warn/bad tokens
+   the pills already use, never a new colour. */
+tr.has-issue td,tr.has-issue th{background:var(--warn-bg)}
+tr.has-issue:hover td,tr.has-issue:hover th{background:var(--warn-bg)}
+/* Not yet accepted — a fact about the ROW, not an issue by itself (a pending
+   applicant with nothing else wrong gets no has-issue tint), so it gets its
+   own, lighter signal. */
+tr.pending td,tr.pending th{font-style:italic}
 .bars{display:flex; flex-direction:column; gap:7px; margin-top:14px}
 .brow{display:grid; grid-template-columns:132px 1fr 62px; gap:12px; align-items:center}
 .blab{font-size:.8rem; color:var(--ink-soft); text-align:right}
@@ -381,11 +381,10 @@ footer{color:var(--ink-faint); font-size:.8rem; border-top:1px solid var(--line-
   .stats{grid-template-columns:repeat(5,1fr); gap:7px; break-inside:avoid}
   .stat{padding:10px 12px} .stat .v{font-size:16pt}
   .two{grid-template-columns:1fr 1fr; gap:12px}
-  .card,.chap,.roster{break-inside:avoid}
+  .card,.chap{break-inside:avoid}
   .card{padding:12px 14px}
   .chap{padding:12px 14px}
-  .grid-chaps,.grid-rosters{grid-template-columns:1fr 1fr; gap:10px}
-  .pmail{font-size:7pt}
+  .stack-chaps{gap:14px}
   .brow{grid-template-columns:106px 1fr 52px; gap:8px}
   .blab,.bval{font-size:7.5pt}
   .btrack{height:11px}

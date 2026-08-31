@@ -2,7 +2,7 @@
 """Audit the Slack workspace from the member's side: channels and accounts.
 
 Collects channel metadata and the full user directory, then renders a
-self-contained HTML report and (unless --no-pdf) a PDF beside it.
+self-contained HTML report.
 
 Everything here is read-only, and this engine reads no messages itself. When
 audit_activity.py's cache is present it reports a posted-recently FLOOR from
@@ -216,6 +216,34 @@ replies are invisible to the API, private channels are limited to the audit acco
 {caveat}
 
 <section>
+  <div class="eyebrow">Issues</div>
+  <h2>What this page can already name</h2>
+  <p class="lede">The to-do list right below is these same counts, turned into
+  verbs — no judgement is made here that isn't a table or a stat further down
+  this page.</p>
+  <ul>
+    <li><b>{len(nodesc)} live channel(s)</b> never had a topic or purpose set.</li>
+    <li><b>{len(small)} live channel(s)</b> have 8 or fewer members.</li>
+    <li><b>{unconf} active human(s)</b> have an unconfirmed email address.</li>
+    <li><b>{guests} active human(s)</b> are guests (restricted or ultra-restricted).</li>
+  </ul>
+  <h2>To-do</h2>
+  {rs.actions([t for t in [
+      ("Set a purpose or topic on %d channel(s)" % len(nodesc),
+       "Never described: %s." % ", ".join(
+           "#" + c["name"] for c in nodesc[:6]),
+       "minutes each", "channel owner", "next") if nodesc else None,
+      ("Decide the fate of %d small channel(s)" % len(small),
+       "8 or fewer members: %s." % ", ".join(
+           "#" + c["name"] for c in small[:6]),
+       "minutes each", "workspace admin", "later") if small else None,
+      ("Follow up on %d unconfirmed email address(es)" % unconf,
+       "Active humans who never confirmed their address.",
+       "minutes", "workspace admin", "later") if unconf else None,
+  ] if t]) or '<p class="mute">Nothing outstanding.</p>'}
+</section>
+
+<section>
   <div class="eyebrow">Channels</div>
   <h2>{len(chans)} channels, {len(arch)} of them retired</h2>
   <div class="stats" style="margin-top:18px">
@@ -384,7 +412,6 @@ def main():
     ap.add_argument("--cache", default=".slack-audit-cache",
                     help="directory for raw API pulls")
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
-    ap.add_argument("--no-pdf", action="store_true", help="write HTML only")
     args = ap.parse_args()
 
     # Before any collection: the cache holds the entire member directory,
@@ -449,8 +476,6 @@ def main():
     html_path = args.out + ".html"
     rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
-    if not args.no_pdf:
-        print("wrote %s" % rs.to_pdf(os.path.abspath(html_path), os.path.abspath(args.out + ".pdf")))
 
 
 if __name__ == "__main__":

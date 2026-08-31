@@ -368,6 +368,24 @@ organizer engine's business and are excluded here.</p>
   <div class="stat"><span class="v">%(n_unfiled)s</span><span class="k">unclassified rooms</span></div>
 </div>
 
+<h2>Issues</h2>
+<p class="lede">Every row below is a room this page can already name — the
+to-do list two paragraphs down is nothing more than these, turned into
+verbs. No new judgement is made here that isn't visible in a table further
+down this page.</p>
+<ul>
+<li><b>%(n_dead)s dead</b> — silent for a year or more (of %(n_quiet_total)s
+measured quiet).</li>
+<li><b>%(n_purpose)s</b> with no purpose set.</li>
+<li><b>%(n_unfiled)s unclassified</b> — live and public, no row on the
+%(tab)s tab.</li>
+<li><b>%(n_thin)s carried by one or two people</b> — active, but one
+departure from dead.</li>
+</ul>
+
+<h2>To-do</h2>
+%(todo)s
+
 <h2>Where the subjects sit</h2>
 %(themes)s
 <p class="mute">%(kinds)s</p>
@@ -430,6 +448,31 @@ because someone wrote it on the %(tab)s tab; the engine never inferred one.</li>
         "window": act_meta["days"] if act_meta else 0,
         "n_purpose": format(len(no_purpose), ","),
         "n_unfiled": format(len(unfiled), ","),
+        "n_dead": format(len(dead), ","),
+        "n_quiet_total": format(len(quiet) + len(never), ","),
+        "n_thin": format(len(thin), ","),
+        "todo": rs.actions([
+            t for t in [
+                (("Decide the fate of %d dead topic room(s)" % len(dead)),
+                 "Silent for a year or more: %s." % ", ".join(
+                     "#" + s["name"] for s in
+                     sorted(dead, key=lambda x: -num(x))[:6]),
+                 "minutes each", "chapter/community lead", "next")
+                if dead else None,
+                (("Set a purpose on %d room(s)" % len(no_purpose)),
+                 "No purpose line: %s." % ", ".join(
+                     "#" + s["name"] for s in no_purpose[:6]),
+                 "minutes each", "room owner", "next")
+                if no_purpose else None,
+                (("File %d unclassified room(s) on the %s tab"
+                  % (len(unfiled), TOPICS_TAB)),
+                 "Live, public, and not a topic: %s." % ", ".join(
+                     "#" + c["name"] for c in
+                     sorted(unfiled, key=lambda c: -(c["num_members"] or 0))[:6]),
+                 "minutes each", "whoever curates the tab", "next")
+                if unfiled else None,
+            ] if t
+        ]) or '<p class="mute">Nothing outstanding.</p>',
         "themes": rs.bars(theme_rows[:14]),
         "kinds": e("Kinds on the tab: " + ", ".join(
             "%s %d" % (k, n) for k, n in kinds.most_common())
@@ -489,7 +532,6 @@ def main():
     ap.add_argument("--cache", default=".slack-audit-cache",
                     help="directory for raw API pulls")
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
-    ap.add_argument("--no-pdf", action="store_true", help="write HTML only")
     args = ap.parse_args()
 
     # Before any collection — this repo is public and the cache holds the
@@ -547,9 +589,6 @@ def main():
     html_path = args.out + ".html"
     rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
-    if not args.no_pdf:
-        print("wrote %s" % rs.to_pdf(os.path.abspath(html_path),
-                                     os.path.abspath(args.out + ".pdf")))
 
 
 if __name__ == "__main__":
