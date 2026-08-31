@@ -379,6 +379,28 @@ with mock.patch.object(sr, "fold_city", sr.fold_city):
 check("the handles guard constant matches the shared sentinel",
       sync_chapters.NO_RESOURCE, "none")
 
+
+# --- propose_handles() actually calls ao.read_intake() — the 3-value unpacking
+# is the same fix class prune_organizers.py/invite_organizers.py needed; this
+# one takes `ao` as a plain argument rather than a module attribute, so no
+# mock.patch is needed — a fake object with the right shape is enough. -------
+class _FakeAO:
+    def read_intake(self):
+        return ([{"name": "Ada", "email": "a@x.com", "city": "Oslo"}], 0, {})
+
+
+class _FakeSlackmod:
+    def lookup_emails(self, api, emails):
+        return {"a@x.com": {"id": "U1", "name": "ada"}}
+
+
+_proposals, _unresolved = sr.propose_handles(
+    [ch("Oslo", row=7, handles="")], _FakeAO(), None, _FakeSlackmod())
+check("propose_handles() runs to completion against a 3-tuple read_intake()",
+      len(_proposals), 1)
+check("the resolved organizer's handle is proposed",
+      _proposals[0]["value"], "@ada")
+
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402

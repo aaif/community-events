@@ -239,7 +239,7 @@ def main():
 
     # The report names channels and how dead they are; the cache holds only
     # counts. Same public-repo rule as the other two audits regardless.
-    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
+    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html")
     os.makedirs(args.cache, exist_ok=True)
     os.chmod(args.cache, 0o700)
 

@@ -416,7 +416,7 @@ def main():
 
     # Before any collection: the cache holds the entire member directory,
     # including email addresses and 2FA/admin flags, and this repo is public.
-    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
+    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html")
     os.makedirs(args.cache, exist_ok=True)
     os.chmod(args.cache, 0o700)
 

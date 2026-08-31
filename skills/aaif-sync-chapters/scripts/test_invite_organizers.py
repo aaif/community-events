@@ -429,6 +429,46 @@ with _ctx.redirect_stderr(_err):
     inv.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
 check("set_redaction(False) leaves REDACT off", inv.REDACT, False)
+
+
+# --- collect() actually calls ao.read_intake() — the 3-value unpacking at
+# invite_organizers.py's collect() is the same fix class as prune_organizers.py's
+# (both once unpacked a stale 2-tuple), but only prune_organizers.py's copy had
+# a test exercising it. A regression here would raise ValueError with nothing
+# local or in CI to catch it. ---------------------------------------------------
+from unittest import mock as _mock  # noqa: E402
+
+_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Boston"}]
+
+
+class _FakeInviteApi:
+    def __init__(self, *a, **kw):
+        pass
+
+    def require_scopes(self, *a):
+        pass
+
+
+def _run_collect():
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1"]), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})):
+        return inv.collect()
+
+
+_rows, _unresolved, _no_channel = _run_collect()
+check("collect() runs to completion against a 3-tuple read_intake()",
+      len(_rows), 1)
+check("the one roster member already present is not double-counted as missing",
+      (_rows[0]["missing"], [n for n, _ in _rows[0]["present"]]), ([], ["Ada"]))
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

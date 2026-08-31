@@ -46,7 +46,8 @@ speaker — `sync_crm`'s SECURITY check already treats this as expected, see
 different talk titles/abstracts from one speaker). Marking either `Duplicate`
 silently discards a live application; check `Talk title` / `Headline` /
 `Abstract` (or the equivalent per-role fields) actually differ before deciding.
-**blank** Status cell is treated as `Prospect`, and so is the **legacy value `New`** —
+
+A **blank** Status cell is treated as `Prospect`, and so is the **legacy value `New`** —
 the pre-2026-08-22 name for the same state, renamed because `New` misread as
 "new organizer" while `Prospect` matches the term the CRM sync already writes.
 `migrate_status_prospect.py` (in `aaif-sync-chapters`) rewrites the dropdowns,

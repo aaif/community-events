@@ -344,13 +344,15 @@ def test_header_index_aborts_on_missing_and_duplicate():
 
 # -------------------------------------------------------------------- join ---
 
-def _row(city, public=None, org=None):
+def _row(city, public=None, org=None, country_channel=None):
     return {"city": city, "regional": None, "public_how": "", "organizers_how": "",
             "regional_how": "",
             "public": public, "public_id": "C1", "public_members": 5,
             "public_candidates": [], "organizers_channel": org,
             "organizers_id": "C2", "organizers_channel_members": 3,
-            "organizers_private": True}
+            "organizers_private": True,
+            "country_channel": country_channel,
+            "country_channel_id": "C3" if country_channel else None}
 
 
 def test_colliding_chapter_names_abort():
@@ -380,6 +382,78 @@ def test_membership_and_staff_split():
           [(x["name"], x["is_staff"]) for x in audit[0]["unaccounted"]],
           [("Outsider", False), ("Staff", True)])
     check("no orphans", orphans, {})
+
+
+def test_local_champs_unpulled_reads_as_unknown_not_absent():
+    """`local_champs_ids=None` (the pull was skipped) must not collapse to
+    "confirmed not a member" — that exact collapse is the bug this suite
+    guards against (main() once computed an empty set instead of None)."""
+    rows = [_row("Boston", public="boston", org="boston-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted", "city": "Boston"}]
+    slack_ids = {"a@x.com": {"id": "U1"}}
+    membership = {"boston": ["U1"], "boston-organizers": ["U1"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {},
+                              "mlops.community", local_champs_ids=None)
+    (a,) = audit[0]["accepted"]
+    check("unpulled local-champs reads as None, not False",
+          a["in_local_champs"], None)
+
+
+def test_local_champs_known_set_marks_real_membership():
+    rows = [_row("Boston", public="boston", org="boston-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted", "city": "Boston"},
+              {"name": "B", "email": "b@x.com", "status": "Accepted", "city": "Boston"}]
+    slack_ids = {"a@x.com": {"id": "U1"}, "b@x.com": {"id": "U2"}}
+    membership = {"boston": ["U1", "U2"], "boston-organizers": ["U1", "U2"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {},
+                              "mlops.community", local_champs_ids={"U1"})
+    a, b = audit[0]["accepted"]
+    check("member of local-champs reads True", a["in_local_champs"], True)
+    check("non-member reads False, not None", b["in_local_champs"], False)
+
+
+def test_country_channel_is_none_when_chapter_has_none():
+    rows = [_row("Boston", public="boston", org="boston-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted", "city": "Boston"}]
+    slack_ids = {"a@x.com": {"id": "U1"}}
+    membership = {"boston": ["U1"], "boston-organizers": ["U1"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {}, "mlops.community")
+    (a,) = audit[0]["accepted"]
+    check("no country channel on the chapter reads as None, not False",
+          a["in_country_channel"], None)
+
+
+def test_country_channel_membership_is_a_real_bool_when_present():
+    rows = [_row("Boston", public="boston", org="boston-organizers",
+                 country_channel="united-states")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted", "city": "Boston"},
+              {"name": "B", "email": "b@x.com", "status": "Accepted", "city": "Boston"}]
+    slack_ids = {"a@x.com": {"id": "U1"}, "b@x.com": {"id": "U2"}}
+    membership = {"boston": ["U1", "U2"], "boston-organizers": ["U1", "U2"],
+                  "united-states": ["U1"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {}, "mlops.community")
+    a, b = audit[0]["accepted"]
+    check("in the country channel reads True", a["in_country_channel"], True)
+    check("not in the country channel reads False", b["in_country_channel"], False)
+
+
+def test_person_issues_flags_absence_and_no_slack_account():
+    rows = [_row("Boston", public="boston", org="boston-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted", "city": "Boston"},
+              {"name": "B", "email": "b@x.com", "status": "Accepted", "city": "Boston"}]
+    slack_ids = {"a@x.com": {"id": "U1"}}
+    membership = {"boston": [], "boston-organizers": ["U1"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {}, "mlops.community")
+    a, b = audit[0]["accepted"]
+    check("no Slack account is the only issue reported for B",
+          ao.person_issues(b, audit[0], True),
+          ["no Slack account under their intake email"])
+    check("present in organizers but absent from public channel is flagged for A",
+          ao.person_issues(a, audit[0], True),
+          ["not in #boston (their chapter's public channel)"])
+    check("local-champs absence is never flagged as an issue",
+          any("local-champs" in x or "local_champs" in x
+              for x in ao.person_issues(a, audit[0], True)), False)
 
 
 def test_unnamed_member_is_marked_unresolved_not_accused():

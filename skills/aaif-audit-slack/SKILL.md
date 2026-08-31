@@ -22,7 +22,7 @@ Three engines over one workspace, same house rules — **everything is read-only
 
 | Deliverable | Script | Produces |
 |---|---|---|
-| Where to focus | `summarize_audits.py` | **the single HTML report you hand over** — a TL;DR ranking what to fix, with an index into the three full reports as sections below it |
+| Where to focus | `summarize_audits.py` | **the single HTML report you hand over** — an index into four full-report sections (Chapters, Organizers, Topics, Members), with a TL;DR ranking what to fix as the closing section |
 
 Run whichever the user asked for. "Audit Slack" with no side named means **all
 three reports**. Order is fixed: **organizers → activity → topics → members.**
@@ -441,12 +441,13 @@ repository — there is nothing to commit them to.
 python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py
 ```
 
-Writes `slack-full-audit.html`: a TL;DR (ranked focus page) followed by an
-index of anchor links, then Organizers, Topics and Members as full sections —
-not appendices tacked onto a PDF. The Organizers section also links its own
-internal Chapters coverage-matrix anchor from the top index, since that table
-answers a different question ("does this chapter have a home?") than the
-person-level rosters below it in the same section.
+Writes `slack-full-audit.html`: a short index of anchor links, then four full
+sections — Chapters, Organizers, Topics, Members — with the TL;DR (ranked
+focus page) last, as a recap rather than a gate the reader scrolls past
+first. Chapters and Organizers are two separate top-level sections, not one
+nested under the other, because they answer different questions ("does this
+chapter have a home?" vs "is the right person in it?") even though both come
+from `audit_organizers.render_body()`'s two returned fragments.
 
 It **measures nothing new**: it reads the four caches the engines wrote and
 aborts naming the engine whose cache is missing, empty, or stamped with a
