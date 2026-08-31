@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The deliverable: ONE PDF, opening on **where should we focus?**
+"""The deliverable: ONE HTML report, opening on **where should we focus?**
 
 Not a fourth audit. It ranks what the three engines already measured — biggest
 cost first, with the evidence and the effort attached — and then carries the
@@ -16,6 +16,7 @@ import datetime as dt
 import html
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
@@ -121,7 +122,7 @@ def topic_findings(subjects, today):
 
     This function used to build its own parallel subject shape and re-read the
     Topics tab, and it drifted immediately: it counted rooms the sweep never
-    reached as "quiet", so the focus page and Appendix B of the SAME PDF
+    reached as "quiet", so the focus page and the Topics section of the SAME document
     reported different numbers and the inflated one was on the cover. Selecting
     from `audit_topics`' own records through its own `state_of` makes that
     divergence unwriteable.
@@ -366,8 +367,9 @@ Read-only throughout; no message text was retained.</footer>
     return body
 
 
-#: Appendices carry their own <h1>, so each starts a fresh printed page and the
-#: PDF reads as four documents in one file rather than one long scroll.
+#: Appendices carry their own <h1>, so each starts a fresh printed page if the
+#: HTML is ever printed, and the document reads as four reports in one file
+#: rather than one long scroll.
 APPENDIX_CSS = """
 /* The appendix must re-create .wrap's vertical rhythm. .wrap is a flex column
    whose 44px gap reaches its DIRECT children only, and an appendix nests its
@@ -381,23 +383,52 @@ APPENDIX_CSS = """
 .appendix > .tag{margin-bottom:-32px}
 .appendix > .tag{display:inline-block;font-size:.72rem;letter-spacing:.08em;
   text-transform:uppercase;opacity:.6;margin-bottom:.4rem}
+/* The sections index: a jump list, not prose — no bullets, no browser-blue
+   links (BASE_CSS's a{} already handles the color; this is layout only). */
+.toc{border:1px solid var(--line-1,#E5E5E2); padding:20px 24px}
+.toc > .tag{display:block; margin-bottom:10px; font-size:.72rem;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint,#8C8C8C)}
+.toc ul{list-style:none; margin:0; padding:0; display:flex;
+  flex-direction:column; gap:8px}
+.toc li{font-size:.95rem}
 """
 
 
+def slug(label):
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+
+
 def appendix(label, body):
-    return ('<section class="appendix"><span class="tag">%s</span>%s</section>'
-            % (e(label), body))
+    return ('<section class="appendix" id="%s"><span class="tag">%s</span>%s</section>'
+            % (e(slug(label)), e(label), body))
 
 
 def build_document(focus_body, appendices):
-    """Focus page + the three full reports, as one self-contained document.
+    """The four full reports, then a TL;DR summary — sections before the recap.
 
-    The organizer report's filter buttons are deliberately dropped: its script
+    A reader arrives wanting the detail; the summary at the end is what they
+    carry away, not a gate they have to scroll past. A short index up top is
+    the only thing that comes before the sections — pure navigation, not
+    content — so the reports themselves are what the document leads with.
+
+    Chapters ("does the room exist?") and Organizers ("is the right person in
+    it?") are two different questions and two different sections, even though
+    both come from `audit_organizers.render_body`'s two fragments — see that
+    function's docstring.
+
+    The Chapters section's filter buttons are deliberately dropped: its script
     hides rows by a global `tbody tr` query, which in a combined document would
-    reach into the other two appendices. Nothing is lost — this output is a PDF,
-    where the buttons were never clickable anyway.
+    reach into the other sections. That is a real trade — the combined HTML
+    loses interactive filtering an organizers-only run still has — traded for
+    a document where every section reads correctly.
     """
-    parts = [focus_body] + [appendix(lbl, b) for lbl, b in appendices]
+    # Summary is a real section too — appended after the four reports — so the
+    # index is built from the full list, not just the four passed in.
+    all_sections = list(appendices) + [("Summary", focus_body)]
+    index = ('<nav class="toc"><span class="tag">Sections</span><ul>%s</ul></nav>'
+            % "".join('<li><a href="#%s">%s</a></li>' % (e(slug(lbl)), e(lbl))
+                     for lbl, _ in all_sections))
+    parts = [index] + [appendix(lbl, b) for lbl, b in all_sections]
     return rs.page("AAIF Slack Audit", "".join(parts), extra_css=APPENDIX_CSS)
 
 
@@ -406,12 +437,9 @@ def main():
     ap.add_argument("--out", default="slack-full-audit",
                     help="output basename (default: slack-full-audit)")
     ap.add_argument("--cache", default=".slack-audit-cache", help="cache directory")
-    ap.add_argument("--no-pdf", action="store_true", help="write HTML only")
-    ap.add_argument("--keep-html", action="store_true",
-                    help="keep the intermediate .html beside the PDF")
     args = ap.parse_args()
 
-    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
+    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html")
 
     audit = need(args.cache, "audit.json", "audit_organizers.py")
     act = need(args.cache, "activity.json", "audit_activity.py")
@@ -425,7 +453,7 @@ def main():
     today = dt.datetime.now(dt.timezone.utc)
     # load_topics() is a LIVE Sheets read. Doing it once matters twice over:
     # two reads cost two round-trips, and they can straddle an edit, so the
-    # focus page and Appendix B could describe two different classifications.
+    # focus page and the Topics section could describe two different classifications.
     claimed = audit_topics.chapter_claimed(args.cache, team_id)
     subjects, filed_out, unfiled = audit_topics.classify(
         chans, load_topics(), claimed)
@@ -435,15 +463,15 @@ def main():
     print("  %d chapters, %d subject rooms (%d quiet), %d organizer gaps"
           % (o["chapters"], len(t["subj"]), len(t["quiet"]), len(o["gaps"])))
 
-    print("  composing the appendices ...")
-    org_body, _ = audit_organizers.render_body(
+    print("  composing the sections ...")
+    chapters_body, org_body, _ = audit_organizers.render_body(
         audit["chapters"], audit.get("orphan_cities") or {},
         audit.get("duplicates") or 0, today)
-    # The organizer body ships filter buttons driven by a script we deliberately
-    # drop (its `tbody tr` query is global and would reach into the other two
-    # appendices). Dropping the script alone left five dead controls in the PDF
-    # that look interactive; strip the markup too, so "nothing is lost" is true.
-    org_body = audit_organizers.strip_controls(org_body)
+    # The Chapters body ships filter buttons driven by a script we deliberately
+    # drop (its `tbody tr` query is global and would reach into the other
+    # sections). Dropping the script alone left five dead controls in the
+    # document that look interactive; strip the markup too.
+    chapters_body = audit_organizers.strip_controls(chapters_body)
 
     # window_days is INDEXED, not .get(...,90): a record without the key is
     # schema drift, and defaulting would mint the very number the page then
@@ -459,27 +487,19 @@ def main():
                 "channels": len(act), "age": ages["activity"]} if ids else None
     # The same completeness tripwire audit_members.main() runs. Calling
     # build_body directly would publish a short user pull with no guard, and
-    # every count on Appendix C plus the member total in action #1 would
+    # every count on the Members section plus the member total in action #1 would
     # understate without saying so.
     audit_members.assert_directory_complete(chans, directory, note=print)
     mem_body = audit_members.build_body(chans, directory, today, activity)
 
     doc = build_document(build(o, t, directory, today, ages),
-                         [("Appendix A — organizers", org_body),
-                          ("Appendix B — topics", top_body),
-                          ("Appendix C — members", mem_body)])
+                         [("Chapters", chapters_body),
+                          ("Organizers", org_body),
+                          ("Topics", top_body),
+                          ("Members", mem_body)])
     html_path = args.out + ".html"
     rs.write_private(html_path, doc)
     print("wrote %s" % html_path)
-    if not args.no_pdf:
-        print("wrote %s" % rs.to_pdf(os.path.abspath(html_path),
-                                     os.path.abspath(args.out + ".pdf")))
-        # One PDF is the deliverable. The HTML is scaffolding, and leaving it
-        # behind means a second copy of the same member names and addresses
-        # sitting in the working directory.
-        if not args.keep_html:
-            os.remove(html_path)
-            print("removed %s (--keep-html to retain it)" % html_path)
 
 
 if __name__ == "__main__":

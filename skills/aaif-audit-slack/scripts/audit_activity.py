@@ -235,12 +235,11 @@ def main():
                     help="trailing window for message counts (default 90)")
     ap.add_argument("--refresh", action="store_true",
                     help="re-pull every channel even if pulled today")
-    ap.add_argument("--no-pdf", action="store_true")
     args = ap.parse_args()
 
     # The report names channels and how dead they are; the cache holds only
     # counts. Same public-repo rule as the other two audits regardless.
-    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
+    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html")
     os.makedirs(args.cache, exist_ok=True)
     os.chmod(args.cache, 0o700)
 
@@ -265,9 +264,6 @@ def main():
     html_path = args.out + ".html"
     rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
-    if not args.no_pdf:
-        print("wrote %s" % rs.to_pdf(os.path.abspath(html_path),
-                                     os.path.abspath(args.out + ".pdf")))
 
 
 if __name__ == "__main__":

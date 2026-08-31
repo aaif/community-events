@@ -914,7 +914,7 @@ def propose_handles(chapters, ao, api, slackmod):
     Order follows the intake, matching the `Organizers` name column beside it, so
     the two read as the same list in the same order.
     """
-    people, _ = ao.read_intake()
+    people, _, _ = ao.read_intake()
     by_city = {}
     for p in people:
         if p["city"]:

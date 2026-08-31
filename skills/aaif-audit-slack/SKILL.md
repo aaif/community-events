@@ -1,7 +1,7 @@
 ---
 name: aaif-audit-slack
-description: Audit the community Slack workspace, from either side. The organizer engine checks, for every chapter on the Chapters List, whether it has a public city channel and a private organizers channel, whether the organizers we accepted are actually in them, and who is in each organizers channel that we never accepted. The topics engine reports on the subject-matter channels — which subjects have gone quiet, which rooms overlap, which are carried by one poster, and which show a newcomer nothing — from a human-curated Topics tab. The member engine reports channel counts, sizes, descriptions and lifecycle, plus how many accounts behind the headline member count are active, deactivated, guests or bots. Each engine can produce a standalone HTML report, but the deliverable is ONE combined PDF. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in the -organizers channels, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
-argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME] [--no-pdf]'
+description: Audit the community Slack workspace, from either side. The organizer engine checks, for every chapter on the Chapters List, whether it has a public city channel and a private organizers channel, whether the organizers we accepted are actually in them, and who is in each organizers channel that we never accepted. The topics engine reports on the subject-matter channels — which subjects have gone quiet, which rooms overlap, which are carried by one poster, and which show a newcomer nothing — from a human-curated Topics tab. The member engine reports channel counts, sizes, descriptions and lifecycle, plus how many accounts behind the headline member count are active, deactivated, guests or bots. Each engine can produce a standalone HTML report, and the deliverable is ONE combined HTML report. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in the -organizers channels, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
+argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME]'
 ---
 
 # AAIF Slack Audit
@@ -22,7 +22,7 @@ Three engines over one workspace, same house rules — **everything is read-only
 
 | Deliverable | Script | Produces |
 |---|---|---|
-| Where to focus | `summarize_audits.py` | **the single PDF you hand over** — the ranked focus page, with all three reports behind it as appendices |
+| Where to focus | `summarize_audits.py` | **the single HTML report you hand over** — an index into four full-report sections (Chapters, Organizers, Topics, Members), with a TL;DR ranking what to fix as the closing section |
 
 Run whichever the user asked for. "Audit Slack" with no side named means **all
 three reports**. Order is fixed: **organizers → activity → topics → members.**
@@ -33,24 +33,25 @@ run either first and those numbers are missing from a report you have already
 handed over. Topics additionally reads the organizer engine's `audit.json` to
 exclude chapter rooms from its unclassified list, so it goes after organizers.
 
-**The output is ONE PDF.** Run the four collectors with `--no-pdf` — they exist
-to fill the cache and to be run standalone when someone wants just one side —
-then `summarize_audits.py` composes the deliverable:
+**The output is ONE HTML report.** Run the four collectors — they exist to fill
+the cache and to be run standalone when someone wants just one side — then
+`summarize_audits.py` composes the deliverable:
 
 ```bash
 for s in organizers activity topics members; do
-  python3 ${CLAUDE_SKILL_DIR}/scripts/audit_$s.py --no-pdf
+  python3 ${CLAUDE_SKILL_DIR}/scripts/audit_$s.py
 done
-python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py   # -> slack-full-audit.pdf
-rm -f slack-*-audit.html                                  # scaffolding, holds PII
+python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py   # -> slack-full-audit.html
+rm -f slack-organizers-audit.html slack-topics-audit.html \
+      slack-members-audit.html slack-activity-audit.html   # scaffolding, holds PII
 ```
 
-Do not hand over four PDFs. Four files drift out of step with each other the
-moment one is re-run, and the person reading them has to work out the ranking
-that `summarize_audits.py` already did. It deletes its own intermediate HTML for
-the same reason the caches are 0600 — a second copy of every member name and
-address in the working directory is a liability, not a convenience
-(`--keep-html` if you genuinely need it).
+Do not hand over four separate reports. Four files drift out of step with each
+other the moment one is re-run, and the person reading them has to work out the
+ranking that `summarize_audits.py` already did. Delete the four standalone
+files once the combined one is written, for the same reason the caches are
+0600 — a second copy of every member name and address in the working
+directory is a liability, not a convenience.
 
 **Activity is not opt-in.** Asking for the organizer or member side alone still
 runs it, because its numbers are the only measured engagement in this skill and
@@ -157,8 +158,8 @@ Joins the **Chapters List**, the **Intake Ops** organizer decisions and **Slack*
 python3 ${CLAUDE_SKILL_DIR}/scripts/audit_organizers.py
 ```
 
-Writes `slack-organizers-audit.html` + `.pdf`, and a machine-readable
-`audit.json` in the cache directory.
+Writes `slack-organizers-audit.html`, and a machine-readable `audit.json` in
+the cache directory.
 
 `--planned-ok` exists for the **pre-provisioning** state: the Chapters List
 names the channel each chapter *will* have before `provision_channels.py` has
@@ -297,7 +298,7 @@ opposed to the chapter rooms (engine 1) and the plumbing (`#general`, `#random`,
 python3 ${CLAUDE_SKILL_DIR}/scripts/audit_topics.py
 ```
 
-Writes `slack-topics-audit.html` + `.pdf`.
+Writes `slack-topics-audit.html`.
 
 Sections: where the subjects sit by theme · quiet and dead topics by last
 **human** message · proposed overlapping rooms · rooms carried by one or two
@@ -352,7 +353,7 @@ Structural audit of channels and accounts. Touches no Drive file.
 python3 ${CLAUDE_SKILL_DIR}/scripts/audit_members.py
 ```
 
-Writes `slack-members-audit.html` + `.pdf`.
+Writes `slack-members-audit.html`.
 
 Sections: channel counts and size distribution · how long since anyone set a
 topic or purpose · membership concentration in the auto-join channels vs
@@ -385,7 +386,7 @@ counts and poster ids only, in the same 0600 cache as everything else.
 python3 ${CLAUDE_SKILL_DIR}/scripts/audit_activity.py
 ```
 
-Writes `slack-activity-audit.html` + `.pdf`. Reuses the shared channel cache;
+Writes `slack-activity-audit.html`. Reuses the shared channel cache;
 its per-channel pulls are resumable within a UTC day, so an interrupted sweep
 continues instead of restarting. When `audit.json` from the organizer engine is
 present, the report includes a per-chapter activity table joined from it.
@@ -407,7 +408,6 @@ present, the report includes a per-chapter activity table joined from it.
 |---|---|
 | `--refresh` | Re-fetch from the API instead of reusing the cache |
 | `--out NAME` | Output basename |
-| `--no-pdf` | HTML only — skip the Chrome render |
 | `--cache DIR` | Where raw pulls are stored (default `.slack-audit-cache`) |
 
 **Both engines cache their raw pulls**, and the first run of each is slow:
@@ -435,37 +435,47 @@ publish the workspace directory irreversibly. It covers already-tracked files
 too, which `.gitignore` alone does not, and it allows paths outside any
 repository — there is nothing to commit them to.
 
-# 5. The single-PDF deliverable
+# 5. The single-HTML deliverable
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py
 ```
 
-Writes `slack-full-audit.pdf`, deleting the intermediate HTML it renders from
-(`--keep-html` retains it; `--no-pdf` writes only the HTML and no PDF).
+Writes `slack-full-audit.html`: a short index of anchor links, then four full
+sections — Chapters, Organizers, Topics, Members — with the TL;DR (ranked
+focus page) last, as a recap rather than a gate the reader scrolls past
+first. Chapters and Organizers are two separate top-level sections, not one
+nested under the other, because they answer different questions ("does this
+chapter have a home?" vs "is the right person in it?") even though both come
+from `audit_organizers.render_body()`'s two returned fragments.
 
 It **measures nothing new**: it reads the four caches the engines wrote and
 aborts naming the engine whose cache is missing, empty, or stamped with a
 different workspace, rather than estimating a number nobody measured. It does
 re-read the **Topics tab** over `gws` — the classification is config, not a
 measurement, and is not cached — and it re-runs `classify`/`attach_activity`
-once so the focus page and Appendix B select from the *same* records. They used
-to derive separately and immediately disagreed about how many rooms were quiet. The focus page
-ranks findings by what it costs to leave them alone (a public organizers channel
-outranks everything; a quiet topic room outranks a missing purpose line), and
-each appendix is the engine's own report body, unmodified.
+once so the focus page and the Topics section select from the *same* records.
+They used to derive separately and immediately disagreed about how many rooms
+were quiet. The focus page ranks findings by what it costs to leave them alone
+(a public organizers channel outranks everything; a quiet topic room outranks
+a missing purpose line), and each section is the engine's own report body,
+unmodified — plus that engine's own "Issues" → "To-do" subsection, built
+directly from lists the report already computes (never new prioritization
+logic invented for the combined document).
 
 The seam is `render_body` / `build_body` in the three engines: they return the
 page fragment, and their `render` / `build_report` wrap it for standalone use.
-Keep both paths — a change to a report body must show up in the combined PDF and
-the standalone one at once, which is the whole point of composing fragments
-rather than stitching generated HTML.
+Keep both paths — a change to a report body must show up in the combined
+document and the standalone one at once, which is the whole point of
+composing fragments rather than stitching generated HTML.
 
 The organizer report's filter buttons are removed from the combined document on
 purpose — **both** the script and the markup. The script hides rows via a global
-`tbody tr` query and would reach into the other appendices; dropping it alone
+`tbody tr` query and would reach into the other sections; dropping it alone
 left five controls that look interactive and do nothing, so
-`audit_organizers.strip_controls()` takes the markup too.
+`audit_organizers.strip_controls()` takes the markup too. That is a real trade
+in the combined document — a standalone `audit_organizers.py` run keeps
+working, interactive filters.
 
 ---
 

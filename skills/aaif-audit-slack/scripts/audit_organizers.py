@@ -21,6 +21,7 @@ import sys
 import time
 import unicodedata
 from collections import defaultdict
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
@@ -65,6 +66,11 @@ INTAKE_TAB = "Organizers"
 #: Exact-string statuses that count as accepted. Exact dropdown strings —
 #: "Existing" alone would miss every MLOps row, so keep the full value.
 ACCEPTED = ("Accepted", "Existing (from MLOps)")
+
+#: The one workspace-wide private room for community leads, distinct from any
+#: chapter's own "<city>-organizers" channel. Resolved by name off the live
+#: channel list, same as every other channel here — never hardcoded to an id.
+LOCAL_CHAMPS_CHANNEL = "local-champs"
 
 #: Intake statuses that are a decided NO. Someone in an organizers room carrying
 #: one of these is not "awaiting a decision" — the decision was made, and their
@@ -451,9 +457,22 @@ def match_channels(chapters, chans, cfg):
         if not pub:
             reg, regional_how = _resolve_alias(city, cfg["regional"], by_name)
             regional = reg["name"] if reg else None
+        # Same resolution, but unconditional, under a DELIBERATELY DIFFERENT
+        # name (`country_channel`, not a `regional`-prefixed sibling) — the
+        # Chapters summary table wants "what country room serves this
+        # chapter" even when a local room also exists (Madrid has both
+        # #madrid and, via Spain, an implicit tie to a country room).
+        # `regional` above stays gated on `not pub` because existing callers
+        # (the funnel counts, "regional only" filter) read it as "this
+        # chapter has NO local room, only a country one" — a same-prefix name
+        # for this unconditional value would invite a future caller to read
+        # the wrong one and have it type-check fine (both are Optional[str]).
+        reg_always, country_channel_how = _resolve_alias(city, cfg["regional"], by_name)
 
         out.append({
             "city": city, "regional": regional,
+            "country_channel": reg_always["name"] if reg_always else None,
+            "country_channel_id": reg_always["id"] if reg_always else None,
             "public_how": how, "organizers_how": org_how,
             "regional_how": regional_how,
             "public": pub["name"] if pub else None,
@@ -600,19 +619,34 @@ def check_membership_floor(membership, chans, chans_cached, refetch, note=print)
 
 
 def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
-                applicants=None):
+                applicants=None, local_champs_ids=None):
     """Join the sheet data to the Slack data, per chapter.
 
     Each chapter record gains `accepted` (people, each with `slack_id`,
-    `slack_account`, `in_public`, `in_organizers`) and `unaccounted` (everyone in
-    the organizers channel we never accepted, each with `is_staff` and
-    `unresolved`, and — when their email matches an intake row — `intake_status`
-    and `intake_city`). Every key from match_channels() survives unchanged.
+    `slack_account`, `handle`, `in_public`, `in_organizers`, `in_local_champs`,
+    `in_country_channel`) and `unaccounted` (everyone in the organizers
+    channel we never accepted, each with `handle`, `is_staff`, `unresolved`,
+    `in_local_champs`, `in_public`, `in_country_channel`, and — when their
+    email matches an intake row — `intake_status` and `intake_city`). Every
+    key from match_channels() survives unchanged.
 
     `intake_status` is what separates "a stranger is in the private room" from
     "someone we are still deciding on is in the private room, doing the work,
     and locked out of the Drive folder because acceptance is what grants it".
+
+    `local_champs_ids` is the one workspace-wide room's membership (a flat id
+    set, not per-chapter) — `None` reads as "unknown" (never as "nobody"), so a
+    caller that skipped the pull doesn't silently report every person absent.
+    `in_local_champs` on each person carries that same tri-state through:
+    `None` = unknown, `True`/`False` = a real answer.
+
+    `in_country_channel` is the same tri-state for a different reason: `None`
+    means the chapter has no country channel at all (`country_channel` is
+    falsy), not that membership is unmeasured — there's nothing to be a member
+    of. Both fields must be read as tri-state; neither collapses `None` and
+    `False` into one meaning anywhere downstream.
     """
+    lc_ids = local_champs_ids
     lookup = {}
     for r in rows:
         key = fold_tight(r["city"])
@@ -639,35 +673,54 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
         # under "has a room and nobody in it".
         pub_ids = set(membership[r["public"]]) if r["public"] else set()
         org_ids = set(membership[r["organizers_channel"]]) if r["organizers_channel"] else set()
+        # .get(), not [...]: `r` reaches here from match_channels() in the real
+        # run, but test fixtures build minimal chapter dicts by hand and don't
+        # carry every optional key — a country channel is genuinely optional.
+        country_channel = r.get("country_channel")
+        country_ids = set(membership[country_channel]) if country_channel else set()
 
         accepted = []
         for person in by_city.get(r["city"], []):
-            uid = (slack_ids.get(person["email"]) or {}).get("id")
+            hit = slack_ids.get(person["email"]) or {}
+            uid = hit.get("id")
             accepted.append({**person, "slack_id": uid, "slack_account": bool(uid),
+                             "handle": hit.get("name", ""),
                              "in_public": bool(uid and uid in pub_ids),
-                             "in_organizers": bool(uid and uid in org_ids)})
+                             "in_organizers": bool(uid and uid in org_ids),
+                             "in_country_channel": bool(uid and uid in country_ids)
+                                                   if country_channel else None,
+                             "in_local_champs": None if lc_ids is None
+                                                else bool(uid and uid in lc_ids)})
 
         known = {p["slack_id"] for p in accepted if p["slack_id"]}
         extras = []
         for uid in sorted(org_ids - known):
             u = directory.get(uid)
+            in_lc = None if lc_ids is None else bool(uid in lc_ids)
+            in_pub = uid in pub_ids
+            in_country = (uid in country_ids) if country_channel else None
             if u is None:
                 # Naming failed for this member. Render them as unidentified
                 # rather than filing them under a group whose label asserts a
                 # judgement we never made about them.
-                extras.append({"id": uid, "name": uid, "email": "",
+                extras.append({"id": uid, "name": uid, "email": "", "handle": "",
                                "is_staff": False, "unresolved": True,
-                               "intake_status": "", "intake_city": ""})
+                               "intake_status": "", "intake_city": "",
+                               "in_local_champs": in_lc, "in_public": in_pub,
+                               "in_country_channel": in_country})
                 continue
             addr = (u.get("email") or "").lower()
             app = (applicants or {}).get(addr) or {}
             extras.append({"id": uid,
                            "name": u.get("real_name") or u.get("name") or uid,
                            "email": u.get("email", ""),
+                           "handle": u.get("name", ""),
                            "is_staff": addr.endswith("@" + staff_domain),
                            "unresolved": False,
+                           "in_country_channel": in_country,
                            "intake_status": app.get("status", ""),
-                           "intake_city": app.get("city", "")})
+                           "intake_city": app.get("city", ""),
+                           "in_local_champs": in_lc, "in_public": in_pub})
         out.append({**r, "accepted": accepted, "unaccounted": extras})
     return out, dict(orphans)
 
@@ -693,7 +746,68 @@ def rooms_to_create(audit):
             and not c["public_how"].startswith(("planned:", "held-private:"))]
 
 
+def person_issues(p, c, is_accepted):
+    """Every mismatch worth a human's attention for one roster row.
+
+    Framed as findings, not accusations — "not in X yet" rather than "missing",
+    because for a pending applicant the room they're not in yet may not be
+    theirs to join (Drive access is gated on acceptance, not membership).
+
+    Module-level (not nested in render_body) so it's directly testable —
+    the exact per-row logic that decides which rows get tinted deserves its
+    own tests, not just an assertion on rendered HTML.
+    """
+    issues = []
+    if is_accepted:
+        if not p["slack_account"]:
+            issues.append("no Slack account under their intake email")
+            return issues          # nothing else is checkable without one
+        if c["public"] and not p["in_public"]:
+            issues.append("not in #%s (their chapter's public channel)" % c["public"])
+        if c["organizers_channel"] and not p["in_organizers"]:
+            issues.append("not in #%s (their organizer channel)" % c["organizers_channel"])
+        # Deliberately NOT an issue: local-champs is a small, curated
+        # leadership channel, not a room every accepted organizer belongs
+        # in. Flagging its absence here would tint nearly every row —
+        # the column above already shows it, which is the right amount
+        # of visibility for a fact that isn't a problem.
+    else:
+        status = p.get("intake_status") or ""
+        if not status:
+            if p["in_local_champs"]:
+                issues.append("in #%s with no intake submission at all"
+                              % LOCAL_CHAMPS_CHANNEL)
+            else:
+                issues.append("in the organizer channel with no intake row")
+        elif status in DECIDED_NO:
+            issues.append("intake status is %r — should not still be in this "
+                          "channel" % status)
+        else:
+            issues.append("applied (%s), awaiting a decision — no Drive access "
+                          "until accepted" % status)
+    return issues
+
+
+class RenderedBody(NamedTuple):
+    """render_body()'s return — a NamedTuple, not a bare 3-tuple of strings,
+    so a caller can't silently misread which fragment is which (all three
+    positions are plain `str`; a reorder of the return statement would
+    type-check and unpack fine either way)."""
+    chapters: str
+    organizers: str
+    js: str
+
+
 def render_body(audit, orphans, dupes, today):
+    """Return (chapters_body, organizers_body, js) — two fragments, not one.
+
+    "Does the room exist" (Chapters: the numbers, the coverage matrix) and
+    "is the right person in it" (Organizers: the leak, rosters, person-by-
+    person, what-to-do) are different questions with different audiences, so
+    the combined document (summarize_audits.py) gives each its own top-level
+    section. The standalone report (`render`, below) concatenates both back
+    into one page — nothing is lost running this file on its own.
+    """
     allp = [p for c in audit for p in c["accepted"]]
     S = {
         "chapters": len(audit),
@@ -723,17 +837,29 @@ def render_body(audit, orphans, dupes, today):
                       '<span class="fval">%d<span class="fpct">%.0f%%</span></span>%s</div>'
                       % (e(lbl), tone, pct, v, pct, drop))
 
-    matrix = []
+    matrix, total_issues, worst_issues = [], 0, []
     for c in audit:
         state = "own" if c["public"] else ("regional" if c["regional"] else "none")
         n = len(c["accepted"])
         inp = sum(1 for p in c["accepted"] if p["in_public"])
         ino = sum(1 for p in c["accepted"] if p["in_organizers"])
+        inlc = sum(1 for p in c["accepted"] if p["in_local_champs"])
+        # None (the pull was skipped) must never render as a confident 0 —
+        # that's the exact collapse local_champs_ids' own contract forbids.
+        lc_unknown = bool(c["accepted"]) and all(
+            p["in_local_champs"] is None for p in c["accepted"])
         nos = sum(1 for p in c["accepted"] if not p["slack_account"])
+        n_issues = (sum(len(person_issues(p, c, True)) for p in c["accepted"])
+                    + sum(len(person_issues(p, c, False)) for p in c["unaccounted"]
+                          if not p["unresolved"] and not p["is_staff"]))
+        total_issues += n_issues
+        if n_issues:
+            worst_issues.append((c["city"], n_issues))
         shown = c["public"] or c["regional"]
         matrix.append(
             '<tr data-state="%s" data-org="%s"><th scope="row">%s</th>'
-            '<td>%s%s%s</td><td>%s%s</td><td class="n">%s</td><td class="n">%s</td>'
+            '<td>%s%s%s</td><td>%s</td><td>%s%s</td><td class="n">%s</td>'
+            '<td class="n">%s</td><td class="n">%s</td><td class="n">%s</td>'
             '<td class="n">%s</td><td class="n">%s</td></tr>'
             % (state, "yes" if c["organizers_channel"] else "no", e(c["city"]),
                ('<code class="chan">#%s</code>' % e(shown)) if shown else '<span class="nil">none</span>',
@@ -741,6 +867,8 @@ def render_body(audit, orphans, dupes, today):
                ('<span class="num">%s</span>'
                 % ("?" if c["public_members"] is None else c["public_members"]))
                if c["public"] else "",
+               ('<code class="chan">#%s</code>' % e(c.get("country_channel")))
+               if c.get("country_channel") else '<span class="nil">none</span>',
                ('<code class="chan">#%s</code>' % e(c["organizers_channel"]))
                if c["organizers_channel"] else '<span class="nil">none</span>',
                '<span class="tag tag-pub">public!</span>'
@@ -748,88 +876,75 @@ def render_body(audit, orphans, dupes, today):
                n or '<span class="nil">0</span>',
                ("%d/%d" % (inp, n)) if n else '<span class="nil">—</span>',
                ("%d/%d" % (ino, n)) if n and c["organizers_channel"] else '<span class="nil">—</span>',
-               ('<span class="bad">%d</span>' % nos) if nos else '<span class="nil">0</span>'))
+               ('<span class="num">?</span>' if lc_unknown
+                else ("%d/%d" % (inlc, n)) if n else '<span class="nil">—</span>'),
+               ('<span class="bad">%d</span>' % nos) if nos else '<span class="nil">0</span>',
+               ('<span class="bad">%d</span>' % n_issues) if n_issues else '<span class="nil">0</span>'))
 
-    def plist(items, extra=""):
-        return ('<ul class="plist %s">%s</ul>' % (extra, "".join(
-            '<li><span class="pname">%s</span><span class="pmail">%s</span></li>'
-            % (e(x["name"]), e(x["email"]) or "—") for x in items)))
-
-    rosters = []
-    for c in sorted([x for x in audit if x["organizers_channel"]],
-                    key=lambda x: -(x["organizers_channel_members"] or 0)):
-        present = [p for p in c["accepted"] if p["in_organizers"]]
-        absent = [p for p in c["accepted"] if not p["in_organizers"]]
-        unresolved = [x for x in c["unaccounted"] if x["unresolved"]]
-        staff = [x for x in c["unaccounted"] if not x["unresolved"] and x["is_staff"]]
-        # Split the not-accepted into two, because they call for opposite
-        # actions. Someone with a live intake row APPLIED and is waiting on a
-        # decision — they are in the private room doing the work and, since
-        # acceptance is what grants Drive, locked out of their own folder.
-        # Someone with no intake row at all is a stranger in a private channel.
-        # One line reading "not an accepted organizer" hid both.
-        pending = [x for x in c["unaccounted"]
-                   if not x["unresolved"] and not x["is_staff"]
-                   and x.get("intake_status") and x["intake_status"] not in DECIDED_NO]
-        others = [x for x in c["unaccounted"]
-                  if not x["unresolved"] and not x["is_staff"] and x not in pending]
-        groups = []
-        for items, pill, label, cls in (
-                (present, "ok", "accepted organizer", ""),
-                (staff, "mute", "staff", "plist-x"),
-                (pending, "warn", "APPLIED — awaiting a decision, no Drive access",
-                 "plist-x"),
-                (others, "warn", "no intake row at all", "plist-x"),
-                (absent, "bad", "accepted but absent", "plist-x"),
-                # Distinct from "not an accepted organizer": we could not look
-                # these accounts up, so we know nothing about them. Saying so is
-                # not the same as accusing them.
-                (unresolved, "mute", "could not identify", "plist-x")):
-            if items:
-                groups.append('<div class="rgrp"><h4><span class="pill pill-%s">%s</span>'
-                              '<span class="cnt">%d</span></h4>%s</div>'
-                              % (pill, label, len(items), plist(items, cls)))
-        rosters.append(
-            '<section class="chap roster"><h3>#%s%s<span class="chapchans">'
-            '<span class="nil">%s &middot; %s members</span></span></h3>'
-            '<div class="rgrps">%s</div></section>'
-            % (e(c["organizers_channel"]),
-               "" if c["organizers_private"] else '<span class="tag tag-pub">public!</span>',
-               e(c["city"]),
-               "?" if c["organizers_channel_members"] is None
-               else c["organizers_channel_members"], "".join(groups)))
+    def yn(v):
+        if v is None:
+            return '<span class="nil">?</span>'
+        return '<span class="pill pill-%s">%s</span>' % (("ok", "yes") if v else ("bad", "no"))
 
     detail = []
     for c in audit:
-        if not c["accepted"] and not c["organizers_channel"]:
+        roster = [(p, True) for p in c["accepted"]]
+        roster += [(p, False) for p in c["unaccounted"]
+                  if not p["unresolved"] and not p["is_staff"]]
+        if not roster and not c["organizers_channel"]:
             continue
-        items = []
-        if not c["accepted"]:
-            items.append('<li class="none">No accepted organizers for this chapter</li>')
-        for p in c["accepted"]:
-            if not p["slack_account"]:
-                pills = '<span class="pill pill-bad">no Slack account</span>'
-            elif c["public"]:
-                pills = ('<span class="pill pill-%s">%s #%s</span>'
-                         % ("ok" if p["in_public"] else "warn",
-                            "in" if p["in_public"] else "not in", e(c["public"])))
+        rows_html = []
+        for p, is_accepted in sorted(roster, key=lambda pair: (not pair[1], pair[0]["name"].lower())):
+            issues = person_issues(p, c, is_accepted)
+            if is_accepted:
+                status_html = "Accepted"
+            elif p.get("intake_status"):
+                status_html = e(p["intake_status"])
             else:
-                pills = '<span class="pill pill-mute">no city channel</span>'
-            if p["slack_account"] and c["organizers_channel"]:
-                pills += ('<span class="pill pill-%s">%sorganizers</span>'
-                          % ("ok" if p["in_organizers"] else "warn",
-                             "" if p["in_organizers"] else "not in "))
-            items.append('<li><span class="pname">%s</span><span class="pmail">%s</span>'
-                         '<span class="pills">%s</span></li>'
-                         % (e(p["name"]), e(p["email"]), pills))
+                status_html = '<span class="nil">no intake row</span>'
+            # A not-yet-accepted person is IN this table only because they are
+            # already a member of the organizer channel (that's how the
+            # roster found them) — "in organizers" is trivially yes for them.
+            in_pub = p["in_public"]
+            in_org = p["in_organizers"] if is_accepted else True
+            row_classes = " ".join(cls for cls in
+                                   ("pending" if not is_accepted else "",
+                                    "has-issue" if issues else "") if cls)
+            rows_html.append(
+                '<tr%s><td>%s</td><td>%s</td><td>%s</td><td>%s</td>'
+                '<td class="n">%s</td><td class="n">%s</td><td class="n">%s</td>'
+                '<td class="n">%s</td><td>%s</td></tr>'
+                % (' class="%s"' % row_classes if row_classes else "",
+                   e(p["name"]),
+                   ('@%s' % e(p["handle"])) if p.get("handle")
+                   else '<span class="nil">—</span>',
+                   e(p["email"]) if p.get("email") else '<span class="nil">—</span>',
+                   status_html,
+                   yn(in_pub) if c["public"] else '<span class="nil">—</span>',
+                   yn(in_org) if c["organizers_channel"] else '<span class="nil">—</span>',
+                   yn(p["in_country_channel"]) if c.get("country_channel")
+                   else '<span class="nil">—</span>',
+                   yn(p["in_local_champs"]),
+                   ("; ".join(e(x) for x in issues) if issues
+                    else '<span class="nil">none</span>')))
         chips = " ".join(x for x in [
             ('<code class="chan">#%s</code>' % e(c["public"])) if c["public"] else "",
             ('<code class="chan">#%s</code>' % e(c["organizers_channel"]))
-            if c["organizers_channel"] else ""] if x)
+            if c["organizers_channel"] else "",
+            ('<code class="chan">#%s</code>' % e(c.get("country_channel")))
+            if c.get("country_channel") else ""] if x)
+        table = (('<div class="tablewrap"><table><thead><tr><th>Name</th>'
+                 '<th>Handle</th><th>Email</th>'
+                 '<th>Intake status</th><th class="n">In public</th>'
+                 '<th class="n">In organizers</th><th class="n">In country</th>'
+                 '<th class="n">In %s</th>'
+                 '<th>Issues</th></tr></thead><tbody>%s</tbody></table></div>'
+                 % (LOCAL_CHAMPS_CHANNEL, "".join(rows_html)))
+                if rows_html else '<p class="nil">No accepted organizers, and nobody else in the '
+                                   'organizer channel, for this chapter</p>')
         detail.append('<section class="chap"><h3>%s<span class="chapchans">%s</span></h3>'
-                      '<ul class="plist">%s</ul></section>'
-                      % (e(c["city"]), chips or '<span class="nil">no channels</span>',
-                         "".join(items)))
+                      '%s</section>'
+                      % (e(c["city"]), chips or '<span class="nil">no channels</span>', table))
 
     create = rooms_to_create(audit)
     unreachable = [c for c in audit if c["accepted"]
@@ -850,7 +965,16 @@ def render_body(audit, orphans, dupes, today):
     absent_total = sum(1 for c in audit for p in c["accepted"]
                        if c["organizers_channel"] and not p["in_organizers"])
 
-    todo = [
+    todo = []
+    if total_issues:
+        worst_issues.sort(key=lambda t: -t[1])
+        todo.append((
+            "Work through %d issue(s) flagged in the Chapters table"
+            % total_issues,
+            "Worst first: %s. Each row's own Issues column names the exact "
+            "gap." % ", ".join("%s (%d)" % (city, n) for city, n in worst_issues[:6]),
+            "varies", "chapter organizer / ops", "next"))
+    todo += [
         ("Make Slack part of accepting an organizer",
          "%d of %d accepted organizers have no Slack account under their intake email, and only "
          "%d are in their own city channel. Acceptance already triggers a Drive grant and a CRM "
@@ -947,13 +1071,13 @@ def render_body(audit, orphans, dupes, today):
                                              for c in cand[:8])))
 
     stamp = today.strftime("%-d %B %Y")
-    body = f"""
+    chapters_body = f"""
 <header>
-  <div class="eyebrow">Organizer-side Slack audit &middot; {stamp}</div>
-  <h1>The organizer side: coverage, rosters and the leak</h1>
+  <div class="eyebrow">Chapter coverage &middot; {stamp}</div>
+  <h1>Does each chapter have a home?</h1>
   <p class="lede">For every chapter on the Chapters List: does it have a public city channel, does
-  it have a private organizers channel, and are the organizers we accepted actually in them?
-  Organizers are matched to Slack accounts by the email on their intake row.</p>
+  it have a private organizers channel, and a country channel serving it? This is the "does the
+  room exist" question — see the Organizers section for who is actually in each room.</p>
 </header>
 
 <div class="caveat"><strong>Read the organizers column carefully.</strong> A user token only sees
@@ -972,6 +1096,34 @@ complete.</div>
     <div class="stat s-bad"><span class="v">{S['org']}</span><span class="k">Organizers channel</span></div>
   </div>
 </section>
+
+<section>
+  <div class="eyebrow">Coverage matrix</div>
+  <h2>Every chapter, both channels</h2>
+  <div class="controls" style="margin:16px 0 12px">
+    <span class="lbl">Show</span>
+    <button class="f" data-filter="all" aria-pressed="true">All {S['chapters']}</button>
+    <button class="f" data-filter="own" aria-pressed="false">Own channel {S['own']}</button>
+    <button class="f" data-filter="regional" aria-pressed="false">Regional only {S['regional']}</button>
+    <button class="f" data-filter="none" aria-pressed="false">No channel {S['none']}</button>
+    <button class="f" data-filter="noorg" aria-pressed="false">No organizers channel {S['chapters'] - S['org']}</button>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Chapter</th><th>Slack channel</th><th>Country channel</th>
+    <th>Organizer channel</th>
+    <th class="n">Accepted</th><th class="n">In public</th><th class="n">In organizers</th>
+    <th class="n">In {LOCAL_CHAMPS_CHANNEL}</th>
+    <th class="n">No Slack</th><th class="n">Issues</th></tr></thead>
+    <tbody>{''.join(matrix)}</tbody></table></div>
+</section>
+"""
+    organizers_body = f"""
+<header>
+  <div class="eyebrow">Organizer-side Slack audit &middot; {stamp}</div>
+  <h1>Are the organizers we accepted actually in their rooms?</h1>
+  <p class="lede">Organizers are matched to Slack accounts by the email on their intake row. See
+  the Chapters section for whether each room exists at all.</p>
+</header>
 
 <section>
   <div class="eyebrow">The leak</div>
@@ -995,33 +1147,6 @@ complete.</div>
 </section>
 
 <section>
-  <div class="eyebrow">Coverage matrix</div>
-  <h2>Every chapter, both channels</h2>
-  <div class="controls" style="margin:16px 0 12px">
-    <span class="lbl">Show</span>
-    <button class="f" data-filter="all" aria-pressed="true">All {S['chapters']}</button>
-    <button class="f" data-filter="own" aria-pressed="false">Own channel {S['own']}</button>
-    <button class="f" data-filter="regional" aria-pressed="false">Regional only {S['regional']}</button>
-    <button class="f" data-filter="none" aria-pressed="false">No channel {S['none']}</button>
-    <button class="f" data-filter="noorg" aria-pressed="false">No organizers channel {S['chapters'] - S['org']}</button>
-  </div>
-  <div class="tablewrap"><table>
-    <thead><tr><th>Chapter</th><th>Public channel</th><th>Organizers channel</th>
-    <th class="n">Accepted</th><th class="n">In public</th><th class="n">In organizers</th>
-    <th class="n">No Slack</th></tr></thead>
-    <tbody>{''.join(matrix)}</tbody></table></div>
-</section>
-
-<section>
-  <div class="eyebrow">Organizer channel rosters</div>
-  <h2>Who is actually in each organizers channel</h2>
-  <p class="lede">The full membership of all {S['org']} organizer channels, split by whether we ever
-  accepted that person. {distinct} distinct people hold {seats} of these seats without having been
-  accepted — some are staff who belong there, others are legacy leads nobody has reviewed.</p>
-  <div class="grid-rosters" style="margin-top:20px">{''.join(rosters)}</div>
-</section>
-
-<section>
   <div class="eyebrow">What to do</div>
   <h2>Ranked by what it unblocks, not by effort</h2>
   {rs.actions(todo)}
@@ -1030,7 +1155,7 @@ complete.</div>
 <section>
   <div class="eyebrow">Person by person</div>
   <h2>Accepted organizers and where they actually are</h2>
-  <div class="grid-chaps" style="margin-top:20px">{''.join(detail)}</div>
+  <div class="stack-chaps" style="margin-top:20px">{''.join(detail)}</div>
 </section>
 
 {('<section><div class="eyebrow">Data quality</div><h2>Fix these, then re-run</h2>'
@@ -1051,25 +1176,27 @@ btns.forEach(b=>b.addEventListener('click',()=>{
   });
 }));
 """
-    return body, js
+    return RenderedBody(chapters_body, organizers_body, js)
 
 
 def strip_controls(body):
     """Remove the interactive filter row from a report body.
 
-    For the combined PDF (summarize_audits.py), which drops the script that
-    drives these buttons because its `tbody tr` query is global and would reach
-    into the other appendices. Dropping the script alone leaves controls that
-    look interactive and do nothing, so the markup goes too.
+    For the combined document (summarize_audits.py), which drops the script
+    that drives these buttons because its `tbody tr` query is global and would
+    reach into the other sections. Dropping the script alone leaves controls
+    that look interactive and do nothing, so the markup goes too. The buttons
+    live in the Chapters fragment (the coverage matrix), not Organizers.
     """
     return re.sub(r'<div class="controls".*?</div>', "", body, flags=re.S)
 
 
 def render(audit, orphans, dupes, today):
-    """The standalone document. `render_body` is the seam the combined
-    single-PDF summary composes from — see summarize_audits.py."""
-    body, js = render_body(audit, orphans, dupes, today)
-    return rs.page("Slack Organizers Audit", body, script=js)
+    """The standalone document — Chapters and Organizers concatenated back
+    into one page. `render_body` is the seam the combined summary composes
+    from — see summarize_audits.py."""
+    chapters_body, organizers_body, js = render_body(audit, orphans, dupes, today)
+    return rs.page("Slack Organizers Audit", chapters_body + organizers_body, script=js)
 
 
 def main():
@@ -1077,7 +1204,6 @@ def main():
     ap.add_argument("--out", default="slack-organizers-audit")
     ap.add_argument("--cache", default=".slack-audit-cache")
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
-    ap.add_argument("--no-pdf", action="store_true")
     ap.add_argument("--planned-ok", action="store_true",
                     help="pre-provisioning: treat sheet-named channels that do "
                          "not exist yet as planned instead of aborting")
@@ -1086,7 +1212,7 @@ def main():
     cfg = load_config()
     # Before any collection: these paths will hold organizer names, email
     # addresses and private-channel rosters, and this repo is public.
-    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html", args.out + ".pdf")
+    rs.assert_git_ignored(args.cache + os.sep, args.out + ".html")
     os.makedirs(args.cache, exist_ok=True)
     os.chmod(args.cache, 0o700)
 
@@ -1172,11 +1298,27 @@ def main():
     targets = {}
     for r in rows:
         for name, cid in ((r["public"], r["public_id"]),
-                          (r["organizers_channel"], r["organizers_id"])):
+                          (r["organizers_channel"], r["organizers_id"]),
+                          (r["country_channel"], r["country_channel_id"])):
             if name:
                 targets[name] = cid
+    # local-champs is one workspace-wide room, not per-chapter — resolved by
+    # name like everything else here, never hardcoded to an id, so a rename
+    # or a re-created room is a miss (reported), not a silently wrong count.
+    local_champs_chan = next((c for c in chans if c["name"] == LOCAL_CHAMPS_CHANNEL
+                              and not c["is_archived"]), None)
+    if local_champs_chan:
+        targets[LOCAL_CHAMPS_CHANNEL] = local_champs_chan["id"]
+    else:
+        print("  WARNING: #%s not found — local-champs membership will read as "
+              "unknown for everyone." % LOCAL_CHAMPS_CHANNEL, file=sys.stderr)
     print("  pulling membership for %d channels ..." % len(targets))
     membership = {name: members(api, cid) for name, cid in sorted(targets.items())}
+    # None, not set() — membership.get(..., []) would silently turn "the pull
+    # was skipped" into "the pull succeeded and found nobody", which is
+    # exactly the collapse build_audit()'s own docstring says never to make.
+    local_champs_ids = (set(membership[LOCAL_CHAMPS_CHANNEL])
+                        if local_champs_chan else None)
     # conversations.list already told us how big each channel is; comparing
     # that against what conversations.members returned is a free floor on a
     # short paged pull, which would otherwise render as "accepted but absent"
@@ -1224,7 +1366,8 @@ def main():
                      ", ".join(sorted({err for _, err in failed}))), file=sys.stderr)
 
     audit, orphans = build_audit(rows, people, slack_ids, membership, directory,
-                                 cfg["staff_email_domain"], applicants)
+                                 cfg["staff_email_domain"], applicants,
+                                 local_champs_ids)
     write_cache(os.path.join(args.cache, "audit.json"),
                 {"chapters": audit, "orphan_cities": orphans, "duplicates": dupes},
                 team_id)
@@ -1233,9 +1376,6 @@ def main():
     html_path = args.out + ".html"
     rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)
-    if not args.no_pdf:
-        print("wrote %s" % rs.to_pdf(os.path.abspath(html_path),
-                                     os.path.abspath(args.out + ".pdf")))
 
 
 if __name__ == "__main__":

@@ -30,9 +30,14 @@ Worth stating, because the obvious guesses are wrong:
   alike. There is no second display face. Mono is a system stack, used only for
   metadata and eyebrows — never for body copy.
 - **Headings are weight 500**, tracking `-0.02em`, line-height 1.05–1.15. Not
-  600, not bold.
+  bold. The one exception is h5/h6 (`--t-xl`/`--t-lg` and smaller) at 600 —
+  the source system's own type scale, not a report-styling deviation.
 - **Flat.** No drop shadows anywhere. Depth comes from 1px hairlines, surface
-  tinting (`--paper` → `--paper-2` → `--paper-3`) and inset strokes.
+  tinting (`--paper` → `--paper-2` → `--paper-3`) and inset strokes. Reports
+  carry that further into corners: cards, stats, tables and chips are square
+  (`border-radius: 0`) — only genuine pills and badges (buttons, `.pill`,
+  `.cnt`) keep the token scale's `--radius-pill`, because rounding is their
+  actual shape, not decoration on a box.
 - **Two first-class surfaces, and no dark mode.** White editorial and black
   plate — always know which one a component is drawn on, because the *designer*
   picks it per component. Reports are editorial, so the page is white and stays

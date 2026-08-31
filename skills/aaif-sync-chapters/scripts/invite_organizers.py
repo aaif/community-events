@@ -122,7 +122,7 @@ def collect(city_filter=None):
     _, _, chapters = read_grid(city_filter)
     chans = {c["name"]: c for c in slackmod.channels(api) if not c["is_archived"]}
 
-    people, _ = ao.read_intake()
+    people, _, _ = ao.read_intake()
     by_city = {}
     for p in people:
         if p["city"]:

@@ -34,8 +34,20 @@ queue** — the person is triaged on their original row, and the duplicate is pa
 rather than denied (a `Denied` row reads as a decision about the person, which this
 is not). It is not a sync status: nothing carries a `Duplicate` row to the chapters
 feed, a CRM or a Drive grant. Rows are only ever marked by hand — the form can't
-know it has seen someone before, so no automation sets this value. A
-**blank** Status cell is treated as `Prospect`, and so is the **legacy value `New`** —
+know it has seen someone before, so no automation sets this value.
+
+**Two rows sharing an email is not, by itself, evidence of a duplicate — read the
+content before parking a row.** A repeat is the *same ask sent again* (identical
+or near-identical answers, most often a form resubmitted after a mistake or a
+timeout). It is a different row, and not a duplicate, when the same person is
+legitimately doing two things: applying for two roles (organizer **and**
+speaker — `sync_crm`'s SECURITY check already treats this as expected, see
+`aaif-sync-chapters`), or pitching two distinct proposals in the same role (two
+different talk titles/abstracts from one speaker). Marking either `Duplicate`
+silently discards a live application; check `Talk title` / `Headline` /
+`Abstract` (or the equivalent per-role fields) actually differ before deciding.
+
+A **blank** Status cell is treated as `Prospect`, and so is the **legacy value `New`** —
 the pre-2026-08-22 name for the same state, renamed because `New` misread as
 "new organizer" while `Prospect` matches the term the CRM sync already writes.
 `migrate_status_prospect.py` (in `aaif-sync-chapters`) rewrites the dropdowns,

@@ -87,7 +87,7 @@ talk to Slack or Luma.
 | `aaif-update-event` | Edit an event's details or move its date (recomputing all task due-dates), flag stale assets, optionally sync the change to Luma | Google Drive, Luma |
 | `aaif-event-status` | Report overdue / due-soon event tasks by owner, plus read-only Luma registration stats | Google Drive, Luma |
 | `aaif-sync-chapters` | Push intake decisions to the Chapters List, About docs, chapter CRMs, per-chapter Drive access and the resource map (report/propose by default) | Google Sheets/Drive/Docs, Slack |
-| `aaif-audit-slack` | Audit the community Slack workspace — chapter/organizer channel coverage and member/channel health — as self-contained HTML + PDF reports | Slack, Google Sheets |
+| `aaif-audit-slack` | Audit the community Slack workspace — chapter/organizer channel coverage and member/channel health — as a self-contained HTML report | Slack, Google Sheets |
 
 > **Heads up — these ship with AAIF's own IDs.** The ops skills reference AAIF's
 > Google resources (the Chapters Drive, the Intake Ops spreadsheet ID, Luma slug
