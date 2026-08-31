@@ -192,6 +192,11 @@ BASE_CSS = """
 body{margin:0; background:var(--ground); color:var(--ink-soft);
   font-family:"Instrument Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased}
+/* The design system's own link treatment (`--link`/`--link-hover`) — a
+   real <a> in a report is a page-internal jump (the sections index), not a
+   web link, so no unstyled browser blue should ever show through. */
+a{color:var(--link,var(--ink-1)); text-decoration:none; border-bottom:1px solid currentColor}
+a:hover{color:var(--link-hover,var(--marker))}
 .wrap{max-width:1120px; margin:0 auto; padding:56px 28px 96px;
   display:flex; flex-direction:column; gap:44px}
 h1,h2,h3,h4{font-family:inherit; color:var(--ink-1);
@@ -206,7 +211,7 @@ h3{font-size:1.1rem}
   font-weight:500; margin-bottom:12px}
 .lede{color:var(--ink-soft); max-width:66ch; margin-top:14px}
 code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
-  background:var(--sunken); border:1px solid var(--line-soft); border-radius:5px;
+  background:var(--sunken); border:1px solid var(--line-soft); border-radius:0;
   padding:1px 6px; color:var(--ink-1); white-space:nowrap}
 /* Masthead + closing band — the design system's own document furniture. */
 .masthead{display:flex; align-items:center; justify-content:space-between;
@@ -219,7 +224,7 @@ code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
   letter-spacing:var(--tr-eyebrow,.16em); color:var(--ink-faint)}
 .closing{display:flex; align-items:center; justify-content:space-between;
   gap:24px; flex-wrap:wrap; background:var(--void,#000); color:#FFF;
-  border-radius:var(--radius-3,10px); padding:26px 30px; margin-top:8px}
+  border-radius:0; padding:26px 30px; margin-top:8px}
 .closing .cl-line{font-size:1.05rem; font-weight:500; letter-spacing:-.01em}
 .closing .cl-meta{font-family:var(--font-mono,ui-monospace,Menlo,monospace);
   font-size:12px; text-transform:uppercase;
@@ -231,12 +236,12 @@ code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
 .mute{color:var(--ink-faint)}
 .bad{color:var(--bad); font-weight:650}
 .caveat{background:var(--warn-bg); border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);
-  border-radius:10px; padding:16px 20px; color:var(--ink-1); font-size:.9rem}
+  border-radius:0; padding:16px 20px; color:var(--ink-1); font-size:.9rem}
 .caveat strong{color:var(--warn)}
 /* Per-cell borders, not a 1px grid gap over a tinted container: a short final
    row would otherwise leave a slab of container colour where cells are missing. */
 .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:10px}
-.stat{background:var(--surface); border:1px solid var(--line-1); border-radius:12px;
+.stat{background:var(--surface); border:1px solid var(--line-1); border-radius:0;
   padding:18px 20px; display:flex; flex-direction:column; gap:3px}
 .stat .v{font-size:2rem; font-weight:600; font-variant-numeric:tabular-nums;
   line-height:1.05; color:var(--ink-1); letter-spacing:-.025em}
@@ -251,7 +256,7 @@ button.f:hover{border-color:var(--accent); color:var(--ink-1)}
 button.f[aria-pressed="true"]{background:var(--accent); border-color:var(--accent);
   color:var(--ground)}
 button.f:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
-.tablewrap{overflow-x:auto; border:1px solid var(--line-1); border-radius:12px;
+.tablewrap{overflow-x:auto; border:1px solid var(--line-1); border-radius:0;
   background:var(--surface)}
 table{border-collapse:collapse; width:100%; font-size:.87rem; min-width:800px}
 th,td{text-align:left; padding:9px 14px; border-bottom:1px solid var(--line-soft);
@@ -266,11 +271,11 @@ td.n{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
 .num{font-size:.75rem; color:var(--ink-faint); font-variant-numeric:tabular-nums;
   margin-left:5px}
 .tag{font-size:.63rem; text-transform:uppercase; letter-spacing:.07em; padding:1px 6px;
-  border-radius:4px; margin-left:5px; white-space:nowrap; font-weight:650}
+  border-radius:0; margin-left:5px; white-space:nowrap; font-weight:650}
 .tag-reg{background:var(--warn-bg); color:var(--warn)}
 .tag-pub{background:var(--bad-bg); color:var(--bad)}
 .two{display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:20px}
-.card{border:1px solid var(--line-1); border-radius:12px; background:var(--surface);
+.card{border:1px solid var(--line-1); border-radius:0; background:var(--surface);
   padding:20px 22px}
 .card h3{margin-bottom:4px}
 .card .sub{font-size:.8rem; color:var(--ink-faint)}
@@ -280,9 +285,9 @@ td.n{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
   padding-left:20px; color:var(--ink-1); max-width:62ch}
 .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:12px}
 .chip{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.72rem;
-  background:var(--sunken); border:1px solid var(--line-soft); border-radius:5px;
+  background:var(--sunken); border:1px solid var(--line-soft); border-radius:0;
   padding:2px 7px}
-.chap{border:1px solid var(--line-1); border-radius:12px; background:var(--surface);
+.chap{border:1px solid var(--line-1); border-radius:0; background:var(--surface);
   padding:18px 22px}
 .chap h3{display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; margin-bottom:12px}
 .chapchans{display:flex; gap:6px; flex-wrap:wrap}
@@ -313,28 +318,28 @@ ul.plist li.none{color:var(--ink-faint); font-size:.85rem; font-style:italic}
 .bars{display:flex; flex-direction:column; gap:7px; margin-top:14px}
 .brow{display:grid; grid-template-columns:132px 1fr 62px; gap:12px; align-items:center}
 .blab{font-size:.8rem; color:var(--ink-soft); text-align:right}
-.btrack{background:var(--sunken); border-radius:4px; height:14px; position:relative;
+.btrack{background:var(--sunken); border-radius:0; height:14px; position:relative;
   border:1px solid var(--line-soft)}
-.bfill{position:absolute; inset:0 auto 0 0; border-radius:3px; min-width:3px}
+.bfill{position:absolute; inset:0 auto 0 0; border-radius:0; min-width:3px}
 .t-accent{background:var(--accent)} .t-bad{background:var(--bad)} .t-warn{background:var(--warn)}
 .bval{font-size:.8rem; font-variant-numeric:tabular-nums; color:var(--ink-1);
   font-weight:600; text-align:right}
 .funnel{display:flex; flex-direction:column; gap:10px; margin-top:18px}
 .frow{display:grid; grid-template-columns:196px 1fr 96px 52px; gap:14px; align-items:center}
 .flab{font-size:.85rem; color:var(--ink-soft); text-align:right}
-.ftrack{background:var(--sunken); border:1px solid var(--line-soft); border-radius:5px;
+.ftrack{background:var(--sunken); border:1px solid var(--line-soft); border-radius:0;
   height:22px; position:relative}
-.ffill{position:absolute; inset:0 auto 0 0; border-radius:4px}
+.ffill{position:absolute; inset:0 auto 0 0; border-radius:0}
 .fval{font-size:1.05rem; font-weight:650; font-variant-numeric:tabular-nums; text-align:right}
 .fpct{display:block; font-size:.7rem; color:var(--ink-faint); font-weight:500}
 .drop{font-size:.78rem; color:var(--bad); font-variant-numeric:tabular-nums; font-weight:650}
-.stack{display:flex; height:34px; border-radius:8px; overflow:hidden; margin-top:14px;
+.stack{display:flex; height:34px; border-radius:0; overflow:hidden; margin-top:14px;
   border:1px solid var(--line-1); gap:2px; background:var(--line-1)}
 .seg{display:flex; align-items:center; justify-content:center; font-size:.68rem;
   font-weight:700; color:var(--ground); overflow:hidden; white-space:nowrap}
 .legend{display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:.78rem;
   color:var(--ink-soft)}
-.legend span.sw{width:10px; height:10px; border-radius:3px; display:inline-block;
+.legend span.sw{width:10px; height:10px; border-radius:0; display:inline-block;
   margin-right:6px; vertical-align:-1px}
 /* Prose in a print table fights the column algorithm and overflows the page box,
    so ranked actions are a grid, not a <table>. */
