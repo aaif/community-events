@@ -70,7 +70,7 @@ def run_classify(members, keep=frozenset(), keep_ids=frozenset(),
          mock.patch.object(pr, "read_keeplist",
                            lambda: (set(keep), set(keep_ids), True)), \
          mock.patch.object(pr, "read_grid", lambda c: (None, None, chapters)), \
-         mock.patch.object(pr.ao, "read_intake", lambda: (INTAKE, 0)):
+         mock.patch.object(pr.ao, "read_intake", lambda: (INTAKE, 0, {})):
         return pr.classify()
 
 

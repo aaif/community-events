@@ -522,8 +522,10 @@ def test_unidentified_members_are_excluded_from_the_accusing_counts():
     flags = sorted(x["unresolved"] for x in audit[0]["unaccounted"])
     check("one identified, one not", flags, [False, True])
     html = ao.render(audit, {}, 0, dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc))
-    check("only the identified person is counted as unaccounted",
-          "1 distinct people hold 1 of these seats" in html, True)
+    check("the identified person appears in the person-by-person table",
+          "Known" in html, True)
+    check("the unidentified member's raw id is not rendered as a roster row",
+          "<td>U7</td>" in html, False)
     check("the unidentified are surfaced in Data quality",
           "could not be identified" in html, True)
 
