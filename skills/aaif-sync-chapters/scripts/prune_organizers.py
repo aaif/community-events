@@ -152,7 +152,7 @@ def classify(city_filter=None):
     _, _, chapters = read_grid(city_filter)
     chans = {c["name"]: c for c in slackmod.channels(api) if not c["is_archived"]}
 
-    people, _ = ao.read_intake()
+    people, _, _ = ao.read_intake()
     emails = {p["email"].lower() for p in people if p["email"]}
     # Name index for the cross-check. Folded the same way every other engine
     # folds, so "Padmé Naberrie" and "Padme Naberrie" are one person.
