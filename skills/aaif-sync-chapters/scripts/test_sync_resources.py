@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "..", "lib"))
 
+import audit_organizers as ao  # noqa: E402
 import sync_chapters  # noqa: E402
 import sync_resources as sr  # noqa: E402
 
@@ -143,6 +144,23 @@ _p, _, _missing = sr.propose_channels([ch("Lagos", country="Nigeria", slack="lag
                                       [chan("lagos"), chan("africa")], CFG)
 check("#africa is not guessed from Nigeria", _p, [])
 check("and the country is reported as a gap", sorted(_missing), ["Nigeria"])
+
+# A blank Country Channel cell must consult COUNTRY_CHANNELS too, not only
+# fold(country) — otherwise a country whose room's real name diverges from its
+# ASCII fold (#deutschland, #korea, #brasil, ...) reports a gap that has had a
+# room the whole time.
+_p, _, _missing = sr.propose_channels(
+    [ch("Stuttgart", country="Germany", slack="stuttgart")],
+    [chan("stuttgart"), chan("deutschland")], CFG)
+check("COUNTRY_CHANNELS wins over fold(country) for a blank cell",
+      [(p["column"], p["value"]) for p in _p], [("Country Channel", "deutschland")])
+check("so it is not reported as a gap", _missing, {})
+
+# --- country_channel_name(): the ONE call site propose_channels() and
+# plan_channels() both go through, so they can't drift on the rule again -----
+check("an override wins", sr.country_channel_name("Germany", ao), "deutschland")
+check("no override falls back to fold()",
+      sr.country_channel_name("India", ao), "india")
 
 # --- folder cells -------------------------------------------------------------
 check("a folder URL round-trips to its id",
