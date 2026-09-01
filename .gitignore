@@ -33,6 +33,11 @@ slack-*-audit.*
 # and must never be committed. Only the runner's stdout summary is PII-free.
 nightly-reports/
 
+# aaif-community-pulse working cache — real #local-champs message text and
+# organizer names, pulled to draft the Pulse post. Never committed; delete once
+# the draft is written.
+.pulse-cache/
+
 # Skills download working copies into the cwd — event trackers (.docx/.xlsx),
 # decks (.pptx), banners (.png), the Luma page copy and drafts (luma.md, new.md),
 # and the clean-data change list (changes.json). All of it is chapter/applicant
