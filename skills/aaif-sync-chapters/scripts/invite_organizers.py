@@ -202,7 +202,7 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None):
                 roster.append(p)
 
         members = set(slackmod.members(api, chan["id"]))
-        missing, present = [], []
+        missing, present, seen_uids = [], [], set()
         for p in roster:
             hit = resolved.get(p["email"]) or {}
             uid = hit.get("id")
@@ -210,9 +210,13 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None):
                 # Not a failure of this script: they have no account under the
                 # address the intake holds. Reported, never silently dropped.
                 unresolved.append((label, p["name"]))
+            elif uid in seen_uids:
+                continue          # same account via a second email on file
             elif uid in members:
+                seen_uids.add(uid)
                 present.append((p["name"], uid))
             else:
+                seen_uids.add(uid)
                 missing.append((p["name"], uid))
 
         known = {uid for _, uid in missing + present}
@@ -301,6 +305,25 @@ SCOPE_COLUMNS = {
 }
 
 
+def run_scope(scope, city_filter=None):
+    """Collect and report every column `scope` targets, off ONE fetch.
+
+    Returns (all_rows, total) — `all_rows` concatenates every column's rows
+    (for `apply()`), `total` sums every column's missing-invite count (the
+    write gate below asks "how many people", not "how many columns").
+    Factored out of main() so a --scope both regression (e.g. `total =`
+    silently replacing `total +=`) fails a unit test, not a live run.
+    """
+    fetched = fetch(city_filter)
+    all_rows, total = [], 0
+    for column, label in SCOPE_COLUMNS[scope]:
+        rows, unresolved, no_channel = collect(city_filter, column=column, fetched=fetched)
+        total += report(rows, unresolved, no_channel, label=label)
+        all_rows += rows
+        print()
+    return all_rows, total
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true")
@@ -316,17 +339,7 @@ def main():
     a = ap.parse_args()
     set_redaction(a.redact)
 
-    # One fetch for the whole run — `--scope both` collects two columns from
-    # the SAME chapters/channels/intake, not two independent sweeps of Slack
-    # and the sheet.
-    fetched = fetch(a.city)
-
-    all_rows, total = [], 0
-    for column, label in SCOPE_COLUMNS[a.scope]:
-        rows, unresolved, no_channel = collect(a.city, column=column, fetched=fetched)
-        total += report(rows, unresolved, no_channel, label=label)
-        all_rows += rows
-        print()
+    all_rows, total = run_scope(a.scope, a.city)
 
     if not a.write:
         print("Report only. Nobody was invited to anything.")

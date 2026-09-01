@@ -108,8 +108,10 @@ API = "https://slack.com/api/"
 #:   room helps no one), never to speak anywhere else.
 #:
 #: `conversations.join` is here because a user token cannot post in a public
-#: channel it has not joined; it is only ever called on a room about to be
-#: archived, so the membership is momentary by construction.
+#: channel it has not joined. Two call sites, both join immediately before
+#: posting: the deprecated-room sweep below (archived right after, so the
+#: membership is momentary) and post_country_directory.py (posts a standing
+#: directory message and stays joined — the room is staying live, not closing).
 WRITE_METHODS = frozenset({"conversations.create", "conversations.rename",
                            "conversations.invite", "conversations.kick",
                            "conversations.archive", "conversations.join",
