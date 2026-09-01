@@ -97,14 +97,33 @@ def org_findings(audit):
     no_pub = [c for c in ch if not c["public"]]
     no_org = [c for c in ch if not c["organizers_channel"]]
     zero = [c for c in ch if c["organizers_channel"] and not c["accepted"]]
-    gaps = []
+    # A person with no Slack account (`slack_account` False) is unconditionally
+    # `in_organizers: False` — there's no uid to be a member with — but that is
+    # not the same finding as "has an account and wasn't invited". audit_organizers'
+    # own person_issues() draws this line (a missing account returns early and never
+    # also reports "not in #channel"); folding both into one "gaps" bucket here
+    # inflates the invite backlog with people invite_organizers.py can never act on.
+    gaps, no_account = [], []
     for c in ch:
         acc = c["accepted"] or []
-        if acc and c["organizers_channel"]:
+        if not acc:
+            continue
+        # No-account is a finding about the PERSON, not the channel — a
+        # chapter with no organizers channel yet still has organizers with no
+        # Slack account under their intake email, and gating this on
+        # `organizers_channel` (as `gaps` correctly does, since a gap
+        # presupposes a channel to be missing from) silently dropped exactly
+        # the newest chapters, where an unconfirmed address is most likely.
+        no_acct = [a for a in acc if not a.get("slack_account")]
+        if no_acct:
+            no_account.append((c["city"], len(no_acct), len(acc)))
+        if c["organizers_channel"]:
             out = [a for a in acc if not a.get("in_organizers")]
-            if out:
-                gaps.append((c["city"], len(out), len(acc)))
+            invitable = [a for a in out if a.get("slack_account")]
+            if invitable:
+                gaps.append((c["city"], len(invitable), len(acc)))
     gaps.sort(key=lambda g: -g[1])
+    no_account.sort(key=lambda g: -g[1])
     # `unresolved` records are members whose directory lookup FAILED. The
     # organizer engine reports them as "could not identify", explicitly not as
     # unaccounted people, because filing them under "nobody reviewed them"
@@ -114,7 +133,8 @@ def org_findings(audit):
               and not u["intake_status"]
               for city in (c["city"],)]
     return {"chapters": len(ch), "pub_org": pub_org, "no_pub": no_pub,
-            "no_org": no_org, "zero": zero, "gaps": gaps, "no_row": no_row}
+            "no_org": no_org, "zero": zero, "gaps": gaps,
+            "no_account": no_account, "no_row": no_row}
 
 
 def topic_findings(subjects, today):
@@ -191,6 +211,17 @@ def build(o, t, directory, today, ages):
             % (len(o["gaps"]),
                "; ".join("%s (%d of %d)" % g for g in top_gaps[:3])),
             "an afternoon", "ops", "next"))
+    if o["no_account"]:
+        acts.append((
+            "Chase %d accepted organizers with no Slack account"
+            % sum(g[1] for g in o["no_account"]),
+            "Across %d chapters, the intake email we hold for an accepted "
+            "organizer matches no Slack account — not a room they can be "
+            "invited to, an address that needs confirming or fixing first: %s."
+            % (len(o["no_account"]),
+               "; ".join("%s (%d of %d)" % g
+                         for g in o["no_account"][:3])),
+            "an afternoon", "ops", "later"))
     if o["no_org"]:
         acts.append((
             "Provision %d missing organizer channels" % len(o["no_org"]),

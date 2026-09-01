@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Put each chapter's accepted organizers into its organizer Slack channel.
+"""Put each chapter's accepted organizers into a Slack channel they belong in.
 
 Answers two questions, and the first is useful on its own:
 
 1. **Who is missing?** For every chapter, who the intake says is an organizer,
-   who is actually in that chapter's `Organizer Channel`, and the difference.
-   Read-only, and the report is the default.
+   who is actually in the target channel, and the difference. Read-only, and
+   the report is the default.
 2. **Add them.** Behind `--write --i-have-approval`, and nothing else.
 
 ## Identity comes from the intake, not from the sheet's handles
@@ -17,16 +17,28 @@ can change at any time, so resolving `@someone` back to an account would break
 silently the day they rename themselves — and "silently" here means an organizer
 quietly stops being invited to their own chapter's room.
 
-## Scope, deliberately narrow
+## Scope: `--scope organizer` (default), `--scope country`, or `--scope both`
 
-- **Organizer channels only.** The public chapter channel is for anyone to join
-  when they choose; being an organizer is not consent to be placed in a public
-  room. Only the private room their role actually requires.
-- **Adds, never removes.** Someone in the channel the intake has never heard of
-  is *reported* and left alone — that is what an audit needs to see, and
-  `aaif-audit-slack` reports the same set from the other direction.
-- **Never touches a channel the sheet does not name**, and skips any channel that
-  does not exist yet with a reason (run `provision_channels.py` first).
+- **`organizer`** targets each chapter's private `Organizer Channel` only. The
+  public chapter channel is for anyone to join when they choose; being an
+  organizer is not consent to be placed in a public room — that policy is
+  unchanged and is the default.
+- **`country`** targets `Country Channel` instead — also a *public* room, and
+  several chapters usually share one (`#españa` serves Madrid, Barcelona and
+  Bilbao). This is the same class of override Rahul made 2026-08-25 for public
+  city channels (being an organizer of your own chapter's public room is part
+  of the role, the room is public anyway, leaving is one click) — extended
+  here to the country room, and built as a standing `--scope` rather than a
+  throwaway script so it doesn't need rebuilding each time. Roster for a
+  shared country channel is the union of every contributing chapter's accepted
+  organizers, deduplicated by email.
+- **`both`** runs both passes in one report/apply.
+- **Adds, never removes**, in every scope. Someone in the channel the intake
+  has never heard of is *reported* and left alone — that is what an audit
+  needs to see, and `aaif-audit-slack` reports the same set from the other
+  direction.
+- **Never touches a channel the sheet does not name**, and skips any channel
+  that does not exist yet with a reason (run `provision_channels.py` first).
 
 ## Why this is gated harder than a sheet write
 
@@ -36,9 +48,10 @@ from mailing share notices by default. `--write` alone is not enough;
 `--i-have-approval` must be passed too, and the report must have been read.
 
 Usage:
-    python3 invite_organizers.py                         # who is missing
-    python3 invite_organizers.py --city Berlin
-    python3 invite_organizers.py --write --i-have-approval
+    python3 invite_organizers.py                         # who is missing (organizer channels)
+    python3 invite_organizers.py --scope country
+    python3 invite_organizers.py --scope both --city Berlin
+    python3 invite_organizers.py --scope both --write --i-have-approval
 """
 
 import argparse
@@ -100,11 +113,13 @@ NEEDED_SCOPES = ("groups:write.invites", "channels:write.invites")
 MAX_PER_CALL = 1000
 
 
-def collect(city_filter=None):
-    """Return (rows, unresolved, no_channel) — who is missing from where.
+def fetch(city_filter=None):
+    """One Slack/Sheets round trip: (api, chapters, chans, by_city, resolved).
 
-    rows = [{city, channel, channel_id, missing: [(name, id)], present: [...],
-             unaccounted: [ids]}].
+    Split out of collect() so a multi-column run (`--scope both`) fetches this
+    once, not once per column — the grid read, live-channel list, full intake
+    read and email-resolution batch are identical between an Organizer Channel
+    pass and a Country Channel pass; only the per-column grouping differs.
     """
     # Same read-token fallback as provision_channels.main(): this estate's CLI
     # credential expired for good in 2026-08, and the env write token carries
@@ -130,53 +145,91 @@ def collect(city_filter=None):
 
     resolved = slackmod.lookup_emails(
         api, {p["email"] for p in people if p["email"]})
+    return api, chapters, chans, by_city, resolved
 
+
+def collect(city_filter=None, column="Organizer Channel", fetched=None):
+    """Return (rows, unresolved, no_channel) — who is missing from where.
+
+    rows = [{city, channel, channel_id, missing: [(name, id)], present: [...],
+             unaccounted: [ids]}].
+
+    Grouped by the target *channel*, not by chapter row: an `Organizer Channel`
+    is normally 1:1 with a city, but a `Country Channel` is routinely shared by
+    several chapters, and inviting per-chapter would send the same person two
+    separate `conversations.invite` calls for the one channel they're both
+    pointed at. `city` on the returned row is the sorted, comma-joined list of
+    every chapter that names this channel — one city in the common case.
+
+    `fetched` reuses a prior fetch() call (see there) instead of hitting Slack
+    and the sheet again — pass it when collecting more than one column.
+    """
+    api, chapters, chans, by_city, resolved = fetched or fetch(city_filter)
+
+    # Group chapters by the channel NAME they name in `column`, not by row:
+    # several chapters can point at the same Country Channel.
     rows, unresolved, no_channel = [], [], []
+    groups = {}
     for ch in chapters:
-        roster = by_city.get(fold_city(ch["city"]), [])
-        if not roster:
+        if not by_city.get(fold_city(ch["city"])):
             continue                      # nobody accepted yet; nothing to do
-        name = ch["current"]["Organizer Channel"]
+        name = ch["current"][column]
         if not name or name == NO_RESOURCE:
-            no_channel.append((ch["city"], "no Organizer Channel on the sheet"))
+            no_channel.append((ch["city"], "no %s on the sheet" % column))
             continue
+        groups.setdefault(name, []).append(ch["city"])
+
+    for name, cities in sorted(groups.items()):
+        label = ", ".join(sorted(cities))
         chan = chans.get(name)
         if not chan:
             # Two indistinguishable causes: the channel genuinely doesn't exist,
             # or it is private and this token's user is not a member —
             # conversations.list hides those (see lib/aaif_events/slack.py).
             no_channel.append(
-                (ch["city"], "#%s not visible — not created yet (run "
+                (label, "#%s not visible — not created yet (run "
                  "provision_channels.py), or private and this token's user "
                  "is not in it" % name))
             continue
 
+        roster, seen_emails = [], set()
+        for city in cities:
+            for p in by_city.get(fold_city(city), []):
+                if p["email"] and p["email"] in seen_emails:
+                    continue               # same person via >1 contributing chapter
+                if p["email"]:
+                    seen_emails.add(p["email"])
+                roster.append(p)
+
         members = set(slackmod.members(api, chan["id"]))
-        missing, present = [], []
+        missing, present, seen_uids = [], [], set()
         for p in roster:
             hit = resolved.get(p["email"]) or {}
             uid = hit.get("id")
             if not uid:
                 # Not a failure of this script: they have no account under the
                 # address the intake holds. Reported, never silently dropped.
-                unresolved.append((ch["city"], p["name"]))
+                unresolved.append((label, p["name"]))
+            elif uid in seen_uids:
+                continue          # same account via a second email on file
             elif uid in members:
+                seen_uids.add(uid)
                 present.append((p["name"], uid))
             else:
+                seen_uids.add(uid)
                 missing.append((p["name"], uid))
 
         known = {uid for _, uid in missing + present}
-        rows.append({"city": ch["city"], "channel": name,
+        rows.append({"city": label, "channel": name,
                      "channel_id": chan["id"], "is_private": chan["is_private"],
                      "missing": missing, "present": present,
                      "unaccounted": sorted(members - known)})
     return rows, unresolved, no_channel
 
 
-def report(rows, unresolved, no_channel):
+def report(rows, unresolved, no_channel, label="Organizer channel"):
     total = sum(len(r["missing"]) for r in rows)
-    print("Organizer channel membership — %d chapter(s) with a live channel\n"
-          % len(rows))
+    print("%s membership — %d live channel(s)\n" % (label, len(rows)))
     for r in sorted(rows, key=lambda x: x["city"]):
         if not r["missing"]:
             print("  %-18s #%-28s all %d in" % (r["city"], r["channel"],
@@ -200,7 +253,7 @@ def report(rows, unresolved, no_channel):
 
     extra = sum(len(r["unaccounted"]) for r in rows)
     if extra:
-        print("\n%d person(s) in an organizer channel the intake does not list. "
+        print("\n%d person(s) in a channel the intake does not list them for. "
               "NOT removed —\nthat is an audit finding, not a cleanup task; see "
               "aaif-audit-slack." % extra)
     print("\nTotal to add: %d" % total)
@@ -243,6 +296,34 @@ def apply(rows, token):
     return done, failed
 
 
+#: What each --scope value targets, and the label used in the report header.
+SCOPE_COLUMNS = {
+    "organizer": [("Organizer Channel", "Organizer channel")],
+    "country": [("Country Channel", "Country channel")],
+    "both": [("Organizer Channel", "Organizer channel"),
+             ("Country Channel", "Country channel")],
+}
+
+
+def run_scope(scope, city_filter=None):
+    """Collect and report every column `scope` targets, off ONE fetch.
+
+    Returns (all_rows, total) — `all_rows` concatenates every column's rows
+    (for `apply()`), `total` sums every column's missing-invite count (the
+    write gate below asks "how many people", not "how many columns").
+    Factored out of main() so a --scope both regression (e.g. `total =`
+    silently replacing `total +=`) fails a unit test, not a live run.
+    """
+    fetched = fetch(city_filter)
+    all_rows, total = [], 0
+    for column, label in SCOPE_COLUMNS[scope]:
+        rows, unresolved, no_channel = collect(city_filter, column=column, fetched=fetched)
+        total += report(rows, unresolved, no_channel, label=label)
+        all_rows += rows
+        print()
+    return all_rows, total
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true")
@@ -250,33 +331,36 @@ def main():
                     help="required alongside --write; an invitation is a "
                          "notification to a real person and cannot be unsent")
     ap.add_argument("--city", help="limit to one chapter")
+    ap.add_argument("--scope", choices=sorted(SCOPE_COLUMNS), default="organizer",
+                    help="which channel to target: the private Organizer "
+                         "Channel (default), the public Country Channel, or "
+                         "both")
     add_redact_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
 
-    rows, unresolved, no_channel = collect(a.city)
-    total = report(rows, unresolved, no_channel)
+    all_rows, total = run_scope(a.scope, a.city)
 
     if not a.write:
-        print("\nReport only. Nobody was invited to anything.")
+        print("Report only. Nobody was invited to anything.")
         return 0
     if not total:
-        print("\nNothing to do.")
+        print("Nothing to do.")
         return 0
     if not a.i_have_approval:
-        sys.exit("\nREFUSING: --write needs --i-have-approval too. This sends a "
+        sys.exit("REFUSING: --write needs --i-have-approval too. This sends a "
                  "Slack notification to %d real people." % total)
 
     token = write_token()
     have = slackmod.Slack(token=token).scopes()
     missing = [s for s in NEEDED_SCOPES if s not in have]
     if missing:
-        sys.exit("\nREFUSING: the write token lacks %s." % ", ".join(missing))
+        sys.exit("REFUSING: the write token lacks %s." % ", ".join(missing))
 
     assert "conversations.invite" in WRITE_METHODS, (
         "conversations.invite must be in the write allowlist")
 
-    done, failed = apply(rows, token)
+    done, failed = apply(all_rows, token)
     print("\nInvited %d, %d invite(s) failed." % (done, len(failed)))
     for f in failed:
         print("  %s" % f)

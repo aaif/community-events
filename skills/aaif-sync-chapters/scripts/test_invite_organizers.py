@@ -469,6 +469,141 @@ check("collect() runs to completion against a 3-tuple read_intake()",
 check("the one roster member already present is not double-counted as missing",
       (_rows[0]["missing"], [n for n, _ in _rows[0]["present"]]), ([], ["Ada"]))
 
+
+# --- fetch()/collect(fetched=...): a second column reuses the first fetch,
+# it does not hit the sheet or Slack's channel list a second time. This is
+# what makes `--scope both` one round trip, not two.
+_FETCH_CALLS = []
+chapters = [{"city": "Boston",
+            "current": {"Organizer Channel": "boston-organizers",
+                       "Country Channel": "united-states"}}]
+chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+         "is_archived": False},
+        {"name": "united-states", "id": "C2", "is_private": False,
+         "is_archived": False}]
+
+
+def _counting_read_grid(c):
+    _FETCH_CALLS.append("read_grid")
+    return None, None, chapters
+
+
+def _counting_channels(api):
+    _FETCH_CALLS.append("channels")
+    return chans
+
+
+with _mock.patch.object(inv, "read_grid", _counting_read_grid), \
+     _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+     _mock.patch.object(inv.slackmod, "channels", _counting_channels), \
+     _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1"]), \
+     _mock.patch.object(inv.slackmod, "lookup_emails",
+                        lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+     _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})):
+    _fetched = inv.fetch()
+    inv.collect(column="Organizer Channel", fetched=_fetched)
+    inv.collect(column="Country Channel", fetched=_fetched)
+
+check("fetch() hits the sheet and Slack exactly once for two collect() calls",
+      _FETCH_CALLS, ["read_grid", "channels"])
+
+
+# --- collect(column=...): a shared Country Channel merges chapters into ONE row
+_COUNTRY_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Madrid"},
+                   {"email": "b@x.com", "name": "Bao", "city": "Barcelona"}]
+
+
+def _run_collect_country():
+    chapters = [
+        {"city": "Madrid", "current": {"Country Channel": "espana"}},
+        {"city": "Barcelona", "current": {"Country Channel": "espana"}},
+    ]
+    chans = [{"name": "espana", "id": "C1", "is_private": False,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"},
+                                                 "b@x.com": {"id": "U2"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_COUNTRY_INTAKE, 0, {})):
+        return inv.collect(column="Country Channel")
+
+
+_crows, _cunresolved, _cno_channel = _run_collect_country()
+check("two chapters sharing one Country Channel produce ONE row, not two",
+      len(_crows), 1)
+check("the row's city label lists both contributing chapters",
+      _crows[0]["city"], "Barcelona, Madrid")
+check("the roster is the union across both chapters, both missing",
+      sorted(n for n, _ in _crows[0]["missing"]), ["Ada", "Bao"])
+
+
+# --- the same person under TWO different emails (one per contributing
+# chapter) resolves to one account and must not be double-counted -------------
+_SAME_PERSON_INTAKE = [
+    {"email": "ada@old.example", "name": "Ada", "city": "Madrid"},
+    {"email": "ada@new.example", "name": "Ada", "city": "Barcelona"},
+]
+
+
+def _run_collect_same_person():
+    chapters = [
+        {"city": "Madrid", "current": {"Country Channel": "espana"}},
+        {"city": "Barcelona", "current": {"Country Channel": "espana"}},
+    ]
+    chans = [{"name": "espana", "id": "C1", "is_private": False,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"ada@old.example": {"id": "U1"},
+                                                 "ada@new.example": {"id": "U1"}}), \
+         _mock.patch.object(inv.ao, "read_intake",
+                            lambda: (_SAME_PERSON_INTAKE, 0, {})):
+        return inv.collect(column="Country Channel")
+
+
+_srows, _, _ = _run_collect_same_person()
+check("one account under two emails is counted once, not twice",
+      _srows[0]["missing"], [("Ada", "U1")])
+
+
+# --- run_scope("both", ...): totals and rows accumulate across BOTH columns,
+# not just the last one — the exact copy-paste class this factoring guards
+# against (`total =` silently replacing `total +=`) -----------------------------
+_BOTH_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Boston"},
+               {"email": "b@x.com", "name": "Bo", "city": "Boston"}]
+
+
+def _run_run_scope_both():
+    chapters = [{"city": "Boston",
+                "current": {"Organizer Channel": "boston-organizers",
+                           "Country Channel": "united-states"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+             "is_archived": False},
+            {"name": "united-states", "id": "C2", "is_private": False,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"},
+                                                 "b@x.com": {"id": "U2"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_BOTH_INTAKE, 0, {})):
+        return inv.run_scope("both")
+
+
+_both_rows, _both_total = _run_run_scope_both()
+check("both columns' rows are concatenated, not overwritten",
+      len(_both_rows), 2)
+check("both columns' missing counts are summed, not overwritten",
+      _both_total, 4)
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

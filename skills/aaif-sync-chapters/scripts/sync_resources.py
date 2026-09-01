@@ -237,7 +237,32 @@ COUNTRY_CHANNELS = {
     "Finland": "nordics",
     "Norway": "nordics",
     "Sweden": "nordics",
+    # #korea (Seoul's room) predates this convention; fold("South Korea") would
+    # look for #southkorea and find nothing, reporting a channel-less country
+    # that has had a home the whole time.
+    "South Korea": "korea",
+    # Likewise #brasil — the community's own (Portuguese) spelling, not
+    # fold("Brazil")'s #brazil.
+    "Brazil": "brasil",
+    # fold() would produce the unwieldy #democratic-republic-of-the-congo.
+    # Kenya/Uganda/Nigeria/South Africa/Egypt each already have their own
+    # per-country room (not the pan-African #africa), so Kinshasa follows the
+    # same per-country pattern — user-decided 2026-08-31 — under a name short
+    # enough to type and unambiguous against the Republic of Congo
+    # (Congo-Brazzaville).
+    "Democratic Republic of the Congo": "dr-congo",
 }
+
+
+def country_channel_name(country, ao):
+    """The channel name a country's row should match: override, else fold().
+
+    One call site for the rule COUNTRY_CHANNELS exists to express — an
+    override wins over the plain ASCII fold — so propose_channels() (matching
+    an existing channel) and plan_channels() (naming one still to be created)
+    can't drift out of sync on it the way COUNTRY_CHANNELS itself once did.
+    """
+    return COUNTRY_CHANNELS.get(country) or ao.fold(country)
 
 #: Values that channel_map.json's unconfirmed `public` table filed in the wrong
 #: COLUMN — not the wrong name, the wrong kind of thing.
@@ -452,8 +477,12 @@ def propose_channels(chapters, chans, cfg):
         # #norway, #turkey. It deliberately cannot find #africa, #nordics-public
         # or #spanish-speaking: those serve several countries and no rule derives
         # them from a country name, so they stay whatever a human put there.
+        # COUNTRY_CHANNELS wins when the room's real name diverges from the
+        # ASCII fold of the country (#deutschland, #nordics, #korea, #brasil) —
+        # without it a blank cell for one of these countries falls straight to
+        # "missing_countries" even though the room has existed for years.
         if not ch["current"]["Country Channel"] and ch["country"]:
-            key = ao.fold(ch["country"])
+            key = country_channel_name(ch["country"], ao)
             c = live.get(key)
             if c and not c["is_private"]:
                 proposals.append({"row": ch["row"], "city": ch["city"],
@@ -512,7 +541,7 @@ def plan_channels(chapters, chans, ao):
                             "column": "Organizer Channel", "value": name,
                             "why": "exists" if name in live else "TO CREATE"})
         if not ch["current"]["Country Channel"] and ch["country"]:
-            name = COUNTRY_CHANNELS.get(ch["country"]) or ao.fold(ch["country"])
+            name = country_channel_name(ch["country"], ao)
             if name:
                 planned.append({"row": ch["row"], "city": ch["city"],
                                 "column": "Country Channel", "value": name,

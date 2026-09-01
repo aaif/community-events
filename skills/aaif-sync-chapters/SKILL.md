@@ -966,11 +966,18 @@ the column. A Slack handle is a display name a person can change, so resolving
 `@someone` back to an account would break the day they rename themselves — and an
 organizer would quietly stop being invited to their own chapter's room.
 
-Scope is deliberately narrow:
+`--scope {organizer,country,both}` picks the target column, default
+`organizer` — the private Organizer Channel only, unchanged from the policy
+below. `--scope country` targets the public Country Channel instead (several
+chapters routinely share one, `#españa` serves Madrid/Barcelona/Bilbao — the
+roster is the union of every contributing chapter's accepted organizers,
+deduplicated by email), which is a deliberate, narrower version of the same
+override Rahul made 2026-08-25 for public *city* channels: being an organizer
+of your own chapter's public room is part of the role, the room is public
+anyway, leaving is one click. `--scope both` runs both passes off one fetch.
 
-- **Organizer channels only.** The public chapter channel is for people to join
-  when they choose; being an organizer is not consent to be placed in a public
-  room.
+Otherwise, scope is deliberately narrow:
+
 - **Adds, never removes.** Someone in the channel the intake doesn't know is
   reported and left alone — an audit finding, not a cleanup task.
 - **Batched per channel**, so Slack renders one event rather than N join lines.
@@ -982,6 +989,30 @@ mail share notices by default: an invitation is a notification to a real person,
 and a hundred arriving at once reads as a phishing wave. Needs
 `groups:write.invites` / `channels:write.invites`, which the audit token does not
 carry.
+
+## Keeping each country channel's chapter directory current (`post_country_directory.py`)
+
+A shared Country Channel needs its own standing post pointing members at their
+city's channel — `#india` serves 8 chapters, and a newcomer landing there needs
+to know which of the 8 is theirs. This script keeps that post complete as
+chapters are added, without ever rewriting the wording a human chose:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/post_country_directory.py                          # what would change
+python3 ${CLAUDE_SKILL_DIR}/scripts/post_country_directory.py --write --i-have-approval
+```
+
+**Additive only — never `chat.update`.** The workspace already carries at
+least three different human phrasings of this post (a plain "This country has
+N chapters" template, a "The Nordics have N chapters" variant, and a "we've
+opened a dedicated city channel for X" announcement). Picking one canonical
+wording and overwriting the others would replace text a human chose on purpose
+for no functional gain. So a channel with no directory-style post at all gets a
+brand-new one; a channel whose existing self-authored post is missing a chapter
+gets a short add-on message naming only what's new; a post authored by someone
+else is reported and left alone. Run it after `invite_organizers.py --scope
+country` (or `both`) — the channel needs its people before it needs a sign
+pointing new arrivals at them.
 
 ## Removing non-organizers (`prune_organizers.py`)
 
@@ -1035,6 +1066,7 @@ After any run (and after editing the engine):
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_access.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_resources.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_invite_organizers.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_post_country_directory.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_prune_organizers.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_nightly.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_status_prospect.py
