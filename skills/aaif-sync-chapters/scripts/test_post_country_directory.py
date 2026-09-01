@@ -35,6 +35,9 @@ class _FakeApi:
     def __init__(self, history):
         self._history = history
 
+    def require_scopes(self, *a):
+        pass
+
     def ok(self, method, **kw):
         assert method == "auth.test"
         return {"user_id": SELF_ID}
@@ -130,15 +133,25 @@ check("a human's post is reported, not touched",
 check("no post_text is generated for it", rows[0]["post_text"], None)
 
 
-# --- single-room variants are skipped, not posted to ---------------------------
+# --- a single-room variant (Country Channel IS the chapter's own channel) is
+# skipped via the generic "no distinct channel" check, not a hardcoded list ---
 chapters = [{"city": "Singapore", "country": "Singapore",
             "current": {"Country Channel": "singapore", "Slack Channel": "singapore"}}]
 chans = [_chan("singapore", "CSG")]
 rows, skipped = _run(chapters, chans, {})
 check("a single-room channel produces no row", rows, [])
 check("it is reported as skipped, with a reason",
-      skipped, [("singapore", "single-room variant — nothing separate to "
-                              "point members at")])
+      skipped, [("singapore", "no distinct, live city channel to link")])
+
+# --- ...and it stops being skipped the moment the country gets its own city
+# room — this is exactly the drift a hardcoded skip list would have missed ----
+chapters = [{"city": "Singapore", "country": "Singapore",
+            "current": {"Country Channel": "singapore", "Slack Channel": "raffles"}}]
+chans = [_chan("singapore", "CSG"), _chan("raffles", "CRF")]
+rows, skipped = _run(chapters, chans, {})
+check("a real city channel is no longer treated as single-room",
+      (rows[0]["action"], rows[0]["mentions"]), ("create", ["<#CRF>"]))
+check("and nothing is skipped", skipped, [])
 
 
 # --- two cities sharing one channel are mentioned ONCE, not twice -------------
@@ -151,6 +164,126 @@ chapters = [
 chans = [_chan("united-states", "CUS"), _chan("bay-area", "CBA")]
 rows, _ = _run(chapters, chans, {})
 check("a shared channel is mentioned once", rows[0]["mentions"], ["<#CBA>"])
+
+
+# --- a brand-new post for a channel shared by several countries opens with
+# the multi-country label, not the single-country "This country has..." ------
+# All four Nordic countries: MULTI_COUNTRY_LABELS matches the exact set, not
+# a subset — a channel serving only two of the four falls through to the
+# generic "X / Y" join instead, which is exercised right after this.
+chapters = [
+    {"city": "Copenhagen", "country": "Denmark",
+     "current": {"Country Channel": "nordics", "Slack Channel": "copenhagen"}},
+    {"city": "Oslo", "country": "Norway",
+     "current": {"Country Channel": "nordics", "Slack Channel": "oslo"}},
+    {"city": "Helsinki", "country": "Finland",
+     "current": {"Country Channel": "nordics", "Slack Channel": "helsinki"}},
+    {"city": "Stockholm", "country": "Sweden",
+     "current": {"Country Channel": "nordics", "Slack Channel": "stockholm"}},
+]
+chans = [_chan("nordics", "CNO"), _chan("copenhagen", "CCO"), _chan("oslo", "COS"),
+        _chan("helsinki", "CHE"), _chan("stockholm", "CST")]
+rows, _ = _run(chapters, chans, {})
+check("a multi-country channel's post opens with the region label",
+      rows[0]["post_text"].startswith(
+          ":wave: Looking for your local AAIF community? "
+          "the Nordic countries have 4 chapters"),
+      True)
+
+# A channel shared by countries with no MULTI_COUNTRY_LABELS entry falls back
+# to joining the sorted country names.
+chapters = [
+    {"city": "Copenhagen", "country": "Denmark",
+     "current": {"Country Channel": "benelux", "Slack Channel": "copenhagen"}},
+    {"city": "Brussels", "country": "Belgium",
+     "current": {"Country Channel": "benelux", "Slack Channel": "brussels"}},
+]
+chans = [_chan("benelux", "CBX"), _chan("copenhagen", "CCO"), _chan("brussels", "CBR")]
+rows, _ = _run(chapters, chans, {})
+check("an unmapped multi-country group falls back to a plain country join",
+      rows[0]["post_text"].startswith(
+          ":wave: Looking for your local AAIF community? "
+          "Belgium / Denmark have 2 chapters"),
+      True)
+
+chapters = [{"city": "Nairobi", "country": "Kenya",
+            "current": {"Country Channel": "kenya", "Slack Channel": "nairobi"}}]
+chans = [_chan("kenya", "CKE"), _chan("nairobi", "CNR")]
+rows, _ = _run(chapters, chans, {})
+check("a single-country channel's post does not name the country",
+      rows[0]["post_text"].startswith(
+          ":wave: Looking for your local AAIF community? This country has 1 chapter"),
+      True)
+
+
+# --- hitting the scan cap with nothing found -> skipped, never "create" ------
+# A directory post that exists but sits past HISTORY_SCAN_CAP messages back
+# must never read as "none exists" — that would post a duplicate greeting.
+_capped_history = {"CIN": [{"user": "UOTHER", "text": "unrelated message"}]
+                   * pcd.HISTORY_SCAN_CAP}
+chapters = [{"city": "Berlin", "country": "Germany",
+            "current": {"Country Channel": "germany", "Slack Channel": "berlin"}}]
+chans = [_chan("germany", "CIN"), _chan("berlin", "CDE")]
+rows, skipped = _run(chapters, chans, _capped_history)
+check("a capped scan with nothing found produces no row", rows, [])
+check("it is reported as skipped, not silently treated as create",
+      any(name == "germany" for name, _ in skipped), True)
+
+
+# --- report() prints the exact text that --write would send, for the two
+# actions that actually post something -----------------------------------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+
+_create_row = {"channel": "kenya", "missing": [], "action": pcd.ACTION_CREATE,
+              "post_text": "the create text"}
+_addon_row = {"channel": "india", "missing": ["<#C1>"], "action": pcd.ACTION_ADD_ON,
+             "post_text": "the add-on text"}
+_uptodate_row = {"channel": "japan", "missing": [], "action": pcd.ACTION_UP_TO_DATE,
+                "post_text": None}
+_buf = _io.StringIO()
+with _ctx.redirect_stdout(_buf):
+    pcd.report([_create_row, _addon_row, _uptodate_row], [])
+_out = _buf.getvalue()
+check("the create row's post text is printed", "the create text" in _out, True)
+check("the add-on row's post text is printed", "the add-on text" in _out, True)
+check("an up-to-date row prints no post text (there is none)",
+      "None" in _out, False)
+
+
+# --- apply(): a real join failure stops before posting; a benign race doesn't -
+class _Recorder:
+    def __init__(self, results):
+        self.calls, self._results = [], results
+
+    def __call__(self, token, method, **params):
+        self.calls.append((method, params))
+        return self._results.get(method, {"ok": True})
+
+
+_todo = [{"channel": "kenya", "channel_id": "CKE", "action": pcd.ACTION_CREATE,
+         "post_text": "hello"}]
+
+_rec = _Recorder({"conversations.join": {"ok": False, "error": "not_authed"}})
+_orig = pcd.call_write
+pcd.call_write = _rec
+try:
+    done, failed = pcd.apply(_todo, "token")
+finally:
+    pcd.call_write = _orig
+check("a real join failure is reported and nothing is posted",
+      (done, failed, [c[0] for c in _rec.calls]),
+      (0, ["kenya: join failed: not_authed"], ["conversations.join"]))
+
+_rec = _Recorder({"conversations.join": {"ok": False, "error": "already_in_channel"}})
+pcd.call_write = _rec
+try:
+    done, failed = pcd.apply(_todo, "token")
+finally:
+    pcd.call_write = _orig
+check("a benign already-in-channel race still posts",
+      (done, failed, [c[0] for c in _rec.calls]),
+      (1, [], ["conversations.join", "chat.postMessage"]))
 
 
 if FAILS:

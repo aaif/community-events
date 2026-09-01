@@ -38,12 +38,24 @@ A directory-style post authored by someone else (not this token) is reported
 and never touched — same reasoning as `invite_organizers.py` leaving people
 the intake doesn't list alone.
 
+Detection reads the word "chapter" — a channel where a human wrote the post
+in another language (Spanish, Portuguese, German — several of these rooms are
+named in that language) could miss it and get a second, English post. Nothing
+today does, but this is a known gap, not a guarantee. `HISTORY_SCAN_CAP`
+bounds the other side of the same risk: if nothing directory-shaped turns up
+in the first 2000 messages, the channel is reported for a human to check by
+hand rather than assumed empty — defaulting to "create" on an unconfirmed
+absence is exactly the duplicate-post failure this design exists to avoid.
+
 ## Which channels are skipped, and why
 
-A Country Channel that IS the chapter's own public channel (Singapore,
-Luxembourg) or that has no separate city channel to point to at all
-(Wellington's Slack Channel is `none`) has nothing to direct anyone to — the
-country room already is the whole answer. These are never posted to.
+A Country Channel with no distinct, live city channel among its chapters has
+nothing to direct anyone to — the country room already is the whole answer.
+This covers a chapter whose Country Channel IS its own public channel
+(Singapore, Luxembourg) and one with no separate city channel at all
+(Wellington's Slack Channel is `none`) through the same check, not a
+hardcoded list of countries: naming specific countries here would stop being
+true the day one of them opens a real city room.
 
 ## Why this is gated harder than a sheet write
 
@@ -83,11 +95,6 @@ def _looks_like_directory_post(text):
     return bool(text) and "chapter" in text.lower() and _MENTION_RE.search(text)
 
 
-#: Country Channels that ARE the one room they'd otherwise point at, or that
-#: have no separate city channel to point to. Nothing to say here that the
-#: channel itself doesn't already say.
-SINGLE_ROOM_CHANNELS = {"singapore", "luxembourg", "new-zealand"}
-
 #: Country -> the label to use in a brand-new post when several countries
 #: share one channel. A channel with exactly one Country value uses that
 #: value verbatim.
@@ -95,14 +102,45 @@ MULTI_COUNTRY_LABELS = {
     frozenset({"Denmark", "Finland", "Norway", "Sweden"}): "the Nordic countries",
 }
 
+#: The four things a row can need, and the only four values `action` ever
+#: holds — compared with `==`/`in` at several sites below, so a typo in any
+#: one of those comparisons must fail an import, not silently miscount a
+#: bucket forever.
+ACTION_CREATE = "create"
+ACTION_ADD_ON = "add-on"
+ACTION_UP_TO_DATE = "up to date"
+ACTION_HUMAN_AUTHORED = "human-authored — not touched"
 
-def new_post_text(label, mentions):
-    return ("%s This country has %d chapter%s — join your city's channel: %s\n"
+MARKER = ":wave: Looking for your local AAIF community?"
+
+#: How much history a channel with NO conclusive finding yet gets scanned
+#: before this run gives up rather than guesses. Matches the order of
+#: magnitude of `history_activity()`'s own default (5000) in
+#: lib/aaif_events/slack.py — a directory post lives near the top of a
+#: channel's history by construction (it is posted once, early), so this is
+#: a generous bound, not a tight one.
+HISTORY_SCAN_CAP = 2000
+
+
+def new_post_text(label, mentions, is_multi):
+    """The brand-new-channel post. `is_multi` picks the opening sentence.
+
+    A single-country channel never names the country (`#kenya`'s post already
+    says "Kenya" the moment someone sees the channel) — matching the wording
+    of every existing single-country post in the workspace. A channel shared
+    by several countries (the Nordics today) has no such implicit name, so it
+    opens with `label` instead ("The Nordic countries have N chapters").
+    """
+    opening = (("%s have %d chapter%s" % (label, len(mentions),
+                                          "" if len(mentions) == 1 else "s"))
+               if is_multi else
+               ("This country has %d chapter%s"
+                % (len(mentions), "" if len(mentions) == 1 else "s")))
+    return ("%s %s — join your city's channel: %s\n"
             "Upcoming events for every chapter live at "
             "https://aaif.io/events?tab=community. No chapter near you yet? "
             "Ask here — we love helping new ones start."
-            % (":wave: Looking for your local AAIF community?", len(mentions),
-               "" if len(mentions) == 1 else "s", ", ".join(mentions)))
+            % (MARKER, opening, ", ".join(mentions)))
 
 
 def addendum_text(mentions):
@@ -114,8 +152,8 @@ def collect():
     """Return (rows, skipped) — what each live country channel needs.
 
     rows = [{channel, channel_id, mentions (ALL desired), missing (not yet
-             mentioned anywhere), action, post_text}], action in
-    ("create", "add-on", "up to date", "human-authored — not touched").
+             mentioned anywhere), action, post_text}], action one of the
+    ACTION_* constants above.
     `skipped` = [(channel, why)] for Country Channels never posted to at all.
     """
     token = os.environ.get("AAIF_SLACK_WRITE_TOKEN", "").strip()
@@ -124,6 +162,11 @@ def collect():
               "Slack CLI credential, which on this estate is expired. If auth "
               "fails, export AAIF_SLACK_WRITE_TOKEN.", file=sys.stderr)
     api = slackmod.Slack(token=token or None)
+    # Before any collection, same as every other script here that reads
+    # history — a missing scope must fail in the first second, not partway
+    # through a sweep across 30+ country channels.
+    api.require_scopes("channels:read", "groups:read",
+                       "channels:history", "groups:history")
     self_id = api.ok("auth.test").get("user_id")
 
     _, _, chapters = read_grid()
@@ -144,10 +187,6 @@ def collect():
         chan = chans.get(name)
         if not chan:
             skipped.append((name, "not visible on Slack"))
-            continue
-        if name in SINGLE_ROOM_CHANNELS:
-            skipped.append((name, "single-room variant — nothing separate to "
-                                  "point members at"))
             continue
 
         # Ordered by city name, de-duplicated by channel id (San Francisco AND
@@ -170,17 +209,20 @@ def collect():
         # change the outcome ("up to date"), so stop paging through history —
         # the common case on every run after the first, and the one that
         # would otherwise re-scan a busy channel's full history for nothing.
-        mentioned, found_any = set(), False
+        mentioned, found_any, scanned, hit_cap = set(), False, 0, False
         for m in api.paged("conversations.history", "messages", channel=chan["id"],
                            limit=200):
+            scanned += 1
             text = m.get("text") or ""
-            if not _looks_like_directory_post(text):
-                continue
-            found_any = True
-            if m.get("user") == self_id:
-                mentioned |= set(_MENTION_RE.findall(text))
-                if set(wanted_ids) <= mentioned:
-                    break
+            if _looks_like_directory_post(text):
+                found_any = True
+                if m.get("user") == self_id:
+                    mentioned |= set(_MENTION_RE.findall(text))
+                    if set(wanted_ids) <= mentioned:
+                        break
+            if scanned >= HISTORY_SCAN_CAP:
+                hit_cap = True
+                break
 
         # wanted_ids preserves city-name order (built from sorted(g["cities"])
         # above) — iterate it directly, not sorted(), or the message would
@@ -189,20 +231,31 @@ def collect():
         all_mentions = ["<#%s>" % cid for cid in wanted_ids]
         missing_mentions = ["<#%s>" % cid for cid in missing_ids]
 
+        if not found_any and hit_cap:
+            # The one case a cap can't resolve safely: nothing directory-shaped
+            # turned up in the first HISTORY_SCAN_CAP messages, but there might
+            # still be one further back that this run never reached. Defaulting
+            # to "create" here is exactly the failure mode the additive-only
+            # design exists to prevent — a duplicate greeting in a public room.
+            skipped.append((name, "scanned %d messages with no directory post "
+                                  "found and no more messages read — can't "
+                                  "confirm one doesn't exist further back; "
+                                  "check by hand" % scanned))
+            continue
         if not found_any:
-            label = MULTI_COUNTRY_LABELS.get(frozenset(g["countries"]))
-            if not label:
-                label = (sorted(g["countries"])[0] if len(g["countries"]) == 1
-                         else " / ".join(sorted(g["countries"])))
-            action, text = "create", new_post_text(label, all_mentions)
+            is_multi = len(g["countries"]) > 1
+            label = (MULTI_COUNTRY_LABELS.get(frozenset(g["countries"]))
+                     or " / ".join(sorted(g["countries"]))) if is_multi else None
+            action = ACTION_CREATE
+            text = new_post_text(label, all_mentions, is_multi)
         elif not mentioned:
             # found_any is True but no self-authored mention landed: every
             # directory-shaped match belongs to someone else.
-            action, text = "human-authored — not touched", None
+            action, text = ACTION_HUMAN_AUTHORED, None
         elif not missing_ids:
-            action, text = "up to date", None
+            action, text = ACTION_UP_TO_DATE, None
         else:
-            action, text = "add-on", addendum_text(missing_mentions)
+            action, text = ACTION_ADD_ON, addendum_text(missing_mentions)
 
         rows.append({"channel": name, "channel_id": chan["id"],
                      "mentions": all_mentions, "missing": missing_mentions,
@@ -211,21 +264,26 @@ def collect():
 
 
 def report(rows, skipped):
-    todo = [r for r in rows if r["action"] in ("create", "add-on")]
+    todo = [r for r in rows if r["action"] in (ACTION_CREATE, ACTION_ADD_ON)]
     print("Country-channel directory posts — %d live channel(s)\n" % len(rows))
     for r in sorted(rows, key=lambda x: x["channel"]):
-        detail = " (%d missing)" % len(r["missing"]) if r["action"] == "add-on" else ""
+        detail = " (%d missing)" % len(r["missing"]) if r["action"] == ACTION_ADD_ON else ""
         print("  #%-20s %s%s" % (r["channel"], r["action"], detail))
+        # The approval gate below only means anything if the text it's
+        # gating is visible here — print exactly what --write would send.
+        if r["action"] in (ACTION_CREATE, ACTION_ADD_ON):
+            for line in r["post_text"].splitlines():
+                print("      %s" % line)
     if skipped:
         print("\nSkipped (%d):" % len(skipped))
         for name, why in sorted(skipped):
             print("  #%-20s %s" % (name, why))
     print("\nTo create: %d, to add-on: %d, already correct: %d, "
           "human-authored (not touched): %d"
-          % (sum(1 for r in rows if r["action"] == "create"),
-             sum(1 for r in rows if r["action"] == "add-on"),
-             sum(1 for r in rows if r["action"] == "up to date"),
-             sum(1 for r in rows if r["action"] == "human-authored — not touched")))
+          % (sum(1 for r in rows if r["action"] == ACTION_CREATE),
+             sum(1 for r in rows if r["action"] == ACTION_ADD_ON),
+             sum(1 for r in rows if r["action"] == ACTION_UP_TO_DATE),
+             sum(1 for r in rows if r["action"] == ACTION_HUMAN_AUTHORED)))
     return todo
 
 
@@ -270,7 +328,7 @@ def main():
                  "to %d channel(s), visible to everyone in them." % len(todo))
 
     token = write_token()
-    assert "chat.postMessage" in WRITE_METHODS
+    assert "chat.postMessage" in WRITE_METHODS and "conversations.join" in WRITE_METHODS
 
     done, failed = apply(todo, token)
     print("\nPosted %d, %d failed." % (done, len(failed)))
