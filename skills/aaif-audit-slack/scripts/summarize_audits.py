@@ -106,14 +106,22 @@ def org_findings(audit):
     gaps, no_account = [], []
     for c in ch:
         acc = c["accepted"] or []
-        if acc and c["organizers_channel"]:
+        if not acc:
+            continue
+        # No-account is a finding about the PERSON, not the channel — a
+        # chapter with no organizers channel yet still has organizers with no
+        # Slack account under their intake email, and gating this on
+        # `organizers_channel` (as `gaps` correctly does, since a gap
+        # presupposes a channel to be missing from) silently dropped exactly
+        # the newest chapters, where an unconfirmed address is most likely.
+        no_acct = [a for a in acc if not a.get("slack_account")]
+        if no_acct:
+            no_account.append((c["city"], len(no_acct), len(acc)))
+        if c["organizers_channel"]:
             out = [a for a in acc if not a.get("in_organizers")]
             invitable = [a for a in out if a.get("slack_account")]
-            no_acct = [a for a in out if not a.get("slack_account")]
             if invitable:
                 gaps.append((c["city"], len(invitable), len(acc)))
-            if no_acct:
-                no_account.append((c["city"], len(no_acct), len(acc)))
     gaps.sort(key=lambda g: -g[1])
     no_account.sort(key=lambda g: -g[1])
     # `unresolved` records are members whose directory lookup FAILED. The
