@@ -46,6 +46,14 @@ _TRANSIENT = ("timed out", "Connection reset", "503", "502", "429")
 
 
 def _gws(cmd, cwd=None, retries=5):
+    """Run a gws command, retrying transient-looking failures.
+
+    retries=1 (no retry) is REQUIRED for any non-idempotent write (a Drive
+    `files.create`, folder or file): if the create actually succeeded
+    server-side but the response looked like a timeout, retrying it creates a
+    second folder/file with the same name, and nothing on the destination side
+    detects that duplicate. Reads and `files.update` (by file id) are safe to
+    retry at the default."""
     for i in range(retries):
         r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=_scrubbed_env())
         if r.returncode == 0:
@@ -57,13 +65,13 @@ def _gws(cmd, cwd=None, retries=5):
         raise RuntimeError("gws failed (%s): %s" % (r.returncode, msg.strip()[:400]))
 
 
-def gws_json(*args, params=None, body=None):
+def gws_json(*args, params=None, body=None, retries=5):
     cmd = ["gws", *args]
     if params is not None:
         cmd += ["--params", json.dumps(params)]
     if body is not None:
         cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd)
+    out = _gws(cmd, retries=retries)
     s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
     if not s:
         raise RuntimeError("gws produced no JSON output for: %s" % " ".join(args))
@@ -91,7 +99,7 @@ def list_children(folder_id):
 
 
 def create_folder(name, parent):
-    return gws_json("drive", "files", "create",
+    return gws_json("drive", "files", "create", retries=1,  # non-idempotent write, see _gws
                      params={"supportsAllDrives": True},
                      body={"name": name, "mimeType": FOLDER, "parents": [parent]})["id"]
 
@@ -107,7 +115,7 @@ def upload_new(name, parent, local_path):
           "--params", json.dumps({"supportsAllDrives": True}),
           "--json", json.dumps({"name": name, "parents": [parent]}),
           "--upload", os.path.basename(local_path),
-          "--upload-content-type", mime], cwd=d)
+          "--upload-content-type", mime], cwd=d, retries=1)  # non-idempotent write, see _gws
 
 
 def upload_update(file_id, local_path):
@@ -147,21 +155,25 @@ def needed_filenames(slug):
             f"organizer_badge_{slug}_colour_1000.png", f"organizer_badge_{slug}_white_1000.png"]
 
 
-def plan(chapters, badge_folders, regenerate):
-    """Returns (folders_to_create: {slug: name}, files_to_upload: {slug: (folder_id_or_None, [filenames])})."""
+def plan(chapters, badge_folders, children_by_slug, regenerate):
+    """Returns (folders_to_create: {slug: name}, files_to_upload: {slug: (folder_id_or_None, [filenames])}).
+
+    `children_by_slug` must already hold an entry for every slug in `chapters`
+    that also has a matching `badge_folders` entry -- membership in it (not an
+    optional key on `badge_folders`) is what means "already fetched"."""
     folders_to_create = {}
     files_to_upload = {}
     for slug, name in sorted(chapters.items()):
-        entry = badge_folders.get(slug)
+        folder = badge_folders.get(slug)
         need = needed_filenames(slug)
-        if entry is None:
+        if folder is None:
             folders_to_create[slug] = name
             files_to_upload[slug] = (None, need)
             continue
-        existing_names = {c["name"] for c in entry["children"]}
+        existing_names = {c["name"] for c in children_by_slug[slug]}
         missing = need if regenerate else [n for n in need if n not in existing_names]
         if missing:
-            files_to_upload[slug] = (entry["id"], missing)
+            files_to_upload[slug] = (folder["id"], missing)
     return folders_to_create, files_to_upload
 
 
@@ -196,18 +208,18 @@ def main():
     # Fetch each folder's contents only for slugs actually in scope (the
     # --chapter filter, or every chapter on a full run) -- an orphan folder,
     # or any folder outside a --chapter filter, needs its NAME (already known
-    # from the listing above) but never its children.
-    for slug in chapters:
-        entry = badge_folders.get(slug)
-        if entry is not None:
-            entry["children"] = list_children(entry["id"])
+    # from the listing above) but never its children. Presence as a KEY in
+    # children_by_slug (not an optional field on badge_folders) is what means
+    # "already fetched" -- see plan()'s docstring.
+    children_by_slug = {slug: list_children(badge_folders[slug]["id"])
+                         for slug in chapters if slug in badge_folders}
 
     # Orphans are judged against the FULL canonical set, never the --chapter
     # filter -- otherwise every other real chapter's folder would misreport as
     # having "no matching chapter" just because it wasn't the one asked for.
     orphans = sorted(n for n in badge_folders if n not in all_chapters)
 
-    folders_to_create, files_to_upload = plan(chapters, badge_folders, a.regenerate)
+    folders_to_create, files_to_upload = plan(chapters, badge_folders, children_by_slug, a.regenerate)
 
     print(f"Chapters (canonical): {len(chapters)}")
     print(f"Badge folders present: {len(badge_folders)}")
@@ -224,8 +236,11 @@ def main():
     for slug, name in sorted(folders_to_create.items()):
         print(f"+ create folder  {slug}/   ({name})")
     for slug, (folder_id, files) in sorted(files_to_upload.items()):
-        verb = "upload" if folder_id is None else ("overwrite" if a.regenerate else "upload")
+        # Per-file, not per-chapter: under --regenerate a partially-complete
+        # folder still has files that were never there to "overwrite".
+        existing_names = {c["name"] for c in children_by_slug.get(slug, [])}
         for fn in files:
+            verb = "overwrite" if fn in existing_names else "upload"
             print(f"  {verb:<9} {slug}/{fn}")
 
     if not a.write:
@@ -244,7 +259,7 @@ def main():
                 print(f"created folder {slug}/ -> {folder_id}")
                 existing_by_name = {}
             else:
-                existing_by_name = {c["name"]: c["id"] for c in badge_folders[slug]["children"]}
+                existing_by_name = {c["name"]: c["id"] for c in children_by_slug[slug]}
             make_badges.build(name, tmp, slug)
             for fn in files:
                 local_path = os.path.join(tmp, slug, fn)
@@ -258,7 +273,10 @@ def main():
                 total += 1
         print(f"\nDone. {total} file(s) written.")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            shutil.rmtree(tmp)
+        except OSError as e:
+            print(f"warning: could not remove temp dir {tmp}: {e}")
 
 
 if __name__ == "__main__":

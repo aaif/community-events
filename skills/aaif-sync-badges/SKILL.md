@@ -94,9 +94,9 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --chapter "Mexico City" --wri
 
 ## Notes
 
-- The generator (`make_badges.py`) is a verbatim copy of the AAIF badge
-  script — kept self-contained here rather than imported from `lib`, per this
-  repo's usual skill-script convention, so this skill still runs standalone.
+- The generator (`make_badges.py`) is AAIF's badge-generation logic, kept
+  self-contained here rather than imported from `lib`, per this repo's usual
+  skill-script convention, so this skill still runs standalone.
 - Badges are built into a private `tempfile.mkdtemp()` directory that is
   deleted at the end of the run — nothing lands in the repo working tree, so
   there's no `.gitignore` entry to add.
