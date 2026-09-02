@@ -27,23 +27,29 @@ Produces, per chapter, in OUTDIR/<slug>/ :
     organizer_badge_<slug>_agent.svg
     organizer_badge_<slug>_agent_1000.png
 """
-import os, re, sys, unicodedata
+import os, sys, unicodedata
 from xml.sax.saxutils import escape as _xml_escape
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import make_badges  # noqa: E402 -- reuse its slugify; this module already
+                     # gave up standalone-zip portability below, so a second
+                     # copy of the same one-liner would only drift, not help.
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))), "lib"))
 from aaif_events import agent_art, report_style  # noqa: E402
+from aaif_events.ooxml_style import token  # noqa: E402
 
-INK = "#0A0A0A"
-INK_3 = "#4A4A4A"
-PAPER = "#FFFFFF"
-LINE_2 = "#CFCFC9"
+# Read straight from the design system rather than copying hex values here --
+# a hardcoded copy is exactly the drift this variant exists to avoid (see
+# module docstring). ink()/paper() are agent_art's own equivalent read.
+INK = agent_art.ink()
+INK_3 = "#" + token("ink-3")
+PAPER = agent_art.paper()
+LINE_2 = "#" + token("line-2")
+FONTS = "Instrument Sans, ui-sans-serif, sans-serif"
 
-
-def slugify(name):
-    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    s = re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_").lower()
-    return s
+slugify = make_badges.slugify
 
 
 def _svg(city, chapter_name):
@@ -64,14 +70,14 @@ def _svg(city, chapter_name):
 <circle cx="500" cy="500" r="480" fill="{PAPER}"/>
 <circle cx="500" cy="500" r="460" fill="none" stroke="{LINE_2}" stroke-width="2"/>
 <path id="tp" d="M 160,500 A 340,340 0 0 1 840,500" fill="none"/>
-<text font-family="Instrument Sans" font-weight="600" font-size="46" letter-spacing="6"
+<text font-family="{FONTS}" font-weight="600" font-size="46" letter-spacing="6"
       fill="{INK}"><textPath href="#tp" startOffset="50%" text-anchor="middle">{city}</textPath></text>
 {art}
 <circle cx="500" cy="675" r="4" fill="{accent}"/>
-<text x="500" y="720" font-family="Instrument Sans" font-weight="500" font-size="26"
+<text x="500" y="720" font-family="{FONTS}" font-weight="500" font-size="26"
       letter-spacing="5" text-anchor="middle" fill="{INK_3}">AGENTIC AI FOUNDATION</text>
 <rect x="368" y="752" width="264" height="60" rx="30" fill="{INK}"/>
-<text x="500" y="791" font-family="Instrument Sans" font-weight="600" font-size="26"
+<text x="500" y="791" font-family="{FONTS}" font-weight="600" font-size="26"
       letter-spacing="4" text-anchor="middle" fill="{PAPER}">ORGANIZER</text>
 </svg>'''
 

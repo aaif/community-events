@@ -116,12 +116,16 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_legacy_badges.py --write --trash-emp
 ```
 
 `--trash-empty` is resilient per folder: one folder's trash failing (e.g. a
-permissions mismatch on that specific folder) is reported and skipped, never
-lets an exception stop the rest from being cleaned up. On the first real run
-against the 89-chapter estate, 28 of 88 emptied legacy folders were trashed;
-the other 60 hit `insufficientFilePermissions` and were left in place —
-harmless (empty, all their files already safely moved) and can be deleted by
-hand in Drive by an owner, or re-run later if permissions change.
+Drive permissions mismatch on that specific folder — differing ownership or
+sharing from its siblings) is reported and skipped, never lets an exception
+stop the rest from being cleaned up. A folder that can't be trashed this way
+is harmless either way — it's already empty, and every file it held has
+already been safely moved — and can be deleted by hand in Drive by an owner,
+or re-run later if permissions change. If many folders in a row fail with the
+*same* error, the script stops instead of continuing to fail identically
+through every remaining folder — that pattern means something systemic (a
+stale `gws` credential, a broken API call), not a per-folder quirk, and is
+worth fixing before re-running rather than working around.
 
 A file already present at the destination (by name) is left alone and
 reported, never overwritten by the migration — run `sync_badges.py

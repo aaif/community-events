@@ -8,6 +8,30 @@ import migrate_legacy_badges as mlb  # noqa: E402
 import sync_badges as sb  # noqa: E402
 
 
+class TestMoveFile(unittest.TestCase):
+    """Drive doesn't guarantee addParents/removeParents apply atomically
+    together -- move_file must verify the resulting `parents`, not trust a
+    200 response blindly."""
+
+    def test_succeeds_when_parents_fully_updated(self):
+        resp = {"id": "f1", "parents": ["new-parent"]}
+        with mock.patch.object(sb, "gws_json", return_value=resp):
+            mlb.move_file("f1", "new-parent", "old-parent")  # must not raise
+
+    def test_raises_when_old_parent_was_not_actually_removed(self):
+        resp = {"id": "f1", "parents": ["new-parent", "old-parent"]}
+        with mock.patch.object(sb, "gws_json", return_value=resp):
+            with self.assertRaises(RuntimeError) as e:
+                mlb.move_file("f1", "new-parent", "old-parent")
+        self.assertIn("did not fully apply", str(e.exception))
+
+    def test_raises_when_new_parent_was_not_actually_added(self):
+        resp = {"id": "f1", "parents": ["old-parent"]}
+        with mock.patch.object(sb, "gws_json", return_value=resp):
+            with self.assertRaises(RuntimeError):
+                mlb.move_file("f1", "new-parent", "old-parent")
+
+
 class TestPlanLegacyFolders(unittest.TestCase):
     def test_matches_slug_folder_to_its_chapter(self):
         chapters = {"dublin": {"name": "Dublin", "folder_id": "chapter-fid"}}
@@ -108,6 +132,30 @@ class TestMainDispatch(unittest.TestCase):
 
         create_folder.assert_not_called()
         move_file.assert_not_called()
+
+    def test_partial_overlap_moves_only_the_files_not_already_at_destination(self):
+        # The realistic case: a chapter partially synced under the new layout
+        # (sync_badges.py already put some files in Badges/) and partially
+        # still under the old shared folder.
+        chapters = {"dublin": {"name": "Dublin", "folder_id": "has-badges-fid"}}
+        legacy_children = {
+            mlb.LEGACY_BADGES_PARENT: [{"id": "legacy-fid", "name": "dublin", "mimeType": sb.FOLDER}],
+            "legacy-fid": [
+                {"id": "f1", "name": "organizer_badge_dublin_colour.svg"},
+                {"id": "f2", "name": "organizer_badge_dublin_white.svg"},
+                {"id": "f3", "name": "organizer_badge_dublin_colour_1000.png"},
+            ],
+        }
+        dest_children = {"existing-badges-fid": [
+            {"id": "f1-dup", "name": "organizer_badge_dublin_colour.svg"},
+        ]}
+        create_folder, move_file, trash_folder = self._run_main(
+            ["--write"], chapters, legacy_children, dest_children)
+
+        create_folder.assert_not_called()
+        self.assertEqual(move_file.call_count, 2)
+        moved_ids = {c.args[0] for c in move_file.call_args_list}
+        self.assertEqual(moved_ids, {"f2", "f3"})
 
     def test_trash_empty_only_trashes_folders_left_empty_by_the_move(self):
         chapters = {"dublin": {"name": "Dublin", "folder_id": "has-badges-fid"}}

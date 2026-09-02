@@ -48,6 +48,13 @@ STYLES = (
     (make_badges, ("colour.svg", "white.svg", "colour_1000.png", "white_1000.png")),
     (make_agent_badge, ("agent.svg", "agent_1000.png")),
 )
+# styles_needed_for() matches filenames by suffix across ALL styles at once --
+# a future style whose suffixes overlap another's would make it silently
+# select the wrong module. Assert that stays impossible rather than relying on
+# every future editor to notice.
+assert len({s for _module, suffixes in STYLES for s in suffixes}) == \
+    sum(len(suffixes) for _module, suffixes in STYLES), \
+    "STYLES suffixes must be disjoint across styles -- see styles_needed_for()"
 
 
 def _scrubbed_env():
@@ -250,6 +257,8 @@ def main():
         print(f"+ create folder  {name}/{BADGES_SUBFOLDER}/")
     for slug, (folder_id, files) in sorted(files_to_upload.items()):
         name = chapters[slug]["name"]
+        # Per-file, not per-chapter: under --regenerate a partially-complete
+        # folder still has files that were never there to "overwrite".
         existing_names = {c["name"] for c in children_by_slug.get(slug, [])}
         for fn in files:
             verb = "overwrite" if fn in existing_names else "upload"

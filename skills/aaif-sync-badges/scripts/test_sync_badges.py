@@ -26,6 +26,11 @@ class TestStylesNeededFor(unittest.TestCase):
         got = sync_badges.styles_needed_for(["organizer_badge_dublin_agent.svg"])
         self.assertEqual(got, [agent_style])
 
+    def test_ring_style_alone_selects_only_make_badges(self):
+        make_badges_style, agent_style = sync_badges.STYLES
+        got = sync_badges.styles_needed_for(["organizer_badge_dublin_colour.svg"])
+        self.assertEqual(got, [make_badges_style])
+
     def test_both_builders_run_when_both_kinds_are_missing(self):
         got = sync_badges.styles_needed_for(
             ["organizer_badge_dublin_colour.svg", "organizer_badge_dublin_agent_1000.png"])
@@ -224,6 +229,21 @@ class TestWritePathDispatch(unittest.TestCase):
         badges_build.assert_not_called()
         agent_build.assert_called_once()
         self.assertEqual(upload_new.call_count, 2)
+
+    def test_only_ring_builder_runs_when_only_ring_files_are_missing(self):
+        all_chapters = {"dublin": {"name": "Dublin", "folder_id": "chapter-fid"}}
+        children_by_folder_id = {
+            "chapter-fid": [{"id": "badges-fid", "name": "Badges", "mimeType": sync_badges.FOLDER}],
+            "badges-fid": [{"id": n, "name": n} for n in [
+                "organizer_badge_dublin_agent.svg", "organizer_badge_dublin_agent_1000.png",
+            ]],
+        }
+        create_folder, upload_new, upload_update, badges_build, agent_build = self._run_main(
+            ["--write", "--chapter", "Dublin"], all_chapters, children_by_folder_id)
+
+        badges_build.assert_called_once()
+        agent_build.assert_not_called()
+        self.assertEqual(upload_new.call_count, 4)
 
     def test_regenerate_updates_the_existing_file_in_place(self):
         all_chapters = {"dublin": {"name": "Dublin", "folder_id": "chapter-fid"}}

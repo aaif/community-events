@@ -34,9 +34,23 @@ LEGACY_BADGES_PARENT = "1ViKjLZh-4KrMBVihOGQyAL2SVsXcI3B9"  # the old chapter-ba
 
 
 def move_file(file_id, new_parent, old_parent):
-    sb.gws_json("drive", "files", "update",
-                params={"fileId": file_id, "addParents": new_parent,
-                        "removeParents": old_parent, "supportsAllDrives": True})
+    """Reparent one file, and verify Drive actually applied BOTH halves.
+
+    Drive does not guarantee addParents/removeParents apply atomically together
+    -- a caller can have permission to add the new parent but not to detach the
+    old one. A response that gws returned as a normal 200 could still leave the
+    file in both folders; without checking `parents` that half-applied state
+    would print as a clean "moved" and later be missed by the --trash-empty
+    safety check for the wrong reason (folder "still has files" with no
+    explanation why)."""
+    resp = sb.gws_json("drive", "files", "update",
+                        params={"fileId": file_id, "addParents": new_parent,
+                                "removeParents": old_parent, "supportsAllDrives": True,
+                                "fields": "id,parents"})
+    parents = resp.get("parents") or []
+    if new_parent not in parents or old_parent in parents:
+        raise RuntimeError(f"reparent for file {file_id} did not fully apply "
+                            f"(expected only {new_parent!r}, got parents={parents})")
 
 
 def trash_folder(folder_id):
@@ -51,7 +65,9 @@ def plan_legacy_folders(chapters):
     - all_legacy_folders: {slug: folder_id} -- every legacy folder matching a chapter,
       including ones already emptied by a prior run (needed so --trash-empty has
       something to act on even when there is nothing left to migrate)
-    - orphans: [(name, [file names])] for slugs with no matching chapter
+    - orphans: [(name, [file names])] for slugs with no matching chapter AND
+      at least one file -- an empty folder matching no chapter has nothing to
+      report or act on, so it is silently skipped rather than listed here
     """
     legacy_with_files = {}
     all_legacy_folders = {}
@@ -114,35 +130,72 @@ def main():
     moved = 0
     for chapter_name, slug, legacy_folder_id, f, dest_id in moves:
         if slug not in dest_cache:
+            if dest_id is None:
+                # Re-check right before creating rather than trusting the plan
+                # snapshot unconditionally: on a long batch, a concurrent run
+                # (another migration invocation, or sync_badges.py --write
+                # racing to create this chapter's first badge folder) could
+                # have created Badges/ since the plan was made. create_folder
+                # is non-idempotent (see sync_badges._gws's retries=1 note),
+                # so creating a second one here would go undetected.
+                dest_id = sb.find_badges_subfolder(chapters[slug]["folder_id"])
             dest_cache[slug] = dest_id or sb.create_folder(sb.BADGES_SUBFOLDER, chapters[slug]["folder_id"])
             if dest_id is None:
                 print(f"created folder {chapter_name}/{sb.BADGES_SUBFOLDER}/ -> {dest_cache[slug]}")
-        move_file(f["id"], dest_cache[slug], legacy_folder_id)
+        try:
+            move_file(f["id"], dest_cache[slug], legacy_folder_id)
+        except RuntimeError as e:
+            # Re-run is safe (idempotent: already-moved files are re-detected
+            # as "already present" and skipped), so surface exactly which
+            # move to investigate rather than a bare stack trace out of gws.
+            raise RuntimeError(
+                f"failed moving {f['name']!r} for chapter {chapter_name!r} "
+                f"(slug={slug!r}) after {moved} successful move(s) this run: {e}") from e
         print(f"  moved    {chapter_name}/{sb.BADGES_SUBFOLDER}/{f['name']}")
         moved += 1
     if moves:
         print(f"\nMoved {moved} file(s).")
 
     if a.trash_empty:
-        trashed, failed = 0, []
+        # A run of failures sharing the SAME error message points at something
+        # systemic (a stale gws credential, a broken API call) rather than
+        # per-folder permission differences -- stop instead of silently
+        # burning through every remaining folder with a guaranteed failure.
+        CONSECUTIVE_FAILURE_LIMIT = 5
+        trashed, failed, consecutive_same = 0, [], []
         for slug, folder_id in sorted(all_legacy_folders.items()):
-            if sb.list_children(folder_id):
-                continue  # still has files -- not this run's business
+            remaining = sb.list_children(folder_id)
+            if remaining:
+                print(f"  left in place  {slug}/  (still has {len(remaining)} file(s): "
+                      f"{[c['name'] for c in remaining]})")
+                continue
             try:
                 trash_folder(folder_id)
             except RuntimeError as e:
-                # One folder's permissions (owned/shared differently than its
-                # siblings) must not stop the rest from being cleaned up --
-                # the files were already safely moved regardless of this step.
-                failed.append((slug, str(e)))
+                err = str(e).splitlines()[0]
+                failed.append((slug, err))
+                if consecutive_same and consecutive_same[-1] == err:
+                    consecutive_same.append(err)
+                else:
+                    consecutive_same = [err]
+                if len(consecutive_same) >= CONSECUTIVE_FAILURE_LIMIT:
+                    print(f"\nABORTING trash-empty: {len(consecutive_same)} consecutive "
+                          f"folders failed with the identical error -- this looks like a "
+                          f"systemic gws/credential problem, not a per-folder permission "
+                          f"quirk. Fix the underlying issue and re-run rather than "
+                          f"continuing through folders certain to fail the same way.")
+                    print(f"Repeated error: {err}")
+                    break
                 continue
+            consecutive_same = []
             print(f"trashed empty legacy folder: {slug}/")
             trashed += 1
         print(f"\nTrashed {trashed} now-empty legacy folder(s).")
         if failed:
-            print(f"Could not trash {len(failed)} folder(s) (left in place, harmless):")
+            print(f"Could not trash {len(failed)} folder(s) -- files already safely "
+                  f"moved regardless, so these are left in place, not lost:")
             for slug, err in failed:
-                print(f"  {slug}/: {err.splitlines()[0]}")
+                print(f"  {slug}/: {err}")
 
 
 if __name__ == "__main__":

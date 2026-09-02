@@ -10,9 +10,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 import make_agent_badge  # noqa: E402
 from aaif_events.report_style import find_chrome  # noqa: E402
 
-# CI installs neither Chrome nor cairosvg (see .github/workflows/validate.yml)
-# -- this generator's PNG step needs headless Chrome (DESIGN.md's one allowed
-# renderer), so tests that call build() must skip gracefully where it's absent.
+# CI's pytest job installs no browser or cairosvg -- this generator's PNG step
+# needs headless Chrome (DESIGN.md's one allowed renderer), so tests that call
+# build() must skip gracefully where it's absent.
 HAS_CHROME = bool(find_chrome())
 
 
@@ -42,8 +42,13 @@ class TestSvgContent(unittest.TestCase):
     def test_escapes_untrusted_chapter_names(self):
         # The chapter display name comes from a live Drive folder any of its
         # organizers can rename -- mirrors make_badges.py's escaping fix.
-        svg = make_agent_badge._svg("R&amp;D", "R&D")
-        xml.dom.minidom.parseString(svg)
+        # Raw, UNescaped input: "R&amp;D" alone would be vacuous here, since
+        # a literal "&amp;" already reads as valid XML whether or not the
+        # escaping code runs at all.
+        svg = make_agent_badge._svg('R&D <VILLE>', 'R&D <VILLE>')
+        xml.dom.minidom.parseString(svg)  # raises if not well-formed
+        self.assertIn("R&amp;D &lt;VILLE&gt;", svg)
+        self.assertNotIn("R&D <VILLE>", svg)
 
 
 @unittest.skipUnless(HAS_CHROME, "headless Chrome not installed")
