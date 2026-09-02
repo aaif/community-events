@@ -1,6 +1,6 @@
 ---
 name: aaif-sync-badges
-description: Sync AAIF chapter organizer badges (SVG + PNG) into the chapter-badges Google Drive folder — generate missing badges for chapters that don't have them yet, and optionally regenerate all of them after a design change. Use when asked to add/sync/update/regenerate chapter organizer badges.
+description: Sync AAIF chapter organizer badges (SVG + PNG) into each chapter's own Drive folder — generate missing badges for chapters that don't have them yet, and optionally regenerate all of them after a design change. Use when asked to add/sync/update/regenerate chapter organizer badges.
 argument-hint: '[--chapter <City Name>] [--regenerate] [--write]'
 ---
 
@@ -21,28 +21,50 @@ argument-hint: '[--chapter <City Name>] [--regenerate] [--write]'
 > trash the copy. Never round-trip a native Doc through `.docx` — it strips
 > native features like Tabs.
 
-Keeps the **chapter-badges** Drive folder (id `1ViKjLZh-4KrMBVihOGQyAL2SVsXcI3B9`)
-in sync with the **Chapters** Drive folder (id `1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx`,
-same one `aaif-create-chapter` clones from). Each chapter gets a subfolder named
-by its **slug** (`make_badges.slugify` — e.g. "Mexico City" → `mexico_city`,
-"Delhi NCR" → `delhi_ncr`), holding 4 files:
+Keeps every chapter's own **`Badges/`** Drive subfolder (created directly inside
+the chapter's folder under the **Chapters** Drive folder, id
+`1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx` — same one `aaif-create-chapter` clones from
+— alongside its existing `Icons/`, `Event Templates (…)/`, etc.) in sync. Each
+chapter's `Badges/` folder holds **two badge styles**, 6 files total:
 
 ```
-organizer_badge_<slug>_colour.svg
-organizer_badge_<slug>_white.svg
-organizer_badge_<slug>_colour_1000.png
-organizer_badge_<slug>_white_1000.png
+organizer_badge_<slug>_colour.svg          \
+organizer_badge_<slug>_white.svg            |  style 1 — scripts/make_badges.py
+organizer_badge_<slug>_colour_1000.png      |  (self-contained, hand-tuned palette)
+organizer_badge_<slug>_white_1000.png      /
+
+organizer_badge_<slug>_agent.svg            \  style 2 — scripts/make_agent_badge.py
+organizer_badge_<slug>_agent_1000.png      /   (real AAIF design-system tokens
+                                                 + the chapter's own agent mascot)
 ```
 
-Badges are generated locally by `scripts/make_badges.py` (a ring-and-arc AAIF
-organizer badge, city name on the top arc, "AGENTIC AI FOUNDATION" on the
-bottom arc, "ORGANIZER" pill) and rendered to PNG via `cairosvg`.
+`<slug>` is `make_badges.slugify(city name)` — e.g. "Mexico City" → `mexico_city`,
+"Delhi NCR" → `delhi_ncr`.
 
-Prereqs: the `gws` CLI must be installed and authenticated (see the user's
-`gws-cli-access` memory), and `cairosvg` must be importable
-(`python3 -m pip install cairosvg`, or run inside a venv that has it — the
-engine imports it lazily, only when actually generating a PNG, so a plan-only
-run needs neither Drive write access nor `cairosvg`).
+## The two badge styles
+
+- **`make_badges.py`** — a ring-and-arc badge in its own hand-picked orange/ink/
+  lilac palette and a system font stack (`Liberation Sans, DejaVu Sans`), rendered
+  to PNG via `cairosvg`. Self-contained (no `lib` import), per this repo's usual
+  skill-script convention. This was the original design and is deliberately kept
+  as-is — it does not pull from the AAIF design system.
+- **`make_agent_badge.py`** — draws from the real design system instead: Instrument
+  Sans embedded exactly as `report_style.font_css()` does for every HTML report,
+  ink/paper/hairline tokens, and the chapter's own **agent mascot**
+  (`agent_art.chapter_scene()` / `agent_art.agent()` — the same deterministic
+  per-chapter colour already used for that chapter's `Icons/` folder and decks, so
+  the badge and the chapter's other AAIF-generated art always agree). Rendered via
+  **headless Chrome** — DESIGN.md's one allowed SVG→PNG renderer — not `cairosvg`.
+  This intentionally takes the `lib/aaif_events` coupling AGENTS.md otherwise asks
+  skill scripts to avoid, for the same reason `restyle_design_system.py` does: the
+  whole point of this variant is to be provably on-system.
+
+Prereqs: the `gws` CLI installed and authenticated (see the user's
+`gws-cli-access` memory); `cairosvg` importable for style 1
+(`python3 -m pip install cairosvg`); a Chrome/Chromium install for style 2. Both
+are imported lazily (only when actually rendering a PNG), so a plan-only run
+needs neither Drive write access nor either renderer, and a chapter only missing
+one style's files never invokes the other style's renderer.
 
 ## Usage (engine: `scripts/sync_badges.py`)
 
@@ -53,8 +75,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py
 # Apply — create missing chapter subfolders and upload missing files:
 python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --write
 
-# Regenerate every file (after a design change to make_badges.py) and
-# overwrite what's already there:
+# Regenerate every file (after a design change) and overwrite what's already there:
 python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --write --regenerate
 
 # One chapter only (Drive chapter-folder name, case-insensitive substring):
@@ -67,18 +88,46 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --chapter "Mexico City" --wri
   folder, not a hardcoded list — a chapter created by `aaif-create-chapter`
   shows up here on the next run with no code change. `TemplateCity` (the
   clone source, not a real chapter) is excluded.
-- **Additive only.** A chapter subfolder or file already present is left
-  alone unless `--regenerate` is passed — badges are never deleted, and a
+- **Additive only.** A chapter's `Badges/` subfolder or file already present is
+  left alone unless `--regenerate` is passed — badges are never deleted, and a
   file that already exists is *updated in place* (same Drive file id), never
   duplicated.
-- **Badge folders with no matching chapter** (a chapter renamed or retired in
-  Drive after its badge folder was created) are reported as orphans and never
-  touched — deleting or renaming them is a manual call.
-- **Non-folder items** directly under the chapter-badges parent (stray files
-  like a `.DS_Store`) are reported and ignored.
 - A collision — two chapter folder names slugifying to the same value — aborts
   the whole run rather than silently dropping one of them; rename one of the
   chapters in Drive first.
+
+## Migrating from the old shared chapter-badges folder
+
+Badges used to live in one shared parent folder (`<parent>/<slug>/…`) instead
+of inside each chapter. `scripts/migrate_legacy_badges.py` moves files out of
+that old layout into the per-chapter `Badges/` folder this skill now targets —
+a Drive **reparent** (`addParents`/`removeParents`), not a re-upload, so file
+ids and revision history survive. Plan-only by default:
+
+```bash
+# Plan — nothing is moved:
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_legacy_badges.py
+
+# Apply the moves:
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_legacy_badges.py --write
+
+# Also trash (Drive trash, recoverable) a legacy folder left empty by the move:
+python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_legacy_badges.py --write --trash-empty
+```
+
+`--trash-empty` is resilient per folder: one folder's trash failing (e.g. a
+permissions mismatch on that specific folder) is reported and skipped, never
+lets an exception stop the rest from being cleaned up. On the first real run
+against the 89-chapter estate, 28 of 88 emptied legacy folders were trashed;
+the other 60 hit `insufficientFilePermissions` and were left in place —
+harmless (empty, all their files already safely moved) and can be deleted by
+hand in Drive by an owner, or re-run later if permissions change.
+
+A file already present at the destination (by name) is left alone and
+reported, never overwritten by the migration — run `sync_badges.py
+--regenerate` afterward if the content should also be refreshed. A legacy
+folder matching no canonical chapter (a renamed/retired chapter, or a stray
+item) is reported and never touched.
 
 ## Procedure
 
@@ -86,20 +135,21 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --chapter "Mexico City" --wri
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py
    ```
-   Review the `+ create folder` / `upload` / `overwrite` lines, and any
-   reported orphans, before writing anything.
+   Review the `+ create folder` / `upload` / `overwrite` lines before writing
+   anything.
 2. **Apply** with `--write` once the plan looks right.
 3. New badges land as `image/svg+xml` and `image/png` files inside the
-   chapter's slug subfolder; re-running afterward reports "Up to date".
+   chapter's own `Badges/` subfolder; re-running afterward reports "Up to date".
 
 ## Notes
 
-- The generator (`make_badges.py`) is AAIF's badge-generation logic, kept
-  self-contained here rather than imported from `lib`, per this repo's usual
-  skill-script convention, so this skill still runs standalone.
 - Badges are built into a private `tempfile.mkdtemp()` directory that is
   deleted at the end of the run — nothing lands in the repo working tree, so
   there's no `.gitignore` entry to add.
-- To change the badge design (colours, layout, text), edit
-  `scripts/make_badges.py` directly, then run `--write --regenerate` to push
-  the new design to every chapter.
+- To change either badge design, edit the corresponding script
+  (`make_badges.py` or `make_agent_badge.py`) directly, then run `--write
+  --regenerate` to push the new design to every chapter.
+- Both chapter-name display strings that reach a generated SVG are
+  XML-escaped before use: the Drive folder name is organizer-editable
+  (any of a chapter's accepted organizers can rename their own chapter
+  folder), so this is untrusted input, not just untrusted-shaped text.
