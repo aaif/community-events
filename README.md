@@ -88,6 +88,8 @@ talk to Slack or Luma.
 | `aaif-event-status` | Report overdue / due-soon event tasks by owner, plus read-only Luma registration stats | Google Drive, Luma |
 | `aaif-sync-chapters` | Push intake decisions to the Chapters List, About docs, chapter CRMs, per-chapter Drive access and the resource map (report/propose by default) | Google Sheets/Drive/Docs, Slack |
 | `aaif-audit-slack` | Audit the community Slack workspace — chapter/organizer channel coverage and member/channel health — as a self-contained HTML report | Slack, Google Sheets |
+| `aaif-community-pulse` | Draft the periodic "AAIF Community Organizer Update" Slack post from recent chapter events, community news, and the Luma calendar | Slack, Google Drive, Luma |
+| `aaif-sync-badges` | Generate and sync chapter organizer badges (SVG + PNG) into the chapter-badges Drive folder | Google Drive |
 
 > **Heads up — these ship with AAIF's own IDs.** The ops skills reference AAIF's
 > Google resources (the Chapters Drive, the Intake Ops spreadsheet ID, Luma slug
