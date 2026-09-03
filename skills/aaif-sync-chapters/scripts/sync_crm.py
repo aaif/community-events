@@ -1197,11 +1197,20 @@ def merge_people(people, blocked=None):
     public and email is the merge key, so a stranger submitting under an
     accepted organizer's address would otherwise fill that person's blank CRM
     cells and restamp their Notes — attacker content attributed to a trusted
-    identity. Refused rows are appended to `blocked` (rejection-shaped, for
-    the report) when the caller passes a list; the legitimate mixed case — one
-    person pipeline in one role and accepted in another — still merges when
-    the pipeline row seeds first (ROLE_TABS order), which is how a real
-    person's rows arrive, and is covered by the tests either way.
+    identity. This is deliberately unconditional, including when the second
+    row carries the SAME name as the accepted person (2026-09-03, reverted a
+    same-day same-name carve-out): merging two role applications into one row
+    is not this engine's call to make on its own — a person accepted in one
+    role who later applies for a second (Speaker/Host, still pending that
+    role's own review) is expected to stay a held, unmerged row until CRM
+    workbooks grow separate per-role tabs; that follow-up decides how the two
+    applications actually come together, and this function must not guess at
+    it by combining them into one "Organizer/Speaker" cell. Refused rows are
+    appended to `blocked` (rejection-shaped, for the report) when the caller
+    passes a list; the legitimate mixed case — one person pipeline in one role
+    and accepted in another — still merges when the pipeline row seeds first
+    (ROLE_TABS order), which is how a real person's rows arrive, and is
+    covered by the tests either way.
     """
     merged = {}
     for tab in ROLE_TABS:                       # priority order
@@ -1213,10 +1222,12 @@ def merge_people(people, blocked=None):
                 if blocked is not None:
                     blocked.append({
                         "row": p["row"], "tab": tab, "name": p["name"],
-                        "why": "status %r — same email as an accepted person's "
-                               "CRM row; refusing to merge an unvetted "
-                               "submission into it. Review the intake row."
-                               % p["status"]})
+                        "why": "status %r — a second role application under "
+                               "an already-accepted person's email (%s); held "
+                               "until per-role CRM tabs exist to keep the two "
+                               "applications separate rather than merged into "
+                               "one row. Review the intake row."
+                               % (p["status"], redact_name(cur["name"]))})
                 continue
             if cur is None:
                 m = dict(p, tabs=[tab], rows=[p["row"]], statuses=[p["status"]])
@@ -1719,9 +1730,10 @@ def _run(args, workdir):
               % (len({fold_email(p["email"]) for p in held}),
                  len({fold_city(p["city"]) for p in held}), SELF_SERVE_MIN))
     if merge_blocked:
-        print("SECURITY: %d not-yet-accepted intake row(s) share an email with "
-              "an accepted person and were NOT merged into their CRM row — "
-              "--verbose lists them; review those intake rows."
+        print("Held (2nd role): %d application(s) sharing an already-accepted "
+              "person's email — held, not merged into their CRM row (per-role "
+              "tabs will carry these separately) — --verbose lists them; "
+              "review those intake rows."
               % len(merge_blocked))
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 

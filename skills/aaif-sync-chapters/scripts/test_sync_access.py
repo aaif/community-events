@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sync_access
-from sync_access import ACCESS_TABS, banner_ids, canon_email
+from sync_access import ACCESS_TABS, canon_email
 
 fails = 0
 def check(label, got, want):
@@ -76,54 +76,6 @@ check("+tags are kept off gmail",
       canon_email("a+tag@fastmail.com"), "a+tag@fastmail.com")
 check("blank stays blank", canon_email(""), "")
 
-
-# ---------------------------------------------------------------------------
-# banner_ids — city key and URL parsing
-# ---------------------------------------------------------------------------
-FEED_HEADERS = ["Title", "City", "Country", "Generated Geolocation", "Summary",
-                "Image", "CTA", "URL for CTA", "Organizers", "Chapter Luma Link",
-                "MLOps Community Organizers"]
-ID_A, ID_B = "1usAa88CR88_XUlMp35tFoF2OIv1mf3IO", "1Q-OzWVYW1lzjI_Hlu6QvY8bNBZYXlodH"
-
-
-def feed_row(city, image):
-    row = [""] * len(FEED_HEADERS)
-    row[FEED_HEADERS.index("City")] = city
-    row[FEED_HEADERS.index("Image")] = image
-    return row
-
-
-def banners_over(rows):
-    with mock.patch.object(sync_access, "get_values", return_value=rows):
-        return banner_ids()
-
-
-got = banners_over([FEED_HEADERS,
-                    feed_row("Washington, DC", "https://lh3.googleusercontent.com/d/" + ID_A),
-                    feed_row("Montréal", "https://drive.google.com/uc?id=" + ID_B),
-                    feed_row("Nowhere", "not a drive url"),
-                    feed_row("", "https://lh3.googleusercontent.com/d/" + ID_A)])
-# fold_city, not fold: plain fold leaves punctuation intact, so the feed's
-# 'Washington, DC' missed the 'Washington DC' folder and the chapter was
-# reported as having no image at all — then never pinned, then locked.
-check("city key is punctuation-folded", "washington dc" in got, True)
-check("city key is accent-folded", "montreal" in got, True)
-check("the /d/<id> form parses", got["washington dc"]["file_id"], ID_A)
-check("the ?id=<id> form parses", got["montreal"]["file_id"], ID_B)
-check("an unrecognised URL yields no id, not a bogus one",
-      got["nowhere"]["file_id"], "")
-check("a row with no city is skipped", len(got), 3)
-check("the original city spelling is preserved for the report",
-      got["washington dc"]["city"], "Washington, DC")
-
-check("a missing Image column aborts rather than planning a lock",
-      aborts(lambda: banners_over([[h for h in FEED_HEADERS if h != "Image"]])), True)
-check("an empty feed aborts", aborts(lambda: banners_over([])), True)
-
-# A trailing-fragment URL must not produce a truncated-but-plausible id.
-frag = banners_over([FEED_HEADERS,
-                     feed_row("Boston", "https://lh3.googleusercontent.com/d/%s#gid=1" % ID_A)])
-check("a URL fragment does not corrupt the id", frag["boston"]["file_id"], ID_A)
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +211,7 @@ check("a failure mid-batch does not abandon the remaining grants",
 # night on any chapter the tree owner organizes — and loosening it to accept any
 # inherited role would pass with no grant made at all.
 def run_verify(perm_rows):
-    p = {"grants": [], "pins": [], "already_pinned_ids": [],
+    p = {"grants": [],
          "already_granted_ids": [("Boston", "F1", "a@x.com")], "role": "writer"}
     with mock.patch.object(sync_access, "perms", lambda fid: perm_rows):
         return sync_access.verify(p, ["grant"])
@@ -281,38 +233,20 @@ check("a direct writer passes",
       run_verify([{"type": "user", "emailAddress": "a@x.com",
                    "role": "writer", "inherited": False}]), [])
 
-# --- phases_to_run: pinning is a standing human decision, never a default -------
-# nightly.py passes only --write, so the unattended path must never publish a
-# banner to the internet as a side effect of syncing grants.
-check("a plain --write runs grant + lock only",
-      sync_access.phases_to_run(None, False), ["grant", "lock"])
-check("--pins adds the pin phase, first",
-      sync_access.phases_to_run(None, True), ["pin", "grant", "lock"])
-check("--phase pin is explicit consent on its own",
-      sync_access.phases_to_run("pin", False), ["pin"])
+# --- phases_to_run: --write always runs grant + lock, in order -----------------
+check("a plain --write runs grant + lock",
+      sync_access.phases_to_run(None), ["grant", "lock"])
 check("--phase runs exactly the named phase",
-      [sync_access.phases_to_run(p, False) for p in ("grant", "lock")],
+      [sync_access.phases_to_run(p) for p in ("grant", "lock")],
       [["grant"], ["lock"]])
 
 
-# --- the flag combinations that used to be silently inert ----------------------
-# `--phase X --pins` discarded --pins (phases_to_run returns [phase]), and
-# `--pins` without `--write` did nothing at all — the worst behaviours for a
-# flag whose whole job is recording explicit consent. Both must now refuse at
-# parse time, before plan() touches the network (asserted by the plan mock).
 def _main_with(argv):
     with mock.patch.object(sync_access, "plan",
                            side_effect=AssertionError("plan() must not run")), \
          mock.patch.object(sys, "argv", ["sync_access.py"] + argv):
         return aborts(sync_access.main)
 
-
-check("--phase with --pins is refused loudly, never discarded",
-      _main_with(["--write", "--phase", "grant", "--pins"]), True)
-check("--phase pin with --pins is refused too — one spelling per consent",
-      _main_with(["--write", "--phase", "pin", "--pins"]), True)
-check("--pins without --write is refused, not silently inert",
-      _main_with(["--pins"]), True)
 
 # --notify / --mail-if-required make Drive email real people: the same
 # --i-have-approval consent the Slack write steps require, refused at parse
@@ -401,7 +335,7 @@ check("both remediation hints name the consent flag",
        _src.count("(or pass --mail-if-required \"\n                     \"--i-have-approval)")), (1, 1))
 
 # --- redaction through the whole report: no fixture email or full name survives --
-_plan = {"pins": [], "already_pinned": [], "no_banner": [], "already_granted": [],
+_plan = {"already_granted": [],
          "grants": [{"chapter": "Boston", "email": "ada@x.com",
                      "name": "Ada Lovelace", "role": "writer"}],
          "public": [], "near": [],

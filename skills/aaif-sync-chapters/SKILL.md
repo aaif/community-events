@@ -80,9 +80,7 @@ a scheduled CI job, and two conventions make that workable:
   `2` when its report proposes changes (or, for `sync_resources`, when a filled
   channel cell is malformed), and anything else on failure. The runner
   aggregates the same way: `0` all clean, `2` drift somewhere, `1` any failure.
-  `sync_access` counts pending grants and a pending lock as drift, but **not**
-  pending banner pins — those are a standing human decision and would read as
-  drift every night forever.
+  `sync_access` counts pending grants and a pending lock as drift.
 - **The runner's stdout never names a person.** This repo is public and a CI log
   is a publication, so the summary is engine names, outcomes, durations and log
   paths only. The full reports — which do carry names, emails and per-person
@@ -117,8 +115,7 @@ person as a side effect — that is a human's call every time. The nightly runs
 `access` in report mode, marks the line `(report mode — never written
 unattended)`, and if the report has pending grants or a pending lock it exits
 `2` with an explicit `NEEDS A HUMAN` note telling the operator to read
-`access.log` and run `sync_access.py --write` by hand (the pin phase needs the
-further explicit `--pins`; pending pins stay named in the report).
+`access.log` and run `sync_access.py --write` by hand.
 
 The run directory is created `0700` and each engine log is opened `0600` —
 the logs hold names and emails, and a CI checkout is often world-readable.
@@ -637,28 +634,20 @@ require `--i-have-approval` (refused at parse time otherwise) — the same conse
 the Slack write steps demand.
 
 Moves the Chapters folder off its public link-share and onto per-chapter grants.
-Report-only by default. Three phases, and **the order is not negotiable**:
+Report-only by default. Two phases, and **the order is not negotiable**:
 
 Numbered as the console prints them:
 
-1. **pin** — give each banner its own `anyone:reader`. Usually a **no-op** (see
-   below), and not needed for the website; it exists for the case where
-   something public genuinely does live in the tree.
-2. **grant** — give each accepted organizer **`writer`** (the `--role` default)
+1. **grant** — give each accepted organizer **`writer`** (the `--role` default)
    on their chapter folder. Must precede the lock: the public link is currently
    their only access.
-3. **lock** — remove `anyone:reader` from Chapters/.
+2. **lock** — remove `anyone:reader` from Chapters/.
 
-`--write` runs **grant then lock**. The pin phase runs only behind the explicit
-**`--pins`** flag (`--write --pins` runs all three, pin first) or as
-`--phase pin` — publishing a file to the whole internet is a standing human
-decision, never a side effect of syncing grants, and `nightly.py` must never
-pass `--pins`. Unpinned banners stay named in every report and write run so the
-pending decision is visible. `--phase pin|grant|lock` runs one phase, and the
-run verifies whatever it ran; the final `Verified:` line claims **only** the
-phases that actually ran and checked something. **`lock` refuses to run when
-any grant failed** — locking then would leave those organizers with no access
-at all; `--lock-anyway` overrides.
+`--write` runs **grant then lock**. `--phase grant|lock` runs one phase, and
+the run verifies whatever it ran; the final `Verified:` line claims **only**
+the phases that actually ran and checked something. **`lock` refuses to run
+when any grant failed** — locking then would leave those organizers with no
+access at all; `--lock-anyway` overrides.
 
 > **The website does not depend on this share — verified, not assumed.** The
 > chapters feed's `Image` column is full of `lh3.googleusercontent.com/d/<id>`
@@ -667,14 +656,10 @@ at all; `--lock-anyway` overrides.
 > was loaded and inspected on 2026-08-07: 26 images, **all** from `cdn.sanity.io`,
 > none from Drive. Chapter content and imagery live in Sanity; the Drive banners
 > are source assets. A column full of image URLs is not evidence that anything
-> fetches them — load the page and look.
-
-> **`pin` is a no-op while the parent is still shared.** Drive merges a child's
-> `anyone:reader` into the inherited one, returns `200` with a permission id, and
-> stores nothing new — the file still reads `inherited: true`. A child can only
-> hold its own public share *after* the parent's is removed. Never trust the
-> phase's "N changes" line; re-read the permission and check
-> `permissionDetails[].inherited`.
+> fetches them — load the page and look. Nothing in this tree needs a public
+> share (2026-09-03, user-decided): a `pin` phase used to exist for making a
+> banner directly public, on the theory that something might genuinely need it;
+> it never did, and was removed.
 
 - **`assert_all_accepted()` is the last gate before write** and re-reads the
   intake through a different code path than the filter that built the plan.
@@ -1038,9 +1023,8 @@ After any run (and after editing the engine):
   of every written doc proposes zero changes"; `sync_crm` "a fresh read
   of every written workbook proposes zero changes"; `sync_access` a composed
   line naming only the phases that ran (e.g. "every accepted organizer holds
-  their grant; Chapters/ is not link-shared" — the banner claim appears only
-  after a pin run); `sync_resources` "a fresh read of every written cell
-  matches the proposal".
+  their grant; Chapters/ is not link-shared"); `sync_resources` "a fresh read
+  of every written cell matches the proposal".
 - Spot-check one touched row in the sheet: `Organizers` merged correctly, the
   MLOps and Luma columns untouched, and the version history shows a single edit
   for the whole sync.

@@ -169,9 +169,13 @@ check("merge dedupes identical expertise", both[0]["expertise"], "Agents")
 check("merge keeps different cities apart",
       len(merge_people([person("A", "a@x.io", "Boston"), person("A", "a@x.io", "Berlin")])), 2)
 
-# Security guard: a NOT-yet-accepted row never merges into an all-accepted
-# person — the public form + email-keyed merge would otherwise let a stranger
-# writing under an accepted organizer's address fill their CRM row.
+# Guard: a NOT-yet-accepted row never merges into an all-accepted person, even
+# when the two rows share a name (2026-09-03: a same-name carve-out was tried
+# and reverted the same day — combining two role applications into one row is
+# not this function's call; a person's second role stays a held, unmerged
+# row until CRM workbooks grow separate per-role tabs). The public form +
+# email-keyed merge would otherwise let a stranger writing under an accepted
+# organizer's address fill their CRM row, so the block stays unconditional.
 _blk = []
 guarded = merge_people(
     [person("Ada", "ada@x.io", "Boston", "Organizers", "Accepted"),
@@ -182,11 +186,17 @@ check("a pipeline row does not merge into an all-accepted person",
 check("...its content does not reach the person's record",
       "totally a real talk" in guarded[0]["interest"], False)
 check("...and the refusal is reported in rejection shape",
-      (len(_blk), sorted(_blk[0]), "refusing to merge" in _blk[0]["why"]),
+      (len(_blk), sorted(_blk[0]), "held" in _blk[0]["why"]),
       (1, ["name", "row", "tab", "why"], True))
 check("without a blocked list the row is still refused",
       merge_people([person("Ada", "ada@x.io", "B", "Organizers", "Accepted"),
                     person("M", "ada@x.io", "B", "Speakers", "New")])[0]["tabs"],
+      ["Organizers"])
+check("a SAME-name second-role application is still held, not merged",
+      merge_people(
+          [person("Ada Lovelace", "ada2@x.io", "Boston", "Organizers", "Accepted"),
+           person("ADA  Lovelace", "ada2@x.io", "Boston", "Speakers", "Prospect",
+                  interest="I want to be a speaker")])[0]["tabs"],
       ["Organizers"])
 
 # --- the Status / Interested-in split (2026-08-25) --------------------------
