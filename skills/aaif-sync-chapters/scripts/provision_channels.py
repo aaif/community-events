@@ -168,15 +168,18 @@ CHANNEL_RENAMES = {
     # #austin-area / #austin-area-organizers became #austin-tx /
     # #austin-tx-organizers.
     "meetup-seattle-organizers": "seattle-wa-organizers",
-    # 2026-09-03: #seattle-wa-organizers (the room the rename above landed on)
-    # turned out to be the wrong one — #seattle-chapter-leads (2026, 14
-    # members, active) is the real organizer room; #seattle-wa-organizers sat
-    # unused and was archived. Reclaim the qualified name for the real room;
-    # its name is free (archived rooms don't hold their name against
-    # order_renames' `taken` set). #seattle-organizers (unqualified) is an
-    # invisible private squatter — unreachable by this token — which is why
-    # the qualified name exists at all.
-    "seattle-chapter-leads": "seattle-wa-organizers",
+    # APPLIED 2026-09-03 and removed from this map (same hazard as the block
+    # above: a junk #seattle-chapter-leads recreated under the freed old name
+    # would re-plan this rename against a room that genuinely holds the
+    # target, and block the whole run): seattle-chapter-leads ->
+    # seattle-wa-organizers. #seattle-wa-organizers (the room the rename above
+    # landed on) turned out to be the wrong one — #seattle-chapter-leads
+    # (2026, 14 members, active) was the real organizer room;
+    # #seattle-wa-organizers sat unused and was archived, freeing its name
+    # (archived rooms don't hold their name against order_renames' `taken`
+    # set) for the real room to reclaim. #seattle-organizers (unqualified) is
+    # an invisible private squatter — unreachable by this token — which is
+    # why the qualified name exists at all.
     "washington-dc-the-capital": "washington-dc",
     # Austin, full history: #austin is squatted with no path to free it on the
     # Pro plan. 2026-08-21 parked the chapter on its historical #austin-area

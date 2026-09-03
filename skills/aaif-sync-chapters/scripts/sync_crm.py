@@ -1223,10 +1223,11 @@ def merge_people(people, blocked=None):
                     blocked.append({
                         "row": p["row"], "tab": tab, "name": p["name"],
                         "why": "status %r — a second role application under "
-                               "an already-accepted person's email (%r); held "
+                               "an already-accepted person's email (%s); held "
                                "until per-role CRM tabs exist to keep the two "
                                "applications separate rather than merged into "
-                               "one row." % (p["status"], cur["name"])})
+                               "one row. Review the intake row."
+                               % (p["status"], redact_name(cur["name"]))})
                 continue
             if cur is None:
                 m = dict(p, tabs=[tab], rows=[p["row"]], statuses=[p["status"]])
@@ -1729,9 +1730,10 @@ def _run(args, workdir):
               % (len({fold_email(p["email"]) for p in held}),
                  len({fold_city(p["city"]) for p in held}), SELF_SERVE_MIN))
     if merge_blocked:
-        print("Held    : %d second-role application(s) under an already-accepted "
+        print("Held (2nd role): %d application(s) sharing an already-accepted "
               "person's email — held, not merged into their CRM row (per-role "
-              "tabs will carry these separately) — --verbose lists them."
+              "tabs will carry these separately) — --verbose lists them; "
+              "review those intake rows."
               % len(merge_blocked))
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
