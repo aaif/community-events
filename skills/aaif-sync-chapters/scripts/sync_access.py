@@ -23,23 +23,14 @@ loaded and inspected on 2026-08-07 and every one of its 26 images comes from
 are source assets, not what visitors fetch. Verify with the live page before ever
 concluding otherwise — the feed column is not evidence.
 
-A `pin` phase exists for the case where something public genuinely does live in
-the tree. It is a NO-OP while the parent is still shared: Drive merges a child's
-`anyone:reader` into the inherited one and reports success, so a child can only
-hold its own public share AFTER the parent's is gone. Never trust its "N changes"
-line — re-read the permission and check `permissionDetails[].inherited`.
-
-Pinning runs ONLY behind the explicit `--pins` flag (or `--phase pin`).
-Publishing a file to the whole internet is a standing human decision, not
-drift: the site serves from Sanity, nothing needs the banners public, and an
-unattended `--write` (nightly.py, which must never pass `--pins`) has no
-business making that call. `--write` alone therefore runs grant + lock; the
-report keeps naming any unpinned banners so the pending decision stays visible.
+Nothing in this tree needs a public share (2026-09-03: the `pin` phase that
+used to exist for that — making a banner directly public — was removed; the
+site serves from Sanity, never from a directly-shared Drive file, so there was
+never a real case for it). `--write` runs grant then lock, always.
 
 Usage:
   python3 sync_access.py                    # full plan, changes nothing
   python3 sync_access.py --write            # apply grant + lock, in order
-  python3 sync_access.py --write --pins     # also run the pin phase first
   python3 sync_access.py --write --phase grant
   python3 sync_access.py --role reader      # grant something other than writer
   python3 sync_access.py --write --mail-if-required --i-have-approval
@@ -50,10 +41,10 @@ Usage:
   python3 sync_access.py --write --lock-anyway        # lock even though some
                                             # organizers could not be granted
 """
-import argparse, os, re, sys
+import argparse, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sync_chapters import (CHAPTERS_ID, CHAPTERS_TAB, INTAKE_ID, gws_json, get_values,
+from sync_chapters import (INTAKE_ID, gws_json, get_values,
                            cell, fold_city, header_index)
 # ROLE_TABS is deliberately NOT imported: folder access reads ACCESS_TABS only,
 # and having the wider constant in scope is how the escalation crept in before.
@@ -157,58 +148,13 @@ def perms(file_id):
             det = p.get("permissionDetails") or []
             # Default to inherited=True when the API doesn't say. The permissive
             # answer (False = "this is our own direct grant") would classify a
-            # merely-inherited share as pinned/granted, skip the work, and then
-            # skip the verification too.
+            # merely-inherited share as granted, skip the work, and then skip
+            # the verification too.
             own = True if not det else any(d.get("inherited") for d in det)
             out.append(dict(p, inherited=own))
         token = res.get("nextPageToken")
         if not token:
             return out
-
-
-def direct_public(file_id):
-    """True when this file carries its OWN anyone:reader, not an inherited one.
-    An inherited share disappears with the parent's; a direct one survives."""
-    return any(p["type"] == "anyone" and not p["inherited"] for p in perms(file_id))
-
-
-_DRIVE_ID_RE = re.compile(r"(?:/d/|[?&]id=)([A-Za-z0-9_-]{20,})")
-
-
-def banner_ids():
-    """{folded city -> {city, file_id, url}} for each chapter's banner asset.
-
-    Resolved from the feed's `Image` column rather than by globbing for a file
-    named `Web Banner.png`, so a cell pointing somewhere unexpected is visible
-    rather than silently replaced by whatever the glob found.
-
-    These are the Drive SOURCE assets the feed points at — NOT what visitors
-    fetch. See the module docstring: the site serves its imagery from Sanity.
-
-    Keyed with fold_city, matching every other city-to-folder comparison in this
-    skill. Plain fold() leaves punctuation intact, so a feed spelling of
-    `Washington, DC` missed the `Washington DC` folder and the chapter was
-    reported as having no resolvable image at all.
-    """
-    rows = get_values(CHAPTERS_ID, "'%s'!A:AZ" % CHAPTERS_TAB)
-    if not rows:
-        sys.exit("ABORT: chapters feed tab %r came back empty." % CHAPTERS_TAB)
-    headers = [h.strip() for h in rows[0]]
-    i_img, i_city = header_index(headers, CHAPTERS_TAB, "Image", "City")
-    out = {}
-    for row in rows[1:]:
-        url, city = cell(row, i_img), cell(row, i_city)
-        if not (url and city):
-            continue
-        # Both forms Drive hands out: `/d/<id>` and `?id=<id>`. An unrecognised
-        # shape yields "" and is reported, never silently treated as absent.
-        m = _DRIVE_ID_RE.search(url)
-        key = fold_city(city)
-        if key in out:
-            print("  !! duplicate feed row for %r — the later one wins" % city,
-                  file=sys.stderr)
-        out[key] = {"city": city, "file_id": m.group(1) if m else "", "url": url}
-    return out
 
 
 # Folder access is for ORGANIZERS ONLY — deliberately narrower than the CRM,
@@ -229,21 +175,9 @@ def plan(role):
         pp, _, _ = read_role_tab(tab, {})
         people += pp
     by_folder, orphans, near = match_chapters(merge_people(people), folders)
-    imgs = banner_ids()
 
-    pins, grants, already_pinned, already_granted, no_banner = [], [], [], [], []
-    already_pinned_ids, already_granted_ids, stale = [], [], []
+    grants, already_granted, already_granted_ids, stale = [], [], [], []
     for f in folders:
-        img = imgs.get(fold_city(f["name"]))
-        if not img or not img["file_id"]:
-            no_banner.append(f["name"])
-        elif direct_public(img["file_id"]):
-            already_pinned.append(f["name"])
-            already_pinned_ids.append((f["name"], img["file_id"]))
-        else:
-            pins.append({"chapter": f["name"], "folder_id": f["id"],
-                         "file_id": img["file_id"], "url": img["url"]})
-
         want = by_folder.get(f["id"], [])
         # Read permissions for EVERY chapter, including the ones with no accepted
         # organizer. Skipping those hid their stale grants entirely — and a
@@ -273,32 +207,13 @@ def plan(role):
 
     parent = perms(CHAPTERS_PARENT)
     public = [p for p in parent if p["type"] == "anyone"]
-    return {"pins": pins, "grants": grants, "already_pinned": already_pinned,
-            "already_granted": already_granted, "no_banner": no_banner,
+    return {"grants": grants, "already_granted": already_granted,
             "public": public, "parent": parent, "orphans": orphans, "near": near,
-            "already_pinned_ids": already_pinned_ids,
             "already_granted_ids": already_granted_ids, "stale": stale, "role": role}
 
 
 def report(p, role):
-    print("PHASE 1 — pin the website's banner images (make each one directly public)")
-    print("  %d banner(s) need their own anyone:reader; %d already have one."
-          % (len(p["pins"]), len(p["already_pinned"])))
-    for x in p["pins"][:6]:
-        print("     %-20s %s" % (x["chapter"], x["file_id"]))
-    if len(p["pins"]) > 6:
-        print("     … and %d more" % (len(p["pins"]) - 6))
-    if p["pins"]:
-        # Keep the standing decision visible without letting an unattended
-        # --write make it: pins never run unless explicitly asked for.
-        print("  (pins run ONLY with --pins or --phase pin — a plain --write "
-              "applies grant + lock and leaves these pending)")
-    if p["no_banner"]:
-        print("  !! %d chapter(s) have no resolvable Image id on the feed (the cell is "
-              "empty or not a Drive URL): %s"
-              % (len(p["no_banner"]), ", ".join(p["no_banner"])))
-
-    print("\nPHASE 2 — grant each accepted organizer %r on their own chapter folder" % role)
+    print("PHASE 1 — grant each accepted organizer %r on their own chapter folder" % role)
     print("  %d new grant(s) across %d chapter(s); %d already in place."
           % (len(p["grants"]), len({g["chapter"] for g in p["grants"]}), len(p["already_granted"])))
     by_ch = {}
@@ -309,7 +224,7 @@ def report(p, role):
     if len(by_ch) > 6:
         print("     … and %d more chapter(s)" % (len(by_ch) - 6))
 
-    print("\nPHASE 3 — remove the public share from the Chapters folder")
+    print("\nPHASE 2 — remove the public share from the Chapters folder")
     if not p["public"]:
         print("  Nothing to remove — the folder is already not link-shared.")
     for x in p["public"]:
@@ -340,46 +255,6 @@ def report(p, role):
     print("\nNet effect: %d chapter-folder grant(s) at %r for accepted organizers, and "
           "the CRMs stop being readable by anyone with the link."
           % (len(p["grants"]) + len(p["already_granted"]), role))
-    print("           (%d Drive banner(s) would hold their own public share. The "
-          "website itself serves from Sanity and is unaffected either way.)"
-          % (len(p["pins"]) + len(p["already_pinned"])))
-
-
-def apply_pins(p):
-    """Give each banner its own anyone:reader — validated, then re-read.
-
-    The file id is string-sliced out of a spreadsheet cell that anyone with edit
-    access to the chapters feed can change. Without checking what it points at,
-    aiming an `Image` cell at a CRM file id would make that CRM permanently
-    world-readable — and `lock` only touches the parent, so the grant survives
-    the very step meant to make things private.
-    """
-    landed = 0
-    for x in p["pins"]:
-        meta = gws_json("drive", "files", "get", params={
-            "fileId": x["file_id"], "supportsAllDrives": True,
-            "fields": "id,name,mimeType,parents"})
-        if not meta.get("mimeType", "").startswith("image/"):
-            sys.exit("ABORT: %s's Image cell points at %r (%s), which is not an image. "
-                     "Nothing further was pinned." % (x["chapter"], meta.get("name"),
-                                                      meta.get("mimeType")))
-        if x["folder_id"] not in (meta.get("parents") or []):
-            sys.exit("ABORT: %s's Image cell points at %r, which does not live in that "
-                     "chapter's folder. Nothing further was pinned."
-                     % (x["chapter"], meta.get("name")))
-        gws_json("drive", "permissions", "create",
-                 params={"fileId": x["file_id"], "supportsAllDrives": True},
-                 body={"type": "anyone", "role": "reader"})
-        # Drive merges a duplicate anyone:reader into the inherited one and
-        # returns 200 having stored nothing, so the create call proves nothing.
-        if not direct_public(x["file_id"]):
-            sys.exit("ABORT: pinning %s returned success but the file still has no "
-                     "direct anyone:reader — Drive merged it into the parent's "
-                     "inherited share. The parent must be unshared FIRST. Do not "
-                     "run lock." % x["chapter"])
-        landed += 1
-        print("  pinned %s" % x["chapter"])
-    return landed
 
 
 def assert_all_accepted(grants):
@@ -510,9 +385,9 @@ def verify(p, ran):
 
     Every check here re-reads remote truth. Three earlier weaknesses are closed:
 
-      * it verified only the PLANNED pins/grants, so anything the plan
-        classified as `already_*` — i.e. exactly the case where the
-        classification was wrong — was never checked;
+      * it verified only the PLANNED grants, so anything the plan classified
+        as `already_granted` — i.e. exactly the case where the classification
+        was wrong — was never checked;
       * it sampled `grants[:5]` of ninety-odd, so a systematic failure past the
         fifth passed clean;
       * it accepted ANY permission for the address, so an inherited or
@@ -522,14 +397,6 @@ def verify(p, ran):
     checks that iterated nothing.
     """
     bad, checked = [], 0
-    if "pin" in ran:
-        # `already_pinned` is an assertion the plan made from an earlier read —
-        # re-verify it rather than trusting it.
-        for x in p["pins"] + [{"chapter": c, "file_id": i}
-                              for c, i in p.get("already_pinned_ids", [])]:
-            checked += 1
-            if not direct_public(x["file_id"]):
-                bad.append("banner for %s is still not directly public" % x["chapter"])
     if "grant" in ran:
         want = [(g["chapter"], g["folder_id"], g["email"], g["role"]) for g in p["grants"]]
         want += [(c, fid, e, p["role"]) for c, fid, e in p.get("already_granted_ids", [])]
@@ -557,23 +424,15 @@ def verify(p, ran):
     return bad
 
 
-def phases_to_run(phase, pins):
-    """The pin/grant/lock subset this invocation applies, in order.
+def phases_to_run(phase):
+    """The grant/lock subset this invocation applies, in order.
 
-    `--phase` names exactly one — pin included, because naming it IS the
-    explicit consent. Without `--phase`, `--write` runs grant + lock; pin
-    joins only under `--pins`, so an unattended write (nightly.py never
-    passes `--pins`) can never publish a file to the internet as a side
-    effect of syncing grants.
-
-    `phase` and `pins` never arrive together: main() rejects `--phase --pins`
-    at parse time (the combination used to discard --pins silently, and a
-    silently dropped consent flag is the one thing a consent flag must not
-    be), so the `if phase` early return cannot swallow a pin request.
+    `--phase` names exactly one; without it, `--write` always runs grant then
+    lock.
     """
     if phase:
         return [phase]
-    return (["pin"] if pins else []) + ["grant", "lock"]
+    return ["grant", "lock"]
 
 
 def main():
@@ -581,12 +440,8 @@ def main():
     ap.add_argument("--write", action="store_true", help="apply (default: report only)")
     ap.add_argument("--role", default="writer", choices=("writer", "reader", "commenter"),
                     help="role granted to each organizer on their chapter (default: writer)")
-    ap.add_argument("--phase", choices=("pin", "grant", "lock"),
-                    help="apply only one phase (default with --write: grant "
-                         "then lock; add --pins to run pin first)")
-    ap.add_argument("--pins", action="store_true",
-                    help="also run the pin phase (make each banner directly "
-                         "public) — never run by a plain --write or by nightly.py")
+    ap.add_argument("--phase", choices=("grant", "lock"),
+                    help="apply only one phase (default with --write: grant then lock)")
     ap.add_argument("--notify", action="store_true",
                     help="let Drive email EVERY organizer about their new access")
     ap.add_argument("--lock-anyway", action="store_true",
@@ -610,42 +465,27 @@ def main():
     if a.i_have_approval and not (a.notify or a.mail_if_required):
         print("NOTE: --i-have-approval is inert without --notify or "
               "--mail-if-required; nothing will be emailed.", file=sys.stderr)
-    # Refuse, never reinterpret: both flags speak for the pin phase, and each
-    # combination below used to be silently inert — the worst behaviour for a
-    # flag whose whole job is recording explicit human consent.
-    if a.phase and a.pins:
-        ap.error("--pins cannot be combined with --phase: --phase names the ONE "
-                 "phase to run, so --pins would be discarded. Use --phase pin "
-                 "to run pins alone, or drop --phase to run pin + grant + lock.")
-    if a.pins and not a.write:
-        ap.error("--pins does nothing without --write — the report already "
-                 "shows pending pins. Add --write to apply them.")
 
     p = plan(a.role)
     report(p, a.role)
     if not a.write:
         print("\nReport only — nothing was changed. Re-run with --write to apply.")
-        # Shared engine exit convention: report mode exits 0 when in sync, 2 when
-        # it proposes changes (consumed by nightly.py). Pending banner pins are
-        # NOT drift: the site serves from Sanity, so pinning is a standing human
-        # decision, and counting it would report drift every night forever.
+        # Shared engine exit convention: report mode exits 0 when in sync, 2
+        # when it proposes changes (consumed by nightly.py).
         return 2 if (p["grants"] or p["public"]) else 0
 
     # Same rule in write mode: with nothing to grant and nothing to lock, do
-    # NOT run the phases (pins are a standing decision, not drift) and do NOT
-    # print the "Verified:" line — nightly.py reads that marker as "wrote",
-    # so printing it unconditionally would label every in-sync write night
-    # "wrote+verified" and exit 2 forever. The other engines' no-drift early
-    # return, in this engine's terms.
-    if not a.phase and not (p["grants"] or p["public"] or (a.pins and p["pins"])):
+    # NOT run the phases and do NOT print the "Verified:" line — nightly.py
+    # reads that marker as "wrote", so printing it unconditionally would
+    # label every in-sync write night "wrote+verified" and exit 2 forever.
+    # The other engines' no-drift early return, in this engine's terms.
+    if not a.phase and not (p["grants"] or p["public"]):
         print("\nNo changes needed — every accepted organizer holds their "
-              "grant and the folder is not link-shared. (Pending banner pins, "
-              "if any, are a standing decision: run --pins or --phase pin "
-              "explicitly.)")
+              "grant and the folder is not link-shared.")
         return 0
 
-    selected = phases_to_run(a.phase, a.pins)
-    order = [("pin", apply_pins, (p,)), ("grant", apply_grants, (p, a.notify, a.mail_if_required)),
+    selected = phases_to_run(a.phase)
+    order = [("grant", apply_grants, (p, a.notify, a.mail_if_required)),
              ("lock", apply_lock, (p,))]
     grant_failures = []
     for name, fn, args in order:
@@ -673,11 +513,6 @@ def main():
             n, grant_failures = n
         print("  phase %r: %d change(s)" % (name, n))
 
-    if p["pins"] and "pin" not in selected:
-        # The skipped standing decision stays visible on every write run.
-        print("\nNOTE: %d banner(s) still lack their own public share — pins run "
-              "only with --pins or --phase pin." % len(p["pins"]))
-
     # Verify whatever ran, including a single --phase. `--write --phase lock` is
     # the most destructive invocation available and used to be the one path with
     # no re-read at all, reporting a PLANNED count as its result.
@@ -689,12 +524,8 @@ def main():
         for b in bad:
             print("  " + b)
         return 1
-    # Claim only what this run actually re-read — the old fixed line said
-    # "banners are directly public" even on runs that never touched a pin,
-    # or when zero pins exist to check.
+    # Claim only what this run actually re-read.
     bits = []
-    if "pin" in selected and (p["pins"] or p["already_pinned_ids"]):
-        bits.append("every banner holds its own public share")
     if "grant" in selected and (p["grants"] or p["already_granted_ids"]):
         bits.append("every accepted organizer holds their grant")
     if "lock" in selected:
