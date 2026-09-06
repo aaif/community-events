@@ -11,6 +11,9 @@ any HTML report a skill writes — is drawn with the **AAIF design system**.
 | `design/aaif-tokens.css` | **Generated.** The `:root` token block lifted out of the bundle so `report_style.py` can read it and prepend it verbatim. Never hand-edit. |
 | `scripts/extract_design_tokens.py` | Regenerates the above. `--check` fails CI when it is stale. |
 | `assets/fonts/` | Instrument Sans (OFL), the system's one typeface, embedded in every report. |
+| `assets/aaif-mark.svg` | The full lockup (mark + wordmark), black. |
+| `assets/aaif-mark-square.svg` | The mark alone, black — headers, avatars, favicons. |
+| `assets/aaif-logo-white.svg` | The full lockup for black plates. |
 
 Replacing the design system is: drop the new bundle at
 `design/aaif-design-system.html`, run `python3 scripts/extract_design_tokens.py`,
@@ -48,6 +51,9 @@ Worth stating, because the obvious guesses are wrong:
   AAIF's tokens, and it shipped here once already.
 - **The warm off-white is not a background.** `--paper-2` is occasional section
   banding. The page ground is `--paper`; tinted panels are `--paper-3`.
+- **Never redraw the mark.** The official SVGs live in `assets/` — use them
+  verbatim (recolor by editing the fill, nothing else). A mark approximated
+  from memory or a screenshot reads as counterfeit branding.
 - **The agent motif** (the bot built from the mark's primitives) is for empty
   states, loading, event graphics and dividers — **never** governance, board or
   press material. Audit reports are closer to the latter, so they do not use it.
