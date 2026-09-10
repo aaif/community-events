@@ -215,13 +215,23 @@ OPTIONAL_SCOPES = {
 #: fails with `name_taken` on the one that matters.
 CHANNEL_RENAMES = {
     "bangalore": "bengaluru",
-    # 2026-09-10 (user-decided, per-channel): #welcome-cyprus is a country room
-    # wearing a `welcome-` prefix from whatever it was first opened as. Every
-    # other country room on this estate is the bare country name (#greece,
-    # #ireland, #austria, #taiwan), and the odd name is why it was nearly left
-    # out of the #general country directory as "probably an onboarding room".
-    # A rename keeps the id, all 7 members and the history; #cyprus is free.
-    "welcome-cyprus": "cyprus",
+    # APPLIED 2026-09-10 and deliberately NOT left as a live entry:
+    # #welcome-cyprus -> #cyprus (id C09N3B8NU21, 7 members and history kept).
+    # It was a country room wearing a `welcome-` prefix from whatever it was
+    # first opened as; every other country room here is the bare country name
+    # (#greece, #ireland, #austria, #taiwan), and the odd name is why it was
+    # nearly left out of the #general country directory as "probably an
+    # onboarding room".
+    #
+    # The entry is a comment rather than a mapping for the reason the block
+    # below records: an applied rename whose OLD name someone later recreates
+    # re-plans, finds its target held by a room nothing frees, and refuses the
+    # WHOLE run — no creates, no ops seed, no folder links, until a human edits
+    # this map. That is not hypothetical here: #welcome-cyprus is still named in
+    # the #general country directory post, so anyone re-reading it could open
+    # the old name by hand. Simulated before removing:
+    #     live = {"cyprus", "welcome-cyprus"}
+    #     -> BLOCKED [("welcome-cyprus", "cyprus")] -> "REFUSING: 1 rename(s)"
     "london-organizers": "london-organizers-deprecated",
     "london-meetup-organizers": "london-organizers",
     "bay-area-sf-organizers": "bay-area-organizers",
