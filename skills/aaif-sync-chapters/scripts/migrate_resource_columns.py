@@ -338,7 +338,8 @@ def verify(seeds):
 CONFIG_HEADERS = ["Setting", "Value", "Notes"]
 CONFIG_LABELS = {"public_prefixes": "Public channel prefix",
                  "organizer_suffixes": "Organizer channel suffix",
-                 "staff_email_domain": "Staff email domain"}
+                 "staff_email_domain": "Staff email domain",
+                 "ops_staff_emails": "Ops staff email"}
 CONFIG_NOTES = {
     "public_prefixes": "Tried in this order when matching a chapter's own channel. "
                        "'(none)' means the plain city slug, no prefix.",
@@ -346,6 +347,9 @@ CONFIG_NOTES = {
                           "channel: <city><suffix>.",
     "staff_email_domain": "Addresses at this domain are counted as staff, not as "
                           "unaccounted members of an organizer channel.",
+    "ops_staff_emails": "AAIF ops staff seeded into every organizer channel by "
+                        "provision_channels.py. One row per person, by email — a "
+                        "@handle is a display name its owner can change.",
 }
 #: A sheet cell cannot hold an empty string distinguishably from a blank cell,
 #: and the first public prefix is exactly that. Must equal
@@ -354,7 +358,14 @@ EMPTY_VALUE = "(none)"
 
 
 def config_rows(cfg):
-    """The `Slack Config` grid, header first, one row per value in order."""
+    """The `Slack Config` grid, header first, one row per value in order.
+
+    Emits the three settings that came out of channel_map.json, and only those
+    — deliberately NOT every key in CONFIG_LABELS. `ops_staff_emails` was never
+    in the JSON this migration reads (it was added 2026-09-10, long after), so
+    there is nothing here to move; its rows are typed onto the tab by hand.
+    Iterating CONFIG_LABELS instead would KeyError on a cfg that predates it.
+    """
     rows = [CONFIG_HEADERS]
     for key in ("public_prefixes", "organizer_suffixes", "staff_email_domain"):
         values = cfg[key] if isinstance(cfg[key], list) else [cfg[key]]

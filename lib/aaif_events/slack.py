@@ -116,10 +116,16 @@ def scrubbed_env(strict=False):
 #: falsifies the old "no message data" ceiling: activity is now measurable
 #: (see `history_activity()` / audit_activity.py), and reports that still
 #: print the caveat must scope it to runs on the old CLI token.
+#: `pins.list` joined on 2026-09-10 for provision_channels' folder-pin phase,
+#: which must know whether a channel already carries its Drive pin before
+#: posting a second one. It is a READ, so it does not weaken the guarantee this
+#: allowlist exists for — nothing here can post, invite, or archive, and
+#: `pins.add` lives in provision_channels' own write allowlist, not this one.
 ALLOWED_METHODS = frozenset({
     "auth.test",
     "conversations.list", "conversations.members", "conversations.history",
     "users.list", "users.info", "users.lookupByEmail",
+    "pins.list",
 })
 
 #: Error codes this module raises itself, as opposed to relaying from Slack.

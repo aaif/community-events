@@ -24,10 +24,46 @@ this one file.
   after a farewell pointer post lands, private ones only once every member is
   already in the successor. Nothing here deletes, and nothing archives a room
   under its working name.
-- **Never invites.** This script builds rooms; it does not put people in them.
-  Inviting lives in `invite_organizers.py`, deliberately separate: it needs
+- **Invites ops staff, and nobody else.** This script builds rooms and puts the
+  workspace's own admins in them; it does not put *community members* in them.
+  That stays `invite_organizers.py`'s job, deliberately separate: it needs
   different scopes, and it is less reversible than anything here. A channel can
   be archived; an invitation notification cannot be unsent.
+
+  The carve-out, added 2026-09-10, is narrow on purpose. An audit that day found
+  17 of 87 organizer channels — every room provisioned on 2026-08-21 and
+  2026-08-31 — with neither ops account in them, because *nothing in the repo
+  had ever put them there*: the 70 healthy rooms were populated by a one-off
+  manual pass, so each new provisioning run silently reopened the same hole.
+  Seeding an admin into a room this script just created is part of building the
+  room, not a decision about who belongs in the community; the accounts are
+  workspace admins who already administer these channels, and the roster is two
+  people, not a form-fed list. Putting it here rather than in
+  `invite_organizers.py` is what makes a room correct at birth instead of
+  correct at the next sweep.
+
+  Their addresses are NOT in this file. They are `Ops staff email` rows on the
+  Chapters List `Slack Config` tab, read through `audit_organizers.load_config`
+  — this repo is public and CLAUDE.md forbids committing PII. With no such row
+  the phase reports that it is disarmed and seeds nothing; it never falls back
+  to a hardcoded account.
+- **Posts each chapter's Drive folder link in its ORGANIZER room, and pins it
+  where it can** (2026-09-10) — never in the public chapter room. The folder
+  holds the CRM, budgets and trackers and is shared per-organizer; posting its
+  link publicly would not leak anything (Drive still refuses everyone else) but
+  it would generate a steady stream of Request Access clicks from members who
+  cannot have it, already a recurring support load here.
+
+  Pinning needs `pins:write`, which this estate's token does not carry as of
+  2026-09-10. Rather than abort, the phase POSTS UNPINNED and says so on every
+  run. Add the scope later and the next run pins the message it already
+  posted — it does not post a second one.
+
+  Idempotency is by folder ID. With `pins:read` it checks the pins and the
+  recent history (the second catches a post whose `pins.add` failed, which a
+  pins-only check would repost). Without it, history alone — sufficient,
+  because a pinned message is still a message, but bounded to one page, which
+  is why `pins:read` is still worth having.
 - **Never creates a channel the sheet does not name.** The sheet is the plan; if
   it isn't there, it isn't provisioned.
 - **Renames only what CHANNEL_RENAMES lists, and merges only CHANNEL_MERGES.** A
@@ -45,8 +81,11 @@ this one file.
 ## Prerequisites, neither of which is in place by default
 
 1. A token with `channels:write` (public), `groups:write` (private) and
-   `chat:write` (the deprecated sweep's farewell pointer), in
-   `$AAIF_SLACK_WRITE_TOKEN`. `channels:join` is also worth requesting: the
+   `chat:write` (the deprecated sweep's farewell pointer and the folder link),
+   in `$AAIF_SLACK_WRITE_TOKEN`. `pins:read`/`pins:write` are OPTIONAL and
+   listed in OPTIONAL_SCOPES: without them the folder link is posted unpinned
+   and every run says so, rather than the run refusing. `channels:join` is also
+   worth requesting: the
    farewell post needs membership in the room being archived, and without the
    scope a join fails and that room's archive is skipped (reported, not
    silent). The Slack CLI's own token is read-only and its scopes cannot be
@@ -65,6 +104,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -103,26 +143,47 @@ API = "https://slack.com/api/"
 #:
 #: - archive refuses any channel whose name does not end `-deprecated`, so the
 #:   only rooms it can close are ones a rename already retired on purpose;
-#: - postMessage is used solely to leave the farewell pointer in the room being
-#:   archived (public rooms only — a pointer nobody can follow into a private
-#:   room helps no one), never to speak anywhere else.
+#: - postMessage had exactly one call site until 2026-09-10: the farewell
+#:   pointer in the room being archived (public rooms only — a pointer nobody
+#:   can follow into a private room helps no one). The folder-pin phase is the
+#:   second, and both are the same shape of thing — one standing message with
+#:   fixed wording, in a room this script is already acting on. It is still
+#:   never used to speak into a room for any other reason.
 #:
 #: `conversations.join` is here because a user token cannot post in a public
 #: channel it has not joined. Two call sites, both join immediately before
 #: posting: the deprecated-room sweep below (archived right after, so the
 #: membership is momentary) and post_country_directory.py (posts a standing
 #: directory message and stays joined — the room is staying live, not closing).
+#: `pins.add` joined on 2026-09-10 for the folder-pin phase. `pins.remove` did
+#: NOT: this phase only ever adds a pin nobody has, and unpinning is how a
+#: human says "that is no longer the thing to read first". A script that can
+#: unpin can silently undo that, one room at a time, with no record.
 WRITE_METHODS = frozenset({"conversations.create", "conversations.rename",
                            "conversations.invite", "conversations.kick",
                            "conversations.archive", "conversations.join",
-                           "chat.postMessage"})
+                           "chat.postMessage", "pins.add"})
 
 #: Scopes each write needs. Checked up front so a missing scope fails before the
 #: first channel rather than half way through the batch.
 # `channels:write` is the USER-token scope for conversations.create/rename;
 # `channels:manage` is its bot-token sibling and never appears on a user token.
-# `chat:write` is for the deprecated-sweep's farewell pointer, nothing else.
+# `chat:write` covers the deprecated-sweep's farewell pointer and the folder link.
+#
+# `pins:read`/`pins:write` are deliberately NOT here. The folder-link phase
+# degrades without them — it posts the link and reports that it could not pin —
+# and making them required would abort renames, creates and the ops seed over a
+# capability none of those need. OPTIONAL_SCOPES is what the phase checks.
 NEEDED_SCOPES = ("channels:write", "groups:write", "chat:write")
+
+#: Capabilities that change what a phase can do without stopping the run.
+#: Reported on every run, present or not: a phase that silently did less than
+#: its name suggests is the failure this printout exists to prevent.
+OPTIONAL_SCOPES = {
+    "pins:read": "read a channel's pins (else the link check falls back to history)",
+    "pins:write": "pin the folder link (else it is posted unpinned)",
+    "channels:join": "join a public room before posting the deprecated-sweep farewell",
+}
 
 #: Slack renames: the room keeps its identity, members and history, and takes a
 #: new name. ORDER IS COMPUTED, not written here — see order_renames(). Two of
@@ -358,8 +419,21 @@ WRITE_TOKEN_ENV = "AAIF_SLACK_WRITE_TOKEN"
 
 
 def write_token():
-    """The token for write calls, or a SystemExit explaining how to get one."""
+    """The token for write calls, or a SystemExit explaining how to get one.
+
+    Environment first, then the repo-root `.env` — the same two places, in the
+    same order, that `slackmod.load_token()` already searches for the READ half
+    of this run. Before the `.env` fallback existed, a machine holding the token
+    only in `.env` (which is how this estate stores it, gitignored) read the
+    plan fine and then failed at the write with "No write token", and the
+    obvious workaround was `export AAIF_SLACK_WRITE_TOKEN=...` on the command
+    line — which CLAUDE.md forbids precisely because shell history and terminal
+    transcripts both keep it forever.
+    """
     token = os.environ.get(WRITE_TOKEN_ENV, "").strip()
+    if not token:
+        token = slackmod._dotenv_token(slackmod.DOTENV_PATH, WRITE_TOKEN_ENV) or ""
+        token = token.strip()
     if not token:
         raise SystemExit(
             "No write token. The Slack CLI token is read-only and its scopes "
@@ -513,6 +587,224 @@ def forbid_erstwhile(creates, renames, forbidden):
             refused)
 
 
+def resolve_ops(api, emails):
+    """Ops addresses -> [(email, id, label)], plus the ones with no account.
+
+    Identity is email -> `users.lookupByEmail` -> id, the same chain
+    invite_organizers.py documents and for the same reason: a @handle is a
+    display name its owner can change, and resolving one would break silently
+    the day they rename themselves.
+
+    A deleted account resolves fine and would be invited into every organizer
+    channel forever, so it is treated as unresolved — `conversations.invite`
+    answers `cant_invite` for it anyway, once per channel.
+    """
+    found = slackmod.lookup_emails(api, emails)
+    ops, unresolved = [], []
+    for email in sorted(set(e for e in emails if e)):
+        rec = found.get(email) or {"id": None, "error": "not_looked_up"}
+        if rec.get("id") and not rec.get("deleted"):
+            ops.append((email, rec["id"], rec.get("real_name") or rec.get("name") or email))
+        else:
+            unresolved.append(
+                (email, "deleted account" if rec.get("id") else rec.get("error", "unknown")))
+    return ops, unresolved
+
+
+#: A Drive folder id out of whatever shape the sheet's `Chapter Folder` cell is
+#: in. Matching on the ID, not the whole URL, is what makes the "is it already
+#: pinned?" check survive a cell that grew a `?usp=sharing`, lost its `https://`,
+#: or was pasted from a different Drive UI — all of which are the same folder,
+#: and none of which should earn a room a second pin.
+_FOLDER_IN_URL = re.compile(r"/folders/([A-Za-z0-9_-]{15,})")
+#: A cell holding a BARE id, anchored at both ends and 19+ chars. Both bounds
+#: are load-bearing. Unanchored, or at the 15 the URL form uses, the literal
+#: `not-a-drive-url` — 15 legal characters — parses as a folder id, and the
+#: phase then posts a "folder link" that is not a link. Real Drive folder ids
+#: are 28-33 characters; 19 is a floor with room to spare.
+_BARE_FOLDER = re.compile(r"^[A-Za-z0-9_-]{19,}$")
+
+
+def folder_id(cell):
+    """The Drive folder id in a `Chapter Folder` cell, or None.
+
+    None means "this cell does not name a folder", and the caller reports the
+    chapter rather than posting — a cell holding a note, a placeholder or a
+    half-pasted URL must never become a pinned message.
+    """
+    cell = (cell or "").strip()
+    match = _FOLDER_IN_URL.search(cell)
+    if match:
+        return match.group(1)
+    return cell if _BARE_FOLDER.match(cell) else None
+
+#: The pinned message. `%s` is the folder URL; the city is deliberately absent —
+#: the room already says which chapter it is, and a name in the text is one more
+#: thing to go stale after a rename.
+FOLDER_PIN = (
+    ":file_folder: *Your chapter's Drive folder* — templates, the CRM, banners "
+    "and event assets all live here:\n%s\n\n"
+    "_Access is granted per organizer. If Drive asks you to *request access*, "
+    "you are almost certainly signed into a different Google account — check "
+    "that first, and ask here rather than clicking Request Access._")
+
+
+def read_chapter_folders():
+    """{city: folder URL} off the Chapters List.
+
+    Read here rather than added to `audit_organizers.read_chapters()` on
+    purpose: that function is shared with the audits, and its `header_index`
+    call ABORTS on a missing column. Teaching it a fourth required column would
+    make every audit fail on a sheet that simply has no folder column yet, to
+    serve one phase of one script.
+    """
+    rows = ao.gws_values(ao.CHAPTERS_ID, "'%s'!A:AZ" % ao.CHAPTERS_TAB)
+    headers = [h.strip() for h in rows[0]]
+    if "Chapter Folder" not in headers:
+        return {}
+    idx = ao.header_index(headers, ao.CHAPTERS_TAB, "City", "Chapter Folder")
+    out = {}
+    for row in rows[1:]:
+        city = ao.cell(row, idx["City"])
+        folder = ao.cell(row, idx["Chapter Folder"]).strip()
+        if city and folder and folder != ao.NO_RESOURCE:
+            out[city] = folder
+    return out
+
+
+def plan_folder_pins(api, tables, folders, channel_ids, can_read_pins=True):
+    """Which organizer channels are missing a pinned link to their Drive folder.
+
+    Returns ([(city, channel, id, folder_url)], skipped) — skipped is
+    [(city, why)] for a chapter this phase deliberately or unavoidably passed
+    over, because a chapter silently absent from both lists is indistinguishable
+    from one that is fine.
+
+    The ORGANIZER room, never the public chapter room. The folder holds the
+    CRM, budgets and trackers and is shared only with accepted organizers, so
+    the link belongs where those people are. Posting it in a public room would
+    not leak the contents — Drive still refuses everyone else — but it would
+    generate a steady stream of Request Access clicks from members who cannot
+    have it, which is already a recurring support load on this estate.
+
+    Idempotency is by folder ID, and it has to work in two different worlds:
+
+    * **With `pins:read`** the pins are the primary signal, and the channel's
+      recent history is the secondary one. Both are needed, because if a run
+      posts the link and then `pins.add` fails, a pins-only check finds nothing
+      next time and posts a SECOND copy — the one outcome this phase must never
+      have. A message already carrying the id yields "pin that ts" instead.
+    * **Without it** (this estate as of 2026-09-10) history is the ONLY signal,
+      which is sufficient: a pinned message is still a message, so anything the
+      pins would have shown is in the history too. The cost is the window —
+      `_existing_link_ts` reads one page, so a link posted long ago in a busy
+      room could fall out of view and be posted twice. Organizer rooms are the
+      quietest on the estate (1-7 members), so the window is not close to
+      binding, but it is the reason `pins:read` is still worth having.
+
+    Entries are (city, channel, id, folder_url, existing_ts); `existing_ts` is
+    None when a post is genuinely needed and a ts when a message is already
+    there and only needs pinning.
+
+    A channel whose pins cannot be read *when the scope says they should be*
+    is SKIPPED, not posted into: "I could not check" must never resolve to "so
+    post another". A missing SCOPE is a different thing — it is a known,
+    reported capability gap, not an unexpected failure on one room.
+    """
+    plan, skipped = [], []
+    for city in sorted(folders):
+        channel = tables["organizers"].get(city)
+        if not channel or channel == ao.NO_RESOURCE:
+            skipped.append((city, "no organizer channel on the sheet"))
+            continue
+        cid = channel_ids.get(channel)
+        if not cid:
+            skipped.append((city, "#%s is not a live channel this token can see" % channel))
+            continue
+        fid = folder_id(folders[city])
+        if not fid:
+            skipped.append((city, "Chapter Folder cell holds no Drive id: %r"
+                            % folders[city][:40]))
+            continue
+        if can_read_pins:
+            got = api.call("pins.list", channel=cid)
+            if not got.get("ok"):
+                skipped.append((city, "pins.list: %s" % got.get("error")))
+                continue
+            if any(fid in ((item.get("message") or {}).get("text", ""))
+                   for item in got.get("items", [])):
+                continue
+        existing_ts, readable = _existing_link_ts(api, cid, fid)
+        if not readable and not can_read_pins:
+            # Neither signal available for this room. Posting here would be a
+            # coin flip on whether the link is already in it.
+            skipped.append((city, "cannot read pins (no scope) or history — "
+                                  "nothing to check against, so nothing posted"))
+            continue
+        if existing_ts is not None and not can_read_pins:
+            # History-only mode: the message is there. Whether it is PINNED is
+            # unknowable without pins:read, so leave it alone rather than
+            # re-pinning something that may already be pinned.
+            continue
+        plan.append((city, channel, cid, folders[city], existing_ts))
+    return plan, skipped
+
+
+def _existing_link_ts(api, cid, folder_id):
+    """(ts of a message already carrying this folder id or None, history readable?).
+
+    The second element matters: `None, True` means "checked, not there" and
+    `None, False` means "could not check". With pins:read those are both fine
+    (the pins already answered), but in history-only mode they are opposite
+    decisions — post, versus refuse to guess.
+
+    Bounded to one page. In pins:read mode that is ample, because this only
+    catches a message THIS phase posted and failed to pin, which is recent. In
+    history-only mode the page IS the whole window; organizer rooms are quiet
+    enough that it does not bind, and the docstring on the caller says so.
+    """
+    got = api.call("conversations.history", channel=cid, limit=200)
+    if not got.get("ok"):
+        return None, False
+    for message in got.get("messages", []):
+        if folder_id in message.get("text", ""):
+            return message.get("ts"), True
+    return None, True
+
+
+def plan_ops_seed(api, tables, ops, channel_ids):
+    """Which organizer channels are missing which ops accounts.
+
+    Returns [(channel_name, channel_id, [(email, id, label)])], only for rooms
+    that are actually short someone.
+
+    Scope is `tables["organizers"]` — the sheet's Organizer Channel column, and
+    only rooms this run can resolve to an id. Public chapter rooms and country
+    rooms are deliberately out: they are public, anyone may join, and putting
+    staff in them is not part of building the room.
+
+    `conversations.members` on a private channel the token is not in answers
+    `channel_not_found`; that room is reported as unreadable rather than
+    treated as empty, because "empty" would mean inviting into a room whose
+    membership was never actually checked.
+    """
+    seed, unreadable = [], []
+    for name in sorted({n for n in tables["organizers"].values()
+                        if n and n != ao.NO_RESOURCE}):
+        cid = channel_ids.get(name)
+        if not cid:
+            continue
+        try:
+            members = set(slackmod.members(api, cid))
+        except slackmod.SlackError as exc:
+            unreadable.append((name, str(exc)))
+            continue
+        missing = [o for o in ops if o[1] not in members]
+        if missing:
+            seed.append((name, cid, missing))
+    return seed, unreadable
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true")
@@ -553,6 +845,26 @@ def main():
     # has its people, so it waits for the next run — by which point they have
     # had the pointer, or (private) have been invited across.
     archives = plan_archives(api, by_name, live, who.get("user_id"))
+
+    # Ops roster off the sheet, never out of this file (public repo — CLAUDE.md).
+    ops_emails = ao.load_config().get("ops_staff_emails") or []
+    ops, ops_unresolved = resolve_ops(api, ops_emails) if ops_emails else ([], [])
+    channel_ids = {n: c["id"] for n, c in by_name.items() if not c["is_archived"]}
+    seed_scope = {n for n in tables["organizers"].values()
+                  if n and n != ao.NO_RESOURCE and n in channel_ids}
+    seed, seed_unreadable = (plan_ops_seed(api, tables, ops, channel_ids)
+                             if ops else ([], []))
+    # Scopes once, up front: the folder-link phase changes shape depending on
+    # them, and the report has to say which shape it is running in.
+    try:
+        token_scopes = set(api.scopes())
+    except Exception:
+        token_scopes = set()
+    can_read_pins = "pins:read" in token_scopes
+    can_pin = "pins:write" in token_scopes
+    folders = read_chapter_folders()
+    pins, pins_skipped = plan_folder_pins(api, tables, folders, channel_ids,
+                                          can_read_pins=can_read_pins)
 
     # The guard's state prints on EVERY run, active or not: a run with the
     # column missing/renamed must not be indistinguishable from a run where
@@ -600,6 +912,40 @@ def main():
     for name, action, detail in archives:
         print("  #%-38s %-8s %s" % (name, action.upper(), detail))
 
+    # Ops seed. Planned against the rooms that exist NOW; rooms this run
+    # creates are re-planned after the creates below, so a new room is seeded
+    # in the same run that builds it — the whole point of the phase.
+    print("\nOps seed — %s in every organizer channel:" % (
+        ", ".join(label for _, _, label in ops) if ops else "(nobody)"))
+    if not ops_emails:
+        print("  DISARMED: no %r row on the %s tab. Nothing is seeded, and no "
+              "account is assumed." % ("Ops staff email", ao.SLACK_CONFIG_TAB))
+    for email, why in ops_unresolved:
+        print("  UNRESOLVED %-34s %s — not seeded anywhere" % (email, why))
+    for name, why in seed_unreadable:
+        print("  UNREADABLE #%-27s %s" % (name, why))
+    if not seed:
+        print("  All %d readable organizer channel(s) already hold every ops "
+              "account." % len(seed_scope))
+    for name, _, missing in seed:
+        print("  #%-28s + %s" % (name, ", ".join(label for _, _, label in missing)))
+
+    print("\nDrive folder link — %d chapter(s) whose organizer channel has no "
+          "folder link yet:" % len(pins))
+    for scope, what in sorted(OPTIONAL_SCOPES.items()):
+        if scope not in token_scopes:
+            print("  no %-14s -> cannot %s" % (scope, what))
+    if not can_pin:
+        print("  Links will be POSTED UNPINNED. Add pins:write and re-run to pin "
+              "them; the re-run finds each link in history and pins it rather "
+              "than posting again.")
+    for city, channel, _, url, existing_ts in pins:
+        print("  %-22s -> #%-28s %s%s"
+              % (city, channel, url,
+                 "" if existing_ts is None else "  (already posted — pin only)"))
+    for city, why in pins_skipped:
+        print("  SKIPPED %-18s %s" % (city, why))
+
     if not a.write:
         print("\nReport only. Nothing was sent to Slack.")
         return 0
@@ -641,6 +987,12 @@ def main():
         if r.get("ok"):
             done += 1
             created_names.add(name)
+            # Keep the new id: the ops seed below runs on this same pass, and a
+            # room created here is exactly the room that would otherwise be born
+            # without an admin in it.
+            new_id = (r.get("channel") or {}).get("id")
+            if new_id:
+                channel_ids[name] = new_id
             print("created #%s" % name)
         else:
             # One bad name must not abandon the batch — a public form feeds these
@@ -657,6 +1009,61 @@ def main():
                               "not a create" % name)
             else:
                 failed.append("create %s: %s" % (name, err))
+
+    # Ops seed, re-planned so rooms created a moment ago are included. The
+    # report above was computed before the creates and would miss exactly the
+    # rooms this phase exists to catch.
+    if ops:
+        seed, seed_unreadable = plan_ops_seed(api, tables, ops, channel_ids)
+        for name, why in seed_unreadable:
+            failed.append("ops seed %s: %s — membership unreadable, NOT seeded"
+                          % (name, why))
+        for name, cid, missing in seed:
+            # One call per room, not per person: Slack takes a comma-separated
+            # list, and a single invite means one join notification in the room
+            # instead of three.
+            r = call_write(token, "conversations.invite", channel=cid,
+                           users=",".join(uid for _, uid, _ in missing))
+            if r.get("ok"):
+                done += 1
+                print("seeded #%s with %s"
+                      % (name, ", ".join(label for _, _, label in missing)))
+            elif r.get("error") == "already_in_channel":
+                # Benign and expected on a re-run that raced a manual invite.
+                pass
+            else:
+                failed.append("ops seed %s: %s" % (name, r.get("error")))
+
+    # Folder pins, re-planned for the same reason the seed is: a room created a
+    # moment ago has no pins, and it is exactly the room that needs one.
+    folders = read_chapter_folders()
+    pins, _ = plan_folder_pins(api, tables, folders, channel_ids,
+                               can_read_pins=can_read_pins)
+    for city, channel, cid, url, existing_ts in pins:
+        ts = existing_ts
+        if ts is None:
+            posted = call_write(token, "chat.postMessage", channel=cid,
+                                text=FOLDER_PIN % url, unfurl_links="false")
+            if not posted.get("ok"):
+                failed.append("folder pin %s: chat.postMessage: %s"
+                              % (channel, posted.get("error")))
+                continue
+            ts = posted["ts"]
+        if not can_pin:
+            done += 1
+            print("posted the %s folder link in #%s (UNPINNED — no pins:write)"
+                  % (city, channel))
+            continue
+        pinned = call_write(token, "pins.add", channel=cid, timestamp=ts)
+        if pinned.get("ok") or pinned.get("error") == "already_pinned":
+            done += 1
+            print("pinned the %s folder link in #%s%s"
+                  % (city, channel, "" if existing_ts is None else " (existing message)"))
+        else:
+            failed.append(
+                "folder pin %s: the message is in the room but NOT pinned (%s). "
+                "Pin it by hand — the next run finds it in history and pins it "
+                "rather than posting a second copy." % (channel, pinned.get("error")))
 
     # Retirements LAST, and only after their target VERIFIABLY exists: the
     # members of a retired room have not been invited across yet (that is
@@ -725,9 +1132,10 @@ def main():
     print("\n%d applied, %d failed." % (done, len(failed)))
     for f in failed:
         print("  %s" % f)
-    print("\nNobody was invited to anything. `Organizer Handles` on the Chapters "
-          "List says who belongs in each organizer channel; inviting them is a "
-          "human's job.")
+    print("\nNo COMMUNITY member was invited to anything — only the ops accounts "
+          "above, into organizer rooms. `Organizer Handles` on the Chapters List "
+          "says who belongs in each organizer channel; inviting them is "
+          "invite_organizers.py's job, still separate and still a human's call.")
     # The return code is the ONLY signal a caller or && chain gets — a run
     # where every rename failed must not read as success.
     return 1 if failed else 0
