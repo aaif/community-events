@@ -215,6 +215,13 @@ OPTIONAL_SCOPES = {
 #: fails with `name_taken` on the one that matters.
 CHANNEL_RENAMES = {
     "bangalore": "bengaluru",
+    # 2026-09-10 (user-decided, per-channel): #welcome-cyprus is a country room
+    # wearing a `welcome-` prefix from whatever it was first opened as. Every
+    # other country room on this estate is the bare country name (#greece,
+    # #ireland, #austria, #taiwan), and the odd name is why it was nearly left
+    # out of the #general country directory as "probably an onboarding room".
+    # A rename keeps the id, all 7 members and the history; #cyprus is free.
+    "welcome-cyprus": "cyprus",
     "london-organizers": "london-organizers-deprecated",
     "london-meetup-organizers": "london-organizers",
     "bay-area-sf-organizers": "bay-area-organizers",
