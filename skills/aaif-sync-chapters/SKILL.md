@@ -52,7 +52,7 @@ changed; never reorder.
 | 5 | Chapter CRMs | `sync_crm.py` | the CRM decides who gets Drive access, so it lands before access does |
 | 6 | Drive access | `sync_access.py` | grants come after the CRM holds the right people |
 | 7 | Resource map | `sync_resources.py --plan` | records folder + channels; `--plan` names channels that do not exist yet |
-| 8 | Create/rename channels | `provision_channels.py` | makes step 7's plan true. **Renames before creates**, in a computed order |
+| 8 | Create/rename channels | `provision_channels.py` | makes step 7's plan true. **Renames before creates**, in a computed order; seeds ops staff into organizer rooms and pins each chapter's Drive folder link |
 | 9 | Add organizers | `invite_organizers.py` | needs the channels from step 8 to exist |
 | 10 | Verify | `aaif-audit-slack` | the independent check: coverage, who is missing, who is in a room we never accepted |
 
@@ -909,10 +909,28 @@ any method outside `ALLOWED_METHODS`, and that refusal is why a typo in a
 that runs once would remove the guarantee from every audit. So this file carries
 its own small write client, with its own allowlist.
 
-What it will never do: **delete** anything, **invite** anyone
-(`Organizer Handles` says who belongs where; a human does the inviting, because a
-script mass-inviting 100 people to 100 channels is indistinguishable from an
+What it will never do: **delete** anything, invite a **community member**
+(`Organizer Handles` says who belongs where; a human does that inviting, because
+a script mass-inviting 100 people to 100 channels is indistinguishable from an
 attack and cannot be undone), or create a channel the sheet does not name.
+
+It **does seed ops staff** into organizer channels, added 2026-09-10. An audit
+that day found 17 of 87 organizer rooms — every one provisioned on 2026-08-21
+and 2026-08-31 — holding neither ops account, because nothing in the repo had
+ever put them there: the 70 healthy rooms came from a one-off manual pass, so
+each provisioning run silently reopened the hole. Seeding an admin into a room
+this script just built is part of building the room; deciding who belongs in the
+community is still `invite_organizers.py`'s job, and still a human's call.
+
+The roster is **`Ops staff email` rows on the `Slack Config` tab**, one per
+person, read by email (`users.lookupByEmail`) — never a `@handle`, which its
+owner can change, and never hardcoded, because this repo is public and the
+addresses are real people's. With no such row the phase prints `DISARMED` and
+seeds nobody; it never falls back to a default account. Scope is the sheet's
+`Organizer Channel` column only — public chapter rooms and country rooms are
+public, anyone may join, and staff presence there is not part of building a
+room. A private room whose membership the token cannot read is reported
+`UNREADABLE` and skipped, never treated as empty.
 
 It **can archive — but only rooms a rename already retired** (authorised
 2026-08-17). The deprecated-room sweep closes `*-deprecated` rooms only: public
@@ -932,6 +950,45 @@ alongside `--write`. Since 2026-08-22 the **read-only report also prefers
 `$AAIF_SLACK_WRITE_TOKEN`** — the Slack CLI credential expired for good and
 cannot be re-scoped, so without the env var the run falls back to a dead
 credential and says so on stderr.
+
+### The Drive folder link (2026-09-10)
+
+Every chapter's Drive folder link is posted in its **organizer** channel and
+pinned. Never the public chapter room: the folder holds the CRM, budgets and
+trackers and is shared per-organizer, so a public link would not leak anything
+(Drive still refuses everyone else) but would generate Request Access clicks
+from members who cannot have it — already a recurring support load. The message
+says as much, because the usual cause is being signed into the wrong Google
+account, not a missing grant.
+
+The posted URL is **rebuilt from the validated folder id**, never the sheet cell
+— the cell is spreadsheet text an editor controls, and Slack renders
+`<url|anchor>` as a link and `<!channel>` as a notification, under the ops
+admin's own token.
+
+Idempotency is by folder id and needs **both** signals: `pins.list` answers "is
+it pinned", the channel history answers "is it posted", and only the second
+decides whether to send another message. So a room whose history cannot be read
+is SKIPPED in every mode — reported, never posted into.
+
+Scopes: `pins:read`/`pins:write` are **optional**. Without them links are posted
+unpinned and every run says so. Pinning that backlog later needs **both** —
+with `pins:write` alone a run cannot tell a pinned message from an unpinned one,
+so it leaves existing posts alone. `channels:history`/`groups:history` are what
+make the check work at all; without them every chapter is skipped rather than
+risk a duplicate. All five are listed in `OPTIONAL_SCOPES` and printed when
+absent.
+
+The write half resolves that token from the environment **then the repo-root
+`.env`** (2026-09-10), the same two sources in the same order as the read half —
+though not the same resolution: `load_token()` prefers `AAIF_SLACK_READ_TOKEN`,
+so the two can land on different credentials. Scope questions about a write call
+are therefore asked of the write token, never of the read client.
+Before that it read the environment only, so an estate keeping the token in
+`.env` — which is how this one stores it — planned fine and then failed at the
+write, and the obvious workaround was `export AAIF_SLACK_WRITE_TOKEN=…` on the
+command line. Never do that: shell history and the terminal transcript both keep
+it (see CLAUDE.md).
 
 ## Adding organizers to their channel (`invite_organizers.py`)
 

@@ -42,13 +42,29 @@ CONFIG_LABELS = {
     "Public channel prefix": "public_prefixes",
     "Organizer channel suffix": "organizer_suffixes",
     "Staff email domain": "staff_email_domain",
+    "Ops staff email": "ops_staff_emails",
+    "Ops staff domain": "ops_staff_domains",
 }
 
 #: Settings that take several values, in sheet row order. Order is load-bearing:
 #: the prefixes are tried in the order listed, so the bare slug beats
 #: "meetup-<slug>" deterministically rather than by whatever order the Slack API
 #: happened to return channels in.
-LIST_SETTINGS = ("public_prefixes", "organizer_suffixes")
+#:
+#: `ops_staff_emails` is a list for a different reason — one row per person —
+#: and it holds real addresses, which is exactly why it lives on the sheet and
+#: not in this file: the repo is public (see CLAUDE.md, "never commit PII").
+#: It is NOT in REQUIRED_CFG: only provision_channels' ops-seed phase consumes
+#: it, and that phase refuses on its own when the list is empty. Making it
+#: required here would take every audit down over a setting they never read.
+#: `ops_staff_domains` is the allowlist the roster is checked against, and it
+#: is a LIST because ops staff are not all at one domain — this estate's roster
+#: spans two. It was briefly the single `staff_email_domain` value, which
+#: refused a real ops admin at the other domain on the first live run; a guard
+#: that silently drops a legitimate member is worse than the gap it closes.
+#: Empty means the guard is off, and resolve_ops says so.
+LIST_SETTINGS = ("public_prefixes", "organizer_suffixes", "ops_staff_emails",
+                 "ops_staff_domains")
 
 #: A spreadsheet cannot hold an empty string distinguishably from an empty cell,
 #: and the FIRST public prefix is exactly that — "" meaning "try the plain city
