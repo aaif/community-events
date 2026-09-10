@@ -52,7 +52,7 @@ changed; never reorder.
 | 5 | Chapter CRMs | `sync_crm.py` | the CRM decides who gets Drive access, so it lands before access does |
 | 6 | Drive access | `sync_access.py` | grants come after the CRM holds the right people |
 | 7 | Resource map | `sync_resources.py --plan` | records folder + channels; `--plan` names channels that do not exist yet |
-| 8 | Create/rename channels | `provision_channels.py` | makes step 7's plan true. **Renames before creates**, in a computed order; seeds ops staff into organizer rooms |
+| 8 | Create/rename channels | `provision_channels.py` | makes step 7's plan true. **Renames before creates**, in a computed order; seeds ops staff into organizer rooms and pins each chapter's Drive folder link |
 | 9 | Add organizers | `invite_organizers.py` | needs the channels from step 8 to exist |
 | 10 | Verify | `aaif-audit-slack` | the independent check: coverage, who is missing, who is in a room we never accepted |
 
@@ -951,8 +951,39 @@ alongside `--write`. Since 2026-08-22 the **read-only report also prefers
 cannot be re-scoped, so without the env var the run falls back to a dead
 credential and says so on stderr.
 
+### The Drive folder link (2026-09-10)
+
+Every chapter's Drive folder link is posted in its **organizer** channel and
+pinned. Never the public chapter room: the folder holds the CRM, budgets and
+trackers and is shared per-organizer, so a public link would not leak anything
+(Drive still refuses everyone else) but would generate Request Access clicks
+from members who cannot have it — already a recurring support load. The message
+says as much, because the usual cause is being signed into the wrong Google
+account, not a missing grant.
+
+The posted URL is **rebuilt from the validated folder id**, never the sheet cell
+— the cell is spreadsheet text an editor controls, and Slack renders
+`<url|anchor>` as a link and `<!channel>` as a notification, under the ops
+admin's own token.
+
+Idempotency is by folder id and needs **both** signals: `pins.list` answers "is
+it pinned", the channel history answers "is it posted", and only the second
+decides whether to send another message. So a room whose history cannot be read
+is SKIPPED in every mode — reported, never posted into.
+
+Scopes: `pins:read`/`pins:write` are **optional**. Without them links are posted
+unpinned and every run says so. Pinning that backlog later needs **both** —
+with `pins:write` alone a run cannot tell a pinned message from an unpinned one,
+so it leaves existing posts alone. `channels:history`/`groups:history` are what
+make the check work at all; without them every chapter is skipped rather than
+risk a duplicate. All five are listed in `OPTIONAL_SCOPES` and printed when
+absent.
+
 The write half resolves that token from the environment **then the repo-root
-`.env`** (2026-09-10), the same two places in the same order as the read half.
+`.env`** (2026-09-10), the same two sources in the same order as the read half —
+though not the same resolution: `load_token()` prefers `AAIF_SLACK_READ_TOKEN`,
+so the two can land on different credentials. Scope questions about a write call
+are therefore asked of the write token, never of the read client.
 Before that it read the environment only, so an estate keeping the token in
 `.env` — which is how this one stores it — planned fine and then failed at the
 write, and the obvious workaround was `export AAIF_SLACK_WRITE_TOKEN=…` on the
