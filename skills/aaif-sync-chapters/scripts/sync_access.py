@@ -103,12 +103,16 @@ NO_ACCOUNT = "there is no Google account"
 def canon_email(e):
     """Match addresses the way DRIVE does, not the way the intake spells them.
 
-    Google canonicalises a Gmail address by dropping dots from the local part, so
-    granting `first.m.last@gmail.com` stores `firstmlast@gmail.com`.
+    Google canonicalises a CONSUMER Gmail address by dropping dots from the local
+    part, so granting `first.m.last@gmail.com` stores `firstmlast@gmail.com`.
     Comparing the intake spelling against the stored one therefore never matches,
-    and every run re-proposes a grant that is already in place. Only gmail.com is
-    folded — dots are significant on other hosts, which is why sync_crm's
-    fold_email (the CRM dedupe key) deliberately keeps them.
+    and every run re-proposes a grant that is already in place.
+
+    Only gmail.com/googlemail.com fold. Dots stay significant on every other
+    host — including a Google Workspace account on a custom domain, where
+    `first.last@acme.com` and `firstlast@acme.com` are two different people — so
+    folding more widely would collapse two humans onto one grant. That is also
+    why sync_crm's fold_email (the CRM dedupe key) deliberately keeps them.
     """
     e = fold_email(e)
     local, _, domain = e.partition("@")
