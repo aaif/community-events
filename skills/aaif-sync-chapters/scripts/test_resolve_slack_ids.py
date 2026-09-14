@@ -147,6 +147,75 @@ check("create=False touches the sheet not at all", len(calls), before)
 check("create=False still reports where they would go",
       got, {"Slack ID": 1, "Slack Email": 2})
 
+# ---------- known_ids / overlay_known ----------
+SRC_HDR = ["Full name", "Email", "Slack ID", "Slack Email"]
+SRC_ROWS = [
+    ["Ada", "a.b@gmail.com", "U0AAAAAAA", "ab@slack.com"],   # gmail-dotted key
+    ["Bo", "bo@x.com", "", ""],                              # no id yet
+    ["Cy", "cy@x.com", "@handle", ""],                       # not an id -> skipped
+    ["Dee", "", "U0DDDDDDD", ""],                            # no email -> skipped
+]
+with mock.patch.object(r, "read_source", lambda: (SRC_HDR, SRC_ROWS)):
+    km = r.known_ids()
+check("known_ids keys on the Gmail-canonical spelling", sorted(km), ["ab@gmail.com"])
+check("known_ids carries the id and slack email",
+      km["ab@gmail.com"], {"id": "U0AAAAAAA", "slack_email": "ab@slack.com"})
+
+with mock.patch.object(r, "read_source", lambda: (["Full name", "Email"], [])):
+    check("no column means no answers, not a crash", r.known_ids(), {})
+
+
+class FakeApi:
+    """Minimal users.info stand-in."""
+
+    def __init__(self, users):
+        self.users = users
+        self.calls = []
+
+    def call(self, method, **kw):
+        self.calls.append((method, kw))
+        u = self.users.get(kw.get("user"))
+        return {"ok": True, "user": u} if u else {"ok": False, "error": "user_not_found"}
+
+
+DIRECTORY = {"U0AAAAAAA": {"name": "ada", "real_name": "Ada Lovelace",
+                           "profile": {"email": "ab@slack.com"}},
+             "U0GONEGONE": {"name": "gone", "real_name": "Gone", "deleted": True,
+                            "profile": {}}}
+
+with mock.patch.object(r, "read_source", lambda: (SRC_HDR, SRC_ROWS)):
+    api = FakeApi(DIRECTORY)
+    resolved = {"a.b@gmail.com": {"id": None, "error": "users_not_found"},
+                "bo@x.com": {"id": None, "error": "users_not_found"}}
+    filled, conflicts = r.overlay_known(api, resolved)
+check("a miss covered by the column is filled", filled, 1)
+check("the filled entry carries the handle", resolved["a.b@gmail.com"]["name"], "ada")
+check("the filled entry is marked as coming from the column",
+      resolved["a.b@gmail.com"]["from_column"], True)
+check("a miss the column cannot cover stays a miss", resolved["bo@x.com"]["id"], None)
+check("no conflicts when nothing resolved live", conflicts, [])
+
+# A live hit must OUTRANK the column, and disagreement is reported not hidden.
+with mock.patch.object(r, "read_source", lambda: (SRC_HDR, SRC_ROWS)):
+    api = FakeApi(DIRECTORY)
+    resolved = {"a.b@gmail.com": {"id": "U0LIVELIVE", "name": "live"}}
+    filled, conflicts = r.overlay_known(api, resolved)
+check("a live hit is never overwritten by the column",
+      resolved["a.b@gmail.com"]["id"], "U0LIVELIVE")
+check("nothing is filled when the live lookup already hit", filled, 0)
+check("the disagreement is reported", conflicts,
+      [("a.b@gmail.com", "U0LIVELIVE", "U0AAAAAAA")])
+check("users.info is not called when there is no gap", api.calls, [])
+
+# A deactivated account is not a usable identity.
+with mock.patch.object(r, "read_source",
+                       lambda: (SRC_HDR, [["Z", "z@x.com", "U0GONEGONE", ""]])):
+    api = FakeApi(DIRECTORY)
+    resolved = {"z@x.com": {"id": None, "error": "users_not_found"}}
+    filled, _ = r.overlay_known(api, resolved)
+check("a deleted account never fills a miss", filled, 0)
+check("the deleted account leaves the miss intact", resolved["z@x.com"]["id"], None)
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:
