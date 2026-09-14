@@ -88,9 +88,9 @@ def apply_file(entries, known=(5, 6, 7)):
         json.dump(entries, fh)
         path = fh.name
     try:
-        with mock.patch.object(r, "write_ids", lambda ci, pairs: written.extend(pairs)):
+        with mock.patch.object(r, "write_cells", lambda ci, pairs: written.extend(pairs)):
             try:
-                r.apply_reviewed(path, 89, set(known))
+                r.apply_reviewed(path, 89, 90, set(known))
             except SystemExit as exc:
                 return exc.code, written
         return None, written
@@ -117,10 +117,35 @@ code, written = apply_file([{"row": 5}])
 check("a missing id is refused, not written as blank", written, [])
 
 # ---------- collect ----------
-HDR = ["Full name", "Email", "Slack ID"]
-ROWS = [["Ada", "ada@x.com", "U1"], ["Bo", "", ""], ["Cy", "cy@x.com", ""]]
-check("collect skips rows with no email and reports the current id",
-      r.collect(HDR, ROWS, 2), [(2, "Ada", "ada@x.com", "U1"), (4, "Cy", "cy@x.com", "")])
+HDR = ["Full name", "Email", "Slack ID", "Slack Email"]
+ROWS = [["Ada", "ada@x.com", "U1", "ada@slack"], ["Bo", "", "", ""],
+        ["Cy", "cy@x.com", "", ""]]
+check("collect skips rows with no email and reports both owned columns",
+      r.collect(HDR, ROWS, 2, 3),
+      [(2, "Ada", "ada@x.com", "U1", "ada@slack"), (4, "Cy", "cy@x.com", "", "")])
+check("a short row does not IndexError", r.collect(HDR, [["Dee", "d@x.com"]], 2, 3),
+      [(2, "Dee", "d@x.com", "", "")])
+
+# ---------- ensure_columns ----------
+# Two NEW columns must not be handed the same index. Computing each off the
+# original len(hdr) gives both the same letter and the second write silently
+# overwrites the first.
+calls = []
+with mock.patch.object(r, "gws", lambda args: calls.append(args)):
+    got = r.ensure_columns(["A", "B"], ("Slack ID", "Slack Email"), create=True)
+check("two new columns get distinct indexes", got, {"Slack ID": 2, "Slack Email": 3})
+check("each new column header is written once", len(calls), 2)
+
+with mock.patch.object(r, "gws", lambda args: calls.append("SHOULD NOT HAPPEN")):
+    got = r.ensure_columns(["A", "Slack ID", "B"], ("Slack ID",), create=True)
+check("an existing column is found, not recreated", got, {"Slack ID": 1})
+
+before = len(calls)
+with mock.patch.object(r, "gws", lambda args: calls.append("SHOULD NOT HAPPEN")):
+    got = r.ensure_columns(["A"], ("Slack ID", "Slack Email"), create=False)
+check("create=False touches the sheet not at all", len(calls), before)
+check("create=False still reports where they would go",
+      got, {"Slack ID": 1, "Slack Email": 2})
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

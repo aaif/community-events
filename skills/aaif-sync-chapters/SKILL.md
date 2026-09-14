@@ -70,6 +70,46 @@ Two ordering constraints that are not negotiable and not obvious:
 A new chapter additionally needs **`aaif-create-chapter`** for its Drive folder
 and assets, and its Luma page created by hand, both before step 7 can find them.
 
+## Identity columns (`resolve_slack_ids.py`, `track_drive_email.py`)
+
+One person reaches this estate under up to three different addresses: the one
+they typed on the form, the one Drive actually granted, and the one their Slack
+account carries. Treating those as one address is what produced the standing
+"organizer has no Slack" and "organizer requests access to a folder they already
+have" confusions. Three columns on `Form Responses` record them side by side —
+and **none of them ever overwrites the intake `Email`**, which is what the person
+told us and what Drive grants are keyed to.
+
+| Column | Written by | Is |
+|---|---|---|
+| `Slack ID` | `resolve_slack_ids.py` | the immutable `U…` account id — the durable key |
+| `Slack Email` | `resolve_slack_ids.py` | the address that Slack account carries |
+| `Drive Email` | `track_drive_email.py` | the address actually on their chapter folder's ACL |
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py            # report
+python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --write    # fill by email lookup
+python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --suggest  # + name candidates
+python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --apply ids.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/track_drive_email.py --write    # after step 6
+```
+
+**An id, never a handle.** A handle is a display name its owner can change, so an
+invite keyed off one breaks silently — the same argument `invite_organizers.py`
+makes, and the reason `Organizer Handles` on the Chapters List is a mirror rather
+than a source.
+
+**`--write` fills only what an email lookup resolved.** A name match is a
+*suggestion*, reported for review and written only through `--apply`, because
+two people genuinely share a name. That guard has already earned itself: a
+`Denied` Lagos applicant shares a full name with an AAIF ops staffer, and the
+automatic pass would have stamped the ops account's id onto her row.
+
+**A `(no grant)` in `Drive Email` on an accepted organizer is the finding** — no
+permission on their chapter folder matches any spelling of their address, so
+they cannot open it and an access request is coming. Run `track_drive_email.py`
+after step 6, when the grants are current.
+
 ## Unattended runs (`nightly.py`)
 
 `nightly.py` runs the five engines in the pipeline order above as subprocesses —

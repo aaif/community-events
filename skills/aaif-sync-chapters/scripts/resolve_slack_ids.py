@@ -63,8 +63,14 @@ from aaif_events.slack import (Slack, load_token,  # noqa: E402
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 SOURCE = "Form Responses"
 H_EMAIL, H_NAME = "Email", "Full name"
-#: The column this script owns. Created at the right-hand end if absent.
+#: The columns this script owns, created at the right-hand end if absent.
+#: `Slack ID` is the durable key; `Slack Email` is the address the account
+#: actually carries, which is frequently NOT the one on the intake row — that
+#: difference is the thing worth being able to see, so it is recorded rather
+#: than reconciled away. Neither is ever written back over the intake `Email`:
+#: that column is what the person told us, and Drive grants are keyed to it.
 H_SLACK_ID = "Slack ID"
+H_SLACK_EMAIL = "Slack Email"
 
 #: Slack ids are `U`/`W` + uppercase alphanumerics. Validated before every write
 #: because `--apply` takes a hand-edited file, and a mistyped id is not inert:
@@ -107,32 +113,40 @@ def read_source():
     return hdr, rows
 
 
-def ensure_column(hdr, create=True):
-    """Index of H_SLACK_ID, creating the header cell if it is not there yet.
+def ensure_columns(hdr, names, create=True):
+    """{name: column index}, creating any header cell that is not there yet.
 
-    `create=False` returns where the column WOULD go without touching the sheet.
-    A report run has to know the index to read current values, and creating the
-    header as a side effect of reporting breaks the promise every engine in this
-    estate makes — that nothing changes without an explicit write flag.
+    `create=False` returns where each column WOULD go without touching the
+    sheet. A report run has to know the indexes to read current values, and
+    creating headers as a side effect of reporting breaks the promise every
+    engine in this estate makes — that nothing changes without a write flag.
+
+    Indexes are assigned against a GROWING header list so two new columns never
+    land on the same letter — the bug you get from computing every index off the
+    original `len(hdr)`.
     """
-    if H_SLACK_ID in hdr:
-        return hdr.index(H_SLACK_ID)
-    ci = len(hdr)
-    if not create:
-        return ci
-    gws(["sheets", "spreadsheets", "values", "update", "--params",
-         json.dumps({"spreadsheetId": SHEET_ID,
-                     "range": "%s!%s1" % (SOURCE, colletter(ci + 1)),
-                     "valueInputOption": "RAW"}),
-         "--json", json.dumps({"values": [[H_SLACK_ID]]}), "--format", "json"])
-    print("Created column %r at %s." % (H_SLACK_ID, colletter(ci + 1)))
-    return ci
+    out, width = {}, len(hdr)
+    for name in names:
+        if name in hdr:
+            out[name] = hdr.index(name)
+            continue
+        out[name] = width
+        width += 1
+        if not create:
+            continue
+        gws(["sheets", "spreadsheets", "values", "update", "--params",
+             json.dumps({"spreadsheetId": SHEET_ID,
+                         "range": "%s!%s1" % (SOURCE, colletter(out[name] + 1)),
+                         "valueInputOption": "RAW"}),
+             "--json", json.dumps({"values": [[name]]}), "--format", "json"])
+        print("Created column %r at %s." % (name, colletter(out[name] + 1)))
+    return out
 
 
-def write_ids(ci, pairs):
-    """pairs = [(row_number, slack_id)]. RAW: an id is inert text, never a formula."""
-    data = [{"range": "%s!%s%d" % (SOURCE, colletter(ci + 1), rn), "values": [[sid]]}
-            for rn, sid in pairs]
+def write_cells(ci, pairs):
+    """pairs = [(row_number, value)]. RAW: these are inert text, never formulas."""
+    data = [{"range": "%s!%s%d" % (SOURCE, colletter(ci + 1), rn), "values": [[v]]}
+            for rn, v in pairs]
     if not data:
         return
     gws(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
@@ -199,32 +213,42 @@ def suggest(unresolved, people):
 
 
 # ---------- run ----------
-def collect(hdr, rows, ci):
-    """(row, name, email, current_id) for every row carrying an email."""
+def collect(hdr, rows, ci, cem=None):
+    """(row, name, email, current_id, current_slack_email) per row with an email.
+
+    Both owned columns are reported because a row is only DONE when both are
+    filled: the 175 rows written before `Slack Email` existed carry an id and a
+    blank email, and keying "to do" off the id alone would skip them forever.
+    """
     ie, iname = hdr.index(H_EMAIL), hdr.index(H_NAME)
     out = []
     for n, r in enumerate(rows, 2):
         email = (r[ie] or "").strip()
         if not email:
             continue
-        out.append((n, (r[iname] or "").strip(), email,
-                    (r[ci] or "").strip() if ci < len(r) else ""))
+        def at(i):
+            return (r[i] or "").strip() if i is not None and i < len(r) else ""
+        out.append((n, (r[iname] or "").strip(), email, at(ci), at(cem)))
     return out
 
 
 def run(write=False, want_suggest=False, apply_path=None):
     hdr, rows = read_source()
-    ci = ensure_column(hdr, create=bool(write or apply_path))
-    if ci >= len(hdr):          # freshly created: widen the in-memory rows
-        rows = [r + [""] * (ci + 1 - len(r)) for r in rows]
-    records = collect(hdr, rows, ci)
+    cols = ensure_columns(hdr, (H_SLACK_ID, H_SLACK_EMAIL),
+                          create=bool(write or apply_path))
+    ci, cem = cols[H_SLACK_ID], cols[H_SLACK_EMAIL]
+    width = max(ci, cem) + 1
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    records = collect(hdr, rows, ci, cem)
 
     if apply_path:
-        return apply_reviewed(apply_path, ci, {r[0] for r in records})
+        return apply_reviewed(apply_path, ci, cem, {r[0] for r in records})
 
-    todo = [r for r in records if not r[3]]
-    print("%d row(s) with an email; %d already carry a %s; %d to resolve.\n"
-          % (len(records), len(records) - len(todo), H_SLACK_ID, len(todo)))
+    todo = [r for r in records if not (r[3] and r[4])]
+    print("%d row(s) with an email; %d already carry both %s and %s; "
+          "%d to resolve.\n"
+          % (len(records), len(records) - len(todo), H_SLACK_ID, H_SLACK_EMAIL,
+             len(todo)))
     if not todo:
         return
 
@@ -233,15 +257,17 @@ def run(write=False, want_suggest=False, apply_path=None):
     print("workspace: %s (%s)\n" % (who.get("team"), who.get("team_id")))
     # One lookup per DISTINCT address: a person who submitted the form three
     # times is one account, and the row->email map fans the answer back out.
-    resolved = lookup_emails(api, [e for _, _, e, _ in todo])
+    resolved = lookup_emails(api, [rec[2] for rec in todo])
 
-    hits, misses, folded = [], [], []
-    for rn, name, email, _ in todo:
+    hits, slack_emails, misses, folded = [], [], [], []
+    for rn, name, email, _, _ in todo:
         got = resolved.get(email) or {}
         if got.get("id"):
             hits.append((rn, got["id"]))
-            if got.get("matched_email", email).lower() != email.lower():
-                folded.append((name, email, got["matched_email"]))
+            matched = got.get("matched_email") or email
+            slack_emails.append((rn, matched))
+            if matched.lower() != email.lower():
+                folded.append((name, email, matched))
         else:
             misses.append((rn, name, email))
 
@@ -282,30 +308,46 @@ def run(write=False, want_suggest=False, apply_path=None):
     if bad:
         sys.exit("ABORT: %d id(s) from the API are not shaped like Slack ids (%r). "
                  "Nothing written." % (len(bad), bad[:3]))
-    write_ids(ci, hits)
-    print("\nWrote %d %s value(s)." % (len(hits), H_SLACK_ID))
+    write_cells(ci, hits)
+    write_cells(cem, slack_emails)
+    print("\nWrote %d %s and %d %s value(s)."
+          % (len(hits), H_SLACK_ID, len(slack_emails), H_SLACK_EMAIL))
 
 
-def apply_reviewed(path, ci, known_rows):
-    """Write a reviewed [{row, slack_id}] list, validating every entry first."""
+def apply_reviewed(path, ci, cem, known_rows):
+    """Write a reviewed [{row, slack_id, slack_email}] list, validating first.
+
+    `slack_email` is optional but strongly wanted: a row carrying an id and a
+    blank email is never "done" by run()'s reckoning, so it would be looked up
+    again — and miss again — on every future run, permanently.
+    """
     with open(path) as fh:
         wanted = json.load(fh)
-    pairs, bad = [], []
+    pairs, emails, bad = [], [], []
     for ch in wanted:
         rn, sid = ch.get("row"), (ch.get("slack_id") or "").strip()
+        sem = (ch.get("slack_email") or "").strip()
         if not isinstance(rn, int) or rn not in known_rows:
             bad.append("row %r is not a data row carrying an email" % (rn,))
-        elif not SLACK_ID_RE.match(sid):
+            continue
+        if not SLACK_ID_RE.match(sid):
             bad.append("row %s: %r is not a Slack id" % (rn, sid))
-        else:
-            pairs.append((rn, sid))
+            continue
+        if sem and "@" not in sem:
+            bad.append("row %s: %r is not an email address" % (rn, sem))
+            continue
+        pairs.append((rn, sid))
+        if sem:
+            emails.append((rn, sem))
     if bad:
         # All-or-nothing: a half-applied review leaves nobody able to say which
         # half, and these ids gate access to private channels.
         sys.exit("ABORT: %d invalid entr(ies); nothing written.\n   %s"
                  % (len(bad), "\n   ".join(bad[:10])))
-    write_ids(ci, pairs)
-    print("Applied %d reviewed %s value(s)." % (len(pairs), H_SLACK_ID))
+    write_cells(ci, pairs)
+    write_cells(cem, emails)
+    print("Applied %d reviewed %s and %d %s value(s)."
+          % (len(pairs), H_SLACK_ID, len(emails), H_SLACK_EMAIL))
 
 
 def main():
