@@ -105,6 +105,16 @@ two people genuinely share a name. That guard has already earned itself: a
 `Denied` Lagos applicant shares a full name with an AAIF ops staffer, and the
 automatic pass would have stamped the ops account's id onto her row.
 
+**The columns are read back by the engines that need them.** `sync_resources.py`
+(Organizer Handles), `invite_organizers.py` and the organizer audit all consult
+`Slack ID` for people an email lookup cannot reach, which is what turns a
+reconciled identity into an actual invite. A **live lookup always outranks the
+column** — a hit is a hard fact about an address, while a cell can predate
+someone changing their Slack email — and a disagreement is printed as a
+`CONFLICT`, never silently resolved. The `@handle` is deliberately NOT stored:
+it is fetched via `users.info` at display time, because a cached handle rots
+into a wrong `@mention`.
+
 **A `(no grant)` in `Drive Email` on an accepted organizer is the finding** — no
 permission on their chapter folder matches any spelling of their address, so
 they cannot open it and an access request is coming. Run `track_drive_email.py`

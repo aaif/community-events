@@ -24,10 +24,16 @@ from collections import defaultdict
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
+# The reviewed `Slack ID` column lives with the engine that writes it. Imported
+# for READING only — this module writes nothing, and resolve_slack_ids itself
+# pulls in only `lib`, so there is no import cycle back into this skill.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                "..", "..", "aaif-sync-chapters", "scripts"))
 
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import Slack, channels, lookup_emails, members, scrubbed_env  # noqa: E402
+import resolve_slack_ids as rsi  # noqa: E402
 
 read_cache, write_cache, cache_age = jsoncache.read, jsoncache.write, jsoncache.age
 
@@ -1305,6 +1311,24 @@ def main():
               % (len(outstanding), len(slack_ids)))
         slack_ids.update(lookup_emails(api, sorted(outstanding)))
         write_cache(ids_path, slack_ids, team_id)
+    # Overlay the reviewed column AFTER the cache is written, never into it: the
+    # cache is a record of what an email lookup said, and folding a sheet value
+    # into it would make a later run unable to tell the two apart. Applied fresh
+    # each run so an edited column takes effect immediately.
+    try:
+        filled, conflicts = rsi.overlay_known(api, slack_ids)
+    except Exception as exc:                      # noqa: BLE001
+        # The audit must still run if the intake sheet is unreachable — this is
+        # an enrichment, not a dependency.
+        filled, conflicts = 0, []
+        print("  note: could not read the %r column (%s) — organizers known only "
+              "by that column will read as unreachable." % (rsi.H_SLACK_ID, exc))
+    if filled:
+        print("  %d organizer(s) resolved from the reviewed %r column."
+              % (filled, rsi.H_SLACK_ID))
+    for email, live, col in conflicts:
+        print("  CONFLICT: %s resolves live to %s but %r says %s — live wins."
+              % (email, live, rsi.H_SLACK_ID, col))
     resolved = sum(1 for email in wanted if (slack_ids.get(email) or {}).get("id"))
     blank = sum(1 for p in people if not p["email"])
     print("  %d/%d organizers resolved to a Slack account%s"

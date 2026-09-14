@@ -57,7 +57,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
 from aaif_events import jsoncache  # noqa: E402
-from aaif_events.slack import (Slack, load_token,  # noqa: E402
+from aaif_events.slack import (Slack, gmail_variants, load_token,  # noqa: E402
                                lookup_emails, scrubbed_env, users)
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
@@ -152,6 +152,91 @@ def write_cells(ci, pairs):
     gws(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
          json.dumps({"spreadsheetId": SHEET_ID}), "--json",
          json.dumps({"valueInputOption": "RAW", "data": data}), "--format", "json"])
+
+
+# ---------- the column as a source for OTHER engines ----------
+def canon(email):
+    """The spelling Gmail folds to, for matching a sheet row to a lookup key."""
+    v = gmail_variants(email)
+    return v[-1] if v else ""
+
+
+def known_ids():
+    """{canonical email: {"id", "slack_email"}} from the `Slack ID` column.
+
+    This is the reviewed answer to "who is this person on Slack", including the
+    ones no email lookup can reach because they joined under an address the
+    intake has never seen. Engines that resolve people to Slack should consult
+    it rather than re-deriving a miss they cannot fix.
+    """
+    hdr, rows = read_source()
+    if H_SLACK_ID not in hdr:
+        return {}
+    ie, ci = hdr.index(H_EMAIL), hdr.index(H_SLACK_ID)
+    cem = hdr.index(H_SLACK_EMAIL) if H_SLACK_EMAIL in hdr else None
+    out = {}
+    for r in rows:
+        def at(i):
+            return (r[i] or "").strip() if i is not None and i < len(r) else ""
+        email, sid = at(ie), at(ci)
+        if not email or not SLACK_ID_RE.match(sid):
+            continue
+        out[canon(email)] = {"id": sid, "slack_email": at(cem)}
+    return out
+
+
+def hydrate(api, ids):
+    """{id: {"name", "real_name"}} via users.info — the column stores no handle.
+
+    An id is the durable key precisely BECAUSE the handle is not; so the handle
+    has to be fetched fresh at the moment it is displayed, never cached into the
+    sheet where it would rot into a wrong @mention.
+    """
+    out = {}
+    for uid in sorted(set(ids)):
+        payload = api.call("users.info", user=uid)
+        if not payload.get("ok"):
+            continue
+        u = payload.get("user") or {}
+        if u.get("deleted"):
+            # A deactivated account is not a usable identity: inviting it fails
+            # and printing its handle tells a reader the person is reachable.
+            continue
+        out[uid] = {"name": u.get("name", ""),
+                    "real_name": u.get("real_name") or "",
+                    "email": (u.get("profile") or {}).get("email", "")}
+    return out
+
+
+def overlay_known(api, resolved, known=None):
+    """Fill `resolved`'s misses from the `Slack ID` column. Returns (n, conflicts).
+
+    Only ever fills a MISS. A live lookup that hit is a hard fact — this address
+    really is on that account — and must outrank a sheet cell, which may predate
+    someone changing their Slack address. Where the two disagree the row is
+    reported as a conflict rather than silently resolved either way.
+    """
+    known = known_ids() if known is None else known
+    gaps = {e: known[canon(e)] for e, got in resolved.items()
+            if not got.get("id") and canon(e) in known}
+    conflicts = [(e, got["id"], known[canon(e)]["id"])
+                 for e, got in resolved.items()
+                 if got.get("id") and canon(e) in known
+                 and known[canon(e)]["id"] != got["id"]]
+    if not gaps:
+        return 0, conflicts
+    info = hydrate(api, [g["id"] for g in gaps.values()])
+    filled = 0
+    for email, rec in gaps.items():
+        u = info.get(rec["id"])
+        if not u:
+            continue
+        resolved[email] = {"id": rec["id"], "name": u["name"],
+                           "real_name": u["real_name"], "deleted": False,
+                           "matched_email": rec["slack_email"] or u["email"],
+                           "from_column": True}
+        filled += 1
+    return filled, conflicts
 
 
 # ---------- name matching (suggestions only) ----------

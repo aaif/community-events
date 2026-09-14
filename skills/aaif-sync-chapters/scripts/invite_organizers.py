@@ -64,11 +64,12 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "aaif-audit-slack", "scripts"
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 
 from sync_chapters import NO_RESOURCE, fold_city  # noqa: E402
-from sync_resources import read_grid  # noqa: E402
+from sync_resources import read_grid, redact_email  # noqa: E402
 from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa: E402
                                 WRITE_TOKEN_ENV)
 
 import audit_organizers as ao  # noqa: E402
+import resolve_slack_ids as rsi  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 
 # --- stdout redaction -------------------------------------------------------
@@ -145,6 +146,19 @@ def fetch(city_filter=None):
 
     resolved = slackmod.lookup_emails(
         api, {p["email"] for p in people if p["email"]})
+    # Then the reviewed `Slack ID` column, for the people no email lookup can
+    # reach because they joined Slack under an address the intake never saw.
+    # Without this they are reported as "no Slack account" forever and are never
+    # invited to their own chapter's room — which is the whole failure the
+    # column was added to end.
+    filled, conflicts = rsi.overlay_known(api, resolved)
+    if filled:
+        print("  %d organizer(s) resolved from the %r column rather than an "
+              "email lookup." % (filled, rsi.H_SLACK_ID))
+    for email, live, col in conflicts:
+        print("  CONFLICT: %s resolves live to %s but the %r column says %s — "
+              "the live answer is used; fix the column."
+              % (redact_email(email), live, rsi.H_SLACK_ID, col), file=sys.stderr)
     return api, chapters, chans, by_city, resolved
 
 
