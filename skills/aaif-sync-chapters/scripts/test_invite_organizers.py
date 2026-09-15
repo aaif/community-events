@@ -408,8 +408,20 @@ inv.REDACT = True
 try:
     check("redacted name is a first initial", inv.redact_name("ada lovelace"), "A.")
     check("empty values survive", inv.redact_name(""), "")
-    check("no redact_email here: nothing in this report prints an address",
-          hasattr(inv, "redact_email"), False)
+    # This report DOES print one address now — the Slack ID column conflict
+    # warning names the person whose column disagrees with the live lookup —
+    # so the assertion is that it goes through the masker, not that no masker
+    # exists. (It was "nothing here prints an address" until the Slack ID
+    # column landed and gave the report a reason to.)
+    check("the conflict warning's address is masked under --redact",
+          inv.redact_email("ada@example.com"), "a***@***.com")
+    # The bug this guards: redact_email was imported from sync_resources, whose
+    # own REDACT flag this module's --redact never sets, so the address printed
+    # raw. Assert it follows THIS module's flag.
+    inv.REDACT = False
+    check("with redaction off the address is untouched",
+          inv.redact_email("ada@example.com"), "ada@example.com")
+    inv.REDACT = True
 finally:
     inv.REDACT = False
 
