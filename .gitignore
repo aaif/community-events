@@ -33,9 +33,13 @@ slack-*-audit.*
 # and must never be committed. Only the runner's stdout summary is PII-free.
 nightly-reports/
 
-# aaif-community-pulse working cache — real #local-champs message text and
-# organizer names, pulled to draft the Pulse post. Never committed; delete once
-# the draft is written.
+# aaif-community-pulse working directory — the #local-champs pull (real message
+# text and organizer names) AND the three drafts written from it
+# (pulse-local-champs.txt, pulse-general.txt, pulse-social.txt). write_drafts.py
+# refuses to write anywhere else for this reason: one ignored directory is the
+# whole containment, so an --out/--outdir pointing elsewhere would land real
+# names in a tracked path. Never committed; delete the directory once the posts
+# are pasted.
 .pulse-cache/
 
 # Skills download working copies into the cwd — event trackers (.docx/.xlsx),

@@ -69,6 +69,7 @@ from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa:
                                 WRITE_TOKEN_ENV)
 
 import audit_organizers as ao  # noqa: E402
+import resolve_slack_ids as rsi  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 
 # --- stdout redaction -------------------------------------------------------
@@ -78,6 +79,25 @@ from aaif_events import slack as slackmod  # noqa: E402
 # flag and these helpers.
 REDACT = False
 CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    """This module's OWN copy, reading this module's `REDACT`.
+
+    It used to be imported from `sync_resources`, which made `--redact` a no-op
+    for the one line that prints an address: `set_redaction` sets the flag HERE,
+    the imported function reads the flag THERE, and the Slack ID conflict
+    warning printed the raw address in a run — CI included, where redaction is
+    on by default precisely because the log is a publication on a public repo.
+    Each standalone script carrying its own copy is the convention (see the
+    comment above) exactly so a flag and the helper it governs cannot drift
+    into two different modules.
+    """
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
 
 
 def redact_name(n):
@@ -145,6 +165,19 @@ def fetch(city_filter=None):
 
     resolved = slackmod.lookup_emails(
         api, {p["email"] for p in people if p["email"]})
+    # Then the reviewed `Slack ID` column, for the people no email lookup can
+    # reach because they joined Slack under an address the intake never saw.
+    # Without this they are reported as "no Slack account" forever and are never
+    # invited to their own chapter's room — which is the whole failure the
+    # column was added to end.
+    filled, conflicts = rsi.overlay_known(api, resolved)
+    if filled:
+        print("  %d organizer(s) resolved from the %r column rather than an "
+              "email lookup." % (filled, rsi.H_SLACK_ID))
+    for email, live, col in conflicts:
+        print("  CONFLICT: %s resolves live to %s but the %r column says %s — "
+              "the live answer is used; fix the column."
+              % (redact_email(email), live, rsi.H_SLACK_ID, col), file=sys.stderr)
     return api, chapters, chans, by_city, resolved
 
 

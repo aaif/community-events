@@ -32,6 +32,20 @@ def test_actions_escapes_every_field():
     assert "<img" not in out and out.count("&lt;img") == 4
 
 
+def test_yesno_is_tri_state_and_unknown_is_not_a_no():
+    """`None` means "we could not measure this" and must never render as a
+    confident no — the engines' whole dormancy doctrine rests on that line."""
+    assert 'pill-ok">live' in rs.yesno(True, "live", "quiet")
+    assert 'pill-bad">quiet' in rs.yesno(False, "live", "quiet")
+    unknown = rs.yesno(None, "live", "quiet")
+    assert 'pill-mute">?' in unknown
+    assert "quiet" not in unknown and "live" not in unknown
+
+
+def test_yesno_escapes_its_labels():
+    assert "<img" not in rs.yesno(True, XSS, "no")
+
+
 def test_helpers_do_not_double_escape():
     """The call sites pass raw text on purpose; escaping twice would show the
     entities to the reader."""

@@ -65,6 +65,7 @@ from sync_chapters import (CHAPTERS_ID, CHAPTERS_TAB, GENERIC_CITY_TOKENS,  # no
                            NO_RESOURCE, RESOURCE_COLUMNS, cell, col_letter,
                            fold_city, get_values, gws_json, header_index)
 from sync_crm import TEMPLATE_FOLDER, list_chapter_folders  # noqa: E402
+import resolve_slack_ids as rsi  # noqa: E402
 
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
@@ -951,6 +952,17 @@ def propose_handles(chapters, ao, api, slackmod):
 
     resolved = slackmod.lookup_emails(
         api, {p["email"] for p in people if p["email"]})
+    # The reviewed `Slack ID` column covers the people an email lookup cannot:
+    # those who joined Slack under an address the intake has never seen. Without
+    # it they render as "(no Slack account)" in Organizer Handles even though we
+    # know exactly who they are.
+    filled, conflicts = rsi.overlay_known(api, resolved)
+    if filled:
+        print("  %d handle(s) resolved from the %r column." % (filled, rsi.H_SLACK_ID))
+    for email, live, col in conflicts:
+        print("  CONFLICT: %s resolves live to %s but the %r column says %s — "
+              "using the live answer." % (redact_email(email), live, rsi.H_SLACK_ID, col),
+              file=sys.stderr)
 
     proposals, unresolved = [], []
     for ch in chapters:

@@ -67,8 +67,8 @@ def resolve_names(api, user_ids):
     return names
 
 
-def write_0600(path, payload):
-    """Write `payload` as 0600 JSON, refusing to follow or reuse anything at `path`.
+def write_0600_text(path, text):
+    """Write `text` as a 0600 file, refusing to follow or reuse anything at `path`.
 
     `path` must resolve inside `.pulse-cache/` — the one directory this repo
     gitignores for skill-generated PII — so a stray `--out` can't smuggle real
@@ -78,6 +78,10 @@ def write_0600(path, payload):
     is at the destination path — including a symlink, atomically, without ever
     opening through it — rather than truncating-in-place, which would silently
     follow a symlink or inherit an existing file's looser permissions.
+
+    `write_drafts.py` writes the Pulse drafts through this same function: a
+    draft quotes the same channel this cache holds, so it gets the same
+    permissions and the same one-directory rule, not a looser path of its own.
     """
     resolved = pathlib.Path(path).resolve()
     cache_root = (pathlib.Path.cwd() / CACHE_DIR_NAME).resolve()
@@ -90,11 +94,16 @@ def write_0600(path, payload):
     fd, tmp = tempfile.mkstemp(dir=dirpath, prefix=resolved.name + ".", suffix=".partial")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2)
+            fh.write(text)
         os.replace(tmp, resolved)
     except BaseException:
         os.unlink(tmp)
         raise
+
+
+def write_0600(path, payload):
+    """The JSON form of `write_0600_text` — the message cache this script writes."""
+    write_0600_text(path, json.dumps(payload, indent=2))
 
 
 def main():

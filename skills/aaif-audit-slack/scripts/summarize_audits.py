@@ -96,7 +96,10 @@ def org_findings(audit):
     pub_org = [c for c in ch if c["organizers_channel"] and not c["organizers_private"]]
     no_pub = [c for c in ch if not c["public"]]
     no_org = [c for c in ch if not c["organizers_channel"]]
-    zero = [c for c in ch if c["organizers_channel"] and not c["accepted"]]
+    # Room-level question — "this private room holds nobody we ever vetted" —
+    # so it reads the room's whole roster. A chapter sharing its neighbour's
+    # room is not an unvetted room; it is one room with one roster.
+    zero = [c for c in ch if c["organizers_channel"] and not audit_organizers.roster(c)]
     # A person with no Slack account (`slack_account` False) is unconditionally
     # `in_organizers: False` — there's no uid to be a member with — but that is
     # not the same finding as "has an account and wasn't invited". audit_organizers'
@@ -105,6 +108,9 @@ def org_findings(audit):
     # inflates the invite backlog with people invite_organizers.py can never act on.
     gaps, no_account = [], []
     for c in ch:
+        # This chapter's own people: an invite to send, or an address to chase,
+        # belongs to the chapter that accepted the person — billing it to both
+        # chapters that share a room would list the same fix twice.
         acc = c["accepted"] or []
         if not acc:
             continue
