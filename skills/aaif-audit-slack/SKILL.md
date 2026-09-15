@@ -300,9 +300,21 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/audit_topics.py
 
 Writes `slack-topics-audit.html`.
 
-Sections: where the subjects sit by theme · quiet and dead topics by last
-**human** message · proposed overlapping rooms · rooms carried by one or two
-posters · rooms with no purpose set · unclassified rooms · the limits.
+Sections: where the subjects sit — **one table per kind, topics first, then
+software**, each room carrying its theme, members, last human message, poster
+count and three yes/no flags (active · 5+ posters · purpose set), with rooms
+dead a year or more tinted · quiet and dead topics by last **human** message ·
+proposed overlapping rooms · rooms carried by one or two posters · rooms with no
+purpose set · unclassified rooms · the limits.
+
+**A flag is tri-state and "?" is not "no".** `is_alive` reads `state_of` and
+never re-derives dormancy from the window counts, even where they look
+sufficient: a room whose scan never reached a human message has an unknown
+*date* while its *window* may be fully measured, and answering from the window
+put 77 rooms in the column against the 64 the same page calls quiet. Two numbers
+for one thing in one document is the failure `dormancy()`'s own docstring records.
+`has_contributors` is the mirror image — a truncated scan reports a floor, so it
+can prove "5 or more" but never "fewer than 5", and returns `None` there.
 
 ## The classification lives on the Chapters List
 
@@ -315,9 +327,18 @@ public without a row is reported as *unclassified*, never guessed at.
 | Column | Means |
 |---|---|
 | `Channel` | the slug; a leading `#` is tolerated and stripped |
-| `Kind` | `topic`, `vendor`, `cloud` — the **subject** rooms, which is what the report measures — or `geo`, `community`, `ops`, which are filed as deliberately *not* topics |
+| `Kind` | `topic`, `software`, `cloud`, `vendor` — the **subject** rooms, which is what the report measures — or `geo`, `community`, `ops`, which are filed as deliberately *not* topics |
 | `Theme` | the grouping the report charts and clusters by (`LLMs & agents`, `Data & pipelines`, …) |
 | `Notes` | free text for the human |
+
+`topic` vs `software` is a subject the community discusses (`#agents`,
+`#coding-agents`) against one named piece of software you install or call
+(`#fastmcp`, `#oss-zenml`, `#triton-inference-server`). It is **not** an
+open-source/commercial line: a room named after a company's product is still a
+room about that software. `vendor` is left for the handful of shared rooms a
+partner runs *with* us (the `ext-*` Slack Connect rooms) — the kind records the
+relationship, never the subject, because no channel here is about a company
+rather than about its software.
 
 **The engine never infers a topic.** A channel with no row is reported as
 *unclassified* — an answer someone will notice — and is counted in nothing else.

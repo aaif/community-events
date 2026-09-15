@@ -41,19 +41,60 @@ e = html.escape
 
 TOPICS_TAB = "Topics"
 
-#: `Kind` values the tab may carry. The first three are subject rooms and are
+#: `Kind` values the tab may carry. The first four are subject rooms and are
 #: what the report measures; the rest are recorded so that "not a topic" is a
 #: filed human decision rather than an absence, exactly as `none` does in the
 #: channel map. A row carrying a channel name is never silently ignored;
 #: a wholly blank row (no Channel) is skipped, since that is a spreadsheet
 #: artefact rather than a half-finished decision.
-SUBJECT_KINDS = ("topic", "vendor", "cloud")
+#:
+#: `topic` and `software` are the line Rahul drew on 2026-09-15: a subject the
+#: community discusses (#agents, #coding-agents, an #mcp room) is a topic; one
+#: named piece of software you install or call (#fastmcp, #oss-zenml,
+#: #triton-inference-server) is software. The distinction is NOT open-source vs
+#: commercial, and it is not who owns the project — a room named after a
+#: company's product is still a room about that software.
+#:
+#: `vendor` survives for the handful of shared rooms a partner company runs
+#: WITH us (the ext-* Slack Connect rooms). There is no channel that is about a
+#: company rather than about its software, so the kind means the relationship,
+#: never the subject.
+#: Derived from KIND_LABELS below, never listed twice: two tuples that must
+#: agree is how a kind ends up counted in every headline stat and missing from
+#: every table — a disappearance, which is the failure this module bans
+#: everywhere else.
 OTHER_KINDS = ("geo", "community", "ops")
-KINDS = SUBJECT_KINDS + OTHER_KINDS
+#: (filled in below, once KIND_LABELS exists)
+SUBJECT_KINDS = ()
+KINDS = ()
 
 #: Dormancy thresholds in days, applied to the LAST HUMAN message.
 QUIET_DAYS = 90
 DEAD_DAYS = 365
+
+#: A room below this many distinct posters in the window is carried by too few
+#: people to survive one of them leaving. Separate from THIN_POSTERS (<=2),
+#: which is the *acute* case and has its own section and to-do line: this is the
+#: per-room flag column, and the two answer different questions ("is this
+#: fragile?" vs "is this one person?").
+CONTRIB_FLOOR = 5
+THIN_POSTERS = 2
+
+#: Display labels for the subject kinds, in the order the report renders them.
+#: Topics lead because a subject outliving any one tool is the thing the
+#: community is actually organised around; software follows because a tool room
+#: is only interesting against the subject it serves.
+KIND_LABELS = (
+    ("topic", "Topics", "Subjects the community organises around \u2014 not a tool, "
+     "not a platform."),
+    ("software", "Software", "One named piece of software you install or call."),
+    ("cloud", "Cloud platforms", "The hyperscalers and the managed platforms on them."),
+    ("vendor", "Partner rooms", "Shared rooms a partner runs with us \u2014 the "
+     "relationship, never the subject."),
+)
+
+SUBJECT_KINDS = tuple(k for k, _, _ in KIND_LABELS)
+KINDS = SUBJECT_KINDS + OTHER_KINDS
 
 #: Floor on the STRING-SIMILARITY path only — the token-subset path in
 #: `near_duplicates` proposes pairs regardless of ratio. Deliberately high:
@@ -238,6 +279,48 @@ def truncated(s):
     return bool(act) and not act.get("window_complete", True)
 
 
+def is_alive(s):
+    """Tri-state: True live, False quiet/silent, None not established.
+
+    Reads `state_of`, and deliberately takes no shortcut around it. For a room
+    whose scan never reached a human message the WINDOW counts can still be
+    complete, so "nobody spoke in 90 days" looks answerable — but answering it
+    here would put 77 not-live rooms in this column against the 64 the page's
+    own headline calls quiet, and that is the documented failure `dormancy` was
+    written to stop: two numbers for the same thing in one document, the larger
+    one next to the smaller. UNKNOWN stays "?" and is counted as unmeasured
+    everywhere, exactly as the stats above do it.
+
+    None is not False. The scan cap is hit by BUSY rooms, so rendering UNKNOWN
+    as "inactive" states the reverse of the truth on rooms that are working.
+    """
+    st = state_of(s)
+    if st in (UNMEASURED, UNKNOWN):
+        return None
+    return st == LIVE
+
+
+def has_contributors(s):
+    """Tri-state: does this room have CONTRIB_FLOOR or more distinct posters?
+
+    A truncated scan reports a FLOOR on the poster count, so it can still prove
+    a yes (already at or above the floor before the scan ran out) but never a
+    no — that stays None rather than convicting a busy room of being thin.
+    """
+    act = s.get("act")
+    if not act:
+        return None
+    posters = act.get("posters", 0)
+    if posters >= CONTRIB_FLOOR:
+        return True
+    return None if truncated(s) else False
+
+
+def has_purpose(s):
+    """Always knowable — the channel object carries it or it is genuinely unset."""
+    return bool((s["chan"].get("purpose") or "").strip())
+
+
 def members_of(s):
     """Membership, or None when Slack did not report it.
 
@@ -301,7 +384,7 @@ def build_body(subjects, filed_out, unfiled, today, measured, act_meta,
     unknown = by_state[UNKNOWN]
     unmeasured = by_state[UNMEASURED]
     dead = [s for s in quiet if s["quiet_days"] >= DEAD_DAYS]
-    no_purpose = [s for s in subjects if not (s["chan"].get("purpose") or "").strip()]
+    no_purpose = [s for s in subjects if not has_purpose(s)]
     dups = near_duplicates(subjects)
 
     # Concentration: how few people carry each room. A topic held up by one
@@ -310,7 +393,8 @@ def build_body(subjects, filed_out, unfiled, today, measured, act_meta,
     # slice of a busy room is an artefact of the cap, not a fragile channel.
     thin = [s for s in subjects
             if s["act"] and not truncated(s)
-            and s["act"].get("human_msgs") and s["act"].get("posters", 0) <= 2]
+            and s["act"].get("human_msgs")
+            and s["act"].get("posters", 0) <= THIN_POSTERS]
 
     by_theme = defaultdict(list)
     for s in subjects:
@@ -335,6 +419,72 @@ def build_body(subjects, filed_out, unfiled, today, measured, act_meta,
 
     theme_rows = sorted(((t, sum(num(x) for x in v)) for t, v in by_theme.items()),
                         key=lambda r: -r[1])
+
+    # The page's own dead list, by identity — not a second derivation of it.
+    # Recomputing "dead" for the tint let the tinted rows and the "N dead"
+    # headline drift, and the recomputation quietly differed (it mapped a None
+    # quiet_days to 0, which `dead` never does).
+    dead_ids = {id(s) for s in dead}
+
+    def flag_row(s, alive, contrib, purpose):
+        # Tint DEAD rooms only — silent a year or more, the set the page's own
+        # first to-do line acts on. Tinting every established problem tinted 94
+        # of 97 rows, which is wallpaper rather than a signal: quiet, thin and
+        # purposeless are the normal state of this workspace, and each already
+        # shows as a red pill in its own column. A room of unknowns is never
+        # tinted — the unmeasured must not be ranked with the worst rooms.
+        issue = id(s) in dead_ids
+        act = s.get("act") or {}
+        posters = act.get("posters")
+        return ('<tr%s><td><b>#%s</b></td><td>%s</td><td class="n">%s</td>'
+                '<td>%s</td><td class="n">%s</td><td>%s</td><td>%s</td>'
+                '<td>%s</td></tr>'
+                % (' class="has-issue"' if issue else "",
+                   e(s["name"]), e(s["theme"] or "\u2014"), format(num(s), ","),
+                   e(quiet_label(s)),
+                   ("%d%s" % (posters, "+" if truncated(s) else ""))
+                   if posters is not None else '<span class="nil">?</span>',
+                   rs.yesno(alive, "live", "quiet"),
+                   rs.yesno(contrib, "%d+" % CONTRIB_FLOOR,
+                            "under %d" % CONTRIB_FLOOR),
+                   rs.yesno(purpose, "set", "none")))
+
+    def kind_section(kind, label, blurb):
+        # `subjects` is already sorted by membership, and a filter preserves
+        # order — re-sorting here was a no-op done once per kind.
+        rooms = [x for x in subjects if x["kind"] == kind]
+        if not rooms:
+            return ""
+        themes = defaultdict(int)
+        for x in rooms:
+            themes[x["theme"] or "(no theme)"] += num(x)
+        # Each room's three flags, computed ONCE: the counts in the sentence and
+        # the pills in the table are then the same values, not two evaluations
+        # that could answer differently.
+        flags = [(x, is_alive(x), has_contributors(x), has_purpose(x)) for x in rooms]
+        n_quiet = sum(1 for _, alive, _, _ in flags if alive is False)
+        n_thin = sum(1 for _, _, contrib, _ in flags if contrib is False)
+        n_nopurp = sum(1 for _, _, _, purpose in flags if not purpose)
+        return """
+<h3>%(label)s <span class="mute">%(n)d room(s) &middot; %(mem)s memberships</span></h3>
+<p>%(blurb)s %(counts)s</p>
+%(bars)s
+<table><thead><tr><th>Channel</th><th>Theme</th><th class="n">Members</th>
+<th>Last human message</th><th class="n">Posters</th><th>Active</th>
+<th>%(floor)d+ posters</th><th>Purpose</th></tr></thead>
+<tbody>%(rows)s</tbody></table>
+""" % {
+            "label": e(label), "n": len(rooms), "blurb": e(blurb),
+            "mem": format(sum(num(x) for x in rooms), ","),
+            "counts": e("%d quiet, %d under %d posters, %d with no purpose."
+                        % (n_quiet, n_thin, CONTRIB_FLOOR, n_nopurp)),
+            "bars": rs.bars(sorted(themes.items(), key=lambda r: -r[1])[:8]),
+            "floor": CONTRIB_FLOOR,
+            "rows": "".join(flag_row(*f) for f in flags),
+        }
+
+    kind_sections = "".join(kind_section(k, lab, blurb)
+                            for k, lab, blurb in KIND_LABELS)
 
     dup_html = "".join(
         '<tr><td><b>#%s</b> <span class="mute">(%s)</span></td>'
@@ -387,6 +537,19 @@ departure from dead.</li>
 %(todo)s
 
 <h2>Where the subjects sit</h2>
+<p>By kind, topics first: a subject outlives any one tool, and a tool room only
+means something against the subject it serves. Each table carries the three
+flags this page can establish per room &mdash; whether anyone spoke recently,
+whether more than a couple of people carry it, and whether a newcomer browsing
+sees anything at all. <b>&ldquo;?&rdquo; is not a no</b>: it is a room the sweep
+could not measure, or one so busy the scan hit its cap before reaching a human
+message. The Posters column can still carry a number for such a room: how many
+people spoke in the window is a different question from how long ago the last
+one did, and the sweep often answers the first when it cannot answer the second.
+Tinted rows have been silent for a year or more.</p>
+%(kind_sections)s
+
+<h3>Across every kind</h3>
 %(themes)s
 <p class="mute">%(kinds)s</p>
 
@@ -473,6 +636,7 @@ because someone wrote it on the %(tab)s tab; the engine never inferred one.</li>
                 if unfiled else None,
             ] if t
         ]) or '<p class="mute">Nothing outstanding.</p>',
+        "kind_sections": kind_sections,
         "themes": rs.bars(theme_rows[:14]),
         "kinds": e("Kinds on the tab: " + ", ".join(
             "%s %d" % (k, n) for k, n in kinds.most_common())
