@@ -64,7 +64,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "aaif-audit-slack", "scripts"
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 
 from sync_chapters import NO_RESOURCE, fold_city  # noqa: E402
-from sync_resources import read_grid, redact_email  # noqa: E402
+from sync_resources import read_grid  # noqa: E402
 from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa: E402
                                 WRITE_TOKEN_ENV)
 
@@ -79,6 +79,25 @@ from aaif_events import slack as slackmod  # noqa: E402
 # flag and these helpers.
 REDACT = False
 CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    """This module's OWN copy, reading this module's `REDACT`.
+
+    It used to be imported from `sync_resources`, which made `--redact` a no-op
+    for the one line that prints an address: `set_redaction` sets the flag HERE,
+    the imported function reads the flag THERE, and the Slack ID conflict
+    warning printed the raw address in a run — CI included, where redaction is
+    on by default precisely because the log is a publication on a public repo.
+    Each standalone script carrying its own copy is the convention (see the
+    comment above) exactly so a flag and the helper it governs cannot drift
+    into two different modules.
+    """
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
 
 
 def redact_name(n):
