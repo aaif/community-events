@@ -462,6 +462,26 @@ def page(title, body, extra_css="", script=""):
                ("\n<script>%s</script>" % script) if script else ""))
 
 
+def yesno(v, yes, no):
+    """A tri-state yes/no pill: True, False, or None for "not established".
+
+    The reports are full of measurements that can come back unknown — a Slack
+    scan that hit its cap, a membership pull that was skipped — and `None` must
+    never render as a confident "no". It gets the muted pill, which reads as an
+    absence rather than a verdict.
+
+    It lives here because the audit engines each grew their own copy and they
+    disagreed about the unknown case (one muted pill, one bare `.nil` span), so
+    one combined report showed "we could not measure this" two different ways on
+    two of its pages. Labels are required, not defaulted: "yes/no" is rarely the
+    honest wording for the question a given column asks.
+    """
+    if v is None:
+        return '<span class="pill pill-mute">?</span>'
+    tone, label = ("ok", yes) if v else ("bad", no)
+    return '<span class="pill pill-%s">%s</span>' % (tone, html.escape(str(label)))
+
+
 def bars(rows, tone="accent", fmt=lambda v: format(v, ",")):
     """A single-series horizontal bar chart.
 
