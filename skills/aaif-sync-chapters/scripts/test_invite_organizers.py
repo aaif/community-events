@@ -471,7 +471,8 @@ def _run_collect():
          _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1"]), \
          _mock.patch.object(inv.slackmod, "lookup_emails",
                             lambda api, emails: {"a@x.com": {"id": "U1"}}), \
-         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})):
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
         return inv.collect()
 
 
@@ -511,7 +512,8 @@ with _mock.patch.object(inv, "read_grid", _counting_read_grid), \
      _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1"]), \
      _mock.patch.object(inv.slackmod, "lookup_emails",
                         lambda api, emails: {"a@x.com": {"id": "U1"}}), \
-     _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})):
+     _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+     _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
     _fetched = inv.fetch()
     inv.collect(column="Organizer Channel", fetched=_fetched)
     inv.collect(column="Country Channel", fetched=_fetched)
@@ -539,7 +541,8 @@ def _run_collect_country():
          _mock.patch.object(inv.slackmod, "lookup_emails",
                             lambda api, emails: {"a@x.com": {"id": "U1"},
                                                  "b@x.com": {"id": "U2"}}), \
-         _mock.patch.object(inv.ao, "read_intake", lambda: (_COUNTRY_INTAKE, 0, {})):
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_COUNTRY_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
         return inv.collect(column="Country Channel")
 
 
@@ -575,7 +578,8 @@ def _run_collect_same_person():
                             lambda api, emails: {"ada@old.example": {"id": "U1"},
                                                  "ada@new.example": {"id": "U1"}}), \
          _mock.patch.object(inv.ao, "read_intake",
-                            lambda: (_SAME_PERSON_INTAKE, 0, {})):
+                            lambda: (_SAME_PERSON_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
         return inv.collect(column="Country Channel")
 
 
@@ -606,7 +610,8 @@ def _run_run_scope_both():
          _mock.patch.object(inv.slackmod, "lookup_emails",
                             lambda api, emails: {"a@x.com": {"id": "U1"},
                                                  "b@x.com": {"id": "U2"}}), \
-         _mock.patch.object(inv.ao, "read_intake", lambda: (_BOTH_INTAKE, 0, {})):
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_BOTH_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
         return inv.run_scope("both")
 
 

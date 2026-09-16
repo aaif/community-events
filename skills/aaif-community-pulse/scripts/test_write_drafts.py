@@ -43,9 +43,11 @@ def test_email_and_phone_are_found():
     check("a real address is caught",
           wd.contact_details("mail ada@example.com please"),
           [("email address", "ada@example.com")])
-    check("a phone number is caught",
-          [k for k, _ in wd.contact_details("call +1 415 555 0134 today")],
-          ["phone number"])
+    for spelling in ("+1 415 555 0134", "415-555-0134", "415.555.0134",
+                     "(415) 555-0134"):
+        check("%r is caught" % spelling,
+              [k for k, _ in wd.contact_details("call %s today" % spelling)],
+              ["phone number"])
 
 
 def test_the_guard_does_not_fire_on_ordinary_post_text():
@@ -63,6 +65,10 @@ def test_the_guard_does_not_fire_on_ordinary_post_text():
 def test_a_long_url_is_not_a_phone_number():
     check("digits inside a URL are ignored",
           wd.contact_details("https://luma.com/e/1234567890123"), [])
+    check("a dotted date is not a phone number",
+          wd.contact_details("on 2026.09.15 we met"), [])
+    check("a member count is not a phone number",
+          wd.contact_details("3,413 members and 1,698 more"), [])
 
 
 # --- end to end -------------------------------------------------------------

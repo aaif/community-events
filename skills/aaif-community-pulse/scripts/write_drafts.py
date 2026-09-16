@@ -55,15 +55,26 @@ DRAFTS = {
 #: three files exist to be pasted somewhere public and a slip is unrecallable.
 #: Deliberately narrow: an address needs a dotted domain (so a bare Slack
 #: @handle is not one), and a phone needs 9+ digits of run (so a date, a member
-#: count and a Luma URL are not).
+#: count and a Luma URL are not). Dots are allowed as separators so
+#: `415.555.0134` is caught like `415-555-0134`, and the match is then required
+#: to carry PHONE_MIN_DIGITS actual digits — without that, admitting the dot
+#: made `2026.09.15` a "phone number", and a false positive here refuses the
+#: whole run and teaches the writer to distrust the check.
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-PHONE_RE = re.compile(r"(?<![\w/])\+?\d[\d\s()–-]{8,}\d(?![\w/])")
+PHONE_RE = re.compile(r"(?<![\w/])\+?\d[\d\s().–-]{8,}\d(?![\w/])")
+
+
+#: A number worth masking has at least this many digits (NANP and E.164 both
+#: bottom out here). Dates, member counts and years fall short of it.
+PHONE_MIN_DIGITS = 10
 
 
 def contact_details(text):
     """Every email address or phone-shaped run in `text`, as (kind, match)."""
+    phones = [m.group(0).strip() for m in PHONE_RE.finditer(text)
+              if sum(c.isdigit() for c in m.group(0)) >= PHONE_MIN_DIGITS]
     return ([("email address", m.group(0)) for m in EMAIL_RE.finditer(text)]
-            + [("phone number", m.group(0).strip()) for m in PHONE_RE.finditer(text)])
+            + [("phone number", p) for p in phones])
 
 
 def main():

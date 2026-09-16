@@ -74,9 +74,11 @@ from aaif_events import slack as slackmod  # noqa: E402
 
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks names as a first initial
-# in every printed line. Each standalone script carries its own copy of this
-# flag and these helpers.
+# a CI log is a publication on a public repo) masks names as a first initial,
+# and addresses to a first initial plus TLD, in every printed line. Each
+# standalone script carries its own copy of this flag and these helpers —
+# including the helpers themselves, because a helper that reads another
+# module's REDACT is a helper this flag does not actually govern.
 REDACT = False
 CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
 

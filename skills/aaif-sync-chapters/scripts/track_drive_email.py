@@ -18,9 +18,12 @@ the difference between them is the fact worth being able to see. Together with
 `Slack Email` (resolve_slack_ids.py) a row shows all three identities a person
 has in this estate without any of them overwriting another.
 
-**A blank `Drive Email` on an accepted organizer is the finding.** It means no
-direct grant on their chapter folder matches any spelling of their intake
-address — they cannot open the folder, and an access request is coming.
+**A `(no grant)` in `Drive Email` on an accepted organizer is the finding.** It
+means no direct grant on their chapter folder matches any spelling of their
+intake address — they cannot open the folder, and an access request is coming.
+A *blank* cell is not the finding and never means one: it is indistinguishable
+from "this script has not run for that row yet", which is exactly why the
+sentinel is written instead.
 
 Organizers only, deliberately — the same narrowing `sync_access.ACCESS_TABS`
 makes. An accepted speaker belongs in a chapter's CRM but has no business with
@@ -46,6 +49,56 @@ from sync_access import canon_email, perms  # noqa: E402
 from sync_chapters import INTAKE_ID  # noqa: E402
 from sync_crm import (TEMPLATE_FOLDER, list_chapter_folders,  # noqa: E402
                       match_chapters, merge_people, read_role_tab)
+
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag AND these helpers — a helper imported from
+# a sibling script reads that script's REDACT, not this one's, so `--redact`
+# would not actually govern it (the exact bug invite_organizers.py had).
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def redact_id(i):
+    """Slack ids are identifiers too: CLAUDE.md names them alongside a row and
+    an address. Keep the shape (a reader can still tell two ids apart in one
+    line) without publishing the account."""
+    if not REDACT or not i:
+        return i
+    return "%s\u2026%s" % (i[:2], i[-2:]) if len(i) > 5 else "***"
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld), names (first initial) and "
+                         "Slack ids on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
 
 SOURCE = "Form Responses"
 H_EMAIL = "Email"
@@ -82,6 +135,12 @@ def grant_by_person():
     Reads permissions for every chapter folder an accepted organizer maps to.
     A person is matched to a grant by CANONICAL address, which is what makes the
     Gmail-dot case resolve rather than read as "no grant".
+
+    One entry per PERSON, not per person-and-chapter: someone who organizes two
+    chapters keeps whichever folder actually grants them access, because the
+    column this fills answers "can this person open a chapter folder at all",
+    and reporting them ungranted on the strength of their second chapter would
+    be a finding about a person who is not locked out.
     """
     folders = [f for f in list_chapter_folders() if f["name"] != TEMPLATE_FOLDER]
     people, _, _ = read_role_tab("Organizers", {})
@@ -102,7 +161,18 @@ def grant_by_person():
                 held[canon_email(q.get("emailAddress", ""))] = q.get("emailAddress")
         for p in want:
             ce = canon_email(p["email"])
-            out[ce] = (f["name"], held.get(ce))
+            grant = held.get(ce)
+            prior = out.get(ce)
+            # One person can organize two chapters. Keyed by person alone, the
+            # LAST folder iterated used to win — so someone with a grant on
+            # their first chapter's folder and none on their second was written
+            # as "(no grant)", which this script's own docstring calls the
+            # finding: "they cannot open the folder, an access request is
+            # coming". A false one of those sends ops chasing access the person
+            # already has. A grant anywhere wins; only someone with a grant on
+            # NONE of their folders is the finding.
+            if prior is None or (grant and not prior[1]):
+                out[ce] = (f["name"], grant)
     return out, no_folder
 
 
@@ -173,13 +243,16 @@ def run(write):
               "(the intake column is left alone):")
         ie = hdr.index(H_EMAIL)
         for n, v, k in differs:
-            print("   row %-5s %-34s -> %-34s %s" % (n, rows[n - 2][ie][:34], v[:34], k))
+            print("   row %-5s %-34s -> %-34s %s"
+                  % (n, redact_email(rows[n - 2][ie])[:34],
+                     redact_email(v)[:34], k))
     if missing:
         print("\nNo grant matches their address — these people CANNOT open their "
               "chapter folder:")
         for n, _v, k in missing:
             ie = hdr.index(H_EMAIL)
-            print("   row %-5s %-34s %s" % (n, rows[n - 2][ie][:34], k))
+            print("   row %-5s %-34s %s"
+                  % (n, redact_email(rows[n - 2][ie])[:34], k))
 
     if not write:
         print("\nReport only — nothing was written. Re-run with --write to fill "
@@ -198,7 +271,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--write", action="store_true",
                     help="fill the column (default: report only)")
-    run(ap.parse_args().write)
+    add_redact_flag(ap)
+    a = ap.parse_args()
+    set_redaction(a.redact)
+    run(a.write)
 
 
 if __name__ == "__main__":
