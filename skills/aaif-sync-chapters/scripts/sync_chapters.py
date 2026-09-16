@@ -317,9 +317,13 @@ def col_letter(i):
         s = chr(ord("A") + r) + s
     return s
 
-def luma_status(slug):
-    """'live' (200) / 'absent' (404) / 'unknown' (couldn't verify)."""
-    req = urllib.request.Request("https://luma.com/aaif-" + slug, method="GET",
+def url_status(url):
+    """'live' (200) / 'absent' (404) / 'unknown' (couldn't verify).
+
+    "unknown" is never treated as a pass anywhere: a page we could not reach is
+    a page a human should look at, not one we assume is fine.
+    """
+    req = urllib.request.Request(url, method="GET",
                                  headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -328,6 +332,58 @@ def luma_status(slug):
         return "absent" if e.code == 404 else "unknown"
     except (urllib.error.URLError, TimeoutError):
         return "unknown"
+
+def luma_status(slug):
+    """'live' / 'absent' / 'unknown' for the Luma page a new row would point at."""
+    return url_status("https://luma.com/aaif-" + slug)
+
+def audit_luma():
+    """Report every EXISTING feed row whose `Chapter Luma Link` is not live.
+
+    The standing replacement for the old write-time gate. Holding a new row back
+    made the engine re-propose that city every run, which is how a missing Luma
+    page stayed visible. Now that rows are written regardless, nothing would
+    mention the page again — a row with a dead "Stay Updated" button would just
+    sit there. This makes that checkable on demand across the WHOLE feed, which
+    is strictly more than the gate ever covered: the gate only ever looked at
+    the cities being added today, never at the 90 already on the sheet.
+
+    Opt-in (`--audit-luma`) because it is one HTTP request per row.
+    """
+    rows = get_values(CHAPTERS_ID, "'%s'!A:AZ" % CHAPTERS_TAB)
+    if not rows:
+        sys.exit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
+    idx = {h.strip(): i for i, h in enumerate(rows[0]) if h.strip()}
+    i_city, i_link = idx.get("City"), idx.get("Chapter Luma Link")
+    if i_city is None or i_link is None:
+        sys.exit("ABORT: --audit-luma needs both 'City' and 'Chapter Luma Link' "
+                 "on %s." % CHAPTERS_TAB)
+    dead, unknown, blank, checked = [], [], [], 0
+    for rownum, row in enumerate(rows[1:], start=2):
+        city, link = cell(row, i_city), cell(row, i_link)
+        if not city:
+            continue
+        if not link:
+            blank.append((rownum, city))
+            continue
+        checked += 1
+        st = url_status(link)
+        if st == "absent":
+            dead.append((rownum, city, link))
+        elif st == "unknown":
+            unknown.append((rownum, city, link))
+    print("\nLuma audit: %d row(s) with a link checked; %d dead, %d unverifiable, "
+          "%d row(s) with no link." % (checked, len(dead), len(unknown), len(blank)))
+    for label, items in (("DEAD (404 — the CTA button goes nowhere)", dead),
+                         ("could not verify — check by hand", unknown)):
+        if items:
+            print("  %s:" % label)
+            for rownum, city, link in items:
+                print("     row %-4d %-22s %s" % (rownum, city, link))
+    if blank:
+        print("  no Chapter Luma Link at all: %s"
+              % ", ".join("%s (row %d)" % (c, r) for r, c in blank))
+    return len(dead)
 
 # ----------------------------------------------------------------------------
 # Read the two sheets
@@ -646,7 +702,7 @@ def new_row_values(n, layout):
         vals[layout["index"][name]] = v
     return vals
 
-def partition_new_rows(new_rows, last_row, allow_missing):
+def partition_new_rows(new_rows, last_row, require_luma=False):
     """Split proposed new rows into (write, held) and renumber the written ones.
 
     A city whose Luma page is not live is HELD BACK, never written — its CTA
@@ -658,9 +714,19 @@ def partition_new_rows(new_rows, last_row, allow_missing):
     The written rows are renumbered onto consecutive rows after last_row, so a
     held city never leaves a blank row in the middle of the feed. Rows are
     copied, not mutated — the caller's proposal still describes what the report
-    showed. --allow-missing-luma writes everything, dead CTAs included.
+    showed.
+
+    The Luma gate is OPT-IN (`--require-luma`); by default every row is written.
+    It was the other way round until 2026-09-17, when the policy changed
+    (user-decided): a chapter's Luma page is made by hand and can follow the row,
+    and holding the row helped nobody — a new row is not site-ready regardless
+    until `Country`, `Summary` and `Image` are filled in by a human, so the dead
+    CTA was never what kept the page off the site. What the gate did do was
+    re-propose the city on every run, which is the visibility that
+    `--audit-luma` now provides for the whole feed rather than only for rows
+    this engine happens to be adding today.
     """
-    if allow_missing:
+    if not require_luma:
         write, held = [dict(n) for n in new_rows], []
     else:
         write = [dict(n) for n in new_rows if n.get("luma") == "live"]
@@ -715,9 +781,16 @@ def main():
     ap = argparse.ArgumentParser(description="Sync intake organizer decisions into the chapters list.")
     ap.add_argument("--write", action="store_true",
                     help="apply the proposed changes (default: report only)")
+    ap.add_argument("--require-luma", action="store_true",
+                    help="hold back a new row whose Luma page is not live yet "
+                         "(default: write it; the page is made by hand and can "
+                         "follow the row)")
     ap.add_argument("--allow-missing-luma", action="store_true",
-                    help="write new rows even if their Luma page isn't live yet "
-                         "(their CTA will point at a 404 until it is created)")
+                    help="deprecated and inert — writing without a live Luma page "
+                         "is now the default; see --require-luma")
+    ap.add_argument("--audit-luma", action="store_true",
+                    help="also check EVERY existing feed row's Chapter Luma Link "
+                         "and report the dead ones (one request per row; slow)")
     add_redact_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
@@ -725,11 +798,17 @@ def main():
     # --write recomputes from a fresh read here — a stale proposal is never applied.
     state = compute()
     print_report(state)
+    if a.allow_missing_luma:
+        print("NOTE: --allow-missing-luma is inert — writing without a live Luma "
+              "page is the default now; see --require-luma.", file=sys.stderr)
+    dead_luma = audit_luma() if a.audit_luma else 0
     drift = bool(state.adds or state.new_rows)
     if not a.write:
         # Exit convention (shared by all five engines, consumed by nightly.py):
-        # report mode exits 0 when in sync, 2 when it proposes changes.
-        return 2 if drift else 0
+        # report mode exits 0 when in sync, 2 when it proposes changes. A dead
+        # Luma link is drift too when it was asked about: the row is on the site
+        # with a button that 404s, which is pending work whoever writes it.
+        return 2 if (drift or dead_luma) else 0
     if not drift:
         return 0
 
@@ -743,11 +822,11 @@ def main():
         if "luma" not in n:
             n["luma"] = luma_status(n["slug"])
     to_write, held = partition_new_rows(state.new_rows, state.last_row,
-                                        a.allow_missing_luma)
+                                        a.require_luma)
     if held:
         print("\nHELD BACK %d new row(s) with no live Luma page (their CTA would "
-              "point at a 404): %s.\nCreate the page(s) and re-run, or re-run with "
-              "--allow-missing-luma if a dead CTA is intended."
+              "point at a 404): %s.\nCreate the page(s) and re-run, or drop "
+              "--require-luma to write them anyway."
               % (len(held), ", ".join(n["city"] for n in held)))
     if not state.adds and not to_write:
         print("Nothing else to write — every proposed change is held back.")
@@ -778,8 +857,7 @@ def main():
     # held_cities and indict a write that fully succeeded. So a re-proposed row
     # that STILL has no live Luma page is also expected — this run could never
     # have written it, whatever it is called now. (Checked only when something
-    # was held; with --allow-missing-luma nothing is, and the verify stays
-    # strict.)
+    # was held; by default nothing is, and the verify stays strict.)
     held_cities = {fold_city(h["city"]) for h in held}
     still_held, leftover_rows = [], []
     for x in after.new_rows:

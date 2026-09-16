@@ -342,24 +342,33 @@ def nrow(row, city, luma=None):
 
 _rows = [nrow(82, "Pune", "absent"), nrow(83, "Boston", "live"),
          nrow(84, "Oslo", "unknown"), nrow(85, "Kyoto", "live")]
-_write, _held = sync_chapters.partition_new_rows(_rows, 81, False)
-check("only live rows are written",
-      [n["city"] for n in _write], ["Boston", "Kyoto"])
-check("absent and unknown are both held",
-      [n["city"] for n in _held], ["Pune", "Oslo"])
-check("written rows are renumbered compactly after last_row (no blank gap)",
-      [n["row"] for n in _write], [82, 83])
-check("the caller's proposal is not mutated",
-      [n["row"] for n in _rows], [82, 83, 84, 85])
-check("a row that never got a luma status is held, not written",
-      sync_chapters.partition_new_rows([nrow(82, "Pune")], 81, False),
-      ([], [nrow(82, "Pune")]))
-_write, _held = sync_chapters.partition_new_rows(_rows, 81, True)
-check("--allow-missing-luma writes everything",
+# The gate is OPT-IN as of 2026-09-17 (user-decided): a Luma page is made by
+# hand and can follow the row, so the DEFAULT writes every city. These checks
+# are written default-first, because the default is what production runs.
+_write, _held = sync_chapters.partition_new_rows(_rows, 81)
+check("by default every row is written, live page or not",
       ([n["city"] for n in _write], _held),
       (["Pune", "Boston", "Oslo", "Kyoto"], []))
-check("--allow-missing-luma still renumbers from last_row",
+check("...renumbered compactly from last_row",
       [n["row"] for n in _write], [82, 83, 84, 85])
+check("the caller's proposal is not mutated",
+      [n["row"] for n in _rows], [82, 83, 84, 85])
+
+_write, _held = sync_chapters.partition_new_rows(_rows, 81, require_luma=True)
+check("--require-luma writes only live rows",
+      [n["city"] for n in _write], ["Boston", "Kyoto"])
+check("--require-luma holds absent AND unknown",
+      [n["city"] for n in _held], ["Pune", "Oslo"])
+check("--require-luma renumbers compactly, leaving no blank gap",
+      [n["row"] for n in _write], [82, 83])
+check("under --require-luma a row with no luma status is held, not written",
+      sync_chapters.partition_new_rows([nrow(82, "Pune")], 81, require_luma=True),
+      ([], [nrow(82, "Pune")]))
+# A row with no status must never be held by the DEFAULT path — that would
+# reinstate the gate through the back door for any caller that skips the report.
+check("by default a row with no luma status is still written",
+      [n["city"] for n in sync_chapters.partition_new_rows([nrow(82, "Pune")], 81)[0]],
+      ["Pune"])
 
 
 # --- --redact: stdout masking (default on under CI) ----------------------------

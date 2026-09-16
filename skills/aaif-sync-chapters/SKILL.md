@@ -299,13 +299,20 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   removed; same exceptions as `aaif-create-chapter`, e.g. Denver → `aaif-colorado`).
   `Country`, `Generated Geolocation`, `Summary` and `Image` are left **blank for a
   human** — the report names them; the row isn't site-ready until they're filled.
-  The report says whether the Luma page is live, and **`--write` holds back a
-  row whose page isn't live** (its CTA would point at a 404) unless you pass
-  `--allow-missing-luma` — the adds and the live rows still land, the held
-  cities are named in the output and re-propose on every run (the write exits
-  `2`, the shared drift code, until their pages exist). Held rows never leave a
-  blank row in the feed: the written rows are renumbered onto consecutive rows.
-  Page creation is manual, and a net-new city still needs
+  The report says whether the Luma page is live, and **the row is written either
+  way** (2026-09-17, user-decided: the page is made by hand and can follow the
+  row). `--require-luma` restores the old gate, holding back a row whose page
+  isn't live; held cities are named in the output, re-propose on every run, and
+  the write exits `2` until their pages exist. Held rows never leave a blank row
+  in the feed: the written rows are renumbered onto consecutive rows.
+  **Why the gate went:** a new row is not site-ready regardless until `Country`,
+  `Generated Geolocation`, `Summary` and `Image` are filled in by a human, so
+  holding it back was never what kept a dead CTA off the site — it only delayed
+  the row. What the gate *did* do was re-propose the city every run, keeping the
+  missing page visible; **`--audit-luma` replaces that** and covers more, checking
+  `Chapter Luma Link` on **every** feed row rather than only the cities being
+  added today, and exiting `2` when one 404s. It is opt-in because it costs one
+  request per row. Page creation is manual, and a net-new city still needs
   its Drive folder/assets: run **`aaif-create-chapter`** for it as the follow-up.
 - Duplicate intake rows for the same person+city are deduped (first wins, reported).
   Duplicate **chapter** rows (two rows for one city) are reported too — only the
