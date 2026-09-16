@@ -610,3 +610,48 @@ def test_retry_secs_never_raises():
     assert [slack._retry_secs(v) for v in
             ("Fri, 21 Aug 2026 07:28:00 GMT", None, "", "2.5", "30", -3)] \
         == [5, 5, 5, 2, 30, 1]
+
+
+def test_gmail_variants_folds_only_gmail():
+    """Dots are significant everywhere except Gmail, so only Gmail may fold."""
+    assert slack.gmail_variants("a.b@gmail.com") == ["a.b@gmail.com", "ab@gmail.com"]
+    assert slack.gmail_variants("a.b+tag@googlemail.com") == [
+        "a.b+tag@googlemail.com", "ab@gmail.com"]
+    # Already canonical: one spelling, so no wasted second API call.
+    assert slack.gmail_variants("ab@gmail.com") == ["ab@gmail.com"]
+    # Another host: folding here would invent an address belonging to someone else.
+    assert slack.gmail_variants("a.b@x.com") == ["a.b@x.com"]
+    assert slack.gmail_variants("") == []
+
+
+def test_lookup_emails_retries_the_gmail_canonical_spelling(monkeypatch):
+    """The dotted intake spelling misses; the canonical one is the same human."""
+    api, calls = client(monkeypatch, [
+        {"ok": False, "error": "users_not_found"},
+        {"ok": True, "user": {"id": "U1", "name": "ab",
+                              "profile": {"email": "ab@gmail.com"}}},
+    ])
+    tried = []
+    real_call = api.call
+    api.call = lambda method, **kw: (tried.append(kw["email"]), real_call(method, **kw))[1]
+    out = slack.lookup_emails(api, ["a.b@gmail.com"])
+    assert tried == ["a.b@gmail.com", "ab@gmail.com"]
+    assert len(calls) == 2
+    # Keyed by what the intake says, carrying what actually matched.
+    assert out["a.b@gmail.com"]["id"] == "U1"
+    assert out["a.b@gmail.com"]["matched_email"] == "ab@gmail.com"
+
+
+def test_lookup_emails_does_not_retry_a_non_gmail_miss(monkeypatch):
+    api, calls = client(monkeypatch, [{"ok": False, "error": "users_not_found"}])
+    out = slack.lookup_emails(api, ["a.b@x.com"])
+    assert len(calls) == 1
+    assert out["a.b@x.com"]["id"] is None
+
+
+def test_lookup_emails_stops_varying_the_spelling_on_a_fatal_error(monkeypatch):
+    """missing_scope must surface as the failure it is, not double the calls."""
+    api, calls = client(monkeypatch, [{"ok": False, "error": "missing_scope"}])
+    with pytest.raises(slack.SlackError):
+        slack.lookup_emails(api, ["a.b@gmail.com"])
+    assert len(calls) == 1

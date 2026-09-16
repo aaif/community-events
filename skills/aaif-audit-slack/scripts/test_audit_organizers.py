@@ -384,6 +384,210 @@ def test_membership_and_staff_split():
     check("no orphans", orphans, {})
 
 
+
+def test_ops_staff_at_another_domain_is_staff_not_a_stranger():
+    """An `Ops staff email` row outside the staff domain is ops, not a finding.
+
+    provision_channels.py seeds that list into EVERY organizer channel, so
+    testing the staff domain alone reported one ops admin as an unreviewed
+    stranger in 87 private rooms — the automation's own footprint rendered as
+    a finding about a person.
+    """
+    rows = [_row("Boston", org="boston-organizers")]
+    membership = {"boston-organizers": ["U9", "U8"]}
+    directory = {"U9": {"real_name": "Ops", "email": "Ops@Y.Example"},
+                 "U8": {"real_name": "Outsider", "email": "o@gmail.com"}}
+    audit, _ = ao.build_audit(rows, [], {}, membership, directory,
+                              "mlops.community", None, None,
+                              ["ops@y.example"])
+    check("ops staff listed by email is staff, whatever their domain",
+          sorted((x["name"], x["is_staff"]) for x in audit[0]["unaccounted"]),
+          [("Ops", True), ("Outsider", False)])
+
+
+def test_an_ops_domain_counts_even_without_a_seed_row():
+    """`Ops staff domain` is the second source, and the one that does not lag.
+
+    The seed list names the people provisioning ran for; anyone added to a room
+    by hand since is not on it. Testing only the singular community domain plus
+    that list re-commits the bug `ops_staff_domains` was introduced to fix.
+    """
+    rows = [_row("Boston", org="boston-organizers")]
+    membership = {"boston-organizers": ["U9", "U8"]}
+    directory = {"U9": {"real_name": "New Ops", "email": "newhire@y.example"},
+                 "U8": {"real_name": "Outsider", "email": "o@gmail.com"}}
+    audit, _ = ao.build_audit(rows, [], {}, membership, directory,
+                              "mlops.community", None, None,
+                              ops_emails=[], ops_domains=["y.example"])
+    check("an ops domain with no seed row is still staff",
+          sorted((x["name"], x["is_staff"]) for x in audit[0]["unaccounted"]),
+          [("New Ops", True), ("Outsider", False)])
+
+
+def test_ops_config_is_normalized_the_way_a_human_types_it():
+    """These values are typed into a spreadsheet by a person.
+
+    A domain written with the leading `@` and stray spacing is the likely real
+    spelling; if the normalization regressed, an ops admin reappears as an
+    unreviewed stranger in 80-odd private rooms, which is the exact failure
+    _is_staff exists to prevent.
+    """
+    rows = [_row("Boston", org="boston-organizers")]
+    membership = {"boston-organizers": ["U9", "U8"]}
+    directory = {"U9": {"real_name": "Ops", "email": "Ops@Y.Example"},
+                 "U8": {"real_name": "Also Ops", "email": "two@z.example"}}
+    audit, _ = ao.build_audit(rows, [], {}, membership, directory,
+                              "mlops.community", None, None,
+                              ops_emails=["  Ops@Y.Example  "],
+                              ops_domains=["  @Z.Example "])
+    check("a padded, cased, @-prefixed config still classifies as staff",
+          sorted((x["name"], x["is_staff"]) for x in audit[0]["unaccounted"]),
+          [("Also Ops", True), ("Ops", True)])
+
+
+def test_ops_email_list_empty_leaves_the_domain_test_alone():
+    rows = [_row("Boston", org="boston-organizers")]
+    directory = {"U8": {"real_name": "Outsider", "email": "o@gmail.com"}}
+    audit, _ = ao.build_audit(rows, [], {}, {"boston-organizers": ["U8"]},
+                              directory, "mlops.community")
+    check("no ops list, no change in verdict",
+          audit[0]["unaccounted"][0]["is_staff"], False)
+
+
+
+def test_chapters_sharing_an_organizers_channel_share_its_roster():
+    """Silicon Valley and San Francisco run out of one room.
+
+    The roster belongs to the ROOM, so the chapter with the empty CRM must not
+    report "an organizer room with nobody we accepted in it" — the room is
+    fully staffed. Borrowed people are labelled and must not inflate the
+    workspace-wide funnel, which counts people, not chapter rows.
+    """
+    rows = [_row("San Francisco", public="bay-area", org="bay-area-organizers"),
+            _row("Silicon Valley", public="bay-area", org="bay-area-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted",
+               "city": "San Francisco"}]
+    slack_ids = {"a@x.com": {"id": "U1"}}
+    membership = {"bay-area": ["U1"], "bay-area-organizers": ["U1"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {},
+                              "mlops.community")
+    sf, sv = audit
+    check("the home chapter's roster is unlabelled",
+          [(p["name"], p.get("shared_from")) for p in sf["accepted"]],
+          [("A", None)])
+    # `accepted` stays THIS chapter's people. Borrowed people live in `shared`,
+    # so an aggregate nobody remembered to filter counts each person once
+    # instead of twice — fail-safe, not fail-open.
+    check("the sharing chapter accepted nobody of its own", sv["accepted"], [])
+    check("the sharing chapter reports the room's person, labelled",
+          [(p["name"], p.get("shared_from"), p["in_organizers"])
+           for p in sv["shared"]], [("A", "San Francisco", True)])
+    check("roster() is the room: both chapters show the one person",
+          ([p["name"] for p in ao.roster(sf)], [p["name"] for p in ao.roster(sv)]),
+          (["A"], ["A"]))
+    check("a borrowed organizer is not also an unaccounted stranger",
+          sv["unaccounted"], [])
+    # The funnel counts PEOPLE. Every figure in this fixture is 1 (one person,
+    # with an account, in both rooms), so a borrowed row leaking into the
+    # aggregates shows up as a 2 and nothing else can produce one.
+    html = ao.render(audit, {}, 0, dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc))
+    check("one person in one room is counted once workspace-wide",
+          '"fval">2' in html, False)
+    check("the roster says whose chapter the borrowed organizer belongs to",
+          "via San Francisco" in html, True)
+
+
+def test_a_shared_roster_never_answers_a_question_about_this_chapter():
+    """The fail-open bug: borrowed people used to sit in `accepted`, so every
+    aggregate was wrong unless it remembered to filter them out.
+
+    "Does this chapter need a room of its own?" and "can we reach anyone here?"
+    are questions about THIS chapter's people, and a neighbour's roster must not
+    answer either.
+    """
+    rows = [_row("San Francisco", public="bay-area", org="bay-area-organizers"),
+            # No public channel and no accepted people of its own: it must not
+            # be told to create a room on the strength of SF's organizers.
+            _row("Silicon Valley", public="", org="bay-area-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted",
+               "city": "San Francisco"},
+              {"name": "B", "email": "b@x.com", "status": "Accepted",
+               "city": "San Francisco"}]
+    slack_ids = {"a@x.com": {"id": "U1"}, "b@x.com": {"id": "U2"}}
+    membership = {"bay-area": ["U1", "U2"], "bay-area-organizers": ["U1", "U2"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {},
+                              "mlops.community")
+    check("no room is proposed for a chapter whose roster is all borrowed",
+          [c["city"] for c in ao.rooms_to_create(audit)], [])
+    _, sv = audit
+    check("the borrowed roster does not make the chapter 'reachable'",
+          sv["accepted"], [])
+
+
+def test_a_borrowed_organizer_is_not_billed_to_the_borrowing_chapter():
+    """The aggregate the `shared` split exists to protect, asserted behaviourally.
+
+    Switching `absent_total` to `roster(c)` went green before this test existed:
+    the shape was right and nothing held it there. The fixture isolates ONE
+    absent person, because `absent_total` also counts people with no Slack
+    account — an earlier version of this test put such a person in the fixture
+    and so could not tell 1-billed-twice from 2-billed-once.
+    """
+    rows = [_row("San Francisco", public="bay-area", org="bay-area-organizers"),
+            _row("Silicon Valley", public="bay-area", org="bay-area-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted",
+               "city": "San Francisco"},          # resolved, NOT in the room
+              {"name": "B", "email": "b@x.com", "status": "Accepted",
+               "city": "Silicon Valley"}]         # resolved, in the room
+    slack_ids = {"a@x.com": {"id": "U1"}, "b@x.com": {"id": "U2"}}
+    membership = {"bay-area": ["U1", "U2"], "bay-area-organizers": ["U2"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {},
+                              "mlops.community")
+    html = ao.render(audit, {}, 0, dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc))
+    # The to-do line's own wording: one person is outside one room. Counting
+    # roster() bills that person to both chapters and says 2.
+    check("one absent organizer is billed once, not once per sharing chapter",
+          "Meanwhile 1 accepted organizers are missing" in html, True)
+    check("...and never twice",
+          "Meanwhile 2 accepted organizers are missing" in html, False)
+    sv = audit[1]
+    check("a borrowed row raises no issues against the borrowing chapter",
+          ao.person_issues(sv["shared"][0], sv, True), [])
+
+
+def test_a_failed_overlay_is_disclosed_on_the_page_not_just_on_stdout():
+    """A failure must never render as a finding about a person.
+
+    When the reviewed-id overlay cannot run, everyone it would have rescued
+    shows as "no Slack account" — measured-zero and failed-to-measure rendered
+    identically. The PDF goes to leadership; a note on stdout does not reach it.
+    """
+    rows = [_row("Boston", org="boston-organizers")]
+    today = dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc)
+    audit, _ = ao.build_audit(rows, [], {}, {"boston-organizers": []}, {},
+                              "mlops.community")
+    clean = ao.render(audit, {}, 0, today)
+    check("nothing is claimed when the overlay ran",
+          "could not be read this run" in clean, False)
+    failed = ao.render(audit, {}, 0, today, "OSError: sheet unreachable")
+    check("the failure is on the page", "could not be read this run" in failed, True)
+    check("...and is framed as this run's failure, not theirs",
+          "not a fact about them" in failed, True)
+    check("...naming the cause so the operator knows where to look",
+          "sheet unreachable" in failed, True)
+
+
+def test_a_chapter_with_its_own_room_borrows_nobody():
+    rows = [_row("Boston", org="boston-organizers"),
+            _row("Chicago", org="chicago-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted", "city": "Boston"}]
+    audit, _ = ao.build_audit(rows, people, {"a@x.com": {"id": "U1"}},
+                              {"boston-organizers": ["U1"], "chicago-organizers": []},
+                              {}, "mlops.community")
+    check("separate rooms keep separate rosters",
+          (len(audit[0]["accepted"]), len(audit[1]["accepted"])), (1, 0))
+
+
 def test_local_champs_unpulled_reads_as_unknown_not_absent():
     """`local_champs_ids=None` (the pull was skipped) must not collapse to
     "confirmed not a member" — that exact collapse is the bug this suite
@@ -528,7 +732,7 @@ def test_applicants_map_covers_every_row_not_just_accepted_ones():
     check("with its real status", applicants["bo@x.io"]["status"], "Prospect")
 
 
-MIN_TESTS = 45
+MIN_TESTS = 59
 
 
 def test_regional_alias_that_no_longer_resolves_aborts():

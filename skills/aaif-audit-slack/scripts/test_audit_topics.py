@@ -166,7 +166,7 @@ def test_load_topics_rejects_bad_kind():
 
 
 def test_load_topics_rejects_duplicates():
-    rows = [["Channel", "Kind"], ["#a", "topic"], ["a", "vendor"]]
+    rows = [["Channel", "Kind"], ["#a", "topic"], ["a", "software"]]
     check_raises("same channel twice", lambda: with_rows(rows)(), "twice")
 
 
@@ -219,7 +219,7 @@ def test_classify_treats_archived_as_not_live():
 
 def test_classify_partitions_subject_from_filed_out():
     topics = {"a": {"name": "a", "kind": "topic"},
-              "b": {"name": "b", "kind": "vendor"},
+              "b": {"name": "b", "kind": "software"},
               "c": {"name": "c", "kind": "geo"},
               "d": {"name": "d", "kind": "community"}}
     chans = [chan(n) for n in "abcd"]
@@ -323,8 +323,99 @@ def test_build_body_separates_the_three_undated_states():
         check("body distinguishes %r" % needle, needle in html, True)
 
 
+# --------------------------------------------------------------------------
+# the per-room flag columns — tri-state, because "?" is not "no"
+# --------------------------------------------------------------------------
+
+def test_is_alive_is_tri_state():
+    live = subject("a", act={"last_human_ts": ago(3), "window_complete": True})
+    quiet = subject("b", act={"last_human_ts": ago(400), "window_complete": True})
+    capped = subject("c", act={"last_human_unknown": True, "human_msgs": 0,
+                               "window_complete": True})
+    unmeasured = subject("d")
+    check("recent human message is live", at.is_alive(live), True)
+    check("old human message is not live", at.is_alive(quiet), False)
+    # Not False, even though the window counts may be complete: answering it
+    # here would disagree with the page's own "measured quiet" headline — one
+    # document reporting two numbers for one thing.
+    check("scan cap reached is UNKNOWN, not inactive", at.is_alive(capped), None)
+    check("never swept is UNKNOWN, not inactive", at.is_alive(unmeasured), None)
+
+
+def test_contributor_floor_never_convicts_a_truncated_scan():
+    """A truncated scan reports a FLOOR on posters: it can prove a yes, never a no."""
+    enough = subject("a", act={"posters": 5, "window_complete": True})
+    thin = subject("b", act={"posters": 2, "window_complete": True})
+    cut_high = subject("c", act={"posters": 9, "window_complete": False})
+    cut_low = subject("d", act={"posters": 2, "window_complete": False})
+    check("at the floor is a yes", at.has_contributors(enough), True)
+    check("below it on a complete scan is a no", at.has_contributors(thin), False)
+    check("a truncated scan already past the floor still proves yes",
+          at.has_contributors(cut_high), True)
+    check("a truncated scan below the floor proves nothing",
+          at.has_contributors(cut_low), None)
+    check("unmeasured proves nothing", at.has_contributors(subject("e")), None)
+
+
+def test_kind_sections_render_topics_before_software():
+    subs = [subject("fastmcp", kind="software", members=50,
+                    act={"last_human_ts": ago(400), "window_complete": True}),
+            subject("agents", kind="topic", members=900,
+                    act={"last_human_ts": ago(2), "posters": 7,
+                         "window_complete": True})]
+    html = at.build_body(subs, [], [], NOW, 2, {"age": "today", "days": 90})
+    check("both kinds get a section",
+          ("<h3>Topics" in html, "<h3>Software" in html), (True, True))
+    check("topics lead", html.index("<h3>Topics") < html.index("<h3>Software"), True)
+    check("an established problem tints the row", 'class="has-issue"' in html, True)
+    check("the flag columns render as pills",
+          ('pill-ok">live' in html, 'pill-bad">quiet' in html), (True, True))
+
+
+def test_an_unmeasured_room_is_not_tinted_as_a_finding():
+    """A row of unknowns is not a finding — tinting it would rank the rooms we
+    failed to measure alongside the worst rooms on the page."""
+    subs = [subject("a", kind="topic", members=10)]
+    subs[0]["chan"]["purpose"] = "something"
+    html = at.build_body(subs, [], [], NOW, 0, {"age": "today", "days": 90})
+    check("no tint on an all-unknown row", 'class="has-issue"' in html, False)
+    check("unknowns render as ?", 'pill-mute">?' in html, True)
+
+
+def test_the_section_sentence_counts_unknowns_as_unknown():
+    """`n_quiet` must be `alive is False`, not `not alive`.
+
+    The looser form counted a scan-capped room as quiet in the prose while its
+    own row rendered "?" — one page, two answers for one room.
+    """
+    subs = [subject("a", kind="topic", members=10,
+                    act={"last_human_ts": ago(400), "posters": 0,
+                         "window_complete": True}),
+            subject("b", kind="topic", members=9,
+                    act={"last_human_unknown": True, "posters": 0})]
+    html = at.build_body(subs, [], [], NOW, 2, {"age": "today", "days": 90})
+    check("only the established quiet room is counted", "1 quiet," in html, True)
+    check("the unmeasured one is not", "2 quiet," in html, False)
+
+
+def test_every_subject_kind_is_labelled_and_rendered():
+    """SUBJECT_KINDS is derived from KIND_LABELS — assert the derivation, or
+    dropping a label silently narrows what load_topics will accept."""
+    check("the kinds are exactly the labelled ones",
+          at.SUBJECT_KINDS, tuple(k for k, _, _ in at.KIND_LABELS))
+    check("KINDS is the union",
+          set(at.KINDS), set(at.SUBJECT_KINDS) | set(at.OTHER_KINDS))
+    subs = [subject("room-%s" % k, kind=k, members=10,
+                    act={"last_human_ts": ago(2), "posters": 7,
+                         "window_complete": True})
+            for k in at.SUBJECT_KINDS]
+    html = at.build_body(subs, [], [], NOW, len(subs), {"age": "today", "days": 90})
+    for kind, label, _ in at.KIND_LABELS:
+        check("%s renders its own section" % kind, "<h3>%s" % label in html, True)
+
+
 def main():
-    MIN_TESTS = 26
+    MIN_TESTS = 34
     ran = 0
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

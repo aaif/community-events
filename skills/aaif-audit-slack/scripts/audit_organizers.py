@@ -24,10 +24,17 @@ from collections import defaultdict
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
+# The reviewed `Slack ID` column lives with the engine that writes it. Imported
+# for READING only — this module never writes to the sheet, and resolve_slack_ids itself
+# pulls in only `lib`, so there is no import cycle back into this skill.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                "..", "..", "aaif-sync-chapters", "scripts"))
 
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
-from aaif_events.slack import Slack, channels, lookup_emails, members, scrubbed_env  # noqa: E402
+from aaif_events.slack import (Slack, SlackError, channels,  # noqa: E402
+                               lookup_emails, members, scrubbed_env)
+import resolve_slack_ids as rsi  # noqa: E402
 
 read_cache, write_cache, cache_age = jsoncache.read, jsoncache.write, jsoncache.age
 
@@ -63,6 +70,10 @@ CONFIG_LABELS = {
 #: refused a real ops admin at the other domain on the first live run; a guard
 #: that silently drops a legitimate member is worse than the gap it closes.
 #: Empty means the guard is off, and resolve_ops says so.
+#: The reverse of CONFIG_LABELS, for messages that must name the sheet row a
+#: human would go and look for rather than the snake_case key they never see.
+CONFIG_LABELS_BY_KEY = {v: k for k, v in CONFIG_LABELS.items()}
+
 LIST_SETTINGS = ("public_prefixes", "organizer_suffixes", "ops_staff_emails",
                  "ops_staff_domains")
 
@@ -634,11 +645,55 @@ def check_membership_floor(membership, chans, chans_cached, refetch, note=print)
     return chans
 
 
+def roster(c):
+    """Everyone this chapter's organizer room holds that we accepted somewhere.
+
+    `accepted` is THIS chapter's people; `shared` is the people of a chapter
+    that runs out of the same room (see build_audit). Room-level questions —
+    "does this room have anyone we vetted in it", "how many of the people in
+    this room are in the public channel" — read this. Questions about the
+    chapter's own people read `accepted` directly.
+
+    `.get` because a chapter dict can predate the key in two ways, and one of
+    them is a live path: `summarize_audits` reads `audit.json` from the cache,
+    which a previous version wrote with `accepted` alone, and the cache is
+    stamped with the workspace but carries no schema version. Test fixtures
+    built by hand are the second. Deleting the `.get` after fixing the fixtures
+    would turn a stale cache into a KeyError mid-report.
+    """
+    return list(c["accepted"]) + list(c.get("shared") or ())
+
+
+def _is_staff(addr, staff_domains, ops_emails):
+    """Is this organizer-channel member AAIF ops rather than a stranger?
+
+    Two tests, because the sheet records ops two ways and both are load-bearing.
+    `Ops staff email` is the per-person list `provision_channels.py` seeds into
+    EVERY organizer channel — so an ops person is in 80-odd private rooms by the
+    repo's own doing, and testing a domain alone reported each of those
+    memberships as an unreviewed stranger. That is the failure mode the skill
+    forbids: the automation's own footprint rendered as a finding about a
+    person, ranked second in the summary, on 87 chapter rows.
+
+    `staff_domains` is a LIST for the reason `ops_staff_domains`' own comment
+    records — "ops staff are not all at one domain; this estate's roster spans
+    two" — a lesson learned when the singular `staff_email_domain` refused a
+    real ops admin on the first live run. Testing the singular value alone here
+    would re-commit exactly that: an ops person at the second domain who is not
+    on the seed list reads as a stranger again, and the seed list is the one
+    thing guaranteed to lag, since it names the people provisioning ran for and
+    not the ones added to a room by hand since.
+    """
+    return bool(addr) and (addr in ops_emails
+                           or any(addr.endswith("@" + d) for d in staff_domains if d))
+
+
 def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
-                applicants=None, local_champs_ids=None):
+                applicants=None, local_champs_ids=None, ops_emails=(),
+                ops_domains=()):
     """Join the sheet data to the Slack data, per chapter.
 
-    Each chapter record gains `accepted` (people, each with `slack_id`,
+    Each chapter record gains `accepted` and `shared` (people, each with `slack_id`,
     `slack_account`, `handle`, `in_public`, `in_organizers`, `in_local_champs`,
     `in_country_channel`) and `unaccounted` (everyone in the organizers
     channel we never accepted, each with `handle`, `is_staff`, `unresolved`,
@@ -649,6 +704,15 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
     `intake_status` is what separates "a stranger is in the private room" from
     "someone we are still deciding on is in the private room, doing the work,
     and locked out of the Drive folder because acceptance is what grants it".
+
+    A chapter sharing its organizers channel with another also gains a `shared`
+    key: that chapter's accepted people, each carrying `shared_from` (the city
+    they were accepted for). `accepted` stays this chapter's OWN people, so a
+    workspace-wide total that reads it counts each person once without having to
+    remember anything. Room-level questions read `roster(c)` — the two lists
+    together — and `shared` is load-bearing there, not decorative: it is what
+    keeps a neighbour's vetted organizer from being reported as a stranger in
+    the room they share.
 
     `local_champs_ids` is the one workspace-wide room's membership (a flat id
     set, not per-chapter) — `None` reads as "unknown" (never as "nobody"), so a
@@ -663,6 +727,13 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
     `False` into one meaning anywhere downstream.
     """
     lc_ids = local_champs_ids
+    # Not `e` as the loop name — `e` is html.escape everywhere else in this file.
+    ops = {addr.strip().lower() for addr in (ops_emails or ()) if addr.strip()}
+    # The singular community domain is just one member of the ops-domain list;
+    # holding them in one tuple means every caller asks one question.
+    staff_domains = tuple(d.strip().lower().lstrip("@")
+                          for d in ([staff_domain] + list(ops_domains or ()))
+                          if d and d.strip())
     lookup = {}
     for r in rows:
         key = fold_tight(r["city"])
@@ -676,6 +747,15 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
                 "organizer attribution would be silently wrong. Merge or rename "
                 "the rows on the Chapters List." % (lookup[key], r["city"], key))
         lookup[key] = r["city"]
+
+    # channel -> the cities running out of it, built once. The per-chapter loop
+    # used to rescan every row looking for channel-mates; grouping first says
+    # what the code is doing (these chapters share a room) instead of leaving
+    # the reader to infer it from a nested scan.
+    by_org_channel = defaultdict(list)
+    for r in rows:
+        if r["organizers_channel"]:
+            by_org_channel[r["organizers_channel"]].append(r["city"])
 
     by_city, orphans = defaultdict(list), defaultdict(list)
     for person in people:
@@ -695,11 +775,33 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
         country_channel = r.get("country_channel")
         country_ids = set(membership[country_channel]) if country_channel else set()
 
-        accepted = []
-        for person in by_city.get(r["city"], []):
+        # Two chapters can point at ONE organizers channel — Silicon Valley and
+        # San Francisco both run out of #bay-area-organizers. The roster is a
+        # property of the room, so both chapters report it; without this the
+        # chapter whose CRM is empty reads as "an organizer room with nobody we
+        # accepted in it", which is a finding about a room that is in fact fully
+        # staffed.
+        #
+        # They go in their OWN key, never into `accepted`. Mixing them in and
+        # filtering them back out at each aggregate is fail-open: it is right
+        # only at the call sites someone remembered to edit, and silently wrong
+        # at every other present and future reader of `accepted` — which was not
+        # theoretical, it made "this chapter needs a room of its own" and "nobody
+        # here has a Slack account" answer partly from another chapter's people.
+        # A separate key is fail-safe: a question about THIS chapter's people
+        # reads `accepted`, a question about the ROOM reads `roster(c)`, and the
+        # choice is visible in the line that makes it.
+        borrowed = [dict(q, shared_from=city)
+                    for city in by_org_channel.get(r["organizers_channel"], ())
+                    if city != r["city"]
+                    for q in by_city.get(city, [])]
+
+        accepted, shared = [], []
+        for person in list(by_city.get(r["city"], [])) + borrowed:
             hit = slack_ids.get(person["email"]) or {}
             uid = hit.get("id")
-            accepted.append({**person, "slack_id": uid, "slack_account": bool(uid),
+            (shared if person.get("shared_from") else accepted).append(
+                            {**person, "slack_id": uid, "slack_account": bool(uid),
                              "handle": hit.get("name", ""),
                              "in_public": bool(uid and uid in pub_ids),
                              "in_organizers": bool(uid and uid in org_ids),
@@ -708,7 +810,11 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
                              "in_local_champs": None if lc_ids is None
                                                 else bool(uid and uid in lc_ids)})
 
-        known = {p["slack_id"] for p in accepted if p["slack_id"]}
+        # The room's whole roster, not just this chapter's share of it: a person
+        # accepted for the chapter next door is someone we accepted, so listing
+        # them as an unreviewed stranger in the room they share is exactly the
+        # false finding this key exists to prevent.
+        known = {p["slack_id"] for p in accepted + shared if p["slack_id"]}
         extras = []
         for uid in sorted(org_ids - known):
             u = directory.get(uid)
@@ -731,13 +837,14 @@ def build_audit(rows, people, slack_ids, membership, directory, staff_domain,
                            "name": u.get("real_name") or u.get("name") or uid,
                            "email": u.get("email", ""),
                            "handle": u.get("name", ""),
-                           "is_staff": addr.endswith("@" + staff_domain),
+                           "is_staff": _is_staff(addr, staff_domains, ops),
                            "unresolved": False,
                            "in_country_channel": in_country,
                            "intake_status": app.get("status", ""),
                            "intake_city": app.get("city", ""),
                            "in_local_champs": in_lc, "in_public": in_pub})
-        out.append({**r, "accepted": accepted, "unaccounted": extras})
+        out.append({**r, "accepted": accepted, "shared": shared,
+                    "unaccounted": extras})
     return out, dict(orphans)
 
 
@@ -773,6 +880,16 @@ def person_issues(p, c, is_accepted):
     the exact per-row logic that decides which rows get tinted deserves its
     own tests, not just an assertion on rendered HTML.
     """
+    # A borrowed row (see build_audit) is someone else's organizer, shown here
+    # because they are in the room this chapter shares. Their chapter's own
+    # section raises their issues, against their OWN public and country
+    # channels — judging them here produced "not in #<this chapter's public
+    # channel>" for a person for whom that is not their chapter's channel at
+    # all, which is a finding about a person that nobody can act on and that
+    # the person's own chapter contradicts two sections further down.
+    if is_accepted and p.get("shared_from"):
+        return []
+
     issues = []
     if is_accepted:
         if not p["slack_account"]:
@@ -814,7 +931,7 @@ class RenderedBody(NamedTuple):
     js: str
 
 
-def render_body(audit, orphans, dupes, today):
+def render_body(audit, orphans, dupes, today, overlay_failed=None):
     """Return (chapters_body, organizers_body, js) — two fragments, not one.
 
     "Does the room exist" (Chapters: the numbers, the coverage matrix) and
@@ -824,6 +941,8 @@ def render_body(audit, orphans, dupes, today):
     section. The standalone report (`render`, below) concatenates both back
     into one page — nothing is lost running this file on its own.
     """
+    # `accepted` holds only this chapter's own people, so counting it straight
+    # counts each person once even where two chapters share a room.
     allp = [p for c in audit for p in c["accepted"]]
     S = {
         "chapters": len(audit),
@@ -856,15 +975,22 @@ def render_body(audit, orphans, dupes, today):
     matrix, total_issues, worst_issues = [], 0, []
     for c in audit:
         state = "own" if c["public"] else ("regional" if c["regional"] else "none")
-        n = len(c["accepted"])
-        inp = sum(1 for p in c["accepted"] if p["in_public"])
-        ino = sum(1 for p in c["accepted"] if p["in_organizers"])
-        inlc = sum(1 for p in c["accepted"] if p["in_local_champs"])
+        # The ROOM's roster: this row is read as "who is in this chapter's
+        # channels", and a chapter sharing a room with its neighbour has the
+        # neighbour's organizers in it whatever the CRM says.
+        people = roster(c)
+        n = len(people)
+        inp = sum(1 for p in people if p["in_public"])
+        ino = sum(1 for p in people if p["in_organizers"])
+        inlc = sum(1 for p in people if p["in_local_champs"])
         # None (the pull was skipped) must never render as a confident 0 —
         # that's the exact collapse local_champs_ids' own contract forbids.
-        lc_unknown = bool(c["accepted"]) and all(
-            p["in_local_champs"] is None for p in c["accepted"])
-        nos = sum(1 for p in c["accepted"] if not p["slack_account"])
+        lc_unknown = bool(people) and all(
+            p["in_local_champs"] is None for p in people)
+        nos = sum(1 for p in people if not p["slack_account"])
+        # This chapter's own people only: an absent organizer is one invite to
+        # send, and billing it to both chapters that share the room would list
+        # the same fix twice.
         n_issues = (sum(len(person_issues(p, c, True)) for p in c["accepted"])
                     + sum(len(person_issues(p, c, False)) for p in c["unaccounted"]
                           if not p["unresolved"] and not p["is_staff"]))
@@ -897,23 +1023,24 @@ def render_body(audit, orphans, dupes, today):
                ('<span class="bad">%d</span>' % nos) if nos else '<span class="nil">0</span>',
                ('<span class="bad">%d</span>' % n_issues) if n_issues else '<span class="nil">0</span>'))
 
-    def yn(v):
-        if v is None:
-            return '<span class="nil">?</span>'
-        return '<span class="pill pill-%s">%s</span>' % (("ok", "yes") if v else ("bad", "no"))
-
     detail = []
     for c in audit:
-        roster = [(p, True) for p in c["accepted"]]
-        roster += [(p, False) for p in c["unaccounted"]
+        people = [(p, True) for p in roster(c)]
+        people += [(p, False) for p in c["unaccounted"]
                   if not p["unresolved"] and not p["is_staff"]]
-        if not roster and not c["organizers_channel"]:
+        if not people and not c["organizers_channel"]:
             continue
         rows_html = []
-        for p, is_accepted in sorted(roster, key=lambda pair: (not pair[1], pair[0]["name"].lower())):
+        for p, is_accepted in sorted(people, key=lambda pair: (not pair[1], pair[0]["name"].lower())):
             issues = person_issues(p, c, is_accepted)
             if is_accepted:
+                # Say whose chapter they were accepted for. Without the label a
+                # shared room reads as two chapters each with their own roster,
+                # which is the opposite of what the shared channel means.
                 status_html = "Accepted"
+                if p.get("shared_from"):
+                    status_html += ('<span class="tag tag-reg">via %s</span>'
+                                    % e(p["shared_from"]))
             elif p.get("intake_status"):
                 status_html = e(p["intake_status"])
             else:
@@ -936,11 +1063,11 @@ def render_body(audit, orphans, dupes, today):
                    else '<span class="nil">—</span>',
                    e(p["email"]) if p.get("email") else '<span class="nil">—</span>',
                    status_html,
-                   yn(in_pub) if c["public"] else '<span class="nil">—</span>',
-                   yn(in_org) if c["organizers_channel"] else '<span class="nil">—</span>',
-                   yn(p["in_country_channel"]) if c.get("country_channel")
+                   rs.yesno(in_pub, "yes", "no") if c["public"] else '<span class="nil">—</span>',
+                   rs.yesno(in_org, "yes", "no") if c["organizers_channel"] else '<span class="nil">—</span>',
+                   rs.yesno(p["in_country_channel"], "yes", "no") if c.get("country_channel")
                    else '<span class="nil">—</span>',
-                   yn(p["in_local_champs"]),
+                   rs.yesno(p["in_local_champs"], "yes", "no"),
                    ("; ".join(e(x) for x in issues) if issues
                     else '<span class="nil">none</span>')))
         chips = " ".join(x for x in [
@@ -1032,6 +1159,18 @@ def render_body(audit, orphans, dupes, today):
             "Half a day", "Ops", "next"))
 
     notes = []
+    if overlay_failed:
+        # First, and phrased as OUR failure. Without this the page states "no
+        # Slack account" for every organizer the column would have rescued —
+        # measured-zero and failed-to-measure rendered identically, which is the
+        # one thing this skill's house rules forbid.
+        notes.append("<li><strong>The reviewed &lsquo;%s&rsquo; column could not be "
+                     "read this run</strong> (%s). Organizers whose only known "
+                     "identity is that column are shown below as having no Slack "
+                     "account. That is this run&rsquo;s failure, not a fact about "
+                     "them — re-run once the sheet is reachable before acting on "
+                     "those rows.</li>"
+                     % (e(rsi.H_SLACK_ID), e(overlay_failed)))
     if orphans:
         notes.append("<li><strong>%d intake cities matched no chapter row</strong>: %s. Fix the "
                      "intake city or add the chapter row, then re-run.</li>"
@@ -1207,11 +1346,12 @@ def strip_controls(body):
     return re.sub(r'<div class="controls".*?</div>', "", body, flags=re.S)
 
 
-def render(audit, orphans, dupes, today):
+def render(audit, orphans, dupes, today, overlay_failed=None):
     """The standalone document — Chapters and Organizers concatenated back
     into one page. `render_body` is the seam the combined summary composes
     from — see summarize_audits.py."""
-    chapters_body, organizers_body, js = render_body(audit, orphans, dupes, today)
+    chapters_body, organizers_body, js = render_body(
+        audit, orphans, dupes, today, overlay_failed)
     return rs.page("Slack Organizers Audit", chapters_body + organizers_body, script=js)
 
 
@@ -1226,6 +1366,19 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config()
+    if not cfg["ops_staff_emails"]:
+        # Not fatal — provision_channels is the only consumer that REQUIRES the
+        # list, and taking the audit down over a setting it can run without
+        # would be worse. But silence is not an option either: with the list
+        # empty, every ops person seeded into every organizers channel is
+        # reported as an unreviewed stranger, which once put 87 such rows in
+        # front of leadership ranked as the second thing to fix. A config gap
+        # must not read as a finding about people.
+        print("  WARNING: no %r rows on the %r tab. AAIF ops staff seeded into "
+              "every organizers channel will be counted as unreviewed people — "
+              "that is a config gap, not a finding about them."
+              % (CONFIG_LABELS_BY_KEY["ops_staff_emails"], SLACK_CONFIG_TAB),
+              file=sys.stderr)
     # Before any collection: these paths will hold organizer names, email
     # addresses and private-channel rosters, and this repo is public.
     rs.assert_git_ignored(args.cache + os.sep, args.out + ".html")
@@ -1305,6 +1458,45 @@ def main():
               % (len(outstanding), len(slack_ids)))
         slack_ids.update(lookup_emails(api, sorted(outstanding)))
         write_cache(ids_path, slack_ids, team_id)
+    # Overlay the reviewed column AFTER the cache is written, never into it: the
+    # cache is a record of what an email lookup said, and folding a sheet value
+    # into it would make a later run unable to tell the two apart. Applied fresh
+    # each run so an edited column takes effect immediately.
+    overlay_failed = None
+    try:
+        filled, conflicts = rsi.overlay_known(api, slack_ids)
+    except (OSError, ValueError, KeyError, IndexError, SlackError) as exc:
+        # The audit must still run if the intake sheet is unreachable — this is
+        # an enrichment, not a dependency. But the people it would have rescued
+        # then render as "no Slack account", which is a confident finding
+        # produced by a failure, so the page has to say so on its face; a note
+        # on stdout does not reach the PDF that goes to leadership.
+        #
+        # Narrow, not `except Exception`: a JSON decode error, a renamed intake
+        # header and a broken token are different operator instructions, and
+        # the blanket form printed "could not read the column" for all of them —
+        # actively wrong for most. Anything outside this list is a bug in our
+        # own code and should abort loudly. `SystemExit` from gws() is not an
+        # Exception subclass and stays uncaught, which is correct.
+        filled, conflicts = 0, []
+        overlay_failed = "%s: %s" % (type(exc).__name__, exc)
+        print("  WARNING: the %r overlay failed (%s). Organizers known only by "
+              "that column are reported below as unreachable — that is THIS "
+              "RUN's failure, not a fact about them."
+              % (rsi.H_SLACK_ID, overlay_failed), file=sys.stderr)
+    if filled:
+        print("  %d organizer(s) resolved from the reviewed %r column."
+              % (filled, rsi.H_SLACK_ID))
+    if conflicts:
+        # Deliberately a COUNT, not the rows. Every other print in this engine
+        # emits counts only, and this engine has no --redact block of its own —
+        # so naming the people here would make the audit's stdout the one
+        # PII-bearing surface in it, on a repo whose CI logs are world-readable
+        # forever. resolve_slack_ids.py is where the rows belong: it is the
+        # engine that can act on them, and it masks what it prints.
+        print("  %d conflict(s) between a live lookup and the %r column — run "
+              "resolve_slack_ids.py to list and fix them; the live answer is "
+              "used here." % (len(conflicts), rsi.H_SLACK_ID))
     resolved = sum(1 for email in wanted if (slack_ids.get(email) or {}).get("id"))
     blank = sum(1 for p in people if not p["email"])
     print("  %d/%d organizers resolved to a Slack account%s"
@@ -1383,12 +1575,14 @@ def main():
 
     audit, orphans = build_audit(rows, people, slack_ids, membership, directory,
                                  cfg["staff_email_domain"], applicants,
-                                 local_champs_ids)
+                                 local_champs_ids, cfg["ops_staff_emails"],
+                                 cfg["ops_staff_domains"])
     write_cache(os.path.join(args.cache, "audit.json"),
                 {"chapters": audit, "orphan_cities": orphans, "duplicates": dupes},
                 team_id)
 
-    html_doc = render(audit, orphans, dupes, dt.datetime.now(dt.timezone.utc))
+    html_doc = render(audit, orphans, dupes, dt.datetime.now(dt.timezone.utc),
+                      overlay_failed)
     html_path = args.out + ".html"
     rs.write_private(html_path, html_doc)
     print("wrote %s" % html_path)

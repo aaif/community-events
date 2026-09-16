@@ -90,6 +90,20 @@ repos:
         language: python
         pass_filenames: false
         files: '\.py$'
+  # --- Real people's identifiers never enter a public repo ------------------
+  # A real organizer's address and two real Slack ids were committed here once,
+  # under a rule in AGENTS.md that already forbade it. Rewriting history cleaned
+  # the branch and left the old commit served at its SHA, which only GitHub can
+  # finish removing. `files` is deliberately broad — the address went into a
+  # docstring in lib/, not into a test.
+  - repo: local
+    hooks:
+      - id: check-no-real-pii
+        name: no real person's email or Slack id in tracked files
+        entry: python3 scripts/check_no_real_pii.py
+        language: python
+        pass_filenames: false
+        files: '\.(py|md|json|txt|ya?ml|html|css)$'
   # --- Generated design tokens must match the design system -------------------
   # design/aaif-tokens.css is derived from design/aaif-design-system.html. A
   # stale copy is worse than none: reports keep rendering, and keep looking

@@ -412,8 +412,14 @@ class _FakeSlackmod:
         return {"a@x.com": {"id": "U1", "name": "ada"}}
 
 
-_proposals, _unresolved = sr.propose_handles(
-    [ch("Oslo", row=7, handles="")], _FakeAO(), None, _FakeSlackmod())
+# `known_ids` is stubbed because propose_handles now consults the reviewed
+# `Slack ID` column through resolve_slack_ids, which shells out to `gws`. A test
+# that reaches a real CLI passes only where that CLI is installed and
+# authenticated — it went green here and failed in CI, which has neither, and it
+# would read live Drive data if it ever did run.
+with mock.patch.object(sr.rsi, "known_ids", lambda: {}):
+    _proposals, _unresolved = sr.propose_handles(
+        [ch("Oslo", row=7, handles="")], _FakeAO(), None, _FakeSlackmod())
 check("propose_handles() runs to completion against a 3-tuple read_intake()",
       len(_proposals), 1)
 check("the resolved organizer's handle is proposed",

@@ -584,6 +584,43 @@ def history_activity(api, channel_id, oldest, max_scan=5000, include_posters=Fal
     return out
 
 
+def gmail_variants(email):
+    """The spellings of `email` worth trying against Slack, most literal first.
+
+    On CONSUMER Gmail, `first.last@gmail.com` and `firstlast@gmail.com` are one
+    mailbox, and `+tag` delivers to the base mailbox (the tag is preserved in
+    the headers — that is the point of the feature — but it does not change
+    where mail lands). Slack does NOT fold either: it stores whatever the person
+    typed when they signed up and matches `users.lookupByEmail` on that exact
+    string, so an intake row spelled with dots misses an account spelled
+    without them and the person is reported as having no Slack at all. Verified
+    live against this workspace on 2026-09-14: the dotted spelling of a real
+    organizer's address returned `users_not_found` while the dotless spelling
+    of the same mailbox returned `ok` for the same person. In the synthetic
+    shape this repo uses: `a.b@gmail.com` misses where `ab@gmail.com` hits.
+
+    ONLY gmail.com and googlemail.com (the same mailbox) fold, and the limit is
+    load-bearing rather than conservative. Dot-insensitivity is a property of
+    consumer Gmail, NOT of Google generally: a Google Workspace account on a
+    custom domain treats dots as significant, so `first.last@acme.com` and
+    `firstlast@acme.com` are two different people. Folding by "looks like it is
+    hosted at Google" would make this function *invent* an address and could
+    resolve one person's intake row onto another person's account — the one
+    failure this must never have. Mirrors sync_access.canon_email, which fixed
+    the identical bug on the Drive side; the two are deliberately separate
+    copies because `lib` must not import a skill script.
+    """
+    e = (email or "").strip().lower()
+    local, _, domain = e.partition("@")
+    if domain not in ("gmail.com", "googlemail.com"):
+        return [e] if e else []
+    # Strip the +tag and the dots: both are consumer-Gmail routing sugar that
+    # Slack stores verbatim, so the tagless, dotless form is the spelling most
+    # likely to be what the account was actually registered under.
+    canon = local.split("+", 1)[0].replace(".", "") + "@gmail.com"
+    return [e] if canon == e else [e, canon]
+
+
 def lookup_emails(api, emails, progress=None):
     """Map each email to its Slack account, or to a genuine miss.
 
@@ -604,15 +641,52 @@ def lookup_emails(api, emails, progress=None):
     into the audit's headline finding, stated with total confidence.
     """
     resolved, failures = {}, []
-    for i, email in enumerate(sorted(set(e for e in emails if e)), 1):
-        payload = api.call("users.lookupByEmail", email=email)
+    # `.strip()`, not truthiness: a cell holding only whitespace — a non-breaking
+    # space is the usual artefact of a pasted spreadsheet value — is not an
+    # address, and letting one through was not merely useless (see below).
+    for i, email in enumerate(sorted(set(e for e in emails if e and e.strip())), 1):
+        # Seed the miss BEFORE the loop. `gmail_variants` returns [] for an
+        # address that strips to empty, so the loop body can run zero times —
+        # and `payload`/`candidate` are loop-scoped names that outlive the
+        # previous iteration. Without this seed, such a row silently inherited
+        # the PREVIOUS person's successful payload and was recorded with their
+        # account id and their address as `matched_email`. That id is what
+        # invite_organizers acts on, so the failure was "invite a stranger into
+        # a private organizers channel" — the one outcome gmail_variants' own
+        # docstring says this must never have. The input filter above now
+        # rejects such a cell too; this seed is the belt to that braces, since
+        # the invariant must not depend on one caller's filter.
+        payload, candidate = {"ok": False, "error": "blank_address"}, email
+        # Try the address as written first, then its Gmail-canonical spelling.
+        # Order matters: the literal spelling is what the person told us, so a
+        # hit on it is never second-guessed, and the fallback only ever runs
+        # where the literal already missed.
+        for candidate in gmail_variants(email):
+            payload = api.call("users.lookupByEmail", email=candidate)
+            if payload.get("ok"):
+                break
+            error = payload.get("error", "unknown")
+            # A non-absence error (missing_scope, invalid_auth) is fatal for the
+            # whole run, so stop varying the spelling and let it be reported —
+            # retrying a canonical form against a broken token just doubles the
+            # calls and can turn the fatal error into a benign-looking miss.
+            if error not in BENIGN_LOOKUP_MISSES:
+                break
         if payload.get("ok"):
             user = payload["user"]
             profile = user.get("profile") or {}
             resolved[email] = {
                 "id": user["id"], "name": user.get("name"),
                 "real_name": user.get("real_name") or profile.get("real_name", ""),
-                "deleted": user.get("deleted", False)}
+                "deleted": user.get("deleted", False),
+                # The spelling that actually resolved. Differs from the key only
+                # when the Gmail fallback did the work, which is exactly the case
+                # an operator needs to see to fix the intake row at the source.
+                # `profile`, not a second `.get("profile", {})`: Slack can return
+                # "profile": null (key present, value null), where the re-derived
+                # form raises AttributeError mid-sweep. The local above already
+                # collapses that with `or {}`.
+                "matched_email": profile.get("email") or candidate}
         else:
             error = payload.get("error", "unknown")
             resolved[email] = {"id": None, "error": error}
