@@ -25,6 +25,17 @@ A *blank* cell is not the finding and never means one: it is indistinguishable
 from "this script has not run for that row yet", which is exactly why the
 sentinel is written instead.
 
+**The column is also an INPUT, which is why this script does not own every
+cell.** `sync_access.py` grants the address recorded here in preference to the
+intake `Email` — that is the supported fix for someone whose intake address has
+no Google account behind it, which Drive refuses to share with at all. So a
+human writes into this column too, and a hand-entered address that Drive has not
+granted yet is reported and **left alone** rather than overwritten with
+`(no grant)`: this script derives its values from the ACL, and the window
+between recording an address and sync_access acting on it is precisely when the
+derived value is wrong. Anything already on the ACL is still written from the
+ACL, including a grant made under the recorded address.
+
 Organizers only, deliberately — the same narrowing `sync_access.ACCESS_TABS`
 makes. An accepted speaker belongs in a chapter's CRM but has no business with
 write access to its Drive folder, so there is no grant to record for them.
@@ -45,7 +56,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "..", "lib"))
 
 from aaif_events.slack import scrubbed_env  # noqa: E402
-from sync_access import canon_email, perms  # noqa: E402
+from sync_access import (H_DRIVE_EMAIL, H_EMAIL, NO_GRANT, SOURCE,  # noqa: E402
+                         canon_email, looks_like_address, perms,
+                         reviewed_drive_emails)
 from sync_chapters import INTAKE_ID  # noqa: E402
 from sync_crm import (TEMPLATE_FOLDER, list_chapter_folders,  # noqa: E402
                       match_chapters, merge_people, read_role_tab)
@@ -100,15 +113,10 @@ def set_redaction(on):
               if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
 
 
-SOURCE = "Form Responses"
-H_EMAIL = "Email"
-#: The column this script owns. Created at the right-hand end if absent.
-H_DRIVE_EMAIL = "Drive Email"
-#: Written when an accepted organizer's chapter folder carries no grant matching
-#: any spelling of their address. A visible sentinel, not a blank — a blank cell
-#: is indistinguishable from "this script has not run yet", and the whole point
-#: of the column is that the empty case is the one worth acting on.
-NO_GRANT = "(no grant)"
+#: SOURCE / H_EMAIL / H_DRIVE_EMAIL / NO_GRANT come from sync_access, which
+#: READS this column to decide where a grant goes. One definition, because the
+#: sentinel's exact spelling is now load-bearing in two scripts: sync_access
+#: must recognise `(no grant)` as "not an address" rather than try to grant it.
 
 
 def gws(args):
@@ -146,6 +154,11 @@ def grant_by_person():
     people, _, _ = read_role_tab("Organizers", {})
     by_folder, orphans, _near = match_chapters(merge_people(people), folders)
 
+    # A grant made to someone's recorded address is still THEIR grant. Matching
+    # on the intake spelling alone reported them "(no grant)" the moment
+    # sync_access honoured the column — the script writing the finding that its
+    # own column had already answered.
+    reviewed = reviewed_drive_emails()
     out, no_folder = {}, {}
     for o in orphans:
         for p in o["people"]:
@@ -161,7 +174,8 @@ def grant_by_person():
                 held[canon_email(q.get("emailAddress", ""))] = q.get("emailAddress")
         for p in want:
             ce = canon_email(p["email"])
-            grant = held.get(ce)
+            alt = reviewed.get(ce)
+            grant = held.get(ce) or (held.get(canon_email(alt)) if alt else None)
             prior = out.get(ce)
             # One person can organize two chapters. Keyed by person alone, the
             # LAST folder iterated used to win — so someone with a grant on
@@ -202,28 +216,42 @@ def ensure_column(hdr, create):
     return ci
 
 
-def plan(hdr, rows, granted, no_folder):
-    """[(row, value, kind)] for every Form Responses row that maps to a grant."""
+def plan(hdr, rows, granted, no_folder, ci=None):
+    """([(row, value, kind)], [(row, address, kind)]) — writes, then requests.
+
+    The second list is the addresses a HUMAN put in the column that Drive has
+    not granted yet. They are deliberately NOT writes: this script derives its
+    values from the ACL, so it would replace every one of them with `(no grant)`
+    — erasing the operator's answer to "which address should this person be
+    granted under" between the moment they record it and the moment sync_access
+    acts on it. That window is the whole point of the column being an input.
+    """
     ie = hdr.index(H_EMAIL)
-    out = []
+    out, pending = [], []
     for n, r in enumerate(rows, 2):
         email = (r[ie] or "").strip()
         if not email:
             continue
+        current = (r[ci] or "").strip() if ci is not None and ci < len(r) else ""
         ce = canon_email(email)
         if ce in granted:
             chapter, addr = granted[ce]
             if addr:
-                # The ACL spelling always canonicalizes back to `ce` — that is
-                # how it matched — so the only question left is whether it is
-                # spelled the same way the person typed it.
+                # The ACL spelling canonicalizes back to `ce`, or to the address
+                # recorded for them — that is how it matched — so the only
+                # question left is whether it is spelled the way they typed it.
                 kind = "same" if addr.lower() == email.lower() else "differs"
                 out.append((n, addr, "%s/%s" % (chapter, kind)))
+            elif looks_like_address(current) and canon_email(current) != ce:
+                pending.append((n, current, "%s/recorded, not granted yet" % chapter))
             else:
                 out.append((n, NO_GRANT, "%s/missing" % chapter))
         elif ce in no_folder:
-            out.append((n, NO_GRANT, "%s/no folder yet" % no_folder[ce]))
-    return out
+            if looks_like_address(current) and canon_email(current) != ce:
+                pending.append((n, current, "%s/no folder yet" % no_folder[ce]))
+            else:
+                out.append((n, NO_GRANT, "%s/no folder yet" % no_folder[ce]))
+    return out, pending
 
 
 def run(write):
@@ -231,7 +259,7 @@ def run(write):
     ci = ensure_column(hdr, create=write)
     rows = [r + [""] * (ci + 1 - len(r)) for r in rows]
     granted, no_folder = grant_by_person()
-    wanted = plan(hdr, rows, granted, no_folder)
+    wanted, pending = plan(hdr, rows, granted, no_folder, ci)
 
     differs = [(n, v, k) for n, v, k in wanted
                if v != NO_GRANT and v.lower() != (rows[n - 2][hdr.index(H_EMAIL)] or "").strip().lower()]
@@ -253,6 +281,14 @@ def run(write):
             ie = hdr.index(H_EMAIL)
             print("   row %-5s %-34s %s"
                   % (n, redact_email(rows[n - 2][ie])[:34], k))
+    if pending:
+        print("\nA %s is recorded but not granted yet — LEFT ALONE (run "
+              "sync_access.py --write to grant these):" % H_DRIVE_EMAIL)
+        ie = hdr.index(H_EMAIL)
+        for n, v, k in pending:
+            print("   row %-5s %-34s -> %-34s %s"
+                  % (n, redact_email(rows[n - 2][ie])[:34],
+                     redact_email(v)[:34], k))
 
     if not write:
         print("\nReport only — nothing was written. Re-run with --write to fill "

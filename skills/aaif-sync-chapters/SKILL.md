@@ -84,7 +84,7 @@ told us and what Drive grants are keyed to.
 |---|---|---|
 | `Slack ID` | `resolve_slack_ids.py` | the immutable `U…` account id — the durable key |
 | `Slack Email` | `resolve_slack_ids.py` | the address that Slack account carries |
-| `Drive Email` | `track_drive_email.py` | the address actually on their chapter folder's ACL |
+| `Drive Email` | `track_drive_email.py`, **and a human** | the address on their chapter folder's ACL — and the address `sync_access.py` grants |
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py            # report
@@ -119,6 +119,36 @@ into a wrong `@mention`.
 permission on their chapter folder matches any spelling of their address, so
 they cannot open it and an access request is coming. Run `track_drive_email.py`
 after step 6, when the grants are current.
+
+**`Drive Email` is the one identity column that is also an input.** `Slack ID`
+redirects who gets *invited*; `Drive Email` redirects who gets *granted*.
+`sync_access.py` grants the address recorded there in preference to the intake
+`Email`, which is the supported fix for the case that otherwise has none: an
+address with **no Google account** behind it, which Drive refuses to share with
+outright, so the only alternative is an unsolicited invitation mail. Write the
+person's Google address into the cell and re-run `sync_access.py` — the grant
+lands silently and the intake `Email` stays untouched.
+
+Three rules make a hand-editable cell safe to grant from:
+
+- **The authority is still the intake row.** The column redirects *where* a
+  grant lands; the acceptance and the chapter come from `Email`, and
+  `assert_all_accepted()` re-derives the recorded address from its own fresh
+  read. An address typed in there cannot manufacture a grant, only move one.
+- **Only an override counts as one.** A blank cell, the `(no grant)` sentinel,
+  free text, two addresses in one cell, or a value that merely restates the
+  intake address are all ignored — the first two silently, the rest with a
+  stderr line naming the row.
+- **Two rows disagreeing about one person drop the override entirely**, loudly.
+  A person can hold several intake rows, so a disagreement is a real question
+  about which address is theirs, and guessing is where this estate's identity
+  bugs come from — the shared-full-name collision the `Slack ID`
+  rules above describe, and the Gmail-dot lookup bug.
+
+`track_drive_email.py` therefore no longer owns every cell: an address a human
+recorded that Drive has not granted **yet** is reported and left alone, not
+overwritten with `(no grant)`. Everything already on the ACL is still written
+from the ACL, including a grant made under the recorded address.
 
 ## Unattended runs (`nightly.py`)
 
@@ -713,14 +743,27 @@ access at all; `--lock-anyway` overrides.
 
 - **`assert_all_accepted()` is the last gate before write** and re-reads the
   intake through a different code path than the filter that built the plan.
-  "The filter that made the list says the list is fine" is not a check.
+  "The filter that made the list says the list is fine" is not a check. A grant
+  the `Drive Email` column redirected is checked **twice over**: the acceptance
+  and the chapter still come from the intake row, and the recorded address is
+  re-derived from its own fresh read rather than trusted from the plan. Typing an
+  address into that column can only redirect a grant an accepted organizer row
+  already justifies — it can never manufacture one, which is what keeps a
+  hand-editable cell from being a way in.
 - **A bad address never abandons the run.** The intake is fed by a public form,
   so a typo'd address is normal input and Drive rejects it with a hard 400.
   Failures are collected and reported; every other grant still lands.
+- **The grant goes to `Drive Email` when a human recorded one**, and to the
+  intake `Email` otherwise. The intake address is never rewritten — it is what
+  the person told us and the key the CRM merges on — so a second address is
+  recorded beside it instead. See "Identity columns" above; the mechanics are in
+  `reviewed_drive_emails()`.
 - **Addresses with no Google account** are refused by Drive unless it may email
-  the person. There is no silent path, so they are skipped and reported unless
-  `--mail-if-required --i-have-approval` (or `--notify --i-have-approval`) is
-  passed — sending mail to real people is never a side effect of a sync.
+  the person. There is no silent path, so they are skipped and reported. The fix
+  that emails nobody is to record a Google-backed address in `Drive Email` and
+  re-run; `--mail-if-required --i-have-approval` (or `--notify
+  --i-have-approval`) sends the invitation instead — mail to real people is
+  never a side effect of a sync.
 - Notifications are **off** by default: a share-mail per organizer, arriving
   unannounced and all at once, reads as a phishing wave.
 - `linuxfoundation.org` domain access is **kept** — that is LF staff reach, a

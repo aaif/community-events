@@ -40,6 +40,13 @@ Usage:
   python3 sync_access.py --write --notify --i-have-approval   # email EVERY grantee
   python3 sync_access.py --write --lock-anyway        # lock even though some
                                             # organizers could not be granted
+
+The address granted is the intake `Email`, UNLESS a human has recorded a
+different one in the `Drive Email` column on `Form Responses` — see
+reviewed_drive_emails(). That column is the supported way to give access to
+someone whose intake address has no Google account behind it, which Drive
+refuses to share with outright. The intake `Email` is never rewritten: it is
+what the person told us and the key the CRM merges on.
 """
 import argparse, os, sys
 
@@ -126,6 +133,101 @@ def canon_email(e):
     return e
 
 
+#: The `Drive Email` column on `Form Responses`, and its "no grant matches this
+#: person" sentinel. Defined HERE rather than in track_drive_email.py, which
+#: writes the column: that script already imports from this one, so owning the
+#: names there and importing them back would be a cycle. track_drive_email
+#: imports them from here instead.
+SOURCE = "Form Responses"
+H_EMAIL = "Email"
+H_DRIVE_EMAIL = "Drive Email"
+NO_GRANT = "(no grant)"
+
+
+def looks_like_address(v):
+    """A conservative "is this an address" test for a hand-editable cell.
+
+    Deliberately strict rather than clever: this value becomes the target of a
+    Drive grant, so anything ambiguous must fall through to the intake address
+    rather than be guessed at. Rejects the `(no grant)` sentinel by construction
+    (no `@`), and anything carrying whitespace, a comma or a semicolon — the
+    shapes a human produces when they put TWO addresses in one cell.
+    """
+    v = (v or "").strip()
+    if not v or v == NO_GRANT:
+        return False
+    if any(c in v for c in " \t,;<>"):
+        return False
+    local, at, domain = v.partition("@")
+    return bool(at) and bool(local) and "." in domain
+
+
+def reviewed_drive_emails(rows=None):
+    """{canonical intake email: the address to grant} from `Drive Email`.
+
+    The intake `Email` is what the person told us and is never overwritten — but
+    it is not always an address Drive can grant. An Apple or Outlook address with
+    no Google account behind it is refused outright (Drive's hard 400), and a
+    person may simply sign in as someone else entirely. `Drive Email` is where
+    that second address is recorded, and this is what makes the column an INPUT
+    to access rather than a note about it: the grant goes to the recorded
+    address, while `Email`, the CRM merge key, stays untouched.
+
+    The authority still comes from the intake row — a recorded address only
+    redirects a grant that an accepted organizer row already justifies, and
+    assert_all_accepted re-derives this mapping independently before anything is
+    granted. A cell agreeing with the intake address is no override at all and is
+    dropped here, so `via_column` means only what it says.
+
+    Two refusals, both toward doing nothing rather than the wrong thing:
+
+      * a value that is not address-shaped is ignored with a stderr line — the
+        column is hand-editable and a typo must not become a grant target;
+      * two rows for one person disagreeing about the address drops BOTH, also
+        loudly. The column is per-row and a person can hold several rows, so a
+        disagreement is a real question about which address is theirs, and
+        picking one is exactly the guess this estate's identity bugs came from.
+    """
+    if rows is None:
+        rows = get_values(INTAKE_ID, "'%s'" % SOURCE)
+    if not rows:
+        sys.exit("ABORT: %r came back empty — cannot read %r." % (SOURCE, H_DRIVE_EMAIL))
+    hdr = [h.strip() for h in rows[0]]
+    if H_DRIVE_EMAIL not in hdr or H_EMAIL not in hdr:
+        return {}
+    ie, ic = hdr.index(H_EMAIL), hdr.index(H_DRIVE_EMAIL)
+    out, bad, seen = {}, [], {}
+    for n, r in enumerate(rows[1:], start=2):
+        def at(i):
+            return (r[i] or "").strip() if i < len(r) else ""
+        intake, recorded = at(ie), at(ic)
+        if not intake or not recorded or recorded == NO_GRANT:
+            continue
+        if not looks_like_address(recorded):
+            bad.append((n, recorded))
+            continue
+        ce = canon_email(intake)
+        # An auto-recorded cell usually just mirrors the intake address. That is
+        # not an override, and treating it as one would label ordinary rows
+        # "via Drive Email" in the report for no reason.
+        if canon_email(recorded) == ce:
+            continue
+        seen.setdefault(ce, {}).setdefault(canon_email(recorded), []).append((n, recorded))
+    for ce, byaddr in seen.items():
+        if len(byaddr) > 1:
+            where = ", ".join("row %d %s" % (n, redact_email(v))
+                              for spellings in byaddr.values() for n, v in spellings)
+            print("  CONFLICT: %s has more than one %r (%s) — no override applied; "
+                  "fix the rows." % (redact_email(ce), H_DRIVE_EMAIL, where),
+                  file=sys.stderr)
+            continue
+        out[ce] = next(iter(byaddr.values()))[0][1]
+    for n, v in bad:
+        print("  IGNORED: row %d has a %r that is not an address (%r) — the intake "
+              "address is used instead." % (n, H_DRIVE_EMAIL, v[:40]), file=sys.stderr)
+    return out
+
+
 def perms(file_id):
     """Every permission on a file, each tagged with whether it is inherited.
 
@@ -180,6 +282,15 @@ def plan(role):
         people += pp
     by_folder, orphans, near = match_chapters(merge_people(people), folders)
 
+    # The reviewed `Drive Email` column, read ONCE for the whole plan: it
+    # redirects a grant to the address Drive can actually honour.
+    reviewed = reviewed_drive_emails()
+
+    def target_for(person):
+        """(address to grant, whether the column redirected it)."""
+        alt = reviewed.get(canon_email(person["email"]))
+        return (alt, True) if alt else (person["email"], False)
+
     grants, already_granted, already_granted_ids, stale = [], [], [], []
     for f in folders:
         want = by_folder.get(f["id"], [])
@@ -188,7 +299,14 @@ def plan(role):
         # chapter nobody is accepted for is exactly where an unexplained writer
         # is most worth seeing.
         folder_perms = perms(f["id"])
-        expected = {canon_email(x["email"]) for x in want}
+        # BOTH spellings are expected. A grant made to someone's reviewed
+        # address would otherwise be reported as "held by people the intake does
+        # not know about" forever — the engine's own write showing up in its
+        # audit list, which is how a real finding gets lost in noise.
+        expected = set()
+        for x in want:
+            expected.add(canon_email(x["email"]))
+            expected.add(canon_email(target_for(x)[0]))
         for q in folder_perms:
             if q["type"] != "user" or q["inherited"]:
                 continue
@@ -202,12 +320,20 @@ def plan(role):
         have = {canon_email(p.get("emailAddress", "")) for p in folder_perms
                 if p["type"] == "user" and (not p["inherited"] or p["role"] == "owner")}
         for p in want:
-            if canon_email(p["email"]) in have:
-                already_granted.append((f["name"], p["email"]))
-                already_granted_ids.append((f["name"], f["id"], p["email"]))
+            addr, via_column = target_for(p)
+            # Either spelling satisfies the grant: someone already granted under
+            # their intake address does not need a second permission just because
+            # a second address was recorded later. Whichever one actually matched
+            # is what gets recorded, so verify() re-reads the right address.
+            matched = next((a for a in (p["email"], addr) if canon_email(a) in have), None)
+            if matched:
+                already_granted.append((f["name"], matched))
+                already_granted_ids.append((f["name"], f["id"], matched))
             else:
                 grants.append({"chapter": f["name"], "folder_id": f["id"],
-                               "email": p["email"], "name": p["name"], "role": role})
+                               "email": addr, "intake_email": p["email"],
+                               "via_column": via_column,
+                               "name": p["name"], "role": role})
 
     parent = perms(CHAPTERS_PARENT)
     public = [p for p in parent if p["type"] == "anyone"]
@@ -222,9 +348,15 @@ def report(p, role):
           % (len(p["grants"]), len({g["chapter"] for g in p["grants"]}), len(p["already_granted"])))
     by_ch = {}
     for g in p["grants"]:
-        by_ch.setdefault(g["chapter"], []).append(g["email"])
+        # Say so when the address is not the one on the intake row: an operator
+        # reading this has to be able to see that a hand-edited cell chose it.
+        shown = redact_email(g["email"])
+        if g.get("via_column"):
+            shown += " (via %s, intake says %s)" % (H_DRIVE_EMAIL,
+                                                    redact_email(g["intake_email"]))
+        by_ch.setdefault(g["chapter"], []).append(shown)
     for ch in sorted(by_ch)[:6]:
-        print("     %-20s %s" % (ch, ", ".join(map(redact_email, by_ch[ch]))))
+        print("     %-20s %s" % (ch, ", ".join(by_ch[ch])))
     if len(by_ch) > 6:
         print("     … and %d more chapter(s)" % (len(by_ch) - 6))
 
@@ -270,6 +402,14 @@ def assert_all_accepted(grants):
     write access to a chapter, and "the filter that built the list says the list
     is fine" is not a check. Matches on email across ALL role tabs, because a
     person can hold several rows and only one of them needs to be a decision.
+
+    A grant redirected by the `Drive Email` column is checked TWICE over, because
+    that column is hand-editable and the address in it need not appear on the
+    intake at all: the ACCEPTANCE is still read off the intake row (identity and
+    chapter come from `Email`, never from the recorded address), and the recorded
+    address is re-derived here from a fresh read rather than trusted from plan().
+    Typing an address into that column can therefore only redirect a grant an
+    accepted organizer row already justifies — it can never manufacture one.
     """
     # Scan ACCESS_TABS, not ROLE_TABS. Matching a decision on ANY tab meant an
     # accepted SPEAKER satisfied the gate — precisely the privilege escalation
@@ -297,16 +437,39 @@ def assert_all_accepted(grants):
     # ...and the accepted row must name the chapter being granted. Without this
     # an accepted organizer for one city satisfies a grant on any other, so a
     # chapter mis-binding upstream would sail through the last gate.
+    def identity(g):
+        return canon_email(g.get("intake_email") or g["email"])
+
     bad = [g for g in grants
-           if fold_city(g["chapter"]) not in ok.get(canon_email(g["email"]), set())]
+           if fold_city(g["chapter"]) not in ok.get(identity(g), set())]
     if bad:
         sys.exit("ABORT: %d grant target(s) are not accepted ORGANIZERS for the "
                  "chapter being granted — nothing was granted:\n%s"
                  % (len(bad), "\n".join(
                      "  %s -> %s (accepted organizer for: %s)"
-                     % (g["email"], g["chapter"],
-                        sorted(ok.get(canon_email(g["email"]), set())) or "<no accepted organizer row>")
+                     % (g.get("intake_email") or g["email"], g["chapter"],
+                        sorted(ok.get(identity(g), set())) or "<no accepted organizer row>")
                      for g in bad)))
+
+    # A redirected target must still BE the recorded address, re-derived here
+    # from its own read. Without this the gate checks the intake row's acceptance
+    # and then grants whatever address plan() happened to attach to it.
+    redirected = [g for g in grants
+                  if canon_email(g["email"]) != identity(g)]
+    if redirected:
+        fresh = reviewed_drive_emails()
+        wrong = [g for g in redirected
+                 if canon_email(fresh.get(identity(g), "")) != canon_email(g["email"])]
+        if wrong:
+            sys.exit("ABORT: %d grant target(s) do not match the %r recorded for "
+                     "that organizer on a fresh read — nothing was granted:\n%s"
+                     % (len(wrong), H_DRIVE_EMAIL, "\n".join(
+                         "  %s -> %s (sheet now says %r)"
+                         % (g.get("intake_email"), g["chapter"],
+                            fresh.get(identity(g), "") or "<nothing>")
+                         for g in wrong)))
+        print("  double-checked: %d target(s) redirected by the %r column still "
+              "match the sheet." % (len(redirected), H_DRIVE_EMAIL))
     print("  double-checked: all %d target(s) hold an %s row on %s, for the chapter "
           "being granted." % (len(grants), " / ".join(SYNC_STATUSES), "/".join(ACCESS_TABS)))
 
@@ -342,10 +505,15 @@ def apply_grants(p, notify, allow_mail=False):
         # notification is the price of granting access at all, not a choice.
         if NO_ACCOUNT in msg and not notify:
             if not allow_mail:
+                # The column is the better fix and is named first: an address
+                # with a Google account behind it grants silently, where mailing
+                # sends an unsolicited Drive invitation that cannot be unsent.
                 failed.append((g["chapter"], g["name"], g["email"],
-                               "no Google account — Drive requires emailing them; "
-                               "re-run with --notify (or --mail-if-required) "
-                               "--i-have-approval"))
+                               "no Google account — record an address that HAS one "
+                               "in the %r column on %s and re-run; or, to invite "
+                               "this address anyway, re-run with --notify "
+                               "(or --mail-if-required) --i-have-approval"
+                               % (H_DRIVE_EMAIL, SOURCE)))
                 print("  SKIPPED %s -> %s: needs a notification email"
                       % (redact_email(g["email"]), g["chapter"]), file=sys.stderr)
                 continue
@@ -503,10 +671,11 @@ def main():
         if name == "lock" and grant_failures and not a.lock_anyway:
             sys.exit("ABORT before lock: %d organizer(s) have no grant (listed above). "
                      "Removing the public share now would leave them with NO access at "
-                     "all.\nFix the intake rows (or pass --mail-if-required "
+                     "all.\nFix the intake rows or record a grantable address in the %r "
+                     "column (or pass --mail-if-required "
                      "--i-have-approval), then "
                      "re-run — or pass --lock-anyway to accept locking them out."
-                     % len(grant_failures))
+                     % (len(grant_failures), H_DRIVE_EMAIL))
         print("\nApplying phase %r..." % name)
         try:
             n = fn(*args)
