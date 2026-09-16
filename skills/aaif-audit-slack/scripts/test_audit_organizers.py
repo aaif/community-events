@@ -395,11 +395,11 @@ def test_ops_staff_at_another_domain_is_staff_not_a_stranger():
     """
     rows = [_row("Boston", org="boston-organizers")]
     membership = {"boston-organizers": ["U9", "U8"]}
-    directory = {"U9": {"real_name": "Ops", "email": "Ops@AiHero.Studio"},
+    directory = {"U9": {"real_name": "Ops", "email": "Ops@Y.Example"},
                  "U8": {"real_name": "Outsider", "email": "o@gmail.com"}}
     audit, _ = ao.build_audit(rows, [], {}, membership, directory,
                               "mlops.community", None, None,
-                              ["ops@aihero.studio"])
+                              ["ops@y.example"])
     check("ops staff listed by email is staff, whatever their domain",
           sorted((x["name"], x["is_staff"]) for x in audit[0]["unaccounted"]),
           [("Ops", True), ("Outsider", False)])
@@ -414,14 +414,35 @@ def test_an_ops_domain_counts_even_without_a_seed_row():
     """
     rows = [_row("Boston", org="boston-organizers")]
     membership = {"boston-organizers": ["U9", "U8"]}
-    directory = {"U9": {"real_name": "New Ops", "email": "newhire@aihero.studio"},
+    directory = {"U9": {"real_name": "New Ops", "email": "newhire@y.example"},
                  "U8": {"real_name": "Outsider", "email": "o@gmail.com"}}
     audit, _ = ao.build_audit(rows, [], {}, membership, directory,
                               "mlops.community", None, None,
-                              ops_emails=[], ops_domains=["aihero.studio"])
+                              ops_emails=[], ops_domains=["y.example"])
     check("an ops domain with no seed row is still staff",
           sorted((x["name"], x["is_staff"]) for x in audit[0]["unaccounted"]),
           [("New Ops", True), ("Outsider", False)])
+
+
+def test_ops_config_is_normalized_the_way_a_human_types_it():
+    """These values are typed into a spreadsheet by a person.
+
+    A domain written with the leading `@` and stray spacing is the likely real
+    spelling; if the normalization regressed, an ops admin reappears as an
+    unreviewed stranger in 80-odd private rooms, which is the exact failure
+    _is_staff exists to prevent.
+    """
+    rows = [_row("Boston", org="boston-organizers")]
+    membership = {"boston-organizers": ["U9", "U8"]}
+    directory = {"U9": {"real_name": "Ops", "email": "Ops@Y.Example"},
+                 "U8": {"real_name": "Also Ops", "email": "two@z.example"}}
+    audit, _ = ao.build_audit(rows, [], {}, membership, directory,
+                              "mlops.community", None, None,
+                              ops_emails=["  Ops@Y.Example  "],
+                              ops_domains=["  @Z.Example "])
+    check("a padded, cased, @-prefixed config still classifies as staff",
+          sorted((x["name"], x["is_staff"]) for x in audit[0]["unaccounted"]),
+          [("Also Ops", True), ("Ops", True)])
 
 
 def test_ops_email_list_empty_leaves_the_domain_test_alone():
@@ -501,6 +522,59 @@ def test_a_shared_roster_never_answers_a_question_about_this_chapter():
     _, sv = audit
     check("the borrowed roster does not make the chapter 'reachable'",
           sv["accepted"], [])
+
+
+def test_a_borrowed_organizer_is_not_billed_to_the_borrowing_chapter():
+    """The aggregate the `shared` split exists to protect, asserted behaviourally.
+
+    Switching `absent_total` to `roster(c)` went green before this test existed:
+    the shape was right and nothing held it there. The fixture isolates ONE
+    absent person, because `absent_total` also counts people with no Slack
+    account — an earlier version of this test put such a person in the fixture
+    and so could not tell 1-billed-twice from 2-billed-once.
+    """
+    rows = [_row("San Francisco", public="bay-area", org="bay-area-organizers"),
+            _row("Silicon Valley", public="bay-area", org="bay-area-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted",
+               "city": "San Francisco"},          # resolved, NOT in the room
+              {"name": "B", "email": "b@x.com", "status": "Accepted",
+               "city": "Silicon Valley"}]         # resolved, in the room
+    slack_ids = {"a@x.com": {"id": "U1"}, "b@x.com": {"id": "U2"}}
+    membership = {"bay-area": ["U1", "U2"], "bay-area-organizers": ["U2"]}
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {},
+                              "mlops.community")
+    html = ao.render(audit, {}, 0, dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc))
+    # The to-do line's own wording: one person is outside one room. Counting
+    # roster() bills that person to both chapters and says 2.
+    check("one absent organizer is billed once, not once per sharing chapter",
+          "Meanwhile 1 accepted organizers are missing" in html, True)
+    check("...and never twice",
+          "Meanwhile 2 accepted organizers are missing" in html, False)
+    sv = audit[1]
+    check("a borrowed row raises no issues against the borrowing chapter",
+          ao.person_issues(sv["shared"][0], sv, True), [])
+
+
+def test_a_failed_overlay_is_disclosed_on_the_page_not_just_on_stdout():
+    """A failure must never render as a finding about a person.
+
+    When the reviewed-id overlay cannot run, everyone it would have rescued
+    shows as "no Slack account" — measured-zero and failed-to-measure rendered
+    identically. The PDF goes to leadership; a note on stdout does not reach it.
+    """
+    rows = [_row("Boston", org="boston-organizers")]
+    today = dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc)
+    audit, _ = ao.build_audit(rows, [], {}, {"boston-organizers": []}, {},
+                              "mlops.community")
+    clean = ao.render(audit, {}, 0, today)
+    check("nothing is claimed when the overlay ran",
+          "could not be read this run" in clean, False)
+    failed = ao.render(audit, {}, 0, today, "OSError: sheet unreachable")
+    check("the failure is on the page", "could not be read this run" in failed, True)
+    check("...and is framed as this run's failure, not theirs",
+          "not a fact about them" in failed, True)
+    check("...naming the cause so the operator knows where to look",
+          "sheet unreachable" in failed, True)
 
 
 def test_a_chapter_with_its_own_room_borrows_nobody():
@@ -658,7 +732,7 @@ def test_applicants_map_covers_every_row_not_just_accepted_ones():
     check("with its real status", applicants["bo@x.io"]["status"], "Prospect")
 
 
-MIN_TESTS = 45
+MIN_TESTS = 59
 
 
 def test_regional_alias_that_no_longer_resolves_aborts():

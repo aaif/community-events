@@ -41,6 +41,24 @@ e = html.escape
 
 TOPICS_TAB = "Topics"
 
+#: The kinds filed as deliberately NOT subjects, so that "not a topic" is a
+#: recorded human decision rather than an absence — exactly as `none` does in
+#: the channel map.
+OTHER_KINDS = ("geo", "community", "ops")
+
+
+#: Dormancy thresholds in days, applied to the LAST HUMAN message.
+QUIET_DAYS = 90
+DEAD_DAYS = 365
+
+#: A room below this many distinct posters in the window is carried by too few
+#: people to survive one of them leaving. Separate from THIN_POSTERS (<=2),
+#: which is the *acute* case and has its own section and to-do line: this is the
+#: per-room flag column, and the two answer different questions ("is this
+#: fragile?" vs "is this one person?").
+CONTRIB_FLOOR = 5
+THIN_POSTERS = 2
+
 #: `Kind` values the tab may carry. The first four are subject rooms and are
 #: what the report measures; the rest are recorded so that "not a topic" is a
 #: filed human decision rather than an absence, exactly as `none` does in the
@@ -59,31 +77,9 @@ TOPICS_TAB = "Topics"
 #: WITH us (the ext-* Slack Connect rooms). There is no channel that is about a
 #: company rather than about its software, so the kind means the relationship,
 #: never the subject.
-#: Derived from KIND_LABELS below, never listed twice: two tuples that must
-#: agree is how a kind ends up counted in every headline stat and missing from
-#: every table — a disappearance, which is the failure this module bans
-#: everywhere else.
-OTHER_KINDS = ("geo", "community", "ops")
-#: (filled in below, once KIND_LABELS exists)
-SUBJECT_KINDS = ()
-KINDS = ()
-
-#: Dormancy thresholds in days, applied to the LAST HUMAN message.
-QUIET_DAYS = 90
-DEAD_DAYS = 365
-
-#: A room below this many distinct posters in the window is carried by too few
-#: people to survive one of them leaving. Separate from THIN_POSTERS (<=2),
-#: which is the *acute* case and has its own section and to-do line: this is the
-#: per-room flag column, and the two answer different questions ("is this
-#: fragile?" vs "is this one person?").
-CONTRIB_FLOOR = 5
-THIN_POSTERS = 2
-
-#: Display labels for the subject kinds, in the order the report renders them.
-#: Topics lead because a subject outliving any one tool is the thing the
-#: community is actually organised around; software follows because a tool room
-#: is only interesting against the subject it serves.
+#: Display label and blurb per subject kind, in the order the report renders
+#: them. Topics lead because a subject outlives any one tool; software follows
+#: because a tool room is only interesting against the subject it serves.
 KIND_LABELS = (
     ("topic", "Topics", "Subjects the community organises around \u2014 not a tool, "
      "not a platform."),
@@ -93,6 +89,10 @@ KIND_LABELS = (
      "relationship, never the subject."),
 )
 
+#: Derived from KIND_LABELS, never listed twice: two tuples that must agree is
+#: how a kind ends up counted in every headline stat and missing from every
+#: table — a disappearance, which is the failure this module bans everywhere
+#: else.
 SUBJECT_KINDS = tuple(k for k, _, _ in KIND_LABELS)
 KINDS = SUBJECT_KINDS + OTHER_KINDS
 
@@ -286,10 +286,13 @@ def is_alive(s):
     whose scan never reached a human message the WINDOW counts can still be
     complete, so "nobody spoke in 90 days" looks answerable — but answering it
     here would put 77 not-live rooms in this column against the 64 the page's
-    own headline calls quiet, and that is the documented failure `dormancy` was
-    written to stop: two numbers for the same thing in one document, the larger
-    one next to the smaller. UNKNOWN stays "?" and is counted as unmeasured
+    own headline calls quiet. One document, two numbers for one thing, the
+    larger next to the smaller. UNKNOWN stays "?" and is counted as unmeasured
     everywhere, exactly as the stats above do it.
+
+    `dormancy` makes the neighbouring argument, and it is the reason the
+    shortcut is tempting in the first place: the scan cap is hit by BUSY rooms,
+    so treating UNKNOWN as silence states the reverse of the truth.
 
     None is not False. The scan cap is hit by BUSY rooms, so rendering UNKNOWN
     as "inactive" states the reverse of the truth on rooms that are working.
@@ -310,15 +313,31 @@ def has_contributors(s):
     act = s.get("act")
     if not act:
         return None
-    posters = act.get("posters", 0)
+    # `.get("posters")`, no 0 default: flag_row nine lines down already reads
+    # this field as a tri-state and renders "?" when it is absent, so defaulting
+    # to 0 here put "Posters: ?" and "under 5" in the same row — one page saying
+    # both that it cannot count and that the count is low. A cache written by an
+    # older build is the live path for that, and `None >= 5` would raise besides.
+    posters = act.get("posters")
+    if posters is None:
+        return None
     if posters >= CONTRIB_FLOOR:
         return True
     return None if truncated(s) else False
 
 
 def has_purpose(s):
-    """Always knowable — the channel object carries it or it is genuinely unset."""
-    return bool((s["chan"].get("purpose") or "").strip())
+    """Tri-state, like its two siblings: None when the record carries no field.
+
+    `slack.channels()` always emits `purpose`, so today this only ever answers
+    True/False — but the moment a channel record arrives from a thinner path (a
+    cache from another build, a conversations.info record) `.get()` would report
+    "no purpose set" for a room nobody measured, which is the confident-wrong
+    answer the other two flags are written to refuse.
+    """
+    if "purpose" not in s["chan"]:
+        return None
+    return bool((s["chan"]["purpose"] or "").strip())
 
 
 def members_of(s):
@@ -384,7 +403,7 @@ def build_body(subjects, filed_out, unfiled, today, measured, act_meta,
     unknown = by_state[UNKNOWN]
     unmeasured = by_state[UNMEASURED]
     dead = [s for s in quiet if s["quiet_days"] >= DEAD_DAYS]
-    no_purpose = [s for s in subjects if not has_purpose(s)]
+    no_purpose = [s for s in subjects if has_purpose(s) is False]
     dups = near_duplicates(subjects)
 
     # Concentration: how few people carry each room. A topic held up by one
@@ -464,7 +483,9 @@ def build_body(subjects, filed_out, unfiled, today, measured, act_meta,
         flags = [(x, is_alive(x), has_contributors(x), has_purpose(x)) for x in rooms]
         n_quiet = sum(1 for _, alive, _, _ in flags if alive is False)
         n_thin = sum(1 for _, _, contrib, _ in flags if contrib is False)
-        n_nopurp = sum(1 for _, _, _, purpose in flags if not purpose)
+        # `is False`, not `not purpose` — an unknown must not be counted as a
+        # finding in the prose while rendering "?" in its own row.
+        n_nopurp = sum(1 for _, _, _, purpose in flags if purpose is False)
         return """
 <h3>%(label)s <span class="mute">%(n)d room(s) &middot; %(mem)s memberships</span></h3>
 <p>%(blurb)s %(counts)s</p>

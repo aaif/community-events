@@ -311,8 +311,9 @@ purpose set · unclassified rooms · the limits.
 never re-derives dormancy from the window counts, even where they look
 sufficient: a room whose scan never reached a human message has an unknown
 *date* while its *window* may be fully measured, and answering from the window
-put 77 rooms in the column against the 64 the same page calls quiet. Two numbers
-for one thing in one document is the failure `dormancy()`'s own docstring records.
+put 77 rooms in the column against the 64 the same page calls quiet — one
+document, two numbers for one thing. (`dormancy()` records the sibling rule: the
+scan cap is hit by *busy* rooms, so UNKNOWN must never read as silence.)
 `has_contributors` is the mirror image — a truncated scan reports a floor, so it
 can prove "5 or more" but never "fewer than 5", and returns `None` there.
 

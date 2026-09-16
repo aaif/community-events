@@ -336,8 +336,8 @@ def test_is_alive_is_tri_state():
     check("recent human message is live", at.is_alive(live), True)
     check("old human message is not live", at.is_alive(quiet), False)
     # Not False, even though the window counts may be complete: answering it
-    # here would disagree with the page's own "measured quiet" headline, which
-    # is the two-numbers-for-one-thing failure dormancy() exists to prevent.
+    # here would disagree with the page's own "measured quiet" headline — one
+    # document reporting two numbers for one thing.
     check("scan cap reached is UNKNOWN, not inactive", at.is_alive(capped), None)
     check("never swept is UNKNOWN, not inactive", at.is_alive(unmeasured), None)
 
@@ -382,8 +382,40 @@ def test_an_unmeasured_room_is_not_tinted_as_a_finding():
     check("unknowns render as ?", 'pill-mute">?' in html, True)
 
 
+def test_the_section_sentence_counts_unknowns_as_unknown():
+    """`n_quiet` must be `alive is False`, not `not alive`.
+
+    The looser form counted a scan-capped room as quiet in the prose while its
+    own row rendered "?" — one page, two answers for one room.
+    """
+    subs = [subject("a", kind="topic", members=10,
+                    act={"last_human_ts": ago(400), "posters": 0,
+                         "window_complete": True}),
+            subject("b", kind="topic", members=9,
+                    act={"last_human_unknown": True, "posters": 0})]
+    html = at.build_body(subs, [], [], NOW, 2, {"age": "today", "days": 90})
+    check("only the established quiet room is counted", "1 quiet," in html, True)
+    check("the unmeasured one is not", "2 quiet," in html, False)
+
+
+def test_every_subject_kind_is_labelled_and_rendered():
+    """SUBJECT_KINDS is derived from KIND_LABELS — assert the derivation, or
+    dropping a label silently narrows what load_topics will accept."""
+    check("the kinds are exactly the labelled ones",
+          at.SUBJECT_KINDS, tuple(k for k, _, _ in at.KIND_LABELS))
+    check("KINDS is the union",
+          set(at.KINDS), set(at.SUBJECT_KINDS) | set(at.OTHER_KINDS))
+    subs = [subject("room-%s" % k, kind=k, members=10,
+                    act={"last_human_ts": ago(2), "posters": 7,
+                         "window_complete": True})
+            for k in at.SUBJECT_KINDS]
+    html = at.build_body(subs, [], [], NOW, len(subs), {"age": "today", "days": 90})
+    for kind, label, _ in at.KIND_LABELS:
+        check("%s renders its own section" % kind, "<h3>%s" % label in html, True)
+
+
 def main():
-    MIN_TESTS = 30
+    MIN_TESTS = 34
     ran = 0
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

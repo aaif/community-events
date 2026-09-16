@@ -470,11 +470,12 @@ def yesno(v, yes, no):
     never render as a confident "no". It gets the muted pill, which reads as an
     absence rather than a verdict.
 
-    It lives here because the audit engines each grew their own copy and they
-    disagreed about the unknown case (one muted pill, one bare `.nil` span), so
-    one combined report showed "we could not measure this" two different ways on
-    two of its pages. Labels are required, not defaulted: "yes/no" is rarely the
-    honest wording for the question a given column asks.
+    It lives here because `audit_organizers` had grown its own copy (rendering
+    the unknown case as a bare `.nil` span) and `audit_topics` was about to grow
+    a second one for its new flag columns — two copies that would have shown
+    "we could not measure this" two different ways in one combined report.
+    Labels are required, not defaulted: "yes/no" is rarely the honest wording
+    for the question a given column asks.
     """
     if v is None:
         return '<span class="pill pill-mute">?</span>'
