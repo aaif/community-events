@@ -56,6 +56,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "..", "lib"))
 
 from aaif_events.slack import scrubbed_env  # noqa: E402
+# SOURCE / H_EMAIL / H_DRIVE_EMAIL / NO_GRANT are owned by sync_access, which
+# READS this column to decide where a grant goes — the sentinel's exact spelling
+# is load-bearing in both scripts, so there is one definition of it.
 from sync_access import (H_DRIVE_EMAIL, H_EMAIL, NO_GRANT, SOURCE,  # noqa: E402
                          canon_email, looks_like_address, perms,
                          reviewed_drive_emails)
@@ -113,11 +116,6 @@ def set_redaction(on):
               if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
 
 
-#: SOURCE / H_EMAIL / H_DRIVE_EMAIL / NO_GRANT come from sync_access, which
-#: READS this column to decide where a grant goes. One definition, because the
-#: sentinel's exact spelling is now load-bearing in two scripts: sync_access
-#: must recognise `(no grant)` as "not an address" rather than try to grant it.
-
 
 def gws(args):
     out = subprocess.run(["gws"] + args, capture_output=True, text=True,
@@ -158,7 +156,7 @@ def grant_by_person():
     # on the intake spelling alone reported them "(no grant)" the moment
     # sync_access honoured the column — the script writing the finding that its
     # own column had already answered.
-    reviewed = reviewed_drive_emails()
+    reviewed, _problems = reviewed_drive_emails()
     out, no_folder = {}, {}
     for o in orphans:
         for p in o["people"]:
@@ -216,7 +214,7 @@ def ensure_column(hdr, create):
     return ci
 
 
-def plan(hdr, rows, granted, no_folder, ci=None):
+def plan(hdr, rows, granted, no_folder, ci):
     """([(row, value, kind)], [(row, address, kind)]) — writes, then requests.
 
     The second list is the addresses a HUMAN put in the column that Drive has
@@ -232,22 +230,36 @@ def plan(hdr, rows, granted, no_folder, ci=None):
         email = (r[ie] or "").strip()
         if not email:
             continue
-        current = (r[ci] or "").strip() if ci is not None and ci < len(r) else ""
+        current = (r[ci] or "").strip() if ci < len(r) else ""
         ce = canon_email(email)
+        # The recorded-address check comes FIRST, before the "is there a grant"
+        # branch. It used to sit only in the no-grant branch, so the common case
+        # — an organizer who still holds an old grant under their intake address
+        # and has a new address recorded — took the `if addr:` path and wrote
+        # the OLD ACL spelling straight over the operator's entry, reported as
+        # `same`, visible nowhere. The instruction was cancelled silently by the
+        # very script whose docstring promises to leave it alone.
+        recorded = (looks_like_address(current)
+                    and canon_email(current) != ce
+                    and (ce not in granted or not granted[ce][1]
+                         or canon_email(granted[ce][1]) != canon_email(current)))
         if ce in granted:
             chapter, addr = granted[ce]
-            if addr:
+            if recorded:
+                why = ("recorded, not granted yet" if not addr
+                       else "recorded; still granted as %s — sync_access.py --write "
+                            "will move it" % addr)
+                pending.append((n, current, "%s/%s" % (chapter, why)))
+            elif addr:
                 # The ACL spelling canonicalizes back to `ce`, or to the address
                 # recorded for them — that is how it matched — so the only
                 # question left is whether it is spelled the way they typed it.
                 kind = "same" if addr.lower() == email.lower() else "differs"
                 out.append((n, addr, "%s/%s" % (chapter, kind)))
-            elif looks_like_address(current) and canon_email(current) != ce:
-                pending.append((n, current, "%s/recorded, not granted yet" % chapter))
             else:
                 out.append((n, NO_GRANT, "%s/missing" % chapter))
         elif ce in no_folder:
-            if looks_like_address(current) and canon_email(current) != ce:
+            if recorded:
                 pending.append((n, current, "%s/no folder yet" % no_folder[ce]))
             else:
                 out.append((n, NO_GRANT, "%s/no folder yet" % no_folder[ce]))
@@ -293,7 +305,11 @@ def run(write):
     if not write:
         print("\nReport only — nothing was written. Re-run with --write to fill "
               "%d %s value(s)." % (len(wanted), H_DRIVE_EMAIL))
-        return
+        # The shared engine convention: 0 in sync, 2 when there is pending work.
+        # This script used to exit 0 unconditionally — including when `missing`
+        # listed people who cannot open their chapter folder, which is the
+        # finding it exists to produce.
+        return 2 if (missing or pending) else 0
     data = [{"range": "%s!%s%d" % (SOURCE, colletter(ci + 1), n), "values": [[v]]}
             for n, v, _k in wanted]
     if data:
@@ -301,6 +317,7 @@ def run(write):
              json.dumps({"spreadsheetId": INTAKE_ID}), "--json",
              json.dumps({"valueInputOption": "RAW", "data": data}), "--format", "json"])
     print("\nWrote %d %s value(s)." % (len(data), H_DRIVE_EMAIL))
+    return 2 if (missing or pending) else 0
 
 
 def main():
@@ -310,8 +327,8 @@ def main():
     add_redact_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
-    run(a.write)
+    return run(a.write)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

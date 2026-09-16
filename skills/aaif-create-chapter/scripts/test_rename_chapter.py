@@ -76,8 +76,13 @@ check("...UPPER multi-word", txu("UTAH CHAPTER"), "SALT LAKE CITY CHAPTER")
 
 
 # --- rename_part: which parts are eligible ----------------------------------
-def part(name, text, tx_=tx, rels=False):
-    return rc.rename_part(name, text.encode("utf-8"), tx_, rels).decode("utf-8")
+#: The slug-only transform `.rels` now receives — the city-name pass must never
+#: reach a relationship part (see rename_part).
+SLUG_ONLY = rc.make_transform("Scotland", "Scotland", "scotland", "edinburgh")
+
+
+def part(name, text, tx_=tx, slug_tx=None):
+    return rc.rename_part(name, text.encode("utf-8"), tx_, slug_tx).decode("utf-8")
 
 
 check("a word document paragraph is rewritten",
@@ -101,14 +106,23 @@ check("document metadata is rewritten",
 RELS = '<Relationship Id="rId7" Target="https://luma.com/aaif-scotland"/>'
 check("rels is untouched without a slug change", part("word/_rels/document.xml.rels", RELS), RELS)
 check("rels IS rewritten with a slug change",
-      part("word/_rels/document.xml.rels", RELS, txs, True),
+      part("word/_rels/document.xml.rels", RELS, txs, SLUG_ONLY),
       '<Relationship Id="rId7" Target="https://luma.com/aaif-edinburgh"/>')
 # Theme and font parts must never be rewritten: they are not brand text, and the
 # embedded brand fonts are what a careless pass destroys.
 THEME = "<a:theme><a:srgbClr val=\"000000\"/>Scotland</a:theme>"
 check("an unrouted part is returned unchanged", part("ppt/theme/theme1.xml", THEME), THEME)
 check("binary parts survive a decode failure",
-      rc.rename_part("word/fonts/font1.odttf", b"\x00\x01\xff", tx, False), b"\x00\x01\xff")
+      rc.rename_part("word/fonts/font1.odttf", b"\x00\x01\xff", tx, None), b"\x00\x01\xff")
+check("...and a binary MEDIA part is not recorded as uninspected",
+      "word/fonts/font1.odttf" in rc.UNDECODABLE, False)
+# An undecodable part that claims to BE xml is a part the verifier could not
+# read, and the verifier shares this decoder — so it must be recorded, or a
+# never-rewritten part passes verification by being invisible to both.
+rc.UNDECODABLE.clear()
+rc.rename_part("word/document.xml", b"\xff\xfe<", tx, None)
+check("an undecodable XML part IS recorded", "word/document.xml" in rc.UNDECODABLE, True)
+rc.UNDECODABLE.clear()
 
 
 # --- strings_changed: what a human is shown before a CRM is touched ---------
@@ -128,6 +142,87 @@ check("a member row that happens to name the city is surfaced too",
       ["moved here from Scotland"])
 check("nothing to change reports nothing",
       rc.strings_changed(book("Ada Lovelace", "Boston"), tx), [])
+
+# --- parts_changed: the selection test IS the rewrite test -------------------
+# The bug this pins: strings_changed only ever saw <w:t>/<a:t>/<t> in .xml
+# members, while rename_part also rewrites docProps and .rels. Files whose only
+# stale text lived there were never queued, and the verify — using that same
+# blind predicate — printed "Verified" over them.
+def zipped(parts):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for n, d in parts.items():
+            z.writestr(n, d)
+    return buf.getvalue()
+
+
+DOCPROPS = zipped({"docProps/core.xml": "<dc:title>AAIF Scotland</dc:title>"})
+RELS_ONLY = zipped({"word/_rels/document.xml.rels":
+                    '<Relationship Id="rId7" Target="https://luma.com/aaif-scotland"/>'})
+
+check("a docProps-only change is SEEN by the selection test",
+      rc.parts_changed(DOCPROPS, tx), ["docProps/core.xml"])
+check("...and strings_changed alone still cannot see it (why it is not the gate)",
+      rc.strings_changed(DOCPROPS, tx), [])
+check("a rels-only slug change is seen when a slug move was asked for",
+      rc.parts_changed(RELS_ONLY, txs, SLUG_ONLY), ["word/_rels/document.xml.rels"])
+check("...and is NOT seen when no slug move was asked for",
+      rc.parts_changed(RELS_ONLY, tx), [])
+check("a file with nothing to change is not queued",
+      rc.parts_changed(zipped({"word/document.xml": "<w:p><w:t>Boston</w:t></w:p>"}), tx), [])
+
+# The .rels part must never receive the city-name pass — rewriting a
+# relationship Target while the zip member keeps its name dangles the
+# relationship, and the document opens as corrupt.
+EMBED = zipped({"word/_rels/document.xml.rels":
+                '<Relationship Target="../embeddings/Scotland_Data.xlsx"/>'})
+check("a rels Target naming the old city is left alone",
+      rc.parts_changed(EMBED, txs, SLUG_ONLY), [])
+
+# --- the XML well-formedness gate -------------------------------------------
+# docProps and .rels take the transform over RAW markup (no escaping layer), so
+# they are where a `--to` containing markup could produce an unopenable file.
+BROKEN = rc.make_transform("Scotland", "Edin<burgh")
+try:
+    rc.rename_part("docProps/core.xml",
+                   '<?xml version="1.0"?><cp:x xmlns:cp="u"><dc:t xmlns:dc="v">'
+                   'Scotland</dc:t></cp:x>'.encode("utf-8"), BROKEN, None)
+    _raised = False
+except RuntimeError:
+    _raised = True
+check("a transform that breaks the XML is refused, not uploaded", _raised, True)
+# The paragraph path escapes its text, so the same value is harmless there —
+# worth pinning so nobody "fixes" the escaping later.
+check("the same value is escaped, not injected, in a text run",
+      "&lt;" in rc.rename_part("word/document.xml",
+          '<?xml version="1.0"?><w:p xmlns:w="u"><w:r><w:t>Scotland</w:t></w:r></w:p>'
+          .encode("utf-8"), BROKEN, None).decode("utf-8"), True)
+check("a well-formed rewrite still passes the gate",
+      "Edinburgh" in rc.rename_part("word/document.xml",
+          '<?xml version="1.0"?><w:p xmlns:w="u"><w:r><w:t>Scotland</w:t></w:r></w:p>'
+          .encode("utf-8"), tx, None).decode("utf-8"), True)
+
+# --- member data and native files -------------------------------------------
+check("a chapter CRM is recognised as member data",
+      rc.is_member_data("Edinburgh CRM.xlsx"), True)
+check("an event tracker is too", rc.is_member_data("Event Tracker.docx"), True)
+check("a design asset is not", rc.is_member_data("Slides.pptx"), False)
+check("a native Google file is flagged as uninspectable",
+      (rc.is_native("About"), rc.is_native("Notes.gdoc")), (True, True))
+check("an Office file is not native", rc.is_native("About.docx"), False)
+
+# --- redaction ---------------------------------------------------------------
+rc.REDACT = False
+check("redaction off: document text is shown", rc.redact_text("AAIF Scotland"),
+      "'AAIF Scotland'")
+rc.REDACT = True
+try:
+    check("redaction on: only the shape survives", rc.redact_text("AAIF Scotland"),
+          "<13 chars>")
+    check("a member row's text does not leak",
+          "Ada" in rc.redact_text("Ada Lovelace, Scotland"), False)
+finally:
+    rc.REDACT = False
 
 print()
 print("FAILED %d check(s)" % len(FAILS) if FAILS else

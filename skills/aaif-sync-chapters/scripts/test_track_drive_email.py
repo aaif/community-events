@@ -147,6 +147,36 @@ def test_a_junk_cell_does_not_block_the_sentinel():
           ([v for _, v, _ in writes], pending), ([t.NO_GRANT], []))
 
 
+def test_a_recorded_address_is_not_clobbered_when_an_OLD_grant_exists():
+    """The regression that made the whole feature a no-op on its main use case.
+
+    Someone still holds a grant under the address on their intake row, and an
+    operator records the Google account they actually sign in with. The pending
+    guard used to live only in the no-grant branch, so this took the `if addr:`
+    path and wrote the OLD ACL spelling straight over the operator's entry —
+    reported as `same`, visible nowhere. Meanwhile sync_access preferred the
+    intake spelling and never moved the grant. The instruction won nowhere.
+    """
+    granted = {"ada@x.com": ("Boston", "ada@x.com")}
+    writes, pending = t.plan(HDR, rows("ada@x.com", recorded="b@x.io"),
+                             granted, {}, CI)
+    check("the recorded address is not overwritten", writes, [])
+    check("it is reported as pending", [v for _, v, _ in pending], ["b@x.io"])
+    check("and the line says a grant already exists elsewhere",
+          "still granted as" in pending[0][2], True)
+
+
+def test_a_grant_matching_the_recorded_address_is_written_normally():
+    """Once sync_access has moved the grant, the cell and the ACL agree and the
+    row goes back to being ordinary — otherwise it would be pending forever."""
+    granted = {"ada@x.com": ("Boston", "b@x.io")}
+    writes, pending = t.plan(HDR, rows("ada@x.com", recorded="b@x.io"),
+                             granted, {}, CI)
+    check("the row is written from the ACL again",
+          [v for _, v, _ in writes], ["b@x.io"])
+    check("and nothing is pending", pending, [])
+
+
 # --- grant_by_person(): one entry per person, across chapters ---------------
 
 def _fake_folders():
@@ -154,7 +184,7 @@ def _fake_folders():
 
 
 def _run_grant_by_person(perms_by_folder, want_by_folder, reviewed=None):
-    with mock.patch.object(t, "reviewed_drive_emails", lambda: reviewed or {}), \
+    with mock.patch.object(t, "reviewed_drive_emails", lambda: (reviewed or {}, [])), \
          mock.patch.object(t, "list_chapter_folders", _fake_folders), \
          mock.patch.object(t, "read_role_tab", lambda tab, x: ([], None, None)), \
          mock.patch.object(t, "merge_people", lambda p: p), \

@@ -94,13 +94,17 @@ def org_row(status, email, chapter, city=""):
     return row
 
 
-def grant(email, chapter):
+def grant(email, chapter, intake=None):
+    # The REAL shape plan() builds. The helper used to omit intake_email, so
+    # every gate test exercised a fallback branch instead of the shipped one.
     return {"chapter": chapter, "folder_id": "f1", "email": email,
+            "intake_email": intake or email, "via_column": bool(intake),
             "name": "X", "role": "writer"}
 
 
 def gate(rows, grants):
-    with mock.patch.object(sync_access, "get_values", return_value=rows):
+    with mock.patch.object(sync_access, "get_values", return_value=rows), \
+         mock.patch.object(sync_access, "reviewed_drive_emails", lambda: ({}, [])):
         return aborts(lambda: sync_access.assert_all_accepted(grants))
 
 
@@ -279,6 +283,43 @@ check("--mail-if-required with --i-have-approval parses and proceeds",
       _main_reaches_plan(["--write", "--mail-if-required", "--i-have-approval"]), True)
 
 
+# --- looks_like_address: every shape a spreadsheet cell really produces -------
+# This decides what address a Drive grant is made to, so each rejection below is
+# a way a hand-edited cell could hand write access to the wrong party.
+lla = sync_access.looks_like_address
+check("a plain address passes", lla("ada@x.io"), True)
+# Alt+Enter in a Sheets cell. A `" "` check missed this, so two addresses in one
+# cell passed as one and the whole blob became the grant target.
+check("a NEWLINE between two addresses is refused", lla("a@x.io\nb@x.io"), False)
+check("a non-breaking space is refused", lla("ada@x.io\xa0x"), False)
+check("a zero-width space is refused", lla("ada@x.io\u200b"), False)
+check("a comma-separated pair is refused", lla("a@x.io,b@x.io"), False)
+check("the display form is refused", lla("Ada <ada@x.io>"), False)
+# A homoglyph domain renders identically in the report, and under --redact the
+# operator sees only a***@***.io — there is no reviewing your way past it.
+check("a non-ASCII (homoglyph) domain is refused", lla("ada@\u0445.io"), False)
+# A group address grants every current AND future member of a list somebody
+# else administers, from one cell. Exercised through the constant rather than by
+# writing the real domain into a fixture, which the PII guard rightly refuses.
+_real_groups = sync_access.GROUP_DOMAINS
+sync_access.GROUP_DOMAINS = ("b.io",)
+try:
+    check("an address at a group-hosting domain is refused", lla("team@b.io"), False)
+    check("...while the same local part elsewhere is fine", lla("team@x.io"), True)
+finally:
+    sync_access.GROUP_DOMAINS = _real_groups
+check("the shipped list names Google Groups",
+      "googlegroups" in " ".join(sync_access.GROUP_DOMAINS), True)
+check("the sentinel is refused", lla(sync_access.NO_GRANT), False)
+check("a bare local part is refused", lla("ada"), False)
+# A trailing ideographic space is normalised to a plain one and stripped, which
+# is right; an INTERIOR one is a second value hiding in the cell.
+check("a trailing ideographic space is normalised away, not refused",
+      lla("ada@x.io\u3000"), True)
+check("an interior ideographic space is refused",
+      lla("ada@x.io\u3000b@x.io"), False)
+
+
 # ---------------------------------------------------------------------------
 # --redact: stdout masking (default on under CI)
 # ---------------------------------------------------------------------------
@@ -374,7 +415,7 @@ RDE_HDR = ["Full name", "Email", "Drive Email"]
 def rde(*pairs):
     rows = [RDE_HDR] + [["Someone", e, d] for e, d in pairs]
     with mock.patch.object(sync_access, "get_values", return_value=rows):
-        return sync_access.reviewed_drive_emails()
+        return sync_access.reviewed_drive_emails()[0]
 
 
 check("a recorded address overrides the intake one",
@@ -402,8 +443,10 @@ check("rows agreeing (in any spelling) keep it",
       {"ada@x.io": "a.b@gmail.com"})
 with mock.patch.object(sync_access, "get_values",
                        return_value=[["Full name", "Email"], ["Someone", "ada@x.io"]]):
-    check("a missing Drive Email column is not an error",
-          sync_access.reviewed_drive_emails(), {})
+    got, probs = sync_access.reviewed_drive_emails()
+    check("a missing Drive Email column is not an error", got, {})
+    check("...but it says so, rather than looking like an empty column",
+          len(probs), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +460,8 @@ def run_plan(folder_perms, people, reviewed):
          mock.patch.object(sync_access, "merge_people", lambda p: p), \
          mock.patch.object(sync_access, "match_chapters",
                            lambda ppl, folders: ({"F1": ppl}, [], [])), \
-         mock.patch.object(sync_access, "reviewed_drive_emails", lambda: reviewed), \
+         mock.patch.object(sync_access, "reviewed_drive_emails",
+                           lambda: (reviewed, [])), \
          mock.patch.object(sync_access, "perms",
                            lambda fid: folder_perms if fid == "F1" else []):
         return sync_access.plan("writer")
@@ -443,13 +487,27 @@ check("with no recorded address the intake one is granted",
       [g["email"] for g in p_["grants"]], ["ada@x.io"])
 check("and it is not flagged", p_["grants"][0]["via_column"], False)
 
-# Someone already granted under their intake address must not be granted a
-# SECOND permission just because an address was recorded for them later.
+# A RECORDED address is an instruction, not a tiebreak. Someone already granted
+# under an OLD address — the "changed Google accounts" case, which is the main
+# thing the column is for — must be granted the recorded one, or the operator's
+# entry wins nowhere: sync_access skipped it as already-granted and
+# track_drive_email then wrote the old ACL spelling back over the cell.
 p_ = run_plan([held("ada@x.io")], ADA, {"ada@x.io": "b@x.io"})
-check("an existing grant under the intake address still satisfies it",
-      (p_["grants"], [e for _c, e in p_["already_granted"]]), ([], ["ada@x.io"]))
+check("a recorded address is granted even when an older grant exists",
+      [(g["email"], g["intake_email"]) for g in p_["grants"]],
+      [("b@x.io", "ada@x.io")])
+check("...and the older grant is named as superseded, not silently left",
+      [(c, o, n) for c, o, n in p_["superseded"]],
+      [("Boston", "ada@x.io", "b@x.io")])
+check("...and it is NOT double-counted as already granted",
+      p_["already_granted"], [])
+
+# Once the recorded address IS on the ACL, there is nothing left to do.
+p_ = run_plan([held("b@x.io")], ADA, {"ada@x.io": "b@x.io"})
+check("a grant already held under the recorded address satisfies it",
+      (p_["grants"], [e for _c, e in p_["already_granted"]]), ([], ["b@x.io"]))
 check("...and verify is pointed at the address that actually matched",
-      [e for _c, _f, e in p_["already_granted_ids"]], ["ada@x.io"])
+      [e for _c, _f, e in p_["already_granted_ids"]], ["b@x.io"])
 
 p_ = run_plan([held("b@x.io")], ADA, {"ada@x.io": "b@x.io"})
 check("a grant under the recorded address satisfies it too",
@@ -474,7 +532,8 @@ def redirected(intake, target):
 
 def gate_redirect(rows, grants, reviewed):
     with mock.patch.object(sync_access, "get_values", return_value=rows), \
-         mock.patch.object(sync_access, "reviewed_drive_emails", lambda: reviewed):
+         mock.patch.object(sync_access, "reviewed_drive_emails",
+                           lambda: (reviewed, [])):
         return aborts(lambda: sync_access.assert_all_accepted(grants))
 
 
@@ -501,6 +560,29 @@ check("a target with no recorded address at all is refused",
 check("a gmail-dot respelling of the recorded address still passes",
       gate_redirect(TAB, [redirected("ada@x.io", "a.b@gmail.com")],
                     {"ada@x.io": "ab@gmail.com"}), False)
+
+# --- the gate refuses a redirect aimed at someone the intake REFUSED ---------
+# The acceptance check keys on the intake row, so it bounds how many grants
+# exist and for which chapter — it says nothing about who the recorded address
+# belongs to. Without this, one cell edit points an accepted organizer's grant
+# at a Denied applicant.
+DENIED_TAB = [ORG_HEADERS,
+              org_row("Accepted", "ada@x.io", "Boston"),
+              org_row("Denied", "dee@x.io", "Boston")]
+check("a redirect to a Denied person's address is refused",
+      gate_redirect(DENIED_TAB, [grant("dee@x.io", "Boston", intake="ada@x.io")],
+                    {"ada@x.io": "dee@x.io"}), True)
+check("a redirect to a New/pending person's address is refused",
+      gate_redirect([ORG_HEADERS, org_row("Accepted", "ada@x.io", "Boston"),
+                     org_row("New", "cy@x.io", "Boston")],
+                    [grant("cy@x.io", "Boston", intake="ada@x.io")],
+                    {"ada@x.io": "cy@x.io"}), True)
+# An address on NO intake row is still allowed — that is the feature: a personal
+# Google account the public form never saw.
+check("a redirect to an address the intake has never seen is allowed",
+      gate_redirect(DENIED_TAB, [grant("b@x.io", "Boston", intake="ada@x.io")],
+                    {"ada@x.io": "b@x.io"}), False)
+
 
 
 # --- redaction through the whole report: no fixture email or full name survives --

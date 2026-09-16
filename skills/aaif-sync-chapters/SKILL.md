@@ -132,13 +132,23 @@ lands silently and the intake `Email` stays untouched.
 Three rules make a hand-editable cell safe to grant from:
 
 - **The authority is still the intake row.** The column redirects *where* a
-  grant lands; the acceptance and the chapter come from `Email`, and
-  `assert_all_accepted()` re-derives the recorded address from its own fresh
-  read. An address typed in there cannot manufacture a grant, only move one.
+  grant lands; the acceptance and the chapter come from `Email`, so the cell
+  cannot create a grant, only move one. It also cannot move one to **someone the
+  intake refused**: a target matching a `Denied`/`New`/`Tentative` row aborts the
+  whole run. A target on *no* intake row is allowed — that is the feature, a
+  personal Google account the form never saw — which is why every redirect is
+  printed in the report for a human to read.
+- **A recorded address is an instruction, not a tiebreak.** Someone already
+  granted under an older address is granted the recorded one, and the older
+  grant is named as superseded. Preferring the existing grant meant the common
+  case — a person who changed Google accounts — had their recorded address
+  ignored by this engine and overwritten by `track_drive_email`.
 - **Only an override counts as one.** A blank cell, the `(no grant)` sentinel,
-  free text, two addresses in one cell, or a value that merely restates the
-  intake address are all ignored — the first two silently, the rest with a
-  stderr line naming the row.
+  and a value that merely restates the intake address are ignored silently; free
+  text, two addresses in one cell (including the newline Alt+Enter produces), a
+  display-form `Name <a@x.io>`, a non-ASCII homoglyph domain and a
+  group-hosting address are ignored with a line naming the row. The report
+  prints those once, next to the grants they affected.
 - **Two rows disagreeing about one person drop the override entirely**, loudly.
   A person can hold several intake rows, so a disagreement is a real question
   about which address is theirs, and guessing is where this estate's identity
@@ -311,8 +321,13 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   the row. What the gate *did* do was re-propose the city every run, keeping the
   missing page visible; **`--audit-luma` replaces that** and covers more, checking
   `Chapter Luma Link` on **every** feed row rather than only the cities being
-  added today, and exiting `2` when one 404s. It is opt-in because it costs one
-  request per row. Page creation is manual, and a net-new city still needs
+  added today, and exiting `2` (report mode) when anything is dead, blank or
+  unverified. It costs one paced request per row that has a link, and
+  **luma.com rate-limits a full sweep**: verified live 2026-09-17, a 96-row run
+  draws a `429` with no `Retry-After`, after which every later row 429s too. The
+  sweep therefore stops at the first 429 and says so with a `PARTIAL:` marker
+  rather than reporting the remaining rows as findings — one upstream fact must
+  not become ninety false ones. Re-run later to finish. Page creation is manual, and a net-new city still needs
   its Drive folder/assets: run **`aaif-create-chapter`** for it as the follow-up.
 - Duplicate intake rows for the same person+city are deduped (first wins, reported).
   Duplicate **chapter** rows (two rows for one city) are reported too — only the
