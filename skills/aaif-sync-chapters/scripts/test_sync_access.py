@@ -94,13 +94,17 @@ def org_row(status, email, chapter, city=""):
     return row
 
 
-def grant(email, chapter):
+def grant(email, chapter, intake=None):
+    # The REAL shape plan() builds. The helper used to omit intake_email, so
+    # every gate test exercised a fallback branch instead of the shipped one.
     return {"chapter": chapter, "folder_id": "f1", "email": email,
+            "intake_email": intake or email, "via_column": bool(intake),
             "name": "X", "role": "writer"}
 
 
 def gate(rows, grants):
-    with mock.patch.object(sync_access, "get_values", return_value=rows):
+    with mock.patch.object(sync_access, "get_values", return_value=rows), \
+         mock.patch.object(sync_access, "reviewed_drive_emails", lambda: ({}, [])):
         return aborts(lambda: sync_access.assert_all_accepted(grants))
 
 
@@ -279,6 +283,43 @@ check("--mail-if-required with --i-have-approval parses and proceeds",
       _main_reaches_plan(["--write", "--mail-if-required", "--i-have-approval"]), True)
 
 
+# --- looks_like_address: every shape a spreadsheet cell really produces -------
+# This decides what address a Drive grant is made to, so each rejection below is
+# a way a hand-edited cell could hand write access to the wrong party.
+lla = sync_access.looks_like_address
+check("a plain address passes", lla("ada@x.io"), True)
+# Alt+Enter in a Sheets cell. A `" "` check missed this, so two addresses in one
+# cell passed as one and the whole blob became the grant target.
+check("a NEWLINE between two addresses is refused", lla("a@x.io\nb@x.io"), False)
+check("a non-breaking space is refused", lla("ada@x.io\xa0x"), False)
+check("a zero-width space is refused", lla("ada@x.io\u200b"), False)
+check("a comma-separated pair is refused", lla("a@x.io,b@x.io"), False)
+check("the display form is refused", lla("Ada <ada@x.io>"), False)
+# A homoglyph domain renders identically in the report, and under --redact the
+# operator sees only a***@***.io — there is no reviewing your way past it.
+check("a non-ASCII (homoglyph) domain is refused", lla("ada@\u0445.io"), False)
+# A group address grants every current AND future member of a list somebody
+# else administers, from one cell. Exercised through the constant rather than by
+# writing the real domain into a fixture, which the PII guard rightly refuses.
+_real_groups = sync_access.GROUP_DOMAINS
+sync_access.GROUP_DOMAINS = ("b.io",)
+try:
+    check("an address at a group-hosting domain is refused", lla("team@b.io"), False)
+    check("...while the same local part elsewhere is fine", lla("team@x.io"), True)
+finally:
+    sync_access.GROUP_DOMAINS = _real_groups
+check("the shipped list names Google Groups",
+      "googlegroups" in " ".join(sync_access.GROUP_DOMAINS), True)
+check("the sentinel is refused", lla(sync_access.NO_GRANT), False)
+check("a bare local part is refused", lla("ada"), False)
+# A trailing ideographic space is normalised to a plain one and stripped, which
+# is right; an INTERIOR one is a second value hiding in the cell.
+check("a trailing ideographic space is normalised away, not refused",
+      lla("ada@x.io\u3000"), True)
+check("an interior ideographic space is refused",
+      lla("ada@x.io\u3000b@x.io"), False)
+
+
 # ---------------------------------------------------------------------------
 # --redact: stdout masking (default on under CI)
 # ---------------------------------------------------------------------------
@@ -328,11 +369,221 @@ with _ctx.redirect_stderr(_err):
 check("with --notify the flag is not called inert", "inert" in _err.getvalue(), False)
 
 # --- the remediation hints name the consent flag, not just the mail flag ------
-_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sync_access.py"),
-            encoding="utf-8").read()
-check("both remediation hints name the consent flag",
-      (_src.count("(or --mail-if-required) \"\n                               \"--i-have-approval\""),
-       _src.count("(or pass --mail-if-required \"\n                     \"--i-have-approval)")), (1, 1))
+# Checked through the strings a user actually sees rather than by matching the
+# source's line wrapping, which made an unrelated reflow look like a regression.
+_no_acct_hint = run_grants([NO_ACCT])[1][0][3]
+check("the no-account hint names the consent flag",
+      "--i-have-approval" in _no_acct_hint, True)
+check("...and offers the column as the fix that emails nobody",
+      sync_access.H_DRIVE_EMAIL in _no_acct_hint, True)
+
+
+def _lock_abort_message():
+    """The abort text shown when the lock phase is refused after a failed grant."""
+    p_ = {"grants": [grant("ada@x.io", "Boston")], "public": [{"id": "p1"}],
+          "already_granted": [], "already_granted_ids": [], "role": "writer"}
+    with mock.patch.object(sync_access, "plan", lambda role: p_), \
+         mock.patch.object(sync_access, "report", lambda *a: None), \
+         mock.patch.object(sync_access, "apply_grants",
+                           lambda *a: (0, [("Boston", "X", "ada@x.io", "nope")])), \
+         mock.patch.object(sync_access, "apply_lock",
+                           side_effect=AssertionError("lock must not run")), \
+         mock.patch.object(sys, "argv", ["sync_access.py", "--write"]):
+        try:
+            sync_access.main()
+        except SystemExit as e:
+            return str(e.code)
+    return ""
+
+
+_abort = _lock_abort_message()
+check("the lock refusal names the consent flag", "--i-have-approval" in _abort, True)
+check("...and points at the column first",
+      sync_access.H_DRIVE_EMAIL in _abort, True)
+check("...and still offers --lock-anyway", "--lock-anyway" in _abort, True)
+
+
+# ---------------------------------------------------------------------------
+# reviewed_drive_emails — the column that redirects a grant
+# ---------------------------------------------------------------------------
+# This column decides WHICH ADDRESS receives standing write access to a chapter
+# folder, and a human types into it. Every check here is a way of turning a
+# hand-edited cell into the wrong grant.
+RDE_HDR = ["Full name", "Email", "Drive Email"]
+
+
+def rde(*pairs):
+    rows = [RDE_HDR] + [["Someone", e, d] for e, d in pairs]
+    with mock.patch.object(sync_access, "get_values", return_value=rows):
+        return sync_access.reviewed_drive_emails()[0]
+
+
+check("a recorded address overrides the intake one",
+      rde(("ada@x.io", "b@x.io")), {"ada@x.io": "b@x.io"})
+check("the key is canonical, so a gmail-dot intake row still matches",
+      rde(("a.b@gmail.com", "b@x.io")), {"ab@gmail.com": "b@x.io"})
+# `(no grant)` is track_drive_email's own sentinel for "nobody granted them".
+# Granting it would be nonsense; treating it as an override would be worse.
+check("the (no grant) sentinel is not an address", rde(("ada@x.io", "(no grant)")), {})
+check("a blank cell is no override", rde(("ada@x.io", "")), {})
+check("a cell restating the intake address is no override",
+      rde(("ada@x.io", "ada@x.io")), {})
+check("a differently-SPELLED but identical gmail is no override",
+      rde(("a.b@gmail.com", "ab@gmail.com")), {})
+check("free text is ignored, not granted", rde(("ada@x.io", "ask her")), {})
+check("two addresses in one cell are ignored",
+      rde(("ada@x.io", "a@x.io, b@x.io")), {})
+check("a bare local part with no domain is ignored", rde(("ada@x.io", "ada")), {})
+# One person, several rows, two different answers: picking one is the guess
+# that the estate's identity bugs are made of.
+check("rows disagreeing about a person drop the override entirely",
+      rde(("ada@x.io", "b@x.io"), ("ada@x.io", "c@x.io")), {})
+check("rows agreeing (in any spelling) keep it",
+      rde(("ada@x.io", "a.b@gmail.com"), ("ada@x.io", "ab@gmail.com")),
+      {"ada@x.io": "a.b@gmail.com"})
+with mock.patch.object(sync_access, "get_values",
+                       return_value=[["Full name", "Email"], ["Someone", "ada@x.io"]]):
+    got, probs = sync_access.reviewed_drive_emails()
+    check("a missing Drive Email column is not an error", got, {})
+    check("...but it says so, rather than looking like an empty column",
+          len(probs), 1)
+
+
+# ---------------------------------------------------------------------------
+# plan() — the column redirects the grant, and both spellings satisfy it
+# ---------------------------------------------------------------------------
+def run_plan(folder_perms, people, reviewed):
+    with mock.patch.object(sync_access, "list_chapter_folders",
+                           lambda: [{"id": "F1", "name": "Boston"}]), \
+         mock.patch.object(sync_access, "read_role_tab",
+                           lambda tab, x: (people, [], [])), \
+         mock.patch.object(sync_access, "merge_people", lambda p: p), \
+         mock.patch.object(sync_access, "match_chapters",
+                           lambda ppl, folders: ({"F1": ppl}, [], [])), \
+         mock.patch.object(sync_access, "reviewed_drive_emails",
+                           lambda: (reviewed, [])), \
+         mock.patch.object(sync_access, "perms",
+                           lambda fid: folder_perms if fid == "F1" else []):
+        return sync_access.plan("writer")
+
+
+ADA = [{"email": "ada@x.io", "name": "Ada"}]
+
+
+def held(email, inherited=False, role="writer"):
+    return {"type": "user", "emailAddress": email, "role": role,
+            "inherited": inherited}
+
+
+p_ = run_plan([], ADA, {"ada@x.io": "b@x.io"})
+check("the grant goes to the recorded address, not the intake one",
+      [(g["email"], g["intake_email"]) for g in p_["grants"]],
+      [("b@x.io", "ada@x.io")])
+check("and it is flagged as coming from the column",
+      p_["grants"][0]["via_column"], True)
+
+p_ = run_plan([], ADA, {})
+check("with no recorded address the intake one is granted",
+      [g["email"] for g in p_["grants"]], ["ada@x.io"])
+check("and it is not flagged", p_["grants"][0]["via_column"], False)
+
+# A RECORDED address is an instruction, not a tiebreak. Someone already granted
+# under an OLD address — the "changed Google accounts" case, which is the main
+# thing the column is for — must be granted the recorded one, or the operator's
+# entry wins nowhere: sync_access skipped it as already-granted and
+# track_drive_email then wrote the old ACL spelling back over the cell.
+p_ = run_plan([held("ada@x.io")], ADA, {"ada@x.io": "b@x.io"})
+check("a recorded address is granted even when an older grant exists",
+      [(g["email"], g["intake_email"]) for g in p_["grants"]],
+      [("b@x.io", "ada@x.io")])
+check("...and the older grant is named as superseded, not silently left",
+      [(c, o, n) for c, o, n in p_["superseded"]],
+      [("Boston", "ada@x.io", "b@x.io")])
+check("...and it is NOT double-counted as already granted",
+      p_["already_granted"], [])
+
+# Once the recorded address IS on the ACL, there is nothing left to do.
+p_ = run_plan([held("b@x.io")], ADA, {"ada@x.io": "b@x.io"})
+check("a grant already held under the recorded address satisfies it",
+      (p_["grants"], [e for _c, e in p_["already_granted"]]), ([], ["b@x.io"]))
+check("...and verify is pointed at the address that actually matched",
+      [e for _c, _f, e in p_["already_granted_ids"]], ["b@x.io"])
+
+p_ = run_plan([held("b@x.io")], ADA, {"ada@x.io": "b@x.io"})
+check("a grant under the recorded address satisfies it too",
+      (p_["grants"], [e for _c, e in p_["already_granted"]]),
+      ([], ["b@x.io"]))
+# The engine's own write must not come back as a finding in its own audit list.
+check("...and does NOT read as a stranger's grant", p_["stale"], [])
+
+p_ = run_plan([held("someone.else@x.io")], ADA, {"ada@x.io": "b@x.io"})
+check("an unrelated direct grant is still reported as stale",
+      [e for _c, e, _r in p_["stale"]], ["someone.else@x.io"])
+
+
+# ---------------------------------------------------------------------------
+# assert_all_accepted — a redirected target is checked twice over
+# ---------------------------------------------------------------------------
+def redirected(intake, target):
+    return {"chapter": "Boston", "folder_id": "f1", "email": target,
+            "intake_email": intake, "via_column": True, "name": "X",
+            "role": "writer"}
+
+
+def gate_redirect(rows, grants, reviewed):
+    with mock.patch.object(sync_access, "get_values", return_value=rows), \
+         mock.patch.object(sync_access, "reviewed_drive_emails",
+                           lambda: (reviewed, [])):
+        return aborts(lambda: sync_access.assert_all_accepted(grants))
+
+
+# The authority comes from the INTAKE row; the column only redirects where the
+# grant lands. An address that appears nowhere on the intake is fine as a
+# target, and would be refused outright as an identity.
+check("a redirected grant passes when the intake row is accepted",
+      gate_redirect(TAB, [redirected("ada@x.io", "b@x.io")],
+                    {"ada@x.io": "b@x.io"}), False)
+check("a redirected grant for a NON-accepted intake row is still refused",
+      gate_redirect(TAB, [redirected("cy@x.io", "d@x.io")],
+                    {"cy@x.io": "d@x.io"}), True)
+check("a redirected grant for the wrong chapter is still refused",
+      gate_redirect(TAB, [dict(redirected("ada@x.io", "b@x.io"),
+                               chapter="Berlin")],
+                    {"ada@x.io": "b@x.io"}), True)
+# The gate re-reads the column itself: trusting plan()'s attachment would mean
+# the acceptance is checked and then some other address is granted.
+check("a target the sheet no longer records is refused",
+      gate_redirect(TAB, [redirected("ada@x.io", "b@x.io")],
+                    {"ada@x.io": "c@x.io"}), True)
+check("a target with no recorded address at all is refused",
+      gate_redirect(TAB, [redirected("ada@x.io", "b@x.io")], {}), True)
+check("a gmail-dot respelling of the recorded address still passes",
+      gate_redirect(TAB, [redirected("ada@x.io", "a.b@gmail.com")],
+                    {"ada@x.io": "ab@gmail.com"}), False)
+
+# --- the gate refuses a redirect aimed at someone the intake REFUSED ---------
+# The acceptance check keys on the intake row, so it bounds how many grants
+# exist and for which chapter — it says nothing about who the recorded address
+# belongs to. Without this, one cell edit points an accepted organizer's grant
+# at a Denied applicant.
+DENIED_TAB = [ORG_HEADERS,
+              org_row("Accepted", "ada@x.io", "Boston"),
+              org_row("Denied", "dee@x.io", "Boston")]
+check("a redirect to a Denied person's address is refused",
+      gate_redirect(DENIED_TAB, [grant("dee@x.io", "Boston", intake="ada@x.io")],
+                    {"ada@x.io": "dee@x.io"}), True)
+check("a redirect to a New/pending person's address is refused",
+      gate_redirect([ORG_HEADERS, org_row("Accepted", "ada@x.io", "Boston"),
+                     org_row("New", "cy@x.io", "Boston")],
+                    [grant("cy@x.io", "Boston", intake="ada@x.io")],
+                    {"ada@x.io": "cy@x.io"}), True)
+# An address on NO intake row is still allowed — that is the feature: a personal
+# Google account the public form never saw.
+check("a redirect to an address the intake has never seen is allowed",
+      gate_redirect(DENIED_TAB, [grant("b@x.io", "Boston", intake="ada@x.io")],
+                    {"ada@x.io": "b@x.io"}), False)
+
+
 
 # --- redaction through the whole report: no fixture email or full name survives --
 _plan = {"already_granted": [],

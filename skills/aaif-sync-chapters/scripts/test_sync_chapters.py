@@ -342,24 +342,128 @@ def nrow(row, city, luma=None):
 
 _rows = [nrow(82, "Pune", "absent"), nrow(83, "Boston", "live"),
          nrow(84, "Oslo", "unknown"), nrow(85, "Kyoto", "live")]
-_write, _held = sync_chapters.partition_new_rows(_rows, 81, False)
-check("only live rows are written",
-      [n["city"] for n in _write], ["Boston", "Kyoto"])
-check("absent and unknown are both held",
-      [n["city"] for n in _held], ["Pune", "Oslo"])
-check("written rows are renumbered compactly after last_row (no blank gap)",
-      [n["row"] for n in _write], [82, 83])
-check("the caller's proposal is not mutated",
-      [n["row"] for n in _rows], [82, 83, 84, 85])
-check("a row that never got a luma status is held, not written",
-      sync_chapters.partition_new_rows([nrow(82, "Pune")], 81, False),
-      ([], [nrow(82, "Pune")]))
-_write, _held = sync_chapters.partition_new_rows(_rows, 81, True)
-check("--allow-missing-luma writes everything",
+# The gate is OPT-IN as of 2026-09-17 (user-decided): a Luma page is made by
+# hand and can follow the row, so the DEFAULT writes every city. These checks
+# are written default-first, because the default is what production runs.
+_write, _held = sync_chapters.partition_new_rows(_rows, 81)
+check("by default every row is written, live page or not",
       ([n["city"] for n in _write], _held),
       (["Pune", "Boston", "Oslo", "Kyoto"], []))
-check("--allow-missing-luma still renumbers from last_row",
+check("...renumbered compactly from last_row",
       [n["row"] for n in _write], [82, 83, 84, 85])
+check("the caller's proposal is not mutated",
+      [n["row"] for n in _rows], [82, 83, 84, 85])
+
+_write, _held = sync_chapters.partition_new_rows(_rows, 81, require_luma=True)
+check("--require-luma writes only live rows",
+      [n["city"] for n in _write], ["Boston", "Kyoto"])
+check("--require-luma holds absent AND unknown",
+      [n["city"] for n in _held], ["Pune", "Oslo"])
+check("--require-luma renumbers compactly, leaving no blank gap",
+      [n["row"] for n in _write], [82, 83])
+check("under --require-luma a row with no luma status is held, not written",
+      sync_chapters.partition_new_rows([nrow(82, "Pune")], 81, require_luma=True),
+      ([], [nrow(82, "Pune")]))
+# A row with no status must never be held by the DEFAULT path — that would
+# reinstate the gate through the back door for any caller that skips the report.
+check("by default a row with no luma status is still written",
+      [n["city"] for n in sync_chapters.partition_new_rows([nrow(82, "Pune")], 81)[0]],
+      ["Pune"])
+
+
+# --- url_status: a Chapters-sheet cell is untrusted input ---------------------
+# audit_luma feeds this function a hand-edited cell. Without a host/scheme
+# restriction, a READ-ONLY report can be made to GET an internal address from
+# the operator's own machine and hand back live/absent as an existence oracle.
+def _no_fetch(*a, **k):
+    raise AssertionError("url_status made a request it should have refused")
+
+
+with mock.patch.object(sync_chapters.urllib.request, "urlopen", _no_fetch):
+    check("an internal http URL is refused without a request",
+          sync_chapters.url_status("http://169.254.169.254/latest/meta-data/"), "unknown")
+    check("an internal https URL on another host is refused",
+          sync_chapters.url_status("https://192.168.1.10:8080/admin/purge"), "unknown")
+    check("a file:// path is refused", sync_chapters.url_status("file:///etc/passwd"), "unknown")
+    check("plain http on luma itself is refused",
+          sync_chapters.url_status("http://luma.com/aaif-boston"), "unknown")
+    # A cell with no scheme used to raise ValueError out of urlopen, which was
+    # not caught — one bad cell aborted a 90-row sweep partway through.
+    check("a scheme-less cell is refused, not an exception",
+          sync_chapters.url_status("luma.com/aaif-boston"), "unknown")
+    check("an empty cell is refused", sync_chapters.url_status(""), "unknown")
+check("a luma host IS allowed through to the fetch",
+      [h for h in sync_chapters.LUMA_HOSTS if "luma" in h] != [], True)
+
+
+# --- audit_luma: what counts as pending work ---------------------------------
+AUDIT_HDR = ["City", "Chapter Luma Link"]
+
+
+def run_audit(rows, statuses):
+    sheet = [AUDIT_HDR] + rows
+    with mock.patch.object(sync_chapters, "get_values", return_value=sheet), \
+         mock.patch.object(sync_chapters, "url_status",
+                           lambda u: statuses.get(u, "live")):
+        return sync_chapters.audit_luma()
+
+
+check("a clean feed reports nothing pending",
+      run_audit([["Boston", "https://luma.com/aaif-boston"]], {}), 0)
+check("a dead link is pending work",
+      run_audit([["Boston", "https://luma.com/aaif-boston"]],
+                {"https://luma.com/aaif-boston": "absent"}), 1)
+# The failure this guards: luma.com rate-limits a ~90-row sweep into "unknown",
+# dead is empty, and the run exits 0 — a night that verified nothing reading as
+# a clean one.
+check("an UNVERIFIABLE link is pending work too, not a pass",
+      run_audit([["Boston", "https://luma.com/aaif-boston"]],
+                {"https://luma.com/aaif-boston": "unknown"}), 1)
+# A row with no link at all is the state this engine now CREATES by default,
+# so the audit that replaced the write-time gate has to be what reports it.
+check("a row with NO link is pending work", run_audit([["Boston", ""]], {}), 1)
+check("a row with no city is skipped entirely",
+      run_audit([["", "https://luma.com/aaif-boston"]], {}), 0)
+check("counts add up across rows",
+      run_audit([["Boston", "https://luma.com/aaif-boston"],
+                 ["Pune", "https://luma.com/aaif-pune"],
+                 ["Oslo", ""]],
+                {"https://luma.com/aaif-boston": "absent",
+                 "https://luma.com/aaif-pune": "unknown"}), 3)
+# Rate-limiting is upstream unavailability, not 96 dead links. Observed live:
+# luma.com 429s partway through a ~96-row sweep, with no Retry-After, and every
+# row after that 429s too.
+_rows3 = [["Boston", "https://luma.com/aaif-boston"],
+          ["Pune", "https://luma.com/aaif-pune"],
+          ["Oslo", "https://luma.com/aaif-oslo"]]
+_seen = []
+
+
+def _throttle_after_one(u):
+    _seen.append(u)
+    return "live" if len(_seen) == 1 else "throttled"
+
+
+with mock.patch.object(sync_chapters, "get_values",
+                       return_value=[AUDIT_HDR] + _rows3), \
+     mock.patch.object(sync_chapters, "url_status", _throttle_after_one), \
+     mock.patch.object(sync_chapters.time, "sleep", lambda s: None):
+    _pending = sync_chapters.audit_luma()
+check("a 429 stops the sweep instead of reporting every later row as a finding",
+      len(_seen), 2)
+check("...and the run is still pending work, not a pass", _pending, 1)
+
+
+def audit_with_headers(headers):
+    with mock.patch.object(sync_chapters, "get_values",
+                           return_value=[headers, ["Boston", "x"]]):
+        return aborts(sync_chapters.audit_luma)
+
+
+# Column layouts on this feed have moved before, and a silent restructure is
+# how the A:D ranges broke last time.
+check("a missing Chapter Luma Link header aborts", audit_with_headers(["City"]), True)
+check("a missing City header aborts", audit_with_headers(["Chapter Luma Link"]), True)
 
 
 # --- --redact: stdout masking (default on under CI) ----------------------------

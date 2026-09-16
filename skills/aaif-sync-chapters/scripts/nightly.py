@@ -100,6 +100,21 @@ def classify(code, wrote_marker, write_mode, partial_marker=False):
     return DRIFT
 
 
+#: Per-engine flags the nightly always passes.
+#:
+#: `chapters` deliberately does NOT get `--audit-luma`, though the case for it
+#: is real: the write-time Luma gate is off by default (2026-09-17), so a new
+#: row is written whether or not its page exists and that sweep is the only
+#: thing left that notices a dead "Stay Updated" button. It was wired in here
+#: and then removed the same day, because luma.com rate-limits it: a 96-row
+#: sweep draws a 429 with no Retry-After (measured 2026-09-17), so an unattended
+#: run would stop at row 2 and report PARTIAL every night. A check that can
+#: never complete unattended teaches operators to ignore the one signal it
+#: shares with real findings. It stays a manual sweep — run it by hand, spaced
+#: out, and heed the PARTIAL marker.
+EXTRA_ARGS = {}
+
+
 def engine_cmd(name, script, write_mode):
     """The argv for one engine. --write passes through EXCEPT to the engines
     in REPORT_ONLY, which never get it no matter what the runner was told."""
@@ -107,6 +122,7 @@ def engine_cmd(name, script, write_mode):
         write_mode = False
     return ([sys.executable, os.path.join(HERE, script)]
             + (["--write"] if write_mode else [])
+            + EXTRA_ARGS.get(name, [])
             + (["--no-redact"] if name in REDACTING else [])), write_mode
 
 

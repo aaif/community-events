@@ -84,7 +84,7 @@ told us and what Drive grants are keyed to.
 |---|---|---|
 | `Slack ID` | `resolve_slack_ids.py` | the immutable `U…` account id — the durable key |
 | `Slack Email` | `resolve_slack_ids.py` | the address that Slack account carries |
-| `Drive Email` | `track_drive_email.py` | the address actually on their chapter folder's ACL |
+| `Drive Email` | `track_drive_email.py`, **and a human** | the address on their chapter folder's ACL — and the address `sync_access.py` grants |
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py            # report
@@ -119,6 +119,46 @@ into a wrong `@mention`.
 permission on their chapter folder matches any spelling of their address, so
 they cannot open it and an access request is coming. Run `track_drive_email.py`
 after step 6, when the grants are current.
+
+**`Drive Email` is the one identity column that is also an input.** `Slack ID`
+redirects who gets *invited*; `Drive Email` redirects who gets *granted*.
+`sync_access.py` grants the address recorded there in preference to the intake
+`Email`, which is the supported fix for the case that otherwise has none: an
+address with **no Google account** behind it, which Drive refuses to share with
+outright, so the only alternative is an unsolicited invitation mail. Write the
+person's Google address into the cell and re-run `sync_access.py` — the grant
+lands silently and the intake `Email` stays untouched.
+
+Three rules make a hand-editable cell safe to grant from:
+
+- **The authority is still the intake row.** The column redirects *where* a
+  grant lands; the acceptance and the chapter come from `Email`, so the cell
+  cannot create a grant, only move one. It also cannot move one to **someone the
+  intake refused**: a target matching a `Denied`/`New`/`Tentative` row aborts the
+  whole run. A target on *no* intake row is allowed — that is the feature, a
+  personal Google account the form never saw — which is why every redirect is
+  printed in the report for a human to read.
+- **A recorded address is an instruction, not a tiebreak.** Someone already
+  granted under an older address is granted the recorded one, and the older
+  grant is named as superseded. Preferring the existing grant meant the common
+  case — a person who changed Google accounts — had their recorded address
+  ignored by this engine and overwritten by `track_drive_email`.
+- **Only an override counts as one.** A blank cell, the `(no grant)` sentinel,
+  and a value that merely restates the intake address are ignored silently; free
+  text, two addresses in one cell (including the newline Alt+Enter produces), a
+  display-form `Name <a@x.io>`, a non-ASCII homoglyph domain and a
+  group-hosting address are ignored with a line naming the row. The report
+  prints those once, next to the grants they affected.
+- **Two rows disagreeing about one person drop the override entirely**, loudly.
+  A person can hold several intake rows, so a disagreement is a real question
+  about which address is theirs, and guessing is where this estate's identity
+  bugs come from — the shared-full-name collision the `Slack ID`
+  rules above describe, and the Gmail-dot lookup bug.
+
+`track_drive_email.py` therefore no longer owns every cell: an address a human
+recorded that Drive has not granted **yet** is reported and left alone, not
+overwritten with `(no grant)`. Everything already on the ACL is still written
+from the ACL, including a grant made under the recorded address.
 
 ## Unattended runs (`nightly.py`)
 
@@ -269,13 +309,25 @@ Prereq: the `gws` CLI must be installed and authenticated (see the user's
   removed; same exceptions as `aaif-create-chapter`, e.g. Denver → `aaif-colorado`).
   `Country`, `Generated Geolocation`, `Summary` and `Image` are left **blank for a
   human** — the report names them; the row isn't site-ready until they're filled.
-  The report says whether the Luma page is live, and **`--write` holds back a
-  row whose page isn't live** (its CTA would point at a 404) unless you pass
-  `--allow-missing-luma` — the adds and the live rows still land, the held
-  cities are named in the output and re-propose on every run (the write exits
-  `2`, the shared drift code, until their pages exist). Held rows never leave a
-  blank row in the feed: the written rows are renumbered onto consecutive rows.
-  Page creation is manual, and a net-new city still needs
+  The report says whether the Luma page is live, and **the row is written either
+  way** (2026-09-17, user-decided: the page is made by hand and can follow the
+  row). `--require-luma` restores the old gate, holding back a row whose page
+  isn't live; held cities are named in the output, re-propose on every run, and
+  the write exits `2` until their pages exist. Held rows never leave a blank row
+  in the feed: the written rows are renumbered onto consecutive rows.
+  **Why the gate went:** a new row is not site-ready regardless until `Country`,
+  `Generated Geolocation`, `Summary` and `Image` are filled in by a human, so
+  holding it back was never what kept a dead CTA off the site — it only delayed
+  the row. What the gate *did* do was re-propose the city every run, keeping the
+  missing page visible; **`--audit-luma` replaces that** and covers more, checking
+  `Chapter Luma Link` on **every** feed row rather than only the cities being
+  added today, and exiting `2` (report mode) when anything is dead, blank or
+  unverified. It costs one paced request per row that has a link, and
+  **luma.com rate-limits a full sweep**: verified live 2026-09-17, a 96-row run
+  draws a `429` with no `Retry-After`, after which every later row 429s too. The
+  sweep therefore stops at the first 429 and says so with a `PARTIAL:` marker
+  rather than reporting the remaining rows as findings — one upstream fact must
+  not become ninety false ones. Re-run later to finish. Page creation is manual, and a net-new city still needs
   its Drive folder/assets: run **`aaif-create-chapter`** for it as the follow-up.
 - Duplicate intake rows for the same person+city are deduped (first wins, reported).
   Duplicate **chapter** rows (two rows for one city) are reported too — only the
@@ -713,14 +765,27 @@ access at all; `--lock-anyway` overrides.
 
 - **`assert_all_accepted()` is the last gate before write** and re-reads the
   intake through a different code path than the filter that built the plan.
-  "The filter that made the list says the list is fine" is not a check.
+  "The filter that made the list says the list is fine" is not a check. A grant
+  the `Drive Email` column redirected is checked **twice over**: the acceptance
+  and the chapter still come from the intake row, and the recorded address is
+  re-derived from its own fresh read rather than trusted from the plan. Typing an
+  address into that column can only redirect a grant an accepted organizer row
+  already justifies — it can never manufacture one, which is what keeps a
+  hand-editable cell from being a way in.
 - **A bad address never abandons the run.** The intake is fed by a public form,
   so a typo'd address is normal input and Drive rejects it with a hard 400.
   Failures are collected and reported; every other grant still lands.
+- **The grant goes to `Drive Email` when a human recorded one**, and to the
+  intake `Email` otherwise. The intake address is never rewritten — it is what
+  the person told us and the key the CRM merges on — so a second address is
+  recorded beside it instead. See "Identity columns" above; the mechanics are in
+  `reviewed_drive_emails()`.
 - **Addresses with no Google account** are refused by Drive unless it may email
-  the person. There is no silent path, so they are skipped and reported unless
-  `--mail-if-required --i-have-approval` (or `--notify --i-have-approval`) is
-  passed — sending mail to real people is never a side effect of a sync.
+  the person. There is no silent path, so they are skipped and reported. The fix
+  that emails nobody is to record a Google-backed address in `Drive Email` and
+  re-run; `--mail-if-required --i-have-approval` (or `--notify
+  --i-have-approval`) sends the invitation instead — mail to real people is
+  never a side effect of a sync.
 - Notifications are **off** by default: a share-mail per organizer, arriving
   unannounced and all at once, reads as a phishing wave.
 - `linuxfoundation.org` domain access is **kept** — that is LF staff reach, a
