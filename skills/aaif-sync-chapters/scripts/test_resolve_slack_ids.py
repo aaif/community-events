@@ -13,6 +13,8 @@ import json
 import os
 import sys
 import tempfile
+import contextlib
+import io
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +42,7 @@ def user(uid, real, handle="h", email="", **flags):
 # ---------- id shape ----------
 for good in ("U0AAAAAAAAA", "W0AAAAAAAAA", "U02BBBBBBBB"):
     check("%s is a Slack id" % good, bool(r.SLACK_ID_RE.match(good)), True)
-for bad in ("u0bjdg1swfk", "C0BJDG1SWFK", "U0B", "", "U0BJ DG1", "=U0AAAAAAAAA",
+for bad in ("u0aaaaaaaaa", "C0AAAAAAAAA", "U0A", "", "U0AA AAA", "=U0AAAAAAAAA",
             "@handle7", "ada@x.com"):
     check("%r is refused as an id" % bad, bool(r.SLACK_ID_RE.match(bad)), False)
 
@@ -215,6 +217,68 @@ with mock.patch.object(r, "read_source",
     filled, _ = r.overlay_known(api, resolved)
 check("a deleted account never fills a miss", filled, 0)
 check("the deleted account leaves the miss intact", resolved["z@x.com"]["id"], None)
+
+def _raises(fn):
+    """The exception type name, or "" — checks read better than try/except."""
+    try:
+        fn()
+    except BaseException as exc:
+        return type(exc).__name__
+    return ""
+
+
+# --- a filled-but-wrong cell, and two rows that disagree, are REPORTED -------
+# Both used to be dropped in silence: the human had done the review, the cell
+# looked answered, and the person stayed "no Slack account" forever.
+_BAD_HDR = ["Full name", "Email", "Slack ID", "Slack Email"]
+_BAD_ROWS = [
+    ["Ada", "ada@x.com", "u0aaaaaaa", ""],      # lowercase paste — not an id
+    ["Bo", "bo@x.com", "@handle", ""],          # a handle, not an id
+]
+_err = io.StringIO()
+with mock.patch.object(r, "read_source", lambda: (_BAD_HDR, _BAD_ROWS)), \
+     contextlib.redirect_stderr(_err):
+    _km = r.known_ids()
+check("a malformed reviewed cell yields no answer", _km, {})
+check("...and says so, naming the row", "row 2" in _err.getvalue(), True)
+check("...and calls out the column", "Slack ID" in _err.getvalue(), True)
+
+_DUP_ROWS = [
+    ["Ada", "a.b@gmail.com", "U0AAAAAAA", ""],
+    ["Ada again", "ab@gmail.com", "U0BBBBBBB", ""],   # same person, other id
+]
+_err = io.StringIO()
+with mock.patch.object(r, "read_source", lambda: (_BAD_HDR, _DUP_ROWS)), \
+     contextlib.redirect_stderr(_err):
+    _km = r.known_ids()
+check("two reviewed rows naming different ids resolve to neither", _km, {})
+check("...and the disagreement is reported",
+      "DIFFERENT" in _err.getvalue(), True)
+
+_SAME_ROWS = [
+    ["Ada", "a.b@gmail.com", "U0AAAAAAA", ""],
+    ["Ada again", "ab@gmail.com", "U0AAAAAAA", "ab@slack.com"],   # agreeing
+]
+with mock.patch.object(r, "read_source", lambda: (_BAD_HDR, _SAME_ROWS)):
+    check("two rows AGREEING still resolve", r.known_ids()["ab@gmail.com"]["id"],
+          "U0AAAAAAA")
+
+
+# --- hydrate: an API failure is never a fact about a person -----------------
+class _FailingApi:
+    def __init__(self, error):
+        self.error = error
+
+    def call(self, method, **kw):
+        return {"ok": False, "error": self.error}
+
+
+check("a missing scope raises rather than reporting people as accountless",
+      _raises(lambda: r.hydrate(_FailingApi("missing_scope"), ["U0AAAAAAA"])),
+      "SlackError")
+check("a genuine absence is not an error",
+      r.hydrate(_FailingApi("user_not_found"), ["U0AAAAAAA"]), {})
+
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

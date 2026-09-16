@@ -594,8 +594,10 @@ def gmail_variants(email):
     typed when they signed up and matches `users.lookupByEmail` on that exact
     string, so an intake row spelled with dots misses an account spelled
     without them and the person is reported as having no Slack at all. Verified
-    live 2026-09-14: `a.b@gmail.com` -> users_not_found while
-    `ab@gmail.com` -> ok, same human.
+    live against this workspace on 2026-09-14: the dotted spelling of a real
+    organizer's address returned `users_not_found` while the dotless spelling
+    of the same mailbox returned `ok` for the same person. In the synthetic
+    shape this repo uses: `a.b@gmail.com` misses where `ab@gmail.com` hits.
 
     ONLY gmail.com and googlemail.com (the same mailbox) fold, and the limit is
     load-bearing rather than conservative. Dot-insensitivity is a property of
@@ -639,7 +641,22 @@ def lookup_emails(api, emails, progress=None):
     into the audit's headline finding, stated with total confidence.
     """
     resolved, failures = {}, []
-    for i, email in enumerate(sorted(set(e for e in emails if e)), 1):
+    # `.strip()`, not truthiness: a cell holding only whitespace — a non-breaking
+    # space is the usual artefact of a pasted spreadsheet value — is not an
+    # address, and letting one through was not merely useless (see below).
+    for i, email in enumerate(sorted(set(e for e in emails if e and e.strip())), 1):
+        # Seed the miss BEFORE the loop. `gmail_variants` returns [] for an
+        # address that strips to empty, so the loop body can run zero times —
+        # and `payload`/`candidate` are loop-scoped names that outlive the
+        # previous iteration. Without this seed, such a row silently inherited
+        # the PREVIOUS person's successful payload and was recorded with their
+        # account id and their address as `matched_email`. That id is what
+        # invite_organizers acts on, so the failure was "invite a stranger into
+        # a private organizers channel" — the one outcome gmail_variants' own
+        # docstring says this must never have. The input filter above now
+        # rejects such a cell too; this seed is the belt to that braces, since
+        # the invariant must not depend on one caller's filter.
+        payload, candidate = {"ok": False, "error": "blank_address"}, email
         # Try the address as written first, then its Gmail-canonical spelling.
         # Order matters: the literal spelling is what the person told us, so a
         # hit on it is never second-guessed, and the fallback only ever runs
@@ -665,7 +682,11 @@ def lookup_emails(api, emails, progress=None):
                 # The spelling that actually resolved. Differs from the key only
                 # when the Gmail fallback did the work, which is exactly the case
                 # an operator needs to see to fix the intake row at the source.
-                "matched_email": payload["user"].get("profile", {}).get("email") or candidate}
+                # `profile`, not a second `.get("profile", {})`: Slack can return
+                # "profile": null (key present, value null), where the re-derived
+                # form raises AttributeError mid-sweep. The local above already
+                # collapses that with `or {}`.
+                "matched_email": profile.get("email") or candidate}
         else:
             error = payload.get("error", "unknown")
             resolved[email] = {"id": None, "error": error}

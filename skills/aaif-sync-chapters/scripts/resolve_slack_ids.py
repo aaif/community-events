@@ -57,8 +57,58 @@ from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
 from aaif_events import jsoncache  # noqa: E402
-from aaif_events.slack import (Slack, gmail_variants, load_token,  # noqa: E402
-                               lookup_emails, scrubbed_env, users)
+from aaif_events.slack import (Slack, SlackError, gmail_variants,  # noqa: E402
+                               load_token, lookup_emails, scrubbed_env, users)
+
+# --- stdout redaction -------------------------------------------------------
+# The report names real people. `--redact` (default ON when CI is set, because
+# a CI log is a publication on a public repo) masks emails as a***@***.tld and
+# names as a first initial in every printed line. Each standalone script
+# carries its own copy of this flag AND these helpers — a helper imported from
+# a sibling script reads that script's REDACT, not this one's, so `--redact`
+# would not actually govern it (the exact bug invite_organizers.py had).
+REDACT = False
+CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def redact_email(e):
+    if not REDACT or not e or "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
+    return "%s***@***.%s" % (local[:1], tld)
+
+
+def redact_name(n):
+    if not REDACT or not n or not n.strip():
+        return n
+    return n.strip()[0].upper() + "."
+
+
+def redact_id(i):
+    """Slack ids are identifiers too: CLAUDE.md names them alongside a row and
+    an address. Keep the shape (a reader can still tell two ids apart in one
+    line) without publishing the account."""
+    if not REDACT or not i:
+        return i
+    return "%s\u2026%s" % (i[:2], i[-2:]) if len(i) > 5 else "***"
+
+
+def add_redact_flag(ap):
+    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
+                    default=CI_REDACT_DEFAULT,
+                    help="mask emails (a***@***.tld), names (first initial) and "
+                         "Slack ids on stdout; default on when CI is set")
+
+
+def set_redaction(on):
+    """Apply the parsed flag; one stderr line says so when masking is on."""
+    global REDACT
+    REDACT = bool(on)
+    if REDACT:
+        print("redaction ON (CI set; pass --no-redact to disable)"
+              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 SOURCE = "Form Responses"
@@ -174,28 +224,85 @@ def known_ids():
         return {}
     ie, ci = hdr.index(H_EMAIL), hdr.index(H_SLACK_ID)
     cem = hdr.index(H_SLACK_EMAIL) if H_SLACK_EMAIL in hdr else None
-    out = {}
-    for r in rows:
+    out, malformed, disagreeing = {}, [], []
+    for n, r in enumerate(rows, start=2):   # sheet row numbers, header is row 1
         def at(i):
             return (r[i] or "").strip() if i is not None and i < len(r) else ""
         email, sid = at(ie), at(ci)
-        if not email or not SLACK_ID_RE.match(sid):
+        if not email:
             continue
-        out[canon(email)] = {"id": sid, "slack_email": at(cem)}
-    return out
+        if not sid:
+            continue
+        if not SLACK_ID_RE.match(sid):
+            # A filled cell that is not an id — a lowercase paste, an @handle,
+            # a channel id, a truncated copy. `--apply` aborts loudly on exactly
+            # this, for the reason its own comment gives: a mistyped id is not
+            # inert, it is the key the invite and audit paths later act on. The
+            # cell reaching here got past that gate (it can be typed straight
+            # into the sheet), and dropping it silently is worse than useless:
+            # a human did the review, the cell LOOKS answered, and the person is
+            # reported unresolvable forever with nothing pointing at the cause.
+            malformed.append((n, sid))
+            continue
+        key = canon(email)
+        prior = out.get(key)
+        if prior and prior["id"] != sid:
+            # Two rows for one person (the form is submitted repeatedly, and
+            # canon() folds Gmail spellings) carrying DIFFERENT reviewed ids.
+            # Last-write-wins would pick by sheet order and hand that id to a
+            # private-channel invite. There is no answer here worth guessing.
+            disagreeing.append((key, prior["id"], sid))
+            out[key] = None
+            continue
+        if key in out and out[key] is None:
+            continue
+        out[key] = {"id": sid, "slack_email": at(cem)}
+    if malformed:
+        print("  WARNING: %d %r cell(s) are filled but not shaped like a Slack "
+              "id and were IGNORED — those people read as unresolved: %s"
+              % (len(malformed), H_SLACK_ID,
+                 ", ".join("row %d=%r" % m for m in malformed[:5])),
+              file=sys.stderr)
+    if disagreeing:
+        print("  WARNING: %d person(s) have two reviewed rows naming DIFFERENT "
+              "ids; both are ignored until a human picks one (row pairs: %s)"
+              % (len(disagreeing),
+                 ", ".join("%s/%s" % (a, b) for _, a, b in disagreeing[:5])),
+              file=sys.stderr)
+    return {k: v for k, v in out.items() if v is not None}
+
+
+#: `users.info` errors that really mean "there is no such account" — an answer
+#: about the id, not about the call. Everything else (missing_scope,
+#: invalid_auth, ratelimited, a 5xx) means we FAILED TO ASK, and must never be
+#: recorded as a fact about a person.
+BENIGN_INFO_MISSES = ("user_not_found",)
 
 
 def hydrate(api, ids):
-    """{id: {"name", "real_name"}} via users.info — the column stores no handle.
+    """{id: {"name", "real_name", "email"}} via users.info — the column stores no handle.
 
     An id is the durable key precisely BECAUSE the handle is not; so the handle
     has to be fetched fresh at the moment it is displayed, never cached into the
     sheet where it would rot into a wrong @mention.
+
+    Ids that resolve to no account, or to a deactivated one, are simply absent
+    from the result — so the output can be SMALLER than the input, which is why
+    `overlay_known`'s `filled` counter differs from the number of gaps it tried.
+
+    Raises rather than returning short when a lookup fails for any reason other
+    than absence. `missing_scope` or `invalid_auth` would otherwise drop every
+    id on the floor, and each dropped id is a person the report then states has
+    no Slack account — the same failure `lookup_emails` refuses one tier up, and
+    the same one that once made a missing scope into the audit's headline.
     """
-    out = {}
+    out, failures = {}, []
     for uid in sorted(set(ids)):
         payload = api.call("users.info", user=uid)
         if not payload.get("ok"):
+            error = payload.get("error", "unknown")
+            if error not in BENIGN_INFO_MISSES:
+                failures.append(error)
             continue
         u = payload.get("user") or {}
         if u.get("deleted"):
@@ -205,6 +312,13 @@ def hydrate(api, ids):
         out[uid] = {"name": u.get("name", ""),
                     "real_name": u.get("real_name") or "",
                     "email": (u.get("profile") or {}).get("email", "")}
+    if failures:
+        raise SlackError(
+            "users.info", "hydrate_failed",
+            "%d of %d reviewed id(s) could not be resolved for API reasons "
+            "rather than absence (%s). Refusing to report these people as "
+            "having no Slack account."
+            % (len(failures), len(set(ids)), ", ".join(sorted(set(failures)))))
     return out
 
 
@@ -361,13 +475,16 @@ def run(write=False, want_suggest=False, apply_path=None):
         print("\nMatched only after Gmail-canonicalizing the address — the intake "
               "spelling is the one to fix at the source:")
         for name, was, now in folded:
-            print("   %-26s %-34s -> %s" % (name[:26], was, now))
+            print("   %-26s %-34s -> %s"
+                  % (redact_name(name)[:26], redact_email(was),
+                     redact_email(now)))
 
     if misses:
         print("\nNo account at the address on file (NOT proof they have no Slack — "
               "they may have joined under another address):")
         for rn, name, email in misses[:40]:
-            print("   row %-5s %-26s %s" % (rn, name[:26], email))
+            print("   row %-5s %-26s %s"
+                  % (rn, redact_name(name)[:26], redact_email(email)))
         if len(misses) > 40:
             print("   … and %d more" % (len(misses) - 40))
 
@@ -378,11 +495,13 @@ def run(write=False, want_suggest=False, apply_path=None):
         byrow = {rn: (name, email) for rn, name, email in misses}
         for rn in sorted(cands):
             name, email = byrow[rn]
-            print("   row %-5s %-26s %s" % (rn, name[:26], email))
+            print("   row %-5s %-26s %s"
+                  % (rn, redact_name(name)[:26], redact_email(email)))
             for u in cands[rn][:4]:
                 print("        %-12s @%-24s %-26s %s"
-                      % (u["id"], u["name"], u["real_name"][:26],
-                         u["email"] or "(no email visible)"))
+                      % (redact_id(u["id"]), u["name"],
+                         redact_name(u["real_name"])[:26],
+                         redact_email(u["email"]) or "(no email visible)"))
 
     if not write:
         print("\nReport only — nothing was written. Re-run with --write to fill "
@@ -443,7 +562,9 @@ def main():
                     help="also list name-match candidates for the unresolved")
     ap.add_argument("--apply", metavar="FILE",
                     help="write a reviewed [{row, slack_id}] JSON list")
+    add_redact_flag(ap)
     a = ap.parse_args()
+    set_redaction(a.redact)
     run(write=a.write, want_suggest=a.suggest, apply_path=a.apply)
 
 
