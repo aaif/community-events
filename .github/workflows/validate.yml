@@ -30,7 +30,7 @@ jobs:
           python-version: "3.x"
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
         # runs `pre-commit run --all-files`: ruff, codespell, gitleaks, frontmatter,
-        # banner, no-secret-args, and the workflow lint.
+        # banner, no-secret-args, no-real-pii, and the workflow lint.
 
   plugin-validate:
     # Anthropic's own validator. The repo root is both the marketplace and the

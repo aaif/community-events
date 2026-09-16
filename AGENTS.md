@@ -20,8 +20,30 @@ sheet, chapter CRMs). None of it belongs in git:
   emitting a new kind of output. Ignored is not the same as safe — delete these
   files when the run is done.
 - Tests and fixtures use synthetic data only — `a@x.com`, `Ada`, `Boston`. Never
-  paste a real row, email, name, or Slack ID into a test, docstring, comment, or
-  commit message.
+  paste a real row, email, name, Slack ID, handle, phone number or LinkedIn URL
+  into a test, docstring, comment, or commit message.
+- **Never paste a value you just observed in a live run.** This is the rule that
+  actually gets broken, because it does not feel like committing PII — it feels
+  like showing your work. A real organizer's Gmail address went into a `lib/`
+  docstring as evidence for a lookup bug, under the words "Verified live", and
+  two real Slack ids went into a test fixture as "known-good" inputs. Both were
+  written by someone who had read the rule above. Record the **shape and the
+  date**, never the value: *"verified live 2026-09-14: the dotted spelling of a
+  real organizer's address missed where the dotless spelling hit"* proves the
+  same thing and names nobody. If a reader would need the real value to trust
+  the claim, the claim belongs in the PR description, not in the repo.
+- **A commit is not undoable here.** Rewriting history and force-pushing cleans
+  the branch and nothing else: GitHub keeps serving the old commit at its SHA —
+  verified, not assumed — and only a GitHub Support request garbage-collects
+  it. Treat every identifier that reaches a commit as published permanently, and
+  act accordingly (tell the person, rather than assuming a rewrite covered it).
+- `scripts/check_no_real_pii.py` enforces the decidable half of this on every
+  commit and in CI: a Slack-id shape must be on its allowlist, and an address
+  must be at a synthetic domain (or carry a stand-in local part at one of the
+  domains this estate really uses). It cannot tell a real name from an invented
+  one, so it is a floor, not a guarantee — and **adding to its allowlist to make
+  a check pass is the bug, not the fix**, unless the value is genuinely
+  invented.
 - Stage explicitly. A single `git add -A` publishes irreversibly.
 - Never paste a token into a command the agent runs; put it in `.env`
   (gitignored) or the keychain, and never `export TOKEN=...` interactively —
@@ -115,6 +137,8 @@ PYTHONPATH=lib python -m pytest lib/aaif_events/tests/test_luma.py -q   # one fi
 python skills/aaif-sync-chapters/scripts/test_sync_crm.py      # one skill test: plain script, exit 1 on failure
 pre-commit run --all-files                                     # ruff, codespell, gitleaks, frontmatter, banner
 python scripts/check_no_secret_args.py  # no --token/--key style CLI flags
+python scripts/check_no_real_pii.py     # no real address/Slack id in tracked files
+python scripts/test_check_no_real_pii.py # that guard's own tests
 python scripts/check_workflows.py       # workflows can't leak secrets/PII (needs pyyaml)
 python scripts/test_check_workflows.py  # the linter's own tests
 python scripts/extract_design_tokens.py --check  # design tokens aren't stale
