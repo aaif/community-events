@@ -325,7 +325,7 @@ def test_an_absent_config_tab_names_the_migration():
 def test_the_config_labels_match_the_migration_that_wrote_them():
     """Both skills must spell the row labels and sentinel the same way."""
     here = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, os.path.join(here, "..", "..", "aaif-sync-chapters", "scripts"))
+    sys.path.insert(0, os.path.join(here, "..", "..", "aaif-sync-chapters", "migrations"))
     import migrate_resource_columns as mig
     check("labels agree", sorted(ao.CONFIG_LABELS),
           sorted(mig.CONFIG_LABELS.values()))
@@ -335,11 +335,13 @@ def test_the_config_labels_match_the_migration_that_wrote_them():
     check("config tab name agrees", ao.SLACK_CONFIG_TAB, mig.CONFIG_TAB)
 
 
-def test_header_index_aborts_on_missing_and_duplicate():
+def test_header_map_aborts_on_missing_and_duplicate():
+    # Wording comes from aaif_events.sheets now; what matters is that it aborts
+    # and names the column the layout no longer has.
     check_raises("missing column aborts",
-                 lambda: ao.header_index(["A"], "T", "B"), "no 'B'")
+                 lambda: ao.header_map(["A"], "T", "B"), "not found")
     check_raises("duplicate column aborts",
-                 lambda: ao.header_index(["A", "A"], "T", "A"), "twice")
+                 lambda: ao.header_map(["A", "A"], "T", "A"), "appears twice")
 
 
 # -------------------------------------------------------------------- join ---

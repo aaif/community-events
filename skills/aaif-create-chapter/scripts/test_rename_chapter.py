@@ -18,6 +18,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rename_chapter as rc  # noqa: E402
+from aaif_events import redact as _redact  # noqa: E402
 
 FAILS = []
 
@@ -212,17 +213,17 @@ check("a native Google file is flagged as uninspectable",
 check("an Office file is not native", rc.is_native("About.docx"), False)
 
 # --- redaction ---------------------------------------------------------------
-rc.REDACT = False
-check("redaction off: document text is shown", rc.redact_text("AAIF Scotland"),
+_redact.REDACT = False
+check("redaction off: document text is shown", rc.redact_doc_text("AAIF Scotland"),
       "'AAIF Scotland'")
-rc.REDACT = True
+_redact.REDACT = True
 try:
-    check("redaction on: only the shape survives", rc.redact_text("AAIF Scotland"),
+    check("redaction on: only the shape survives", rc.redact_doc_text("AAIF Scotland"),
           "<13 chars>")
     check("a member row's text does not leak",
-          "Ada" in rc.redact_text("Ada Lovelace, Scotland"), False)
+          "Ada" in rc.redact_doc_text("Ada Lovelace, Scotland"), False)
 finally:
-    rc.REDACT = False
+    _redact.REDACT = False
 
 print()
 print("FAILED %d check(s)" % len(FAILS) if FAILS else

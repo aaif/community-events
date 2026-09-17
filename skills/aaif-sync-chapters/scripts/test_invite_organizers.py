@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 import invite_organizers as inv  # noqa: E402
 import provision_channels as prov  # noqa: E402
+from aaif_events import redact as _redact  # noqa: E402
 
 FAILS = []
 
@@ -402,9 +403,9 @@ finally:
 
 
 # --- --redact: stdout masking (default on under CI) ----------------------------
-inv.REDACT = False
+_redact.REDACT = False
 check("redaction off: name passes through", inv.redact_name("Ada Lovelace"), "Ada Lovelace")
-inv.REDACT = True
+_redact.REDACT = True
 try:
     check("redacted name is a first initial", inv.redact_name("ada lovelace"), "A.")
     check("empty values survive", inv.redact_name(""), "")
@@ -418,18 +419,18 @@ try:
     # The bug this guards: redact_email was imported from sync_resources, whose
     # own REDACT flag this module's --redact never sets, so the address printed
     # raw. Assert it follows THIS module's flag.
-    inv.REDACT = False
+    _redact.REDACT = False
     check("with redaction off the address is untouched",
           inv.redact_email("ada@example.com"), "ada@example.com")
-    inv.REDACT = True
+    _redact.REDACT = True
 finally:
-    inv.REDACT = False
+    _redact.REDACT = False
 
 
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402
-check("the CI default is the strict 1/true/yes parse of $CI", inv.CI_REDACT_DEFAULT,
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
       os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
@@ -440,7 +441,7 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     inv.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
-check("set_redaction(False) leaves REDACT off", inv.REDACT, False)
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 
 
 # --- collect() actually calls ao.read_intake() — the 3-value unpacking at

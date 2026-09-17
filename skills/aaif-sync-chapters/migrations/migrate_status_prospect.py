@@ -77,7 +77,14 @@ import tempfile
 import zipfile
 from xml.etree import ElementTree as ET
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# The engines this migration reads its schema from live one level up, in
+# scripts/. This file sits in migrations/ because it has already run. It is
+# kept because it is still the tool that proves the estate is consistent with
+# the schema it established — not as tooling anyone reaches for in a normal
+# week, and no live engine names it as a fix.
+sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
+sys.path.insert(0, _HERE)
 from sync_chapters import (INTAKE_ID, download, fold_city, fresh_if_unchanged,  # noqa: E402
                            get_values, gws_json, upload)
 from sync_crm import (CRM_SHEET, ROLE_TABS, X, XLSX, cell_ref,  # noqa: E402

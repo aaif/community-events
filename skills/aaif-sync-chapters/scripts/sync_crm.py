@@ -69,6 +69,8 @@ from collections import Counter, namedtuple
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # Shared with the chapters-feed engine on purpose: one gws retry/JSON path, one
 # city-folding rule, one near-miss stoplist. Two copies would drift, and a city
 # that folds one way here and another way there syncs a person to a chapter whose
@@ -79,44 +81,14 @@ from sync_chapters import (INTAKE_ID, bad_public_text, gws_json, get_values,
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "..", "..", ".."))
-
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@***.tld and
-# names as a first initial in every printed line. Each standalone script
-# carries its own copy of this flag and these helpers.
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_email(e):
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
-    return "%s***@***.%s" % (local[:1], tld)
-
-
-def redact_name(n):
-    if not REDACT or not n or not n.strip():
-        return n
-    return n.strip()[0].upper() + "."
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask emails (a***@***.tld) and names (first initial) "
-                         "on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    """Apply the parsed flag; one stderr line says so when masking is on."""
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+# a CI log is a publication on a public repo) masks them in every printed line.
+# The flag and the helpers it governs come from ONE module on purpose: a helper
+# that reads a different module's flag is a helper this `--redact` does not
+# actually govern, which is how an address once reached a public CI log.
+from aaif_events.redact import (add_redact_flag, redact_email, redact_name, redacting,  # noqa: E402
+                                set_redaction)
 
 
 #: Columns whose values are categorical, not personal — the only ones a
@@ -137,10 +109,13 @@ def set_redaction(on):
 SHOWN_UNDER_REDACT = ("Status", "Interested in", "Signal", "Trusted/Regular")
 
 
-def redact_sets(sets):
-    """The per-op cell dict: under REDACT every value is masked except the
-    role/status-like columns, so the report still shows WHICH columns change."""
-    if not REDACT:
+def mask_sets(sets):
+    """The per-op cell dict: under redaction every value is masked except the
+    role/status-like columns, so the report still shows WHICH columns change.
+
+    Stays here rather than in `aaif_events.redact` because `SHOWN_UNDER_REDACT`
+    is this workbook's schema, not a general rule."""
+    if not redacting():
         return sets
     return {k: (v if k in SHOWN_UNDER_REDACT else "…")
             for k, v in sets.items()}
@@ -155,8 +130,9 @@ def backup_root(kind):
     public. Living under the repo (not $TMPDIR) keeps the recovery copy where
     an operator will find it and where a reboot does not sweep it.
 
-    Three outcomes, ported from migrate_status_prospect.assert_git_safe (the
-    scripts stay standalone): git missing -> abort, since nothing can prove
+    Three outcomes, ported from migrate_status_prospect.assert_git_safe. The
+    copy stays here because the guard is about THIS script's backup directory,
+    not because the two files are independent — migrations/ imports from here: git missing -> abort, since nothing can prove
     the path is safe; REPO is not a git checkout (a plugin install, a zip) ->
     allowed, with a printed note, because there is no repo to leak into; any
     other git failure (dubious ownership, a corrupt .git) -> abort quoting
@@ -205,7 +181,8 @@ def cleanup_workdir(workdir, keep_backups):
     the entire organizer base. Only before/ has recovery value, so at most
     before/ survives, and a failed delete is REPORTED rather than swallowed:
     silence would leave member data on disk with nobody aware.
-    (Ported from migrate_status_prospect.py; the scripts stay standalone.)
+    (Ported from migrate_status_prospect.py, which imports from this module;
+    the copy is CRM-workbook-specific, not a portability hedge.)
     """
     left = []
     for name in sorted(os.listdir(workdir)):
@@ -772,8 +749,8 @@ class Attendees:
             # across 62 chapters and goes looking for corrupt workbooks.
             raise ValueError(
                 "no %r column yet — this workbook predates the 2026-08-25 "
-                "Status/role split. Run migrate_interested_in.py --write, then "
-                "re-run this sync." % NEW_COLUMN)
+                "Status/role split. Run migrations/migrate_interested_in.py "
+                "--write, then re-run this sync." % NEW_COLUMN)
         if missing:
             raise ValueError("missing column(s): %s" % ", ".join(missing))
         # Row 2 is the shipped sample row and is the only place the per-column
@@ -986,7 +963,11 @@ def read_survey_interests():
     is the latest answer only because the form appends chronologically — a
     sorted or hand-reordered tab would silently change which answer is used.
     """
-    rows = get_values(INTAKE_ID, "'Form Responses'!A:CO")
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = get_values(INTAKE_ID, "'Form Responses'!A:EZ")
     if not rows:
         sys.exit("ABORT: 'Form Responses' came back empty.")
     i_email, i_what = header_index(rows[0], "Form Responses",
@@ -1011,7 +992,11 @@ def read_role_tab(tab, interests, include_pipeline=False):
     must never reach one. Only sync_crm's own run() opts in, and it still gates
     pipeline ORGANIZERS per chapter afterwards (gate_pipeline_organizers).
     """
-    rows = get_values(INTAKE_ID, "%s!A:BB" % tab)
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = get_values(INTAKE_ID, "%s!A:CZ" % tab)
     if not rows:
         sys.exit("ABORT: intake tab %r came back empty." % tab)
     headers = [h.strip() for h in rows[0]]
@@ -1777,12 +1762,12 @@ def _run(args, workdir):
             # Show the TRANSITION, not just the destination: `Status='Prospect'`
             # reads as filling a blank cell whether or not it just replaced a
             # chapter's hand-set `Accepted`.
-            was = redact_sets(o.get("was", {}))
+            was = mask_sets(o.get("was", {}))
             detail = ("dummy row wiped" if o["kind"] == "clear" else
                       ", ".join(
                           ("%s: %r -> %r" % (k, was[k], v)) if was.get(k)
                           else ("%s=%r" % (k, v if len(v) < 60 else v[:57] + "…"))
-                          for k, v in redact_sets(o["sets"]).items()))
+                          for k, v in mask_sets(o["sets"]).items()))
             print("      %s row %-4d %s <%s> — %s"
                   % (mark, o["rownum"], redact_name(o["name"]),
                      redact_email(o["email"]), detail))
@@ -1837,7 +1822,7 @@ def _run(args, workdir):
     if no_dropdown:
         print("\nStale or missing dropdown(s) — people still sync, but the column "
               "won't constrain what an organizer types. Run "
-              "migrate_interested_in.py --write:")
+              "migrations/migrate_interested_in.py --write:")
         for name, cols in no_dropdown:
             print("  %-28s %s" % (name, ", ".join(repr(c) for c in cols)))
     if rejected and args.verbose:

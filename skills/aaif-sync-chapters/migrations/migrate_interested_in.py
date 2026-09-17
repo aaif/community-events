@@ -74,7 +74,13 @@ import sys
 import tempfile
 from xml.etree import ElementTree as ET
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# The engines this migration reads its schema from live one level up, in
+# scripts/. This file sits in migrations/ because it has already run: it is
+# kept as the remediation path a live engine names when a sheet is missing
+# its columns, not as tooling anyone reaches for in a normal week.
+sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
+sys.path.insert(0, _HERE)
 from sync_chapters import download, fold_city, fresh_if_unchanged, upload  # noqa: E402
 from sync_crm import (CRM_HEADERS, CRM_LIFECYCLE, CRM_ROLE, CRM_SHEET,  # noqa: E402
                       DV_EXPECTED, NEW_COLUMN, SYNC_STATUSES, X, XLSX,

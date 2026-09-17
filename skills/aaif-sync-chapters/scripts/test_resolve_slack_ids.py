@@ -280,6 +280,36 @@ check("a genuine absence is not an error",
       r.hydrate(_FailingApi("user_not_found"), ["U0AAAAAAA"]), {})
 
 
+
+# --- --apply is a write, and writes are gated by --write ----------------------
+# It used to write on its own, so "does this invocation touch the sheet?" could
+# not be answered by reading the command line — which is exactly how every other
+# script in this skill, and the SKILL.md documenting them, expects it to work.
+def _main_with(argv):
+    """Run main() with argv, returning (SystemExit code-or-message, ran?)."""
+    ran = {}
+    with mock.patch.object(sys, "argv", ["resolve_slack_ids.py"] + argv), \
+         mock.patch.object(r, "run", lambda **kw: ran.setdefault("kw", kw)):
+        try:
+            r.main()
+        except SystemExit as exc:
+            return exc.code, "kw" in ran
+    return None, "kw" in ran
+
+
+_code, _ran = _main_with(["--apply", "ids.json"])
+check("--apply without --write refuses", isinstance(_code, str) and "REFUSING" in _code, True)
+check("--apply without --write does not reach run()", _ran, False)
+check("the refusal shows the corrected command",
+      "--apply ids.json --write" in (_code or ""), True)
+
+_code, _ran = _main_with(["--apply", "ids.json", "--write"])
+check("--apply with --write proceeds", _ran, True)
+
+_code, _ran = _main_with([])
+check("a bare run still reports without writing", _ran, True)
+
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

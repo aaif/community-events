@@ -48,14 +48,12 @@ Usage:
 import argparse
 import json
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "..", "lib"))
 
-from aaif_events.slack import scrubbed_env  # noqa: E402
 # SOURCE / H_EMAIL / H_DRIVE_EMAIL / NO_GRANT are owned by sync_access, which
 # READS this column to decide where a grant goes — the sentinel's exact spelling
 # is load-bearing in both scripts, so there is one definition of it.
@@ -65,74 +63,45 @@ from sync_access import (H_DRIVE_EMAIL, H_EMAIL, NO_GRANT, SOURCE,  # noqa: E402
 from sync_chapters import INTAKE_ID  # noqa: E402
 from sync_crm import (TEMPLATE_FOLDER, list_chapter_folders,  # noqa: E402
                       match_chapters, merge_people, read_role_tab)
-
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@***.tld and
-# names as a first initial in every printed line. Each standalone script
-# carries its own copy of this flag AND these helpers — a helper imported from
-# a sibling script reads that script's REDACT, not this one's, so `--redact`
-# would not actually govern it (the exact bug invite_organizers.py had).
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_email(e):
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
-    return "%s***@***.%s" % (local[:1], tld)
-
-
-def redact_name(n):
-    if not REDACT or not n or not n.strip():
-        return n
-    return n.strip()[0].upper() + "."
-
-
-def redact_id(i):
-    """Slack ids are identifiers too: CLAUDE.md names them alongside a row and
-    an address. Keep the shape (a reader can still tell two ids apart in one
-    line) without publishing the account."""
-    if not REDACT or not i:
-        return i
-    return "%s\u2026%s" % (i[:2], i[-2:]) if len(i) > 5 else "***"
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask emails (a***@***.tld), names (first initial) and "
-                         "Slack ids on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    """Apply the parsed flag; one stderr line says so when masking is on."""
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
-
+# a CI log is a publication on a public repo) masks them in every printed line.
+# The flag and the helpers it governs come from ONE module on purpose: a helper
+# that reads a different module's flag is a helper this `--redact` does not
+# actually govern, which is how an address once reached a public CI log.
+from aaif_events import gws as gwsmod  # noqa: E402
+from aaif_events.sheets import col_letter  # noqa: E402
+from aaif_events.redact import add_redact_flag, redact_email, set_redaction  # noqa: E402
 
 
 def gws(args):
-    out = subprocess.run(["gws"] + args, capture_output=True, text=True,
-                         env=scrubbed_env())
-    if out.returncode != 0:
-        sys.exit("gws error: %s...\n%s" % (" ".join(args[:4]), out.stderr.strip()[:400]))
-    txt = out.stdout
+    """Run a prepared `gws` argument list and parse whatever JSON comes back.
+
+    A thin boundary over `aaif_events.gws.run`, keeping two behaviours this
+    script relies on: it exits with a sentence rather than a traceback, and an
+    empty body is `{}` rather than an error, because a values `update` answers
+    with nothing useful.
+
+    This used to be a bare `subprocess.run` with no retry handling, so a single
+    intermittent 503 — which the sync engines have always ridden out — failed
+    the whole run. It now retries on the shared table.
+    """
+    try:
+        txt = gwsmod.clean_stdout(gwsmod.run(["gws"] + args))
+    except gwsmod.GwsError as exc:
+        sys.exit(str(exc))
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
     return json.loads(txt[i:]) if i >= 0 else {}
 
 
 def colletter(n):
-    s = ""
-    while n:
-        n, r = divmod(n - 1, 26)
-        s = chr(65 + r) + s
-    return s
+    """1-based column number -> A1 letter.
+
+    The shared helper is 0-based (it is fed header-row indexes); this script's
+    call sites count from 1, so the offset is applied here rather than at four
+    call site. A third spelling of the same conversion is how they drift.
+    """
+    return col_letter(n - 1)
 
 
 def grant_by_person():
@@ -324,7 +293,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--write", action="store_true",
                     help="fill the column (default: report only)")
-    add_redact_flag(ap)
+    add_redact_flag(ap, masks="emails (a***@***.tld)")
     a = ap.parse_args()
     set_redaction(a.redact)
     return run(a.write)

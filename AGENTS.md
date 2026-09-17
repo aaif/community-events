@@ -84,21 +84,37 @@ installed — which is why skill scripts can reach outside their own folder.
 Python lives in two tiers, and picking the right one is the main design decision
 in this repo:
 
-- **`lib/aaif_events/`** — shared, stdlib-only modules (`slack`, `luma`,
-  `tracker`, `office`, `report_style`, `jsoncache`, `slides_export`). Skill
-  scripts import these through a `sys.path.insert(...parents[3] / "lib")` shim at
-  the top of the file. **Cost:** a skill that imports `aaif_events` no longer
-  works when zipped standalone for claude.ai — it only runs from a full checkout
-  or plugin install.
+- **`lib/aaif_events/`** — shared, stdlib-only modules (`slack`, `luma`, `gws`,
+  `sheets`, `redact`, `tracker`, `office`, `report_style`, `jsoncache`,
+  `slides_export`). Skill scripts import these through a
+  `sys.path.insert(...parents[3] / "lib")` shim at the top of the file.
+  **Cost:** a skill that imports `aaif_events` no longer works when zipped
+  standalone for claude.ai — it only runs from a full checkout or plugin
+  install.
 - **`skills/<name>/scripts/*.py`** — otherwise self-contained. Several duplicate
   a small `gws_json`/`gws` subprocess helper rather than take the `lib` coupling.
   That duplication is deliberate; don't "fix" it by hoisting one into `lib`
   without deciding the skill can stop being portable.
+  `scripts/check_portable_skills.py` makes that decision visible rather than
+  preventing it: the README names every lib-coupled skill, and the list has to
+  move in the same commit as the import.
 
-One duplication *is* enforced: the tooling-rule banner is copied into every ops
-`SKILL.md` (skills ship downstream without this file), and
-`scripts/check_tooling_banner.py` fails the build if the copies drift. Edit all of
-them together.
+  **Two duplications have been resolved the other way, because what they
+  duplicated could not be allowed to differ.** `aaif_events.redact` owns
+  `--redact`: a helper that reads a sibling module's flag is a helper the flag
+  does not govern, which is how an address once reached a public CI log
+  (`check_no_local_redaction.py` enforces it). `aaif_events.gws` and
+  `aaif_events.sheets` own the subprocess plumbing and header-name lookup for
+  the skills that were already coupled — their copies had drifted into
+  *different* retry tables and *different* safety guards, so which script you
+  were in decided whether a 503 was survived or a duplicated column was
+  caught.
+
+Three duplications *are* enforced, for the same reason: skills ship downstream
+without this file, so the rule has to travel inside each `SKILL.md`. The
+tooling-rule banner, the public-copy rule and the attendee legal footer are each
+byte-identical everywhere they appear, and `scripts/check_tooling_banner.py`
+fails the build if any copy drifts. Edit all of them together.
 
 Anything a human looks at — every HTML report and the PDFs rendered from them —
 is drawn with the AAIF design system in `design/`, through
@@ -141,9 +157,21 @@ python scripts/check_no_real_pii.py     # no real address/Slack id in tracked fi
 python scripts/test_check_no_real_pii.py # that guard's own tests
 python scripts/check_workflows.py       # workflows can't leak secrets/PII (needs pyyaml)
 python scripts/test_check_workflows.py  # the linter's own tests
+python scripts/check_no_local_redaction.py   # --redact comes from lib, never a local copy
+python scripts/check_portable_skills.py      # lib coupling matches the README's caveat
 python scripts/extract_design_tokens.py --check  # design tokens aren't stale
 claude plugin validate .                                       # marketplace.json + plugin.json
+claude plugin eval . --no-publish --trust-plugin  # does the right skill FIRE? (needs model access)
 ```
+
+Everything in that list except the last line is deterministic, and none of it
+asks the question the skills live on: does the right one trigger, and does the
+agent reading a `SKILL.md` do what it says? `evals/` covers that, and **it is
+the check to run before editing any `description:`** — that field decides
+activation, and an edit that reads like an improvement can silently stop a
+skill firing with every other check still green. It needs model access, so CI
+cannot run it (`validate.yml` holds no credential, by design). See
+`evals/README.md`.
 
 CI (`.github/workflows/validate.yml`) runs all of these on every PR. Ruff is
 pyflakes-only and does not resolve imports, so pytest is what actually catches a

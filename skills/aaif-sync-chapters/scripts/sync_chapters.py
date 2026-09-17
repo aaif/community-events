@@ -16,59 +16,23 @@ near-miss city names (never auto-matched), and a "no changes" line when the
 sheets are already in sync. --write recomputes the proposal from a fresh read,
 applies it atomically, then re-reads and verifies the diff is empty.
 """
-import argparse, json, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
+import argparse, os, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 from collections import namedtuple
-
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@***.tld and
-# names as a first initial in every printed line. Each standalone script
-# carries its own copy of this flag and these helpers.
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_email(e):
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
-    return "%s***@***.%s" % (local[:1], tld)
-
-
-def redact_name(n):
-    if not REDACT or not n or not n.strip():
-        return n
-    return n.strip()[0].upper() + "."
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask emails (a***@***.tld) and names (first initial) "
-                         "on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    """Apply the parsed flag; one stderr line says so when masking is on."""
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
-
-
-def redact_text(v):
-    """Free-form form text (and the repr of a malformed cell) may quote a
-    person wholesale, so under REDACT it is replaced, not trimmed."""
-    return "[redacted]" if REDACT and v else v
-
-
-def redact_names_cell(cell):
-    """The Organizers cell is a '; '-joined list of names; mask each."""
-    if not REDACT or not cell:
-        return cell
-    return "; ".join(redact_name(x.strip()) for x in cell.split(";"))
+# a CI log is a publication on a public repo) masks them in every printed line.
+# The flag and the helpers it governs come from ONE module on purpose: a helper
+# that reads a different module's flag is a helper this `--redact` does not
+# actually govern, which is how an address once reached a public CI log.
+from aaif_events import gws as _gws_mod  # noqa: E402
+# cell/header_index/col_letter are re-exported: five sibling scripts import
+# them from here. `header_index` now aborts on a DUPLICATED header, which this
+# module's own copy did not — it silently resolved to the first of the two.
+from aaif_events.sheets import cell, col_letter, header_index  # noqa: E402,F401
+from aaif_events.redact import (add_redact_flag, redact_name, redact_names_cell, redact_text,  # noqa: E402
+                                set_redaction)
 
 
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
@@ -134,89 +98,24 @@ MAX_PUBLIC_TEXT = 120
 _UNSAFE_PUBLIC_TEXT = re.compile(r"[\x00-\x1f\x7f<>]")
 
 # ----------------------------------------------------------------------------
-# gws helpers (same retry/JSON pattern as aaif-create-chapter)
+# gws helpers
 # ----------------------------------------------------------------------------
-_TRANSIENT = ("timed out", "internalError", "HTTP request failed",
-              "Connection reset", "Connection refused", "Connection aborted",
-              "temporarily", "rateLimit", "userRateLimit", "backendError")
-# Bare "500"/"502"/"503" as substrings match any range or quota id that happens to
-# contain those digits ("A500:K500 exceeds grid limits"), so a permanent error
-# would burn the full backoff. Match them only as standalone HTTP statuses.
-_TRANSIENT_STATUS = re.compile(r"(?<![0-9])(?:429|500|502|503|504)(?![0-9])")
+# The subprocess plumbing — retries, backoff, the scrubbed environment and the
+# U+2028-safe JSON split — lives in `aaif_events.gws`. This module used to carry
+# its own copy under a "stays standalone" comment; the copy in aaif-audit-slack
+# drifted away from it (it retried on `Internal error` and this one did not), so
+# whether a run survived a sick API depended on which script you were in.
+#
+# The names are re-exported because a dozen sibling scripts import them from
+# here. There is no flag involved, so unlike the redaction helpers this is a
+# plain alias, not a second source of truth.
+gws_json = _gws_mod.json_out
+get_values = _gws_mod.values
+download = _gws_mod.download
+upload = _gws_mod.upload
+_gws = _gws_mod.run
+_transient = _gws_mod.transient
 
-def _transient(msg):
-    return any(k in msg for k in _TRANSIENT) or bool(_TRANSIENT_STATUS.search(msg))
-
-def _scrubbed_env():
-    """os.environ minus the Slack/Luma secrets, for every gws subprocess: gws
-    needs none of them, and a crash dump or plugin log must not leak one.
-    Local copy — this script stays standalone."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN")) and k != "LUMA_API_KEY"}
-
-def _gws(cmd, retries=5, cwd=None):
-    # cwd: gws rejects --output/--upload paths outside its working directory, so
-    # the shared download()/upload() below run it from the file's own directory.
-    for i in range(max(1, retries)):   # retries<=0 must raise below, not return None
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
-                           env=_scrubbed_env())
-        if r.returncode == 0:
-            return r.stdout
-        msg = (r.stderr or "") + (r.stdout or "")
-        if i < max(1, retries) - 1 and _transient(msg):
-            # Announce it: a silent 30s backoff looks like a hang, and a run that
-            # succeeds on attempt 4 should still leave a trace that the API was sick.
-            print("  gws call failed (attempt %d/%d), retrying in %ds: %s"
-                  % (i + 1, max(1, retries), 2 * (i + 1), msg.strip()[:120]), file=sys.stderr)
-            time.sleep(2 * (i + 1))
-            continue
-        raise RuntimeError("gws failed (%s): %s" % (r.returncode, msg.strip()[:400]))
-
-def gws_json(*args, params=None, body=None):
-    cmd = ["gws", *args]
-    if params is not None:
-        cmd += ["--params", json.dumps(params)]
-    if body is not None:
-        cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd)
-    # Split on "\n" only — NOT splitlines(), which also splits on U+2028 and
-    # friends INSIDE cell values, corrupting the JSON when rejoined.
-    s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
-    if not s:
-        raise RuntimeError("gws produced no JSON output for: %s" % " ".join(args))
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        raise RuntimeError("gws returned non-JSON output for %s: %s" % (" ".join(args), s[:200]))
-
-def get_values(sheet_id, rng):
-    res = gws_json("sheets", "spreadsheets", "values", "batchGet",
-                   params={"spreadsheetId": sheet_id, "ranges": [rng]})
-    return res["valueRanges"][0].get("values", [])
-
-# Shared by sync_about.py (.docx) and sync_crm.py (.xlsx) — one copy, here with
-# the other gws plumbing, because two byte-identical Drive helpers inside one
-# skill had already drifted apart once in comment text alone.
-def download(file_id, path):
-    """Fetch a Drive file's bytes to `path` and return them.
-
-    gws rejects --output paths outside its cwd, so it runs in the file's dir.
-    """
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    _gws(["gws", "drive", "files", "get", "--params",
-          json.dumps({"fileId": file_id, "supportsAllDrives": True, "alt": "media"}),
-          "--output", os.path.basename(path)], cwd=os.path.dirname(path) or ".")
-    with open(path, "rb") as fh:
-        return fh.read()
-
-def upload(file_id, path, raw, content_type):
-    """Replace a Drive file's content with `raw` (staged at `path` for gws)."""
-    with open(path, "wb") as fh:
-        fh.write(raw)
-    _gws(["gws", "drive", "files", "update", "--params",
-          json.dumps({"fileId": file_id, "supportsAllDrives": True}),
-          "--upload", os.path.basename(path), "--upload-content-type", content_type],
-         cwd=os.path.dirname(path) or ".")
 
 def fresh_if_unchanged(file_id, tmp_path, planned_bytes):
     """Re-download a Drive file and say whether it drifted from a plan's bytes.
@@ -293,29 +192,6 @@ def resolve_city(existing, new):
 def slugify(city):
     s = unicodedata.normalize("NFKD", city).encode("ascii", "ignore").decode()
     return SLUG_OVERRIDES.get(fold(city), re.sub(r"[^a-z0-9]", "", s.lower()))
-
-def cell(row, i):
-    return row[i].strip() if i < len(row) and isinstance(row[i], str) else ""
-
-def header_index(headers, sheet, *names):
-    idx = []
-    for n in names:
-        if n not in headers:
-            sys.exit("ABORT: column %r not found on %s — sheet layout changed?" % (n, sheet))
-        idx.append(headers.index(n))
-    return idx
-
-def col_letter(i):
-    """0-based column index -> A1 letter. Every write target is derived from the
-    header row through this, so a column reorder moves the writes with it."""
-    if i < 0:
-        raise ValueError("col_letter: negative column index %d" % i)
-    s = ""
-    i += 1
-    while i:
-        i, r = divmod(i - 1, 26)
-        s = chr(ord("A") + r) + s
-    return s
 
 #: The only hosts this tool will fetch. `audit_luma` feeds it a `Chapter Luma
 #: Link` cell, and a spreadsheet cell is untrusted input: without this an
@@ -452,12 +328,22 @@ def read_intake():
                    placed, inferred}]                               needs a human
     malformed  = [{row, name, city, why}]      public-unsafe text — never written
     """
-    rows = get_values(INTAKE_ID, "%s!A:U" % INTAKE_TAB)
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = get_values(INTAKE_ID, "%s!A:AZ" % INTAKE_TAB)
     if not rows:
         sys.exit("ABORT: intake tab %r came back empty." % INTAKE_TAB)
+    # `Run events before?` is on the live sheet TWICE (a form-version artefact).
+    # It is read-only here — it is printed in the unresolved-row report and
+    # never written — so it resolves to the first match with a warning rather
+    # than aborting the engine. Every other column here stays fatal on a
+    # duplicate, which is the case that would land a write in the wrong column.
     i_status, i_name, i_g, i_h, i_events, i_why = header_index(
         rows[0], INTAKE_TAB, "Status", "Full name", "City (Existing)", "City (New)",
-        "Run events before?", "Why organize / ties")
+        "Run events before?", "Why organize / ties",
+        first_of=("Run events before?",))
 
     entries, unresolved, dupes, malformed = [], [], [], []
     counts = {s: 0 for s in SYNC_STATUSES}
@@ -512,10 +398,11 @@ def read_chapters():
         sys.exit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
     headers = [h.strip() for h in rows[0]]
 
-    # A duplicated header would resolve differently for reads and writes:
-    # header_index() takes the FIRST match, a dict comprehension keeps the LAST.
-    # The script would then read organizers from one column and write the merged
-    # value over another, clobbering it. Refuse rather than pick a winner.
+    # A duplicated header would resolve differently for reads and writes: the
+    # dict comprehension below keeps the LAST match. header_index() now aborts
+    # on a duplicate too, but only for the columns it is asked about — this
+    # checks EVERY header, which is what the write path needs. Refuse rather
+    # than pick a winner.
     dups = sorted({h for h in headers if h and headers.count(h) > 1})
     if dups:
         sys.exit("ABORT: duplicate column header(s) %s on %s — reads and writes "
@@ -849,7 +736,7 @@ def main():
     ap.add_argument("--audit-luma", action="store_true",
                     help="also check EVERY existing feed row's Chapter Luma Link "
                          "and report the dead ones (one request per row; slow)")
-    add_redact_flag(ap)
+    add_redact_flag(ap, masks="names (first initial) and free-text answers")
     a = ap.parse_args()
     set_redaction(a.redact)
 

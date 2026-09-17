@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sync_chapters
 from sync_chapters import (fold, fold_city, slugify, parse_organizers, build_proposal,
                            col_letter)
+from aaif_events import redact as _redact  # noqa: E402
 
 # The live feed layout — writes are resolved through it by name.
 HEADERS = ["Title", "City", "Country",
@@ -299,7 +300,10 @@ check("MLOps history untouched on new rows", vals[LAYOUT["index"]["MLOps Communi
 
 # --- gws_json survives U+2028 inside JSON string values (the splitlines() bug) ---
 raw = '{"a": "line1\u2028line2"}\n'
-with mock.patch.object(sync_chapters.subprocess, "run",
+# Kept here as well as in the library's own tests: this is the path the feed
+# actually reads through, and a cell holding a line separator is real data.
+from aaif_events import gws as _gwsmod  # noqa: E402
+with mock.patch.object(_gwsmod.subprocess, "run",
                        return_value=mock.Mock(returncode=0, stdout=raw)):
     check("gws_json keeps U+2028 inside values", sync_chapters.gws_json("sheets", "get"),
           {"a": "line1\u2028line2"})
@@ -467,30 +471,30 @@ check("a missing City header aborts", audit_with_headers(["Chapter Luma Link"]),
 
 
 # --- --redact: stdout masking (default on under CI) ----------------------------
-sync_chapters.REDACT = False
-check("redaction off: email passes through", sync_chapters.redact_email("ada@x.com"), "ada@x.com")
+_redact.REDACT = False
+# No redact_email here either: this report prints names and free-text answers.
+check("no address masker is imported, because nothing here prints one",
+      hasattr(sync_chapters, "redact_email"), False)
 check("redaction off: name passes through", sync_chapters.redact_name("Ada Lovelace"), "Ada Lovelace")
-sync_chapters.REDACT = True
+_redact.REDACT = True
 try:
-    check("redacted email keeps one char + TLD only", sync_chapters.redact_email("ada@x.com"), "a***@***.com")
     check("redacted name is a first initial", sync_chapters.redact_name("ada lovelace"), "A.")
-    check("a non-email is left alone", sync_chapters.redact_email("Boston"), "Boston")
-    check("empty values survive", (sync_chapters.redact_email(""), sync_chapters.redact_name("")), ("", ""))
+    check("empty values survive", sync_chapters.redact_name(""), "")
 finally:
-    sync_chapters.REDACT = False
+    _redact.REDACT = False
 
-sync_chapters.REDACT = True
+_redact.REDACT = True
 try:
     check("the Organizers cell is masked name by name",
           sync_chapters.redact_names_cell("Ada Lovelace; Grace Hopper"), "A.; G.")
 finally:
-    sync_chapters.REDACT = False
+    _redact.REDACT = False
 
 
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402
-check("the CI default is the strict 1/true/yes parse of $CI", sync_chapters.CI_REDACT_DEFAULT,
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
       os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
@@ -501,16 +505,16 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     sync_chapters.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
-check("set_redaction(False) leaves REDACT off", sync_chapters.REDACT, False)
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 
 # --- free text and malformed cells are replaced, never trimmed ----------------
-sync_chapters.REDACT = True
+_redact.REDACT = True
 try:
     check("free text is replaced wholesale under REDACT",
           sync_chapters.redact_text("I know Ada Lovelace <ada@x.com>"), "[redacted]")
     check("empty free text stays empty", sync_chapters.redact_text(""), "")
 finally:
-    sync_chapters.REDACT = False
+    _redact.REDACT = False
 check("free text passes through with redaction off",
       sync_chapters.redact_text("hello"), "hello")
 
@@ -530,12 +534,12 @@ _st = sync_chapters.State(
     layout={"index": {"Organizers": 3}, "headers": ["City", "Organizers"]},
     malformed=[{"row": 9, "city": "Pune", "why": "control char near ada@x.com Ada Lovelace"}])
 _out = _io.StringIO()
-sync_chapters.REDACT = True
+_redact.REDACT = True
 try:
     with _ctx.redirect_stdout(_out):
         sync_chapters.print_report(_st)
 finally:
-    sync_chapters.REDACT = False
+    _redact.REDACT = False
 _text = _out.getvalue()
 check("redacted report carries no fixture email",
       [w for w in ("ada@x.com", "grace@x.com") if w in _text], [])
@@ -546,22 +550,26 @@ check("the malformed cell and free text print as [redacted]",
 check("the redacted report still names the city", "Boston" in _text, True)
 
 # --- gws subprocesses never inherit the Slack/Luma secrets --------------------
+# The scrubbing itself is `aaif_events.gws`'s, and tested there. What is pinned
+# here is that this module's `gws_json` really is that client — an alias could
+# be pointed somewhere else in a refactor, and nothing else would notice.
+check("gws_json is the shared client, not a local copy",
+      (sync_chapters.gws_json is _gwsmod.json_out,
+       sync_chapters.get_values is _gwsmod.values), (True, True))
 with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "xoxb-secret",
                                   "AAIF_SLACK_READ_TOKEN": "xoxp-secret",
                                   "LUMA_API_KEY": "luma-secret", "KEEP_ME": "1"}):
-    _env = sync_chapters._scrubbed_env()
-    check("_scrubbed_env drops the Slack tokens and the Luma key",
-          [k for k in _env if k.startswith("AAIF_SLACK_") or k == "LUMA_API_KEY"], [])
-    check("_scrubbed_env keeps everything else", _env.get("KEEP_ME"), "1")
     _seen = {}
     def _fake_run(cmd, **kw):
         _seen["env"] = kw.get("env")
         return mock.Mock(returncode=0, stdout="{}")
-    with mock.patch.object(sync_chapters.subprocess, "run", _fake_run):
+    with mock.patch.object(_gwsmod.subprocess, "run", _fake_run):
         sync_chapters.gws_json("sheets", "get")
     check("every gws call passes the scrubbed env",
-          (_seen["env"] is not None, "AAIF_SLACK_WRITE_TOKEN" in (_seen["env"] or {}),
-           "LUMA_API_KEY" in (_seen["env"] or {})),
-          (True, False, False))
+          (_seen["env"] is not None,
+           [k for k in (_seen["env"] or {})
+            if k.startswith("AAIF_SLACK_") or k == "LUMA_API_KEY"],
+           (_seen["env"] or {}).get("KEEP_ME")),
+          (True, [], "1"))
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)

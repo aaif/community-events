@@ -54,6 +54,9 @@ Prefer the guided UI flow? Run these inside Claude Code:
 
 ### ✍️ Content skills — no setup required
 Pure writing skills. They take the event details you give them and produce copy.
+Two of them (`aaif-carousel-copy`, `aaif-dayof-slides`) additionally *place* that
+copy into a Drive template, and that step needs `gws` like any ops skill; the
+writing itself does not.
 
 | Skill | What it writes |
 |---|---|
@@ -67,10 +70,12 @@ Pure writing skills. They take the event details you give them and produce copy.
 | `aaif-recap-post` | Post‑event LinkedIn recap (within 48h) |
 
 > **Attendee legal defaults.** The attendee‑facing skills (`aaif-announcement-post`,
-> `aaif-luma-description`, `aaif-attendee-reminder`) append two standing links by
-> default — the [Code of Conduct](https://events.linuxfoundation.org/about/code-of-conduct/)
+> `aaif-luma-description`, `aaif-attendee-reminder`, `aaif-recap-post`) append two
+> standing links by default — the [Code of Conduct](https://events.linuxfoundation.org/about/code-of-conduct/)
 > and [Privacy Policy](https://www.linuxfoundation.org/legal/privacy-policy).
-> Running your own chapter? Swap these URLs in each skill's `SKILL.md`.
+> Running your own chapter? Swap these URLs in each skill's `SKILL.md`; they sit
+> in a banner that `scripts/check_tooling_banner.py` keeps byte-identical, so a
+> copy you miss fails the build rather than shipping the old URLs.
 
 ### 🛠️ Ops skills — need Google Workspace access
 These drive Google Drive / Sheets through the `gws` CLI (see below); a few also
@@ -169,10 +174,14 @@ Code *plugin*:
 - **Claude Code** — install as the plugin above (native).
 - **claude.ai / Claude Agent SDK** — zip a skill folder (the dir containing
   `SKILL.md`) and upload it as a Skill. **Caveat:** skills whose scripts import
-  the shared `lib/aaif_events` package — `aaif-audit-slack`,
-  `aaif-sync-chapters`, `aaif-create-event`, `aaif-update-event`,
-  `aaif-event-status` — do **not** work zipped standalone; they need the full
-  checkout (or plugin install), since the zip won't contain `lib/`.
+  the shared `lib/aaif_events` package do **not** work zipped standalone; they
+  need the full checkout (or plugin install), since the zip won't contain
+  `lib/`. Those are `aaif-audit-slack`, `aaif-community-pulse`,
+  `aaif-create-chapter`, `aaif-create-event`, `aaif-event-status`,
+  `aaif-sync-badges`, `aaif-sync-chapters` and `aaif-update-event`.
+  `scripts/check_portable_skills.py` keeps this list honest — adding a
+  `lib/aaif_events` import to a skill that is not listed here fails the build,
+  so giving up a skill's portability stays a decision someone makes on purpose.
 - **Cursor** — Cursor uses its own `.cursor/rules/*.mdc` format and does **not**
   consume Claude Code plugins. You can copy a `SKILL.md`'s instructions into a
   Cursor rule, but it won't run the bundled scripts the same way.
@@ -198,7 +207,8 @@ meetups/
 ├── skills/
 │   ├── aaif-announcement-post/SKILL.md
 │   ├── aaif-create-chapter/{SKILL.md, scripts/}
-│   └── …  (18 skills total)
+│   ├── aaif-sync-chapters/{SKILL.md, scripts/, migrations/, references/}
+│   └── …  (20 skills total)
 └── README.md
 ```
 

@@ -803,7 +803,7 @@ def read_chapter_folders():
     headers = [h.strip() for h in rows[0]]
     if "Chapter Folder" not in headers:
         return {}, False
-    idx = ao.header_index(headers, ao.CHAPTERS_TAB, "City", "Chapter Folder")
+    idx = ao.header_map(headers, ao.CHAPTERS_TAB, "City", "Chapter Folder")
     out = {}
     for row in rows[1:]:
         city = ao.cell(row, idx["City"])

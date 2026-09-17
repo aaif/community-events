@@ -117,7 +117,29 @@ check("every engine is in the redacting set", {n for n, _ in nightly.ENGINES}, n
 for _n, _s in nightly.ENGINES:
     _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), _s),
                 encoding="utf-8").read()
-    check("%s actually accepts --no-redact" % _s, "add_redact_flag(ap)" in _src, True)
+    # `add_redact_flag(ap` — the call may carry a `masks=` argument naming what
+    # this particular engine actually prints, so the prefix is what is pinned.
+    check("%s actually accepts --no-redact" % _s, "add_redact_flag(ap" in _src, True)
+
+
+
+# --- the Verify list in SKILL.md names every test in this directory -----------
+# It had drifted: three tests existed that the list did not mention, including
+# the one for provision_channels.py, the most dangerous script here. A list that
+# is almost complete is worse than none — it reads as "these are all of them".
+_SCRIPTS = os.path.dirname(os.path.abspath(__file__))
+_SKILL_MD = os.path.join(_SCRIPTS, "..", "SKILL.md")
+with open(_SKILL_MD, encoding="utf-8") as _fh:
+    _doc = _fh.read()
+_on_disk = {f for f in os.listdir(_SCRIPTS) if f.startswith("test_") and f.endswith(".py")}
+_missing = sorted(f for f in _on_disk if f not in _doc)
+check("SKILL.md's Verify list names every test in scripts/", _missing, [])
+
+_MIGRATIONS = os.path.join(_SCRIPTS, "..", "migrations")
+_mig_on_disk = {f for f in os.listdir(_MIGRATIONS)
+                if f.startswith("test_") and f.endswith(".py")}
+check("and every test beside the completed migrations",
+      sorted(f for f in _mig_on_disk if f not in _doc), [])
 
 
 def access_drive(log_text, code):

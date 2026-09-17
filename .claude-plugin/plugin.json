@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "aaif-events",
   "displayName": "AAIF Community Events Toolkit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Skills for running AAIF (Agentic AI Foundation) in-person and online events — event content writing (announcements, Luma pages, LinkedIn carousels, recaps, speaker bios/invites, day-of slides, attendee reminders) and chapter ops (spin up a new city chapter or online event series, triage community intake, clean intake data, sync accepted organizers into the chapters list, and push/sync events to Luma with live RSVP stats).",
   "author": {
     "name": "AAIF",

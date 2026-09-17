@@ -30,6 +30,8 @@ from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # Imported, not copied: city folding, the near-miss stoplist and city resolution
 # must mean the same thing here as on the chapters list, or an organizer lands on
 # one city's feed row and in another city's About doc.
@@ -37,44 +39,13 @@ from sync_chapters import (INTAKE_ID, INTAKE_TAB, SYNC_STATUSES, cell,
                            city_tokens, download, fold, fold_city,
                            fresh_if_unchanged, get_values, gws_json,
                            header_index, read_intake, resolve_city, upload)
-
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@***.tld and
-# names as a first initial in every printed line. Each standalone script
-# carries its own copy of this flag and these helpers.
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_email(e):
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
-    return "%s***@***.%s" % (local[:1], tld)
-
-
-def redact_name(n):
-    if not REDACT or not n or not n.strip():
-        return n
-    return n.strip()[0].upper() + "."
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask emails (a***@***.tld) and names (first initial) "
-                         "on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    """Apply the parsed flag; one stderr line says so when masking is on."""
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+# a CI log is a publication on a public repo) masks them in every printed line.
+# The flag and the helpers it governs come from ONE module on purpose: a helper
+# that reads a different module's flag is a helper this `--redact` does not
+# actually govern, which is how an address once reached a public CI log.
+from aaif_events.redact import add_redact_flag, redact_name, set_redaction  # noqa: E402
 
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"
@@ -279,7 +250,11 @@ def read_roster():
     just that it is accepted today: a chapter whose organizer was later declined
     must still be rewritable, or its doc names them forever.
     """
-    rows = get_values(INTAKE_ID, "%s!A:U" % INTAKE_TAB)
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = get_values(INTAKE_ID, "%s!A:AZ" % INTAKE_TAB)
     if not rows:
         sys.exit("ABORT: intake tab %r came back empty." % INTAKE_TAB)
     i_name, i_g, i_h = header_index(rows[0], INTAKE_TAB,
@@ -552,7 +527,7 @@ def main():
     ap.add_argument("--write", action="store_true",
                     help="apply the proposed rewrites (default: report only)")
     ap.add_argument("--city", help="limit to one chapter folder")
-    add_redact_flag(ap)
+    add_redact_flag(ap, masks="names (first initial)")
     args = ap.parse_args()
     set_redaction(args.redact)
 

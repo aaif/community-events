@@ -55,3 +55,9 @@ luma.md
 new.md
 !lib/aaif_events/tests/fixtures/*
 !assets/*
+
+# claude plugin eval output. A result holds the full transcript of each run —
+# the prompts, the agent's replies and the graders' reasoning — and the cases
+# feed it synthetic people only, but a run against a real sheet would not. The
+# suite is local-only for the same reason (see evals/README.md).
+evals/results/

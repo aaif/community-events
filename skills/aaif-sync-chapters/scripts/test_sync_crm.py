@@ -20,6 +20,7 @@ from sync_crm import (Attendees, CRM_HEADERS, DV_EXPECTED, NEW_COLUMN,
                       is_aaif_ops, is_auto_role, join_distinct, load_parts,
                       match_chapters, merge_people, plan_workbook,
                       save_parts, sheet_part, valid_email)
+from aaif_events import redact as _redact  # noqa: E402
 
 TODAY = "2026-08-06"
 
@@ -946,22 +947,22 @@ check("an aliased spreadsheetml prefix does not break serialization",
 # ---------------------------------------------------------------------------
 # --redact: stdout masking (default on under CI)
 # ---------------------------------------------------------------------------
-sync_crm.REDACT = False
+_redact.REDACT = False
 check("redaction off: email passes through", sync_crm.redact_email("ada@x.com"), "ada@x.com")
 check("redaction off: name passes through", sync_crm.redact_name("Ada Lovelace"), "Ada Lovelace")
-sync_crm.REDACT = True
+_redact.REDACT = True
 try:
     check("redacted email keeps one char + TLD only", sync_crm.redact_email("ada@x.com"), "a***@***.com")
     check("redacted name is a first initial", sync_crm.redact_name("ada lovelace"), "A.")
     check("a non-email is left alone", sync_crm.redact_email("Boston"), "Boston")
     check("empty values survive", (sync_crm.redact_email(""), sync_crm.redact_name("")), ("", ""))
 finally:
-    sync_crm.REDACT = False
+    _redact.REDACT = False
 
-sync_crm.REDACT = True
+_redact.REDACT = True
 try:
-    check("redact_sets shows column names but masks every personal value",
-          sync_crm.redact_sets({"Email": "ada@x.com", "Full name": "Ada Lovelace",
+    check("mask_sets shows column names but masks every personal value",
+          sync_crm.mask_sets({"Email": "ada@x.com", "Full name": "Ada Lovelace",
                                 "Company": "Acme", "Status": "Accepted",
                                 "Interested in": "Organizer",
                                 "Role / title": "CTO", "What brings you here?": "my friend Ada"}),
@@ -981,7 +982,7 @@ try:
         linkedin="https://li/ada", company="Acme", title="Head of ML at Acme",
         expertise="agents")])[0]
     _shown = sorted(k for k, v in
-                    sync_crm.redact_sets(crm_fields(_person, TODAY)).items()
+                    sync_crm.mask_sets(crm_fields(_person, TODAY)).items()
                     if v not in ("…", ""))
     check("only categorical columns survive redaction — no free text, ever",
           _shown, sorted(["Status", NEW_COLUMN, "Trusted/Regular"]))
@@ -991,7 +992,7 @@ try:
                     "Role / title", "Technical expertise", "What brings you here?")],
           [])
 finally:
-    sync_crm.REDACT = False
+    _redact.REDACT = False
 
 # ---------------------------------------------------------------------------
 # --write leaves nothing behind but before/, and before/ is gitignored
@@ -1070,7 +1071,7 @@ check("inside the repo and ignored is fine", (_msg, _p is not None), (None, True
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402
-check("the CI default is the strict 1/true/yes parse of $CI", sync_crm.CI_REDACT_DEFAULT,
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
       os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
@@ -1081,7 +1082,7 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     sync_crm.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
-check("set_redaction(False) leaves REDACT off", sync_crm.REDACT, False)
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

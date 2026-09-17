@@ -1,0 +1,128 @@
+"""Tests for header-name sheet access.
+
+The behaviours worth pinning are the refusals: this module's job is to make a
+layout change loud, because the alternative is a write landing in the wrong
+column and nothing saying so.
+"""
+
+import pytest
+
+from aaif_events import sheets
+
+HEADERS = ["Title", "City", "Country", "Status"]
+
+
+class TestCell:
+    def test_a_value_comes_back_stripped(self):
+        assert sheets.cell(["  Boston  "], 0) == "Boston"
+
+    def test_past_the_end_is_blank_not_an_error(self):
+        """The API truncates trailing empty cells, so short rows are normal."""
+        assert sheets.cell(["Boston"], 5) == ""
+        assert sheets.cell([], 0) == ""
+
+    def test_a_negative_index_is_blank_not_a_wraparound(self):
+        assert sheets.cell(["a", "b"], -1) == ""
+
+    def test_a_non_string_cell_reads_as_blank(self):
+        """One old copy raised here. A report should say blank, not die."""
+        assert sheets.cell([42], 0) == ""
+        assert sheets.cell([True], 0) == ""
+        assert sheets.cell([None], 0) == ""
+
+
+class TestHeaderIndex:
+    def test_indexes_come_back_in_the_order_asked(self):
+        assert sheets.header_index(HEADERS, "Tab", "Country", "Title") == [2, 0]
+
+    def test_a_missing_column_aborts(self):
+        with pytest.raises(SystemExit, match="not found"):
+            sheets.header_index(HEADERS, "Tab", "Nope")
+
+    def test_a_duplicated_column_aborts(self):
+        """The gap in one old copy: it silently took the first of the two."""
+        with pytest.raises(SystemExit, match="appears twice"):
+            sheets.header_index(["City", "City"], "Tab", "City")
+
+    def test_the_abort_names_the_column_and_the_tab(self):
+        with pytest.raises(SystemExit, match="'Nope'.*Chapters"):
+            sheets.header_index(HEADERS, "Chapters", "Nope")
+
+
+class TestFirstOf:
+    """The opt-out for a column that is duplicated, benign and read-only.
+
+    Verified against the live intake sheet on 2026-09-17: one column there
+    carries the same header twice, both within the range the engines have
+    always read, and the engine that resolves it only ever prints the value.
+    Aborting every run over it would trade a real outage for an ambiguity
+    nothing acts on.
+    """
+
+    def test_an_opted_in_duplicate_resolves_to_the_first(self):
+        assert sheets.header_index(["A", "B", "A"], "Tab", "A",
+                                   first_of=("A",)) == [0]
+
+    def test_it_warns_so_the_sheet_still_gets_fixed(self, capsys):
+        sheets.header_index(["A", "B", "A"], "Tab", "A", first_of=("A",))
+        err = capsys.readouterr().err
+        assert "appears 2 times" in err
+        assert "A, C" in err          # both columns named, so it can be found
+
+    def test_a_duplicate_NOT_opted_in_still_aborts(self):
+        """The opt-out is per column, not a mode."""
+        with pytest.raises(SystemExit, match="appears twice"):
+            sheets.header_index(["A", "B", "A"], "Tab", "A", first_of=("B",))
+
+    def test_opting_in_a_column_that_is_not_duplicated_changes_nothing(self):
+        assert sheets.header_index(["A", "B"], "Tab", "B", first_of=("B",)) == [1]
+
+    def test_a_missing_column_still_aborts_even_when_opted_in(self):
+        with pytest.raises(SystemExit, match="not found"):
+            sheets.header_index(["A"], "Tab", "Z", first_of=("Z",))
+
+    def test_header_map_takes_it_too(self):
+        assert sheets.header_map(["A", "B", "A"], "Tab", "A",
+                                 first_of=("A",)) == {"A": 0}
+
+
+class TestHeaderMap:
+    def test_the_same_lookup_keyed_by_name(self):
+        assert sheets.header_map(HEADERS, "Tab", "City", "Status") == {"City": 1, "Status": 3}
+
+    def test_it_refuses_a_duplicate_too(self):
+        with pytest.raises(SystemExit, match="appears twice"):
+            sheets.header_map(["City", "City"], "Tab", "City")
+
+
+class TestHeaderWhitespace:
+    def test_a_header_is_matched_exactly(self):
+        """Documented so the behaviour is a decision, not an accident: a live
+        sheet whose header picked up a trailing space aborts with "layout
+        changed" when the layout did not change. Callers strip `rows[0]` before
+        calling; the two that do not are the ones to fix if this ever bites."""
+        with pytest.raises(SystemExit):
+            sheets.header_index(["City "], "Tab", "City")
+
+
+class TestColLetter:
+    def test_single_letters(self):
+        assert [sheets.col_letter(i) for i in (0, 1, 25)] == ["A", "B", "Z"]
+
+    def test_the_wrap_into_two_letters(self):
+        assert sheets.col_letter(26) == "AA"
+        assert sheets.col_letter(27) == "AB"
+        assert sheets.col_letter(51) == "AZ"
+        assert sheets.col_letter(52) == "BA"
+
+    def test_the_wrap_into_three_letters(self):
+        """`ZZ` -> `AAA` is the arm of the loop most likely to be got wrong,
+        and every write range is built through it."""
+        assert sheets.col_letter(701) == "ZZ"
+        assert sheets.col_letter(702) == "AAA"
+        assert sheets.col_letter(703) == "AAB"
+
+    def test_a_negative_index_raises_rather_than_returning_empty(self):
+        """An empty string here would build the range `Tab!:` and read nothing."""
+        with pytest.raises(ValueError):
+            sheets.col_letter(-1)
