@@ -184,9 +184,11 @@ check("the trailing run is emptied", res.count("<a:t></a:t>") == 1)
 check("the run properties are untouched", 'sz="1200"' in res)
 check("XML-special text is escaped", "&amp;" in bf.retext(split, "A & B"))
 
-print("text_width and font_size")
-check("mono width is exact", bf.text_width("LOGO 1", 1200)
+print("width and font_size")
+check("mono width is exact", bf.width("LOGO 1", 1200)
       == int(6 * bf.MONO_EM * 12 * bf.EMU_PER_PT))
+check("the proportional face is still reachable", bf.width("LOGO 1", 1200, bf.PROP_EM)
+      == int(6 * bf.PROP_EM * 12 * bf.EMU_PER_PT))
 check("font_size reads the first run", bf.font_size('<a:rPr b="0" sz="1100"/>') == 1100)
 check("font_size falls back when absent", bf.font_size("<a:rPr/>") == 1100)
 
