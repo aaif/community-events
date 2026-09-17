@@ -47,6 +47,7 @@ check("speakers and hosts are not access tabs",
 # accepted, not what they answered. sync_crm's "the Form Responses join is
 # broken" guard must not fire for that caller, where zero matches is expected.
 import sync_crm  # noqa: E402  (imported here, beside the behaviour it guards)
+from aaif_events import redact as _redact  # noqa: E402
 
 ORG_MIN = [["Status", "Full name", "Email", "Chapter", "City (Existing)"],
            ["Accepted", "Ada", "ada@x.io", "Boston", "Boston"]]
@@ -323,10 +324,10 @@ check("an interior ideographic space is refused",
 # ---------------------------------------------------------------------------
 # --redact: stdout masking (default on under CI)
 # ---------------------------------------------------------------------------
-sync_access.REDACT = False
+_redact.REDACT = False
 check("redaction off: email passes through", sync_access.redact_email("ada@x.com"), "ada@x.com")
 check("redaction off: name passes through", sync_access.redact_name("Ada Lovelace"), "Ada Lovelace")
-sync_access.REDACT = True
+_redact.REDACT = True
 try:
     check("redacted email keeps one char + TLD only", sync_access.redact_email("ada@x.com"), "a***@***.com")
     check("redacted name is a first initial", sync_access.redact_name("ada lovelace"), "A.")
@@ -336,13 +337,13 @@ try:
     check("a dotless domain shows nothing", sync_access.redact_email("ada@localhost"), "a***@***.***")
     check("empty values survive", (sync_access.redact_email(""), sync_access.redact_name("")), ("", ""))
 finally:
-    sync_access.REDACT = False
+    _redact.REDACT = False
 
 
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402
-check("the CI default is the strict 1/true/yes parse of $CI", sync_access.CI_REDACT_DEFAULT,
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
       os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
@@ -353,7 +354,7 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     sync_access.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
-check("set_redaction(False) leaves REDACT off", sync_access.REDACT, False)
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 
 # --- --i-have-approval without --notify/--mail-if-required is inert, and says so --
 _err = _io.StringIO()
@@ -594,12 +595,12 @@ _plan = {"already_granted": [],
          "orphans": [{"city": "Pune", "people": [{"name": "Grace Hopper"}]}],
          "stale": [("Berlin", "ada@x.com", "writer")]}
 _out = _io.StringIO()
-sync_access.REDACT = True
+_redact.REDACT = True
 try:
     with _ctx.redirect_stdout(_out):
         sync_access.report(_plan, "writer")
 finally:
-    sync_access.REDACT = False
+    _redact.REDACT = False
 _text = _out.getvalue()
 check("redacted report carries no fixture email",
       [w for w in ("ada@x.com", "grace@x.com", "x.com") if w in _text], [])

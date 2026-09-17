@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 import audit_organizers as ao  # noqa: E402
 import sync_chapters  # noqa: E402
 import sync_resources as sr  # noqa: E402
+from aaif_events import redact as _redact  # noqa: E402
 
 FAILS = []
 
@@ -428,7 +429,7 @@ check("the resolved organizer's handle is proposed",
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402
-check("the CI default is the strict 1/true/yes parse of $CI", sr.CI_REDACT_DEFAULT,
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
       os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
@@ -439,15 +440,15 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     sr.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
-check("set_redaction(False) leaves REDACT off", sr.REDACT, False)
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 
 # --- --redact: the unresolved-organizer list is the one place names print -----
-sr.REDACT = True
+_redact.REDACT = True
 try:
     check("redacted name is a first initial", sr.redact_name("ada lovelace"), "A.")
     check("redacted email keeps one char + TLD only", sr.redact_email("ada@x.com"), "a***@***.com")
 finally:
-    sr.REDACT = False
+    _redact.REDACT = False
 check("redaction off passes a name through", sr.redact_name("Ada Lovelace"), "Ada Lovelace")
 
 if FAILS:

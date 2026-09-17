@@ -69,6 +69,8 @@ from collections import Counter, namedtuple
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # Shared with the chapters-feed engine on purpose: one gws retry/JSON path, one
 # city-folding rule, one near-miss stoplist. Two copies would drift, and a city
 # that folds one way here and another way there syncs a person to a chapter whose
@@ -79,44 +81,14 @@ from sync_chapters import (INTAKE_ID, bad_public_text, gws_json, get_values,
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "..", "..", ".."))
-
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@***.tld and
-# names as a first initial in every printed line. Each standalone script
-# carries its own copy of this flag and these helpers.
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_email(e):
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
-    return "%s***@***.%s" % (local[:1], tld)
-
-
-def redact_name(n):
-    if not REDACT or not n or not n.strip():
-        return n
-    return n.strip()[0].upper() + "."
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask emails (a***@***.tld) and names (first initial) "
-                         "on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    """Apply the parsed flag; one stderr line says so when masking is on."""
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+# a CI log is a publication on a public repo) masks them in every printed line.
+# The flag and the helpers it governs come from ONE module on purpose: a helper
+# that reads a different module's flag is a helper this `--redact` does not
+# actually govern, which is how an address once reached a public CI log.
+from aaif_events.redact import (add_redact_flag, redact_email, redact_name, redacting,  # noqa: E402
+                                set_redaction)
 
 
 #: Columns whose values are categorical, not personal — the only ones a
@@ -137,10 +109,13 @@ def set_redaction(on):
 SHOWN_UNDER_REDACT = ("Status", "Interested in", "Signal", "Trusted/Regular")
 
 
-def redact_sets(sets):
-    """The per-op cell dict: under REDACT every value is masked except the
-    role/status-like columns, so the report still shows WHICH columns change."""
-    if not REDACT:
+def mask_sets(sets):
+    """The per-op cell dict: under redaction every value is masked except the
+    role/status-like columns, so the report still shows WHICH columns change.
+
+    Stays here rather than in `aaif_events.redact` because `SHOWN_UNDER_REDACT`
+    is this workbook's schema, not a general rule."""
+    if not redacting():
         return sets
     return {k: (v if k in SHOWN_UNDER_REDACT else "…")
             for k, v in sets.items()}
@@ -1777,12 +1752,12 @@ def _run(args, workdir):
             # Show the TRANSITION, not just the destination: `Status='Prospect'`
             # reads as filling a blank cell whether or not it just replaced a
             # chapter's hand-set `Accepted`.
-            was = redact_sets(o.get("was", {}))
+            was = mask_sets(o.get("was", {}))
             detail = ("dummy row wiped" if o["kind"] == "clear" else
                       ", ".join(
                           ("%s: %r -> %r" % (k, was[k], v)) if was.get(k)
                           else ("%s=%r" % (k, v if len(v) < 60 else v[:57] + "…"))
-                          for k, v in redact_sets(o["sets"]).items()))
+                          for k, v in mask_sets(o["sets"]).items()))
             print("      %s row %-4d %s <%s> — %s"
                   % (mark, o["rownum"], redact_name(o["name"]),
                      redact_email(o["email"]), detail))

@@ -117,7 +117,9 @@ check("every engine is in the redacting set", {n for n, _ in nightly.ENGINES}, n
 for _n, _s in nightly.ENGINES:
     _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), _s),
                 encoding="utf-8").read()
-    check("%s actually accepts --no-redact" % _s, "add_redact_flag(ap)" in _src, True)
+    # `add_redact_flag(ap` — the call may carry a `masks=` argument naming what
+    # this particular engine actually prints, so the prefix is what is pinned.
+    check("%s actually accepts --no-redact" % _s, "add_redact_flag(ap" in _src, True)
 
 
 def access_drive(log_text, code):

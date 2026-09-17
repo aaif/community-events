@@ -18,57 +18,16 @@ applies it atomically, then re-reads and verifies the diff is empty.
 """
 import argparse, json, os, re, subprocess, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 from collections import namedtuple
-
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks emails as a***@***.tld and
-# names as a first initial in every printed line. Each standalone script
-# carries its own copy of this flag and these helpers.
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_email(e):
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
-    return "%s***@***.%s" % (local[:1], tld)
-
-
-def redact_name(n):
-    if not REDACT or not n or not n.strip():
-        return n
-    return n.strip()[0].upper() + "."
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask emails (a***@***.tld) and names (first initial) "
-                         "on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    """Apply the parsed flag; one stderr line says so when masking is on."""
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
-
-
-def redact_text(v):
-    """Free-form form text (and the repr of a malformed cell) may quote a
-    person wholesale, so under REDACT it is replaced, not trimmed."""
-    return "[redacted]" if REDACT and v else v
-
-
-def redact_names_cell(cell):
-    """The Organizers cell is a '; '-joined list of names; mask each."""
-    if not REDACT or not cell:
-        return cell
-    return "; ".join(redact_name(x.strip()) for x in cell.split(";"))
+# a CI log is a publication on a public repo) masks them in every printed line.
+# The flag and the helpers it governs come from ONE module on purpose: a helper
+# that reads a different module's flag is a helper this `--redact` does not
+# actually govern, which is how an address once reached a public CI log.
+from aaif_events.redact import (add_redact_flag, redact_name, redact_names_cell, redact_text,  # noqa: E402
+                                set_redaction)
 
 
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
@@ -849,7 +808,7 @@ def main():
     ap.add_argument("--audit-luma", action="store_true",
                     help="also check EVERY existing feed row's Chapter Luma Link "
                          "and report the dead ones (one request per row; slow)")
-    add_redact_flag(ap)
+    add_redact_flag(ap, masks="names (first initial) and free-text answers")
     a = ap.parse_args()
     set_redaction(a.redact)
 

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "..", "lib"))
 
 import prune_organizers as pr  # noqa: E402
+from aaif_events import redact as _redact  # noqa: E402
 
 FAILS = []
 
@@ -117,22 +118,22 @@ check("blank and 'none' cells are not skips — nothing was recorded",
 
 
 # --- --redact: stdout masking (default on under CI) ----------------------------
-pr.REDACT = False
+_redact.REDACT = False
 check("redaction off: name passes through", pr.redact_name("Ada Lovelace"), "Ada Lovelace")
-pr.REDACT = True
+_redact.REDACT = True
 try:
     check("redacted name is a first initial", pr.redact_name("ada lovelace"), "A.")
     check("empty values survive", pr.redact_name(""), "")
     check("no redact_email here: nothing in this report prints an address",
           hasattr(pr, "redact_email"), False)
 finally:
-    pr.REDACT = False
+    _redact.REDACT = False
 
 
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402
-check("the CI default is the strict 1/true/yes parse of $CI", pr.CI_REDACT_DEFAULT,
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
       os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
@@ -143,7 +144,7 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     pr.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
-check("set_redaction(False) leaves REDACT off", pr.REDACT, False)
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

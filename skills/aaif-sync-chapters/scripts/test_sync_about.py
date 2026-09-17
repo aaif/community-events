@@ -15,6 +15,7 @@ from sync_about import (PLACEHOLDER, TEMPLATE_NAMES, clone_bullet,
                         read_document, removals, render, set_spacing,
                         wanted_names, write_document)
 from sync_chapters import fold, fold_city
+from aaif_events import redact as _redact  # noqa: E402
 
 fails = 0
 def check(label, got, want):
@@ -304,7 +305,7 @@ check("the hold keeps the write run's exit non-zero", _rc, 2)
 # --- the CI default is a real boolean, and masking announces itself ------------
 import io as _io  # noqa: E402
 import contextlib as _ctx  # noqa: E402
-check("the CI default is the strict 1/true/yes parse of $CI", sync_about.CI_REDACT_DEFAULT,
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
       os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
 _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
@@ -315,13 +316,16 @@ _err = _io.StringIO()
 with _ctx.redirect_stderr(_err):
     sync_about.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
-check("set_redaction(False) leaves REDACT off", sync_about.REDACT, False)
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 
 # --- --redact: the report names people in five places; none survive -----------
-sync_about.REDACT = True
+_redact.REDACT = True
 try:
     check("redacted name is a first initial", sync_about.redact_name("ada lovelace"), "A.")
-    check("redacted email keeps one char + TLD only", sync_about.redact_email("ada@x.com"), "a***@***.com")
+    # No redact_email here: this report prints names, never an address. It used
+    # to import one anyway, which is dead code that reads like a guarantee.
+    check("no address masker is imported, because nothing here prints one",
+          hasattr(sync_about, "redact_email"), False)
     _d = sync_about.Doc({"name": "Boston"}, {"id": "a-Boston"}, b"", "",
                         ["Ada Lovelace"], ["Grace Hopper"], "<new/>", None,
                         ["Ada Lovelace"], ["Grace Hopper"])
@@ -335,6 +339,6 @@ try:
           [w for w in ("Lovelace", "Hopper") if w in _text], [])
     check("the redacted About report still names the chapter", "Boston" in _text, True)
 finally:
-    sync_about.REDACT = False
+    _redact.REDACT = False
 print("\n%s (%d failure(s))" % ("ALL PASS" if not fails else "FAILURES", fails))
 sys.exit(1 if fails else 0)

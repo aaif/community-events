@@ -53,10 +53,19 @@ import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 from create_chapter import (CHAPTERS_PARENT, _process_paragraphs,  # noqa: E402
                             _rewrite_zip, gws_download, gws_upload,
                             is_member_data, list_children, rename_file)
+# --- stdout redaction -------------------------------------------------------
+# This script prints CRM cell text (see strings_changed), so it needs the same
+# masking every sibling engine has: a CI log on this public repo is a
+# publication. The flag and the helpers it governs come from ONE module on
+# purpose — a helper that reads a different module's flag is a helper this
+# `--redact` does not actually govern.
+from aaif_events.redact import add_redact_flag, redact_doc_text, set_redaction  # noqa: E402
 
 #: A Luma slug token, INCLUDING its hyphenated tail. Matched so the
 #: city-name pass can be kept out of it. `[a-z0-9]+` alone stopped at the
@@ -64,36 +73,6 @@ from create_chapter import (CHAPTERS_PARENT, _process_paragraphs,  # noqa: E402
 #: and renaming a city called `City` rewrote the slug's own tail — the
 #: exact 404 this guard exists to prevent.
 SLUG_TOKEN = re.compile(r"(?i)\baaif-[a-z0-9]+(?:-[a-z0-9]+)*")
-
-# --- stdout redaction -------------------------------------------------------
-# This script prints CRM cell text (see strings_changed), so it needs the same
-# masking every sibling engine has: a CI log on this public repo is a
-# publication. Its own copy of the flag and helpers, because a helper imported
-# from a sibling reads THAT module's REDACT, not this one's.
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_text(t):
-    """Mask a document string. Under --redact only its shape survives — the
-    strings this prints are document text, and a chapter CRM's are member rows."""
-    if not REDACT or not t:
-        return repr(t)
-    return "<%d chars>" % len(t)
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask document text on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
 
 
 #: Native Google formats have no bytes this script can rewrite — Drive stores
@@ -300,7 +279,7 @@ def main():
     ap.add_argument("--include-member-data", action="store_true",
                     help="also rewrite the chapter CRM and event tracker, which "
                          "hold attendee data (default: report them and skip)")
-    add_redact_flag(ap)
+    add_redact_flag(ap, masks="document text")
     a = ap.parse_args()
     set_redaction(a.redact)
     if bool(a.slug_from) != bool(a.slug_to):
@@ -377,7 +356,7 @@ def main():
             print("   %-56s %d part(s), %d string(s)"
                   % (relpath[:56], len(parts), len(changed)))
             for x in changed[:4]:
-                print("        %s" % redact_text(x[:88]))
+                print("        %s" % redact_doc_text(x[:88]))
             if len(changed) > 4:
                 print("        … and %d more" % (len(changed) - 4))
             if not changed:

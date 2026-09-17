@@ -71,56 +71,13 @@ from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa:
 import audit_organizers as ao  # noqa: E402
 import resolve_slack_ids as rsi  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
-
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
-# a CI log is a publication on a public repo) masks names as a first initial,
-# and addresses to a first initial plus TLD, in every printed line. Each
-# standalone script carries its own copy of this flag and these helpers —
-# including the helpers themselves, because a helper that reads another
-# module's REDACT is a helper this flag does not actually govern.
-REDACT = False
-CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
-
-
-def redact_email(e):
-    """This module's OWN copy, reading this module's `REDACT`.
-
-    It used to be imported from `sync_resources`, which made `--redact` a no-op
-    for the one line that prints an address: `set_redaction` sets the flag HERE,
-    the imported function reads the flag THERE, and the Slack ID conflict
-    warning printed the raw address in a run — CI included, where redaction is
-    on by default precisely because the log is a publication on a public repo.
-    Each standalone script carrying its own copy is the convention (see the
-    comment above) exactly so a flag and the helper it governs cannot drift
-    into two different modules.
-    """
-    if not REDACT or not e or "@" not in e:
-        return e
-    local, _, domain = e.partition("@")
-    tld = domain.rsplit(".", 1)[-1] if "." in domain else "***"
-    return "%s***@***.%s" % (local[:1], tld)
-
-
-def redact_name(n):
-    if not REDACT or not n or not n.strip():
-        return n
-    return n.strip()[0].upper() + "."
-
-
-def add_redact_flag(ap):
-    ap.add_argument("--redact", action=argparse.BooleanOptionalAction,
-                    default=CI_REDACT_DEFAULT,
-                    help="mask names (first initial) on stdout; default on when CI is set")
-
-
-def set_redaction(on):
-    """Apply the parsed flag; one stderr line says so when masking is on."""
-    global REDACT
-    REDACT = bool(on)
-    if REDACT:
-        print("redaction ON (CI set; pass --no-redact to disable)"
-              if CI_REDACT_DEFAULT else "redaction ON (--redact)", file=sys.stderr)
+# a CI log is a publication on a public repo) masks them in every printed line.
+# The flag and the helpers it governs come from ONE module on purpose: a helper
+# that reads a different module's flag is a helper this `--redact` does not
+# actually govern, which is how an address once reached a public CI log.
+from aaif_events.redact import (add_redact_flag, redact_email, redact_name, set_redaction)  # noqa: E402
 
 
 #: Inviting to a PRIVATE channel needs the groups scope; the public one is here

@@ -90,6 +90,20 @@ repos:
         language: python
         pass_filenames: false
         files: '\.py$'
+  # --- One redaction surface, not nine -------------------------------------
+  # `--redact` masks the names and addresses an ops report prints, and it only
+  # works when the flag and the helpers that read it are the same module's. A
+  # helper that reads a sibling module's flag is a helper `--redact` does not
+  # govern; that is how an address once reached a public CI log. Both failure
+  # modes are invisible in output, so this is enforced rather than reviewed.
+  - repo: local
+    hooks:
+      - id: check-no-local-redaction
+        name: redaction flag and helpers come from aaif_events.redact
+        entry: python3 scripts/check_no_local_redaction.py
+        language: python
+        pass_filenames: false
+        files: '\.py$'
   # --- Real people's identifiers never enter a public repo ------------------
   # A real organizer's address and two real Slack ids were committed here once,
   # under a rule in AGENTS.md that already forbade it. Rewriting history cleaned
