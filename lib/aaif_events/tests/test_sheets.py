@@ -58,6 +58,16 @@ class TestHeaderMap:
             sheets.header_map(["City", "City"], "Tab", "City")
 
 
+class TestHeaderWhitespace:
+    def test_a_header_is_matched_exactly(self):
+        """Documented so the behaviour is a decision, not an accident: a live
+        sheet whose header picked up a trailing space aborts with "layout
+        changed" when the layout did not change. Callers strip `rows[0]` before
+        calling; the two that do not are the ones to fix if this ever bites."""
+        with pytest.raises(SystemExit):
+            sheets.header_index(["City "], "Tab", "City")
+
+
 class TestColLetter:
     def test_single_letters(self):
         assert [sheets.col_letter(i) for i in (0, 1, 25)] == ["A", "B", "Z"]
@@ -67,6 +77,13 @@ class TestColLetter:
         assert sheets.col_letter(27) == "AB"
         assert sheets.col_letter(51) == "AZ"
         assert sheets.col_letter(52) == "BA"
+
+    def test_the_wrap_into_three_letters(self):
+        """`ZZ` -> `AAA` is the arm of the loop most likely to be got wrong,
+        and every write range is built through it."""
+        assert sheets.col_letter(701) == "ZZ"
+        assert sheets.col_letter(702) == "AAA"
+        assert sheets.col_letter(703) == "AAB"
 
     def test_a_negative_index_raises_rather_than_returning_empty(self):
         """An empty string here would build the range `Tab!:` and read nothing."""

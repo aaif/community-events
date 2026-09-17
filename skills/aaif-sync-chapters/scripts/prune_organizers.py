@@ -108,7 +108,13 @@ def read_keeplist():
         return set(), set(), False
     rows = ao.gws_values(ao.CHAPTERS_ID, "'%s'!A:B" % KEEPLIST_TAB)
     if not rows:
-        return set(), set(), False
+        # The tab EXISTS — the title probe above proved it. An empty read is a
+        # tab with nothing in it yet, which is the legitimate starting state,
+        # so `had` stays True: reporting False here would send the operator to
+        # create a tab they are looking at. (A read that failed rather than
+        # came back empty now raises out of `gws.values` instead of arriving
+        # as `[]`, which is what made these two cases distinguishable.)
+        return set(), set(), True
     headers = [h.strip() for h in rows[0]]
     if "Slack Handle" not in headers:
         sys.exit("ABORT: %s has no 'Slack Handle' column." % KEEPLIST_TAB)

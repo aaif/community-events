@@ -130,8 +130,9 @@ def backup_root(kind):
     public. Living under the repo (not $TMPDIR) keeps the recovery copy where
     an operator will find it and where a reboot does not sweep it.
 
-    Three outcomes, ported from migrate_status_prospect.assert_git_safe (the
-    scripts stay standalone): git missing -> abort, since nothing can prove
+    Three outcomes, ported from migrate_status_prospect.assert_git_safe. The
+    copy stays here because the guard is about THIS script's backup directory,
+    not because the two files are independent — migrations/ imports from here: git missing -> abort, since nothing can prove
     the path is safe; REPO is not a git checkout (a plugin install, a zip) ->
     allowed, with a printed note, because there is no repo to leak into; any
     other git failure (dubious ownership, a corrupt .git) -> abort quoting
@@ -180,7 +181,8 @@ def cleanup_workdir(workdir, keep_backups):
     the entire organizer base. Only before/ has recovery value, so at most
     before/ survives, and a failed delete is REPORTED rather than swallowed:
     silence would leave member data on disk with nobody aware.
-    (Ported from migrate_status_prospect.py; the scripts stay standalone.)
+    (Ported from migrate_status_prospect.py, which imports from this module;
+    the copy is CRM-workbook-specific, not a portability hedge.)
     """
     left = []
     for name in sorted(os.listdir(workdir)):
@@ -747,8 +749,8 @@ class Attendees:
             # across 62 chapters and goes looking for corrupt workbooks.
             raise ValueError(
                 "no %r column yet — this workbook predates the 2026-08-25 "
-                "Status/role split. Run migrate_interested_in.py --write, then "
-                "re-run this sync." % NEW_COLUMN)
+                "Status/role split. Run migrations/migrate_interested_in.py "
+                "--write, then re-run this sync." % NEW_COLUMN)
         if missing:
             raise ValueError("missing column(s): %s" % ", ".join(missing))
         # Row 2 is the shipped sample row and is the only place the per-column
@@ -961,7 +963,7 @@ def read_survey_interests():
     is the latest answer only because the form appends chronologically — a
     sorted or hand-reordered tab would silently change which answer is used.
     """
-    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
     # first, which is the one a reader is most likely to have just added — and
     # `header_index` then aborts with "layout changed" pointing at a column that
     # is right there on the sheet. Read wide; resolve by header name.
@@ -990,7 +992,7 @@ def read_role_tab(tab, interests, include_pipeline=False):
     must never reach one. Only sync_crm's own run() opts in, and it still gates
     pipeline ORGANIZERS per chapter afterwards (gate_pipeline_organizers).
     """
-    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
     # first, which is the one a reader is most likely to have just added — and
     # `header_index` then aborts with "layout changed" pointing at a column that
     # is right there on the sheet. Read wide; resolve by header name.
@@ -1820,7 +1822,7 @@ def _run(args, workdir):
     if no_dropdown:
         print("\nStale or missing dropdown(s) — people still sync, but the column "
               "won't constrain what an organizer types. Run "
-              "migrate_interested_in.py --write:")
+              "migrations/migrate_interested_in.py --write:")
         for name, cols in no_dropdown:
             print("  %-28s %s" % (name, ", ".join(repr(c) for c in cols)))
     if rejected and args.verbose:

@@ -35,7 +35,7 @@ from aaif_events.slack import Slack, channels  # noqa: E402
 # copied. The `lib` coupling is already paid for by the import above; a fourth
 # copy of gws_values would only be a fourth thing to fix.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from audit_organizers import CHAPTERS_ID, cell, gws_values, header_index  # noqa: E402
+from audit_organizers import CHAPTERS_ID, cell, gws_values, header_map  # noqa: E402
 
 e = html.escape
 
@@ -111,7 +111,7 @@ def load_topics(sheet_id=None):
     is the half of "read by header name" that still breaks when someone inserts
     a column, which is exactly how the Chapters restructure broke sync-chapters.
     """
-    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
     # first, which is the one a reader is most likely to have just added — and
     # `header_index` then aborts with "layout changed" pointing at a column that
     # is right there on the sheet. Read wide; resolve by header name.
@@ -123,7 +123,7 @@ def load_topics(sheet_id=None):
             "tab first (see the skill's Topics section)." % TOPICS_TAB)
 
     headers = [h.strip() for h in rows[0]]
-    idx = header_index(headers, TOPICS_TAB, "Channel", "Kind")
+    idx = header_map(headers, TOPICS_TAB, "Channel", "Kind")
     theme_i = headers.index("Theme") if "Theme" in headers else None
     notes_i = headers.index("Notes") if "Notes" in headers else None
 

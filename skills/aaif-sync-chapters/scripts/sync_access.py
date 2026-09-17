@@ -498,7 +498,7 @@ def assert_all_accepted(grants):
     # gate has to be at least as narrow as the thing it guards.
     ok, refused = {}, {}
     for tab in ACCESS_TABS:
-        # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+        # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
         # first, which is the one a reader is most likely to have just added — and
         # `header_index` then aborts with "layout changed" pointing at a column that
         # is right there on the sheet. Read wide; resolve by header name.

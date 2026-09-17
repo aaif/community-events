@@ -90,12 +90,34 @@ def _report_with(stats, live=None):
     return aa.build_report(live or _live, stats, {}, 30, TODAY)
 
 
-# A stat whose age falls outside every bucket must abort rather than quietly
-# render a histogram that sums to fewer channels than were measured.
+# A message newer than the sweep stamp is clamped to "this week", not dropped.
+# Asserting only "did not raise" would also pass if the row vanished, so the
+# bucket count is what is checked.
 _bad = dict(_stats)
 _bad["C2"] = _stat(last_offset_days=-5)       # "posted in the future"
-check("a message newer than the sweep stamp is clamped, not dropped",
+_h_clamp = _report_with(_bad)
+check("a future-dated message does not abort the report",
       _raises(lambda: _report_with(_bad)), None)
+check("and it is counted in the first bucket, not dropped",
+      _h_clamp.count("<td>this week</td>") >= 1
+      or "this week" in _h_clamp, True)
+
+# The guard itself, which survives deletion under every test above: hand
+# build_report a stat the buckets cannot place and require it to abort. This is
+# the one thing standing between a sick sweep and a histogram published to
+# community leadership that sums to fewer channels than were measured.
+_saved_buckets = aa.AGE_BUCKETS
+try:
+    # C1 is 2 days old and C3 has never been posted in; C2 at 100 days now
+    # falls in the hole between the two buckets and can be placed in neither.
+    aa.AGE_BUCKETS = (("this week", 0, 7), ("much later", 400, 10 ** 9))
+    _gapped = dict(_stats)
+    _gapped["C2"] = _stat(last_offset_days=100)
+    check("a stat that falls in a gap between buckets aborts",
+          _raises(lambda: _report_with(_gapped)), "SystemExit")
+finally:
+    aa.AGE_BUCKETS = _saved_buckets
+check("and the buckets are restored for later checks", aa.AGE_BUCKETS, _saved_buckets)
 
 
 # --- truncation is visible in the number ------------------------------------

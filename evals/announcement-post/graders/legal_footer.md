@@ -1,10 +1,11 @@
 ---
 type: regex
-pattern: "code-of-conduct"
+pattern: "(?s)code-of-conduct.*privacy-policy|(?s)privacy-policy.*code-of-conduct"
 match: contains
 target: last_message
 arm: with-only
 ---
-Attendee-facing copy carries the two standing AAIF links by default. This is
-the assertion that would have caught the footer drifting out of one skill's
-copy of the rule while the other three kept it.
+Attendee-facing copy carries BOTH standing AAIF links by default. The pattern
+requires the two of them, in either order: asserting only the Code of Conduct
+would pass a post that had quietly dropped the Privacy Policy, which is half of
+what footer drift means.

@@ -71,10 +71,23 @@ def _complete(chans, directory):
 
 check("a directory matching the default channel passes",
       _complete([_chan("general", 3, general=True)], _HUMANS), None)
-check("a directory within the 10% tolerance passes",
-      _complete([_chan("general", 3, general=True)], _HUMANS[:3]), None)
 check("a materially short pull aborts",
       _complete([_chan("general", 30, general=True)], _HUMANS), "SystemExit")
+
+# The 0.9 tolerance, pinned on BOTH sides. The case this replaces compared the
+# same three humans against num_members=3 twice — an exact match either way, so
+# the tolerance was never on the boundary and could be changed to 1.0 (or
+# deleted) with the suite still green. A tolerance nobody tests is a nightly
+# run that starts aborting whenever one person deactivates mid-pull, or one
+# that publishes a directory missing 40% of the workspace.
+# assert_directory_complete counts RECORDS, not distinct identities, so the
+# id repeats here rather than inventing nine more — every Slack id in this repo
+# has to be one the PII guard knows is synthetic.
+_TEN = [_user("U0AAAAAAA") for _ in range(10)]
+check("9 humans against a 10-member channel is inside the tolerance",
+      _complete([_chan("general", 10, general=True)], _TEN[:9]), None)
+check("8 against 10 is outside it and aborts",
+      _complete([_chan("general", 10, general=True)], _TEN[:8]), "SystemExit")
 
 # The channel is found by `is_general`, never by name: #general can be renamed,
 # and a name lookup then silently skipped the whole cross-check.

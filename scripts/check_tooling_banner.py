@@ -53,8 +53,19 @@ def check_one(paths, marker):
         if b is not None:
             banners.setdefault(b, []).append(p)
 
-    if len(banners) <= 1:
-        n = len(next(iter(banners.values()))) if banners else 0
+    if not banners:
+        # Nobody carries it. Reported as a PASS before, which is the worst
+        # possible answer: re-word the marker in a copy edit across the nine
+        # files and the check goes on printing a success line while policing
+        # nothing. A banner with no carriers is a broken marker, not a clean
+        # tree.
+        print("ERROR: no SKILL.md carries %r — did the wording change? "
+              "Update MARKERS in this file, or restore the banner."
+              % marker, file=sys.stderr)
+        return 1
+
+    if len(banners) == 1:
+        n = len(next(iter(banners.values())))
         print("  %-24s %d file(s), all identical." % (marker.strip("> *"), n))
         return 0
 

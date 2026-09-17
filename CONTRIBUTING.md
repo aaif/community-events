@@ -62,8 +62,9 @@ pre-commit run --all-files     # run them now against the whole repo
 
 The hooks cover JSON/YAML/whitespace hygiene, Ruff (bug-focused lint of the
 helper scripts), codespell, gitleaks secret scanning, a SKILL.md frontmatter
-check, and four repo-specific guards. Each one exists because the mistake it
-catches is invisible in the output:
+check, and seven repo-specific guards — `check_no_secret_args.py`,
+`check_workflows.py` and `extract_design_tokens.py --check` alongside the four
+below. These four are the ones whose mistake is invisible in the output:
 
 - **`check_tooling_banner.py`** — three banners are deliberately copied into
   every `SKILL.md` that needs them (skills ship downstream without the repo

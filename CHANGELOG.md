@@ -36,9 +36,9 @@ Nothing yet.
   carry it), and two `gws`-dependent skills filed under "no setup required".
 
 ### Added
-- **`lib/aaif_events/redact.py`** — one redaction surface. Nine scripts carried
-  their own copy of `--redact`'s flag and helpers, and one had already lost its
-  address masker. `scripts/check_no_local_redaction.py` keeps it single.
+- **`lib/aaif_events/redact.py`** — one redaction surface. Ten scripts carried
+  their own copy of `--redact`'s flag and helpers, and they had already drifted
+  apart — one had lost its address masker entirely. `scripts/check_no_local_redaction.py` keeps it single.
 - **`lib/aaif_events/gws.py`** and **`lib/aaif_events/sheets.py`** — one `gws`
   client and one header-name lookup for the skills already coupled to `lib`.
   The previous copies had drifted into *different* retry tables and *different*

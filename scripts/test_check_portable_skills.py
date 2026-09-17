@@ -34,6 +34,29 @@ class TestDocumentedSkills(unittest.TestCase):
                          {"aaif-audit-slack", "aaif-sync-chapters"})
 
 
+class TestCompare(unittest.TestCase):
+    """The decision itself, driven with synthetic sets.
+
+    Without these, both error branches were unreachable: `main()` could be
+    replaced with `return 0` and all eight tests passed.
+    """
+
+    def test_agreement_is_no_findings(self):
+        self.assertEqual(chk.compare({"a", "b"}, {"a", "b"}), ([], []))
+
+    def test_an_undocumented_import_is_reported(self):
+        self.assertEqual(chk.compare({"a", "b"}, {"a"}), (["b"], []))
+
+    def test_a_skill_that_stopped_importing_is_reported(self):
+        self.assertEqual(chk.compare({"a"}, {"a", "b"}), ([], ["b"]))
+
+    def test_both_directions_at_once(self):
+        self.assertEqual(chk.compare({"a", "c"}, {"a", "b"}), (["c"], ["b"]))
+
+    def test_empty_on_both_sides_is_agreement(self):
+        self.assertEqual(chk.compare(set(), set()), ([], []))
+
+
 class TestRepo(unittest.TestCase):
     def setUp(self):
         self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

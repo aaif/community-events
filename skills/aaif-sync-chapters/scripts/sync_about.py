@@ -250,7 +250,7 @@ def read_roster():
     just that it is accepted today: a chapter whose organizer was later declined
     must still be rewritable, or its doc names them forever.
     """
-    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
     # first, which is the one a reader is most likely to have just added — and
     # `header_index` then aborts with "layout changed" pointing at a column that
     # is right there on the sheet. Read wide; resolve by header name.

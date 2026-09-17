@@ -15,9 +15,18 @@ than the same one:
   state in which "resolve by name" stops being safe, because the two columns
   mean different things and the reader cannot see which one it got.
 
-This module keeps the safer half of each, so the guard is not a property of
-which script you happen to be in. The dict form and the list form both survive
-because callers genuinely want both shapes; they share one lookup.
+For `header_index` this module keeps the stricter of the two: a duplicate now
+aborts everywhere. For `cell` it keeps the more forgiving one, and that is a
+deliberate trade rather than the same choice twice — every read in this repo
+goes through `values.batchGet` with the default `FORMATTED_VALUE` render, which
+returns strings, so the non-string branch is a guard against a shape that does
+not occur rather than a live data path. **If a caller ever passes
+`valueRenderOption=UNFORMATTED_VALUE`, revisit it**: numbers would then read as
+blank, and a blank resource cell means "nobody has looked yet" to the sync
+engine, which proposes and writes over it.
+
+The dict form and the list form both survive because callers genuinely want
+both shapes; they share one lookup.
 """
 
 import sys

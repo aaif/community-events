@@ -152,6 +152,36 @@ class TestJsonOut:
         with pytest.raises(gws.GwsError, match="my-sheet"):
             gws.json_out("sheets", "get", what="my-sheet")
 
+    def test_a_non_json_body_is_not_dumped_into_the_error(self, calls):
+        """The body is sheet data. A run with --redact on must not print raw
+        intake rows because one read came back wrong."""
+        calls.queue.append(FakeProc(
+            stdout='rows: Ada Lovelace, ada@x.com, Boston, '
+                   '"my friend told me about this"' * 5))
+        with pytest.raises(gws.GwsError) as exc:
+            gws.json_out("sheets", "get", what="Intake")
+        assert "Lovelace" not in str(exc.value)
+        assert "ada@x.com" not in str(exc.value)
+        assert "chars" in str(exc.value)          # the shape still reaches the reader
+        assert "Boston" not in str(exc.value)
+
+
+class TestSecretsNeverReachTheReader:
+    def test_a_credential_in_stderr_is_scrubbed_from_the_exception(self, calls):
+        calls.queue.append(FakeProc(
+            1, stderr='GOOGLE_WORKSPACE_CLI_CLIENT_SECRET=abc123notarealsecret'))
+        with pytest.raises(gws.GwsError) as exc:
+            gws.run(["gws", "x"])
+        assert "abc123notarealsecret" not in str(exc.value)
+        assert "<redacted>" in str(exc.value)
+
+    def test_a_refresh_token_in_a_retry_banner_is_scrubbed(self, calls, capsys):
+        calls.queue += [FakeProc(1, stderr='timed out "refresh_token": '
+                                           '"1//0aaaaaaaaaaaaaaaaaaaaaaaaaa"'),
+                        FakeProc(0, stdout="ok")]
+        gws.run(["gws", "x"])
+        assert "1//0aaaaaaaaaaaaaaaaaaaaaaaaaa" not in capsys.readouterr().err
+
 
 class TestValues:
     def test_rows_come_back_from_the_first_range(self, calls):
@@ -163,8 +193,23 @@ class TestValues:
         calls.queue.append(FakeProc(stdout=json.dumps({"valueRanges": [{}]})))
         assert gws.values("sheet", "Tab!A:Z") == []
 
-    def test_a_missing_valueranges_key_is_no_rows(self, calls):
+    def test_a_missing_valueranges_key_raises_rather_than_reading_as_empty(self, calls):
+        """The one that matters. A caller acts on "no rows": the keep-list
+        reader treats it as "this chapter keeps nobody" and reports every
+        keep-listed organizer for removal. A failed read must not be able to
+        produce that answer."""
         calls.queue.append(FakeProc(stdout="{}"))
+        with pytest.raises(gws.GwsError, match="valueRanges"):
+            gws.values("sheet", "Tab!A:Z")
+
+    def test_an_error_envelope_raises_too(self, calls):
+        calls.queue.append(FakeProc(stdout=json.dumps({"error": {"code": 403}})))
+        with pytest.raises(gws.GwsError, match="valueRanges"):
+            gws.values("sheet", "Tab!A:Z")
+
+    def test_an_empty_valueranges_list_is_still_no_rows(self, calls):
+        """`valueRanges: []` IS a batchGet response; it just held nothing."""
+        calls.queue.append(FakeProc(stdout=json.dumps({"valueRanges": []})))
         assert gws.values("sheet", "Tab!A:Z") == []
 
     def test_the_error_names_the_sheet_and_range(self, calls):
@@ -174,7 +219,8 @@ class TestValues:
 
 
 class TestFiles:
-    def test_download_runs_in_the_files_own_directory(self, calls, tmp_path):
+    def test_download_runs_in_the_files_own_directory(self, calls, monkeypatch,
+                                                      tmp_path):
         target = tmp_path / "sub" / "f.docx"
 
         def fake_run(cmd, **kw):
@@ -182,7 +228,11 @@ class TestFiles:
             target.write_bytes(b"PK\x03\x04")
             return FakeProc(stdout="")
 
-        gws.subprocess.run = fake_run
+        # Through monkeypatch, not a bare assignment: `gws.subprocess` is the
+        # global module, so an unrestored write hands every later test in the
+        # session a fake `subprocess.run`. That is how this suite briefly broke
+        # four tests in report_style, which shells out to git.
+        monkeypatch.setattr(gws.subprocess, "run", fake_run)
         assert gws.download("fid", str(target)) == b"PK\x03\x04"
         assert calls[0]["cwd"] == str(tmp_path / "sub")
         assert "f.docx" in calls[0]["cmd"]          # a basename, never a full path

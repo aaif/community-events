@@ -127,10 +127,11 @@ def gws_values(sheet_id, rng, retries=5):
         raise SystemExit(str(exc))
 
 
-# `header_index` here returns a dict keyed by column name — this engine's call
-# sites read `idx["City"]`. The sync engine wants the positional list, and both
-# shapes come off the same lookup in `aaif_events.sheets`.
-header_index = _sheets.header_map
+# This engine's call sites read `idx["City"]`, so they want the dict shape. It
+# is imported under its own name: calling it `header_index` here gave that one
+# identifier a list return in `aaif_events.sheets`/`sync_chapters` and a dict
+# return in this module, and `provision_channels` imports from both sides.
+header_map = _sheets.header_map
 cell = _sheets.cell
 
 
@@ -150,7 +151,7 @@ def load_config(sheet_id=None):
             "--write\nto create it." % SLACK_CONFIG_TAB)
 
     headers = [h.strip() for h in rows[0]]
-    idx = header_index(headers, SLACK_CONFIG_TAB, "Setting", "Value")
+    idx = header_map(headers, SLACK_CONFIG_TAB, "Setting", "Value")
 
     cfg = {k: [] for k in LIST_SETTINGS}
     unknown = set()
@@ -226,7 +227,7 @@ def read_chapters():
     if not rows:
         raise SystemExit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
     headers = [h.strip() for h in rows[0]]
-    idx = header_index(headers, CHAPTERS_TAB, "City", *CHANNEL_COLUMNS)
+    idx = header_map(headers, CHAPTERS_TAB, "City", *CHANNEL_COLUMNS)
 
     out, tables = [], {t: {} for t in CHANNEL_COLUMNS.values()}
     for row in rows[1:]:
@@ -251,7 +252,7 @@ def read_chapters():
 
 
 def read_intake():
-    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
     # first, which is the one a reader is most likely to have just added — and
     # `header_index` then aborts with "layout changed" pointing at a column that
     # is right there on the sheet. Read wide; resolve by header name.
@@ -259,7 +260,7 @@ def read_intake():
     if not rows:
         raise SystemExit("ABORT: intake tab %r came back empty." % INTAKE_TAB)
     headers = [h.strip() for h in rows[0]]
-    idx = header_index(headers, INTAKE_TAB, "Status", "Full name", "Email",
+    idx = header_map(headers, INTAKE_TAB, "Status", "Full name", "Email",
                        "City (Existing)", "City (New)", "Chapter")
     people, seen, dupes, saw = [], set(), 0, set()
     # Every intake row by email, ACCEPTED OR NOT. The audit's job is to explain

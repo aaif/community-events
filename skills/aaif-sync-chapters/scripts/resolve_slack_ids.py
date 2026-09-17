@@ -116,7 +116,7 @@ def colletter(n):
 
     The shared helper is 0-based (it is fed header-row indexes); this script's
     call sites count from 1, so the offset is applied here rather than at four
-    call sites. A third spelling of the same conversion is how they drift.
+    call site. A third spelling of the same conversion is how they drift.
     """
     return col_letter(n - 1)
 

@@ -78,9 +78,47 @@ class TestOffenders(unittest.TestCase):
         path = os.path.join("lib", "aaif_events", "redact.py")
         self.assertEqual(chk.offenders(path), [])
 
+    def test_a_value_import_of_the_flag_is_caught(self):
+        """The original bug wearing an import statement.
+
+        `from ... import REDACT` binds a copy: `set_redaction()` rebinds the
+        library's name and this one stays False, while the helpers imported
+        beside it keep masking.
+        """
+        src = ("from aaif_events.redact import REDACT, redact_email\n"
+               "print(REDACT, redact_email('a@x.com'))\n")
+        self.assertEqual(_names(src), ["REDACT"])
+
+    def test_the_ci_default_may_not_be_value_imported_either(self):
+        src = "from aaif_events.redact import CI_REDACT_DEFAULT\n"
+        self.assertEqual(_names(src), ["CI_REDACT_DEFAULT"])
+
+    def test_importing_the_functions_is_still_fine(self):
+        src = ("from aaif_events.redact import (add_redact_flag, redact_email,\n"
+               "                                redacting, set_redaction)\n")
+        self.assertEqual(_names(src), [])
+
+    def test_a_same_named_import_from_elsewhere_is_not_ours(self):
+        """Only this module's flag is reserved."""
+        self.assertEqual(_names("from other.module import REDACT\n"), [])
+
     def test_a_syntax_error_is_reported_not_swallowed(self):
         """An unparsable file is a file this guard could not clear."""
         self.assertEqual(_names("def broken(:\n"), ["<syntax error>"])
+
+
+class TestNotVacuous(unittest.TestCase):
+    """A guard that examines nothing must not report success."""
+
+    def test_an_empty_tree_aborts_rather_than_passing(self):
+        import tempfile
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as d:
+            os.chdir(d)
+            try:
+                self.assertEqual(chk.main(["check_no_local_redaction.py"]), 1)
+            finally:
+                os.chdir(cwd)
 
 
 class TestRepo(unittest.TestCase):

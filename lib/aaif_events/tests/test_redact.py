@@ -113,8 +113,30 @@ def test_set_redaction_announces_itself_on_stderr(capsys):
     assert "redaction ON" in capsys.readouterr().err
 
 
-def test_set_redaction_off_says_nothing():
+def test_set_redaction_off_says_nothing(capsys):
+    """The announcement is the only visible difference between "masked" and
+    "nothing to mask", so announcing on both branches would train operators to
+    ignore it. This asserted only the fixture until it was pointed out."""
+    redact.set_redaction(False)
+    assert capsys.readouterr().err == ""
     assert redact.redacting() is False
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("1", True), ("true", True), ("TRUE", True), ("yes", True),
+    ("0", False), ("false", False), ("no", False), ("", False),
+])
+def test_the_ci_parse_is_strict(value, expected, monkeypatch):
+    """`CI=0` is not CI. A local shell that exports CI for another tool must
+    not silently mask the report its operator is reading."""
+    import importlib
+    monkeypatch.setenv("CI", value)
+    reloaded = importlib.reload(redact)
+    try:
+        assert reloaded.CI_REDACT_DEFAULT is expected
+    finally:
+        monkeypatch.delenv("CI", raising=False)
+        importlib.reload(redact)
 
 
 def test_add_redact_flag_defaults_to_the_ci_value():

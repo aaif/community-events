@@ -1,14 +1,16 @@
 """One redaction surface for every ops script.
 
-Nine scripts used to carry their own byte-identical copy of these helpers, and
+Ten scripts used to carry their own near-identical copy of these helpers, and
 the duplication was deliberate: an earlier refactor moved `redact_email` into a
 sibling module but left `REDACT` and `set_redaction` behind, so `--redact`
 became a no-op for the one line that printed an address — the flag was set in
 one module and read in another, and a real address reached a CI log on a public
 repo.
 
-That bug is a property of *splitting* the flag from the helpers, not of sharing
-them. Here the flag and every function that reads it live in the same module, so
+The copies had already drifted apart — one had no address masker at all, one
+masked document text to a length instead of a sentinel, and every `--help`
+string differed. That bug is a property of *splitting* the flag from the
+helpers, not of sharing them. Here the flag and every function that reads it live in the same module, so
 a caller that does
 
     from aaif_events.redact import add_redact_flag, redact_email, set_redaction
@@ -37,8 +39,15 @@ CI_REDACT_DEFAULT = os.environ.get("CI", "").strip().lower() in ("1", "true", "y
 
 #: The live flag. Read at call time by every helper below, so a test may set it
 #: directly (`redact.REDACT = True`) instead of going through `set_redaction`,
-#: which prints. Never shadow this in a consumer module.
-REDACT = False
+#: which prints. Never shadow this in a consumer module, and never import it by
+#: value — `from ... import REDACT` binds a copy that `set_redaction` can never
+#: reach. `check_no_local_redaction.py` refuses both.
+#:
+#: It starts at the CI default rather than at `False` so the guarantee holds
+#: from import: anything printed before `main()` wires the flag — an argparse
+#: error, a config abort — is masked under CI too. `set_redaction` then only
+#: ever relaxes it, in response to an explicit `--no-redact`.
+REDACT = CI_REDACT_DEFAULT
 
 
 def redacting():

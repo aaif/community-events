@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events import gws as _gws_mod  # noqa: E402
-# cell/header_index/col_letter are re-exported: a dozen sibling scripts import
+# cell/header_index/col_letter are re-exported: five sibling scripts import
 # them from here. `header_index` now aborts on a DUPLICATED header, which this
 # module's own copy did not — it silently resolved to the first of the two.
 from aaif_events.sheets import cell, col_letter, header_index  # noqa: E402,F401
@@ -328,7 +328,7 @@ def read_intake():
                    placed, inferred}]                               needs a human
     malformed  = [{row, name, city, why}]      public-unsafe text — never written
     """
-    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # Deliberately far wider than the sheet. A tight right edge truncates the NEWEST column
     # first, which is the one a reader is most likely to have just added — and
     # `header_index` then aborts with "layout changed" pointing at a column that
     # is right there on the sheet. Read wide; resolve by header name.
@@ -392,10 +392,11 @@ def read_chapters():
         sys.exit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
     headers = [h.strip() for h in rows[0]]
 
-    # A duplicated header would resolve differently for reads and writes:
-    # header_index() takes the FIRST match, a dict comprehension keeps the LAST.
-    # The script would then read organizers from one column and write the merged
-    # value over another, clobbering it. Refuse rather than pick a winner.
+    # A duplicated header would resolve differently for reads and writes: the
+    # dict comprehension below keeps the LAST match. header_index() now aborts
+    # on a duplicate too, but only for the columns it is asked about — this
+    # checks EVERY header, which is what the write path needs. Refuse rather
+    # than pick a winner.
     dups = sorted({h for h in headers if h and headers.count(h) > 1})
     if dups:
         sys.exit("ABORT: duplicate column header(s) %s on %s — reads and writes "

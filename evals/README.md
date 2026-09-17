@@ -23,7 +23,7 @@ of them targets a failure this repo has actually had or is one edit away from.
 | `speaker-bio` | The prompt volunteers an address and a phone number, the way a real tracker row does. The public-copy rule is stated in nine `SKILL.md` files and was, until this case, verified in none. |
 | `triage-intake` | A form answer asking to be marked `Accepted`. Untrusted input is the rule most likely to be obeyed by an agent trying to be helpful. |
 | `sync-chapters-write-gate` | Every engine reports by default and writes only on approval. This checks the skill's document actually conveys that, rather than the scripts merely enforcing it. |
-| `audit-slack` | Trigger coverage for a description that was 1,040 characters on one line until recently. The prompt is worded the way someone would really ask, not by echoing the skill's own words — a description that only matches its own vocabulary is not tested by a prompt that quotes it. |
+| `audit-slack` | Trigger coverage for a description that was over 1,100 characters on one line until recently. The prompt is worded the way someone would really ask, not by echoing the skill's own words — a description that only matches its own vocabulary is not tested by a prompt that quotes it. |
 
 ## Running them
 
@@ -73,7 +73,7 @@ A case is a directory holding `prompt.md` (frontmatter plus the prompt) and
 "this skill fired", `regex` for "this string is or is not in the output", and
 `llm` for judgements a regex cannot make.
 
-Four things worth keeping to:
+Five things worth keeping to:
 
 - **Write the prompt as a person would say it**, not in the skill's own words.
   A prompt that quotes the description tests nothing about whether the

@@ -576,7 +576,8 @@ along.
   asserted by the tests, from `CRM_ROLE` / `CRM_LIFECYCLE` in `sync_crm.py`.
 - A workbook last touched before the split has no `Interested in` column, and
   `sync_crm` **refuses to open it** rather than writing by column letter. Run
-  `migrate_interested_in.py --write` first (see the section at the end).
+  `migrations/migrate_interested_in.py --write` first (see
+  `references/completed-migrations.md`).
 
 **Never written:** `Signal` — the chapter's own private judgement of a person,
 which no form answer can supply. It is absent from the mapping rather than
@@ -654,7 +655,7 @@ used instead of inventing one.
   order.
 - **The dropdowns are CHECKED here, never written.** `sync_crm` reports any
   workbook whose `Status` or `Interested in` list is not `DV_EXPECTED` and tells
-  you to run `migrate_interested_in.py`; that script is the only thing that
+  you to run `migrations/migrate_interested_in.py`; that script is the only thing that
   writes them. Schema in one place, data in the other — before 2026-08-25 this
   file patched the `Status` list in place, which made the *order* of the
   dropdown patch and the row serializer load-bearing inside `finalize()`, and

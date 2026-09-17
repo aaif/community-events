@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 
+from .report_style import redact as _scrub
 from .slack import scrubbed_env
 
 #: Substrings that mean "the API was sick, ask again". The union of the two
@@ -72,6 +73,15 @@ def run(cmd, retries=RETRIES, cwd=None):
     Retries are announced on stderr: a silent 30-second backoff looks like a
     hang, and a run that succeeds on attempt 4 should still leave a trace that
     the API was sick.
+
+    Child output is scrubbed before it reaches stderr or an exception. `gws`
+    prints its environment or a request dump on some failures, and
+    `scrubbed_env` deliberately KEEPS `GOOGLE_WORKSPACE_CLI_*` because `gws`
+    needs it — so the OAuth client secret and refresh token are exactly what
+    such a dump contains. Three callers turn the exception straight into
+    `sys.exit(str(exc))`, and an operator pastes that into an issue on a public
+    repo. `slides_export` already scrubbed for this reason; this module is now
+    the single path every script reaches Google through.
     """
     attempts = max(1, retries)
     for i in range(attempts):
@@ -82,10 +92,15 @@ def run(cmd, retries=RETRIES, cwd=None):
         msg = (proc.stderr or "") + (proc.stdout or "")
         if i < attempts - 1 and transient(msg):
             print("  gws call failed (attempt %d/%d), retrying in %ds: %s"
-                  % (i + 1, attempts, 2 * (i + 1), msg.strip()[:120]), file=sys.stderr)
+                  % (i + 1, attempts, 2 * (i + 1), _scrub(msg.strip(), 120)),
+                  file=sys.stderr)
             time.sleep(2 * (i + 1))
             continue
-        raise GwsError("gws failed (%s): %s" % (proc.returncode, msg.strip()[:400]))
+        raise GwsError("gws failed (%s): %s"
+                       % (proc.returncode, _scrub(msg.strip())))
+    # Unreachable: the final iteration fails the `i < attempts - 1` guard and
+    # raises above. Kept as a guard against a future edit to the loop, which is
+    # the only way a caller could otherwise receive None.
     raise GwsError("gws exhausted %d attempt(s): %s" % (attempts, " ".join(cmd[:4])))
 
 
@@ -120,16 +135,36 @@ def json_out(*args, params=None, body=None, retries=RETRIES, what=None):
     except json.JSONDecodeError as exc:
         # Every other failure names what was being read; a stray non-JSON line
         # on stdout should not be the one that dies as a bare traceback.
-        raise GwsError("gws returned non-JSON output for %s (%s): %s"
-                       % (label, exc, text[:400]))
+        # The body is sheet data — intake rows, names, form free-text — and it
+        # is outside the `--redact` surface, so a run masking every report line
+        # would otherwise print raw rows on this one error. Not even a prefix
+        # is safe: a leading row is the likeliest thing to be there. Length and
+        # first character are enough to tell an HTML login page from truncated
+        # JSON, and the operator can re-run to see the body locally.
+        raise GwsError("gws returned non-JSON output for %s (%s): %d chars "
+                       "beginning %r — re-run to see it"
+                       % (label, exc, len(text), text[:1]))
 
 
 def values(sheet_id, rng, retries=RETRIES):
-    """Read one A1 range, returning a list of rows (missing range -> `[]`)."""
+    """Read one A1 range as a list of rows. An empty range is `[]`.
+
+    A response that is not a batchGet response RAISES rather than reading as
+    zero rows. The distinction is the whole point: callers act on "no rows" —
+    `prune_organizers.read_keeplist` treats it as "this chapter has no
+    keep-list" and every keep-listed organizer is then reported for removal.
+    Turning a failed read into that answer is how a live roster becomes an
+    empty one, and the version this replaced raised (`res["valueRanges"]`)
+    precisely so it could not happen.
+    """
     res = json_out("sheets", "spreadsheets", "values", "batchGet",
                    params={"spreadsheetId": sheet_id, "ranges": [rng]},
                    retries=retries, what="%s!%s" % (sheet_id, rng))
-    ranges = res.get("valueRanges") or [{}]
+    if not isinstance(res, dict) or "valueRanges" not in res:
+        raise GwsError("gws: no valueRanges reading %s!%s — this is not a "
+                       "batchGet response, and must not read as zero rows"
+                       % (sheet_id, rng))
+    ranges = res["valueRanges"] or [{}]
     return ranges[0].get("values", [])
 
 

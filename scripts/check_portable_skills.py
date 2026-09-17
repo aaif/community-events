@@ -12,8 +12,11 @@ import at a time, and the README's list of affected skills had drifted to five
 where eight were coupled. Someone reading it would zip one of the other three
 and find out at runtime.
 
-This compares the two: the skills that actually import `aaif_events` from a
-non-test script, against the skills the README names. Either list moving without
+This compares the two: the skills whose non-test scripts MENTION
+`aaif_events`, against the skills the README names. A substring scan, not the
+AST pass its sibling guard uses — a comment explaining why a script avoids the
+library would read as coupling. Every hit today is a real import; tighten this
+the first time that stops being true. Either list moving without
 the other is the failure. Adding an import is still allowed — it just has to be
 written down in the same commit.
 
@@ -38,7 +41,7 @@ MARKER_RE = re.compile(r"\s+".join(re.escape(w) for w in MARKER.split()))
 
 
 def coupled_skills():
-    """Skills with a non-test script importing `aaif_events`."""
+    """Skills whose non-test scripts mention `aaif_events` (see the caveat above)."""
     out = set()
     for path in glob.glob("skills/*/scripts/*.py") + glob.glob("skills/*/migrations/*.py"):
         if os.path.basename(path).startswith("test_"):
@@ -65,10 +68,20 @@ def documented_skills(text=None):
     return set(re.findall(r"`(aaif-[a-z-]+)`", text[i:end if end > 0 else len(text)]))
 
 
+def compare(actual, documented):
+    """(undocumented, stale) — the whole decision, drivable without the repo.
+
+    Split out of `main()` because `main()` reading the real tree could only
+    ever be tested against a repo that is already consistent: both error
+    branches were unreachable from a test, and `main()` could be replaced with
+    `return 0` with the suite still green.
+    """
+    return sorted(actual - documented), sorted(documented - actual)
+
+
 def main():
     actual, documented = coupled_skills(), documented_skills()
-    undocumented = sorted(actual - documented)
-    stale = sorted(documented - actual)
+    undocumented, stale = compare(actual, documented)
     if not undocumented and not stale:
         print("check_portable_skills: %d skill(s) import aaif_events, all documented."
               % len(actual))
