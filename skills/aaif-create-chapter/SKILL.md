@@ -272,6 +272,55 @@ There is **no undo** beyond Drive's revision history, and `--write` replaces
 every template the scan finds, in place — a plan run prints that count. Read one
 first.
 
+## Backfilling the projects roster
+
+`scripts/backfill_projects.py` brings the **`THE PROJECTS` roster** on each
+deck's About slide up to the projects AAIF actually hosts. The decks were drawn
+against four (`MCP · goose · AGENTS.md · agentgateway`); aaif.io/projects now
+lists six, with **A2A** and **Agent Router** added. The roster lives in
+`PROJECTS` at the top of the script — when the foundation takes on another
+project, edit that tuple and sweep again. Nothing watches for drift on its own,
+and the durable fix is the TemplateCity edit the sweep makes: the script exists
+to bring the copies already in Drive up to it.
+
+The roster is found **structurally** — the `THE PROJECTS` eyebrow, then the text
+shape directly below it on the same left edge — so a deck an organizer had
+already half-corrected is still found. Two guards sit on top of that:
+
+- A roster naming anything that is not one of the projects is a chapter's **own
+  wording**, so it is left untouched and reported. Adding a project therefore
+  never overwrites a hand-written line.
+- Six names do not fit the box four were drawn in. The box is **widened** to fit
+  but never past a gutter in front of whatever is to its right (on the About
+  slide, the `OPEN / BY DEFAULT` stat), so it cannot collide. If even the full
+  width is too narrow the type is stepped down instead and the file is flagged —
+  a shrunk roster is a design decision an operator should see.
+
+Scope, the `ATTENTION` block and the estate-coverage checks come from
+`scripts/deck_estate.py`, shared with `backfill_host_footer.py`: templates only,
+all chapters plus the online series, and a run that never reaches
+**TemplateCity** exits non-zero because new chapters would still be minted with
+the old roster. A deck already naming the six is not re-uploaded, so **re-running
+is a no-op**, and a plan run does not even repack the decks it would change.
+
+```bash
+# Plan (default) — show every template's roster, writes nothing:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py
+
+# Apply across the estate:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py --write
+
+# One chapter (matches anywhere in the Drive path, case-insensitive):
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py \
+    --chapter "New York City" --write
+
+# Test the XML engine on a local file, no Drive at all:
+python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py \
+    --rewrite-local ./Slides.pptx
+```
+
+There is **no undo** beyond Drive's revision history. Read a plan run first.
+
 ## Conforming the estate to the design system
 
 `scripts/restyle_design_system.py` is the sweep that keeps every deck, tracker

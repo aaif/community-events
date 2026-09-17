@@ -7,6 +7,15 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
 ## [Unreleased]
 
 ### Changed
+- **The About slide's `THE PROJECTS` roster names all six hosted projects.** The
+  decks were drawn when AAIF hosted four (`MCP · goose · AGENTS.md ·
+  agentgateway`); aaif.io/projects now lists six, with **A2A** and **Agent
+  Router** added, and a roster an audience can check against the website mid-talk
+  is one that has to be right. The line stays one line: its box is widened to
+  hold the two extra names, stopping short of the `OPEN / BY DEFAULT` stat beside
+  it. The templates live in Drive, so a chapter sees this only once the backfill
+  below has swept it, and new chapters only once the sweep has reached
+  TemplateCity.
 - **Every deck, tracker and CRM in the Drive estate now follows the AAIF design
   system.** The HTML/PDF side already read `design/aaif-tokens.css`; the OOXML
   side never had a seam, so the brand lived in those files as literal font names
@@ -91,6 +100,19 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   TemplateCity.
 
 ### Added
+- **`skills/aaif-create-chapter/scripts/deck_estate.py`** is where the estate
+  walk, the per-file download/rewrite/upload contract and the slide-XML helpers
+  now live. They were written inside `backfill_host_footer.py`, which made a
+  script named after a footer the home of the whole estate's Drive id and of
+  every later sweep's primitives; a sweep can now be retired without taking the
+  next one with it. Both backfills import it, and the estate-coverage checks —
+  the lines that stop a renamed folder reading as a clean estate — exist once.
+- **`skills/aaif-create-chapter/scripts/backfill_projects.py`** applies that
+  roster to templates that already exist — all chapters, the online series, and
+  TemplateCity. Read-only by default; `--write` applies, a deck already naming
+  the six is not re-uploaded, and a chapter that wrote its own roster is skipped
+  and reported rather than overwritten. The roster itself is the `PROJECTS`
+  tuple at the top of the script: edit it and sweep again when the list changes.
 - **`skills/aaif-create-chapter/scripts/backfill_host_footer.py`** applies that
   rework to templates that already exist — all chapters, the online series, and
   the shared Templates folder. Read-only by default; `--write` applies, and a
