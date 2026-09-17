@@ -49,6 +49,43 @@ class TestHeaderIndex:
             sheets.header_index(HEADERS, "Chapters", "Nope")
 
 
+class TestFirstOf:
+    """The opt-out for a column that is duplicated, benign and read-only.
+
+    Verified against the live intake sheet on 2026-09-17: one column there
+    carries the same header twice, both within the range the engines have
+    always read, and the engine that resolves it only ever prints the value.
+    Aborting every run over it would trade a real outage for an ambiguity
+    nothing acts on.
+    """
+
+    def test_an_opted_in_duplicate_resolves_to_the_first(self):
+        assert sheets.header_index(["A", "B", "A"], "Tab", "A",
+                                   first_of=("A",)) == [0]
+
+    def test_it_warns_so_the_sheet_still_gets_fixed(self, capsys):
+        sheets.header_index(["A", "B", "A"], "Tab", "A", first_of=("A",))
+        err = capsys.readouterr().err
+        assert "appears 2 times" in err
+        assert "A, C" in err          # both columns named, so it can be found
+
+    def test_a_duplicate_NOT_opted_in_still_aborts(self):
+        """The opt-out is per column, not a mode."""
+        with pytest.raises(SystemExit, match="appears twice"):
+            sheets.header_index(["A", "B", "A"], "Tab", "A", first_of=("B",))
+
+    def test_opting_in_a_column_that_is_not_duplicated_changes_nothing(self):
+        assert sheets.header_index(["A", "B"], "Tab", "B", first_of=("B",)) == [1]
+
+    def test_a_missing_column_still_aborts_even_when_opted_in(self):
+        with pytest.raises(SystemExit, match="not found"):
+            sheets.header_index(["A"], "Tab", "Z", first_of=("Z",))
+
+    def test_header_map_takes_it_too(self):
+        assert sheets.header_map(["A", "B", "A"], "Tab", "A",
+                                 first_of=("A",)) == {"A": 0}
+
+
 class TestHeaderMap:
     def test_the_same_lookup_keyed_by_name(self):
         assert sheets.header_map(HEADERS, "Tab", "City", "Status") == {"City": 1, "Status": 3}

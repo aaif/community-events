@@ -44,10 +44,32 @@ def cell(row, i):
     return row[i].strip() if isinstance(row[i], str) else ""
 
 
-def _lookup(headers, sheet, names):
-    """Resolve each name to its column index, aborting if that is ambiguous."""
+def _lookup(headers, sheet, names, first_of=()):
+    """Resolve each name to its column index, aborting if that is ambiguous.
+
+    `first_of` names columns where a duplicate is known, benign and READ-ONLY:
+    those resolve to the first match with a warning instead of aborting. It
+    exists because a live sheet already carries one — the intake's
+    `Run events before?` sits in two columns, a form-version artefact — and
+    that column is only ever printed in a report, never written back. Aborting
+    every run over a column nobody writes trades a real outage for a
+    theoretical ambiguity.
+
+    It is deliberately per-column and opt-in. The default stays fatal, because
+    the case this guard exists for is a WRITE resolving to a different column
+    than the read that fed it.
+    """
     out = []
     for name in names:
+        if headers.count(name) > 1 and name in first_of:
+            at = [i for i, h in enumerate(headers) if h == name]
+            print("  warning: %r appears %d times on %s (columns %s) — reading "
+                  "the first. This column is read-only here; fix the sheet when "
+                  "convenient."
+                  % (name, len(at), sheet,
+                     ", ".join(col_letter(i) for i in at)), file=sys.stderr)
+            out.append(at[0])
+            continue
         if headers.count(name) > 1:
             sys.exit("ABORT: %r appears twice on %s — reads would be ambiguous."
                      % (name, sheet))
@@ -58,18 +80,18 @@ def _lookup(headers, sheet, names):
     return out
 
 
-def header_index(headers, sheet, *names):
+def header_index(headers, sheet, *names, first_of=()):
     """Column indexes for `names`, in the order asked, as a list.
 
     For the positional style: `i_city, i_country = header_index(h, tab, "City",
-    "Country")`.
+    "Country")`. See `_lookup` for `first_of`.
     """
-    return _lookup(headers, sheet, names)
+    return _lookup(headers, sheet, names, first_of)
 
 
-def header_map(headers, sheet, *names):
+def header_map(headers, sheet, *names, first_of=()):
     """The same lookup keyed by column name, for the `idx["City"]` style."""
-    return dict(zip(names, _lookup(headers, sheet, names)))
+    return dict(zip(names, _lookup(headers, sheet, names, first_of)))
 
 
 def col_letter(i):

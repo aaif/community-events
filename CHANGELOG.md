@@ -27,6 +27,17 @@ Nothing yet.
 - **`resolve_slack_ids.py --apply` wrote to the sheet without `--write`**, so
   whether an invocation writes could not be answered by reading the command
   line. It now refuses and prints the corrected command.
+- **The new duplicate-header abort would have broken `sync_chapters` on every
+  live run.** Verified against the live intake sheet 2026-09-17: one column
+  there carries the same header twice, and the sync engine resolves that
+  header. Both copies predate this branch and sit inside the range the engines
+  have always read, so the abort — not the widened ranges — is what surfaced
+  it. That column is read-only (its value is printed in a report, never written
+  back), so `header_index` grew a per-column `first_of` opt-out: it resolves to
+  the first match and warns, naming both columns. Every other column stays
+  fatal on a duplicate, which is the case that would land a write in the wrong
+  column. All eleven live header lookups in the repo were then re-run and
+  resolve.
 - **`sync_chapters` had no duplicate-header guard.** Its header lookup resolved
   silently to the first of two identically named columns; the audit skill's copy
   had aborted on this all along. Both now use the shared lookup, which aborts.

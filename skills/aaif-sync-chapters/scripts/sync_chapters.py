@@ -335,9 +335,15 @@ def read_intake():
     rows = get_values(INTAKE_ID, "%s!A:AZ" % INTAKE_TAB)
     if not rows:
         sys.exit("ABORT: intake tab %r came back empty." % INTAKE_TAB)
+    # `Run events before?` is on the live sheet TWICE (a form-version artefact).
+    # It is read-only here — it is printed in the unresolved-row report and
+    # never written — so it resolves to the first match with a warning rather
+    # than aborting the engine. Every other column here stays fatal on a
+    # duplicate, which is the case that would land a write in the wrong column.
     i_status, i_name, i_g, i_h, i_events, i_why = header_index(
         rows[0], INTAKE_TAB, "Status", "Full name", "City (Existing)", "City (New)",
-        "Run events before?", "Why organize / ties")
+        "Run events before?", "Why organize / ties",
+        first_of=("Run events before?",))
 
     entries, unresolved, dupes, malformed = [], [], [], []
     counts = {s: 0 for s in SYNC_STATUSES}

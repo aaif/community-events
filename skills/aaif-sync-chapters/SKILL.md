@@ -70,6 +70,13 @@ Two ordering constraints that are not negotiable and not obvious:
 A new chapter additionally needs **`aaif-create-chapter`** for its Drive folder
 and assets, and its Luma page created by hand, both before step 7 can find them.
 
+> **A duplicated column header aborts the engine, on purpose** — a read and a
+> write resolving to different columns is how a cell gets clobbered. One
+> exception is wired in by name: the intake's `Run events before?` exists twice
+> and is only ever printed, so it resolves to the first with a warning. If an
+> engine aborts naming a column you can see on the sheet, look for a second
+> column with the same header rather than assuming the layout moved.
+
 ## Identity columns (`resolve_slack_ids.py`, `track_drive_email.py`)
 
 One person reaches this estate under up to three different addresses: the one
