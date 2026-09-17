@@ -6,6 +6,10 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.6.0] — 2026-09-17
+
 ### Fixed
 - **A worked example in `aaif-community-pulse` had been pasted from a real
   posted update**, naming real organizers in a public repo. Replaced with the
