@@ -13,16 +13,33 @@ and builder-first.**
 
 **House voice:** share the practice, never sell the product. Specific over grand,
 builder-to-builder. Signal, not numbers.
-Never include emails, phone numbers, door codes, or attendee names that are not already public in any post, slide, or message.
+> **Public-copy rule.** Everything these skills write gets published — a post,
+> a slide, an event page, a DM. Never include an email address, a phone number,
+> a door code, or an attendee's name that is not already public. A name on an
+> intake row is not public. Where a detail is needed but not publishable,
+> describe it ("the venue sends door access to everyone who RSVPs") instead of
+> printing it.
 
-**Standard footer (always include).** Close with the two standing AAIF attendee
-links — these are defaults on every event page:
-- Code of Conduct — https://events.linuxfoundation.org/about/code-of-conduct
-- Privacy Policy — https://www.linuxfoundation.org/legal/privacy-policy
+> **Standard footer (always include).** Close with one quiet line carrying the
+> two standing AAIF attendee links — Code of Conduct
+> (https://events.linuxfoundation.org/about/code-of-conduct) and Privacy Policy
+> (https://www.linuxfoundation.org/legal/privacy-policy). It sits outside any
+> word count given above, and it is a default: leave it out only if the user
+> says to. Running your own chapter? Swap both URLs in every skill carrying
+> this banner.
 
 One quiet line is enough; it sits below the vendor-neutral line, not in the body.
 
 ## Input (from the event tracker)
+
+> **If the details were not pasted, fetch them — do not ask for a paste and
+> stop.** The event's tracker entry is what these fields come from, and
+> `aaif-event-status` reads it: run that skill for the chapter or series and
+> take the entry for the event named. `aaif-create-event` and
+> `aaif-update-event` know the same layout if the event is being written in the
+> same session. Ask the user only for what the tracker genuinely does not hold,
+> and name the missing fields rather than asking again in general.
+
 - Event : `[EVENT TITLE] ([SERIES]) — [THEME]`
 - When : `[DATE & TIME]`   Where: `[VENUE / CITY]`
 - Speaker : `[SPEAKER + TALK]`   Demos: `[DEMO COUNT]`
