@@ -293,15 +293,27 @@ already half-corrected is still found. Two guards sit on top of that:
 - Six names do not fit the box four were drawn in. The box is **widened** to fit
   but never past a gutter in front of whatever is to its right (on the About
   slide, the `OPEN / BY DEFAULT` stat), so it cannot collide. If even the full
-  width is too narrow the type is stepped down instead and the file is flagged —
-  a shrunk roster is a design decision an operator should see.
+  width is too narrow the type steps down; and a roster that still overruns —
+  because it is already at the smallest size the script will use, or because its
+  run declares no size to rewrite — is reported as **overflowing** rather than
+  quietly written. A shrunk or colliding roster is a design decision an operator
+  should see.
 
-Scope, the `ATTENTION` block and the estate-coverage checks come from
+Scope and the estate-coverage lines of the `ATTENTION` block come from
 `scripts/deck_estate.py`, shared with `backfill_host_footer.py`: templates only,
-all chapters plus the online series, and a run that never reaches
-**TemplateCity** exits non-zero because new chapters would still be minted with
-the old roster. A deck already naming the six is not re-uploaded, so **re-running
-is a no-op**, and a plan run does not even repack the decks it would change.
+across all chapters, the online series and the shared Templates folder. A run
+that never reaches **TemplateCity** — or that reaches it and finds no roster in
+it — says so and exits non-zero, because new chapters would otherwise still be
+minted with the old list. So does a run where an unusual share of templates
+showed no roster at all: the estate is one cloned design, so that is the matcher
+having stopped matching, not good news.
+
+Exit codes are `0` (nothing left to do), `1` (a plan run with work outstanding)
+and `2` (something a human must read: a failure, a skipped roster, an overflow,
+or coverage the scan could not achieve). A deck already naming the six is not
+re-uploaded, so **re-running is a no-op**; a plan run does not repack the decks
+it would change, which also means it does not exercise the repack — only
+`--write` does.
 
 ```bash
 # Plan (default) — show every template's roster, writes nothing:

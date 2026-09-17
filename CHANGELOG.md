@@ -108,8 +108,8 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   next one with it. Both backfills import it, and the estate-coverage checks —
   the lines that stop a renamed folder reading as a clean estate — exist once.
 - **`skills/aaif-create-chapter/scripts/backfill_projects.py`** applies that
-  roster to templates that already exist — all chapters, the online series, and
-  TemplateCity. Read-only by default; `--write` applies, a deck already naming
+  roster to templates that already exist — all chapters, the online series and
+  the shared Templates folder, a set that includes TemplateCity. Read-only by default; `--write` applies, a deck already naming
   the six is not re-uploaded, and a chapter that wrote its own roster is skipped
   and reported rather than overwritten. The roster itself is the `PROJECTS`
   tuple at the top of the script: edit it and sweep again when the list changes.

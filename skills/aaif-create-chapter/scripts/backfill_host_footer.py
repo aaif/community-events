@@ -56,7 +56,7 @@ Usage:
   # Apply to the whole estate:
   python backfill_host_footer.py --write
 
-  # One chapter (matches the Drive folder name, case-insensitive):
+  # One chapter (matches anywhere in the Drive path, case-insensitive):
   python backfill_host_footer.py --chapter "New York City" --write
 
   # Test the XML engine on a local .pptx, no Drive at all:
@@ -74,7 +74,7 @@ from deck_estate import (                                    # noqa: F401 — re
     COMMUNITY_ROOT, CHAPTERS_FOLDER, TEMPLATE_CITY, TEMPLATE_FOLDER_RE, SERIES_FOLDER,
     EMU_PER_PT, OFF_RE, EXT_RE, SHAPE_RE, TEXT_RE, GEOM_RE, SZ_RE, SLIDE_RE,
     Box, Shape, shape_text, shapes, font_size, text_width, move, resize, retext,
-    walk_templates, coverage_attention, process)
+    splice, walk_templates, coverage_attention, process)
 
 # Deck constants sampled from the templates themselves, NOT design-system tokens:
 # MUTED is the grey the decks' own HOSTED BY / WITH label runs use (it is not
@@ -307,14 +307,8 @@ def rework_slide(xml):
             edits[i] = body
             x += w + gap
 
-    out, cursor = [], 0
-    for i in sorted(edits):
-        start, end = shp[i].span
-        out.append(xml[cursor:start])
-        out.append(edits[i])
-        cursor = end
-    out.append(xml[cursor:])
-    return "".join(out), len(chips) + len(strays), host is not None or had_lockup
+    return (splice(xml, shp, edits), len(chips) + len(strays),
+            host is not None or had_lockup)
 
 
 def rework_pptx(src, dst):
@@ -379,12 +373,15 @@ def main():
     if args.rework_local:
         return rework_local(args.rework_local)
 
+    if args.jobs < 1:
+        sys.exit("ABORT: --jobs must be at least 1 (got %d)." % args.jobs)
+
     print("Scanning the Community Events tree for event templates...")
-    entries, chapters, series, with_decks = walk_templates(COMMUNITY_ROOT,
-                                                            max(args.jobs, 8))
+    scan = walk_templates(COMMUNITY_ROOT, max(args.jobs, 8))
+    entries = scan.templates
     if args.chapter:
         needle = args.chapter.lower()
-        entries = [e for e in entries if needle in e["path"].lower()]
+        entries = [e for e in entries if needle in e.path.lower()]
     if not entries:
         print("No templates matched." if args.chapter else
               "No templates found — has the Community Events tree moved?")
@@ -398,16 +395,17 @@ def main():
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for entry, report, err in pool.map(
                 lambda e: process(e, tmpdir, args.write, rework_pptx), entries):
+            report = report or {}
             if err is not None:
                 failed += 1
-                print("  FAILED  %s\n            %s" % (entry["path"], err))
+                print("  FAILED  %s\n            %s" % (entry.path, err))
             elif report:
                 changed += 1
                 missing = sorted(p for p, (_n, host) in report.items() if not host)
                 if missing:
-                    no_lockup.append((entry["path"], missing))
+                    no_lockup.append((entry.path, missing))
                 print("  %s  %s  (%s)%s"
-                      % ("REWORKED" if args.write else "would rework", entry["path"],
+                      % ("REWORKED" if args.write else "would rework", entry.path,
                          ", ".join("%s:%d chips %s" % (p.rsplit("/", 1)[-1], n,
                                                        "+lockup" if host else "NO LOCKUP")
                                    for p, (n, host) in sorted(report.items())),
@@ -418,15 +416,16 @@ def main():
     print("\n%d reworked, %d already clean or footerless, %d failed."
           % (changed, clean, failed))
 
-    # A folder-name match that stops matching looks exactly like a clean estate,
-    # so name what the scan could not see instead of letting it read as done.
+    # Everything that must be read before this run counts as finished: what the
+    # rework left half-done, and — on a full-estate run — what the scan could
+    # not see, since a folder-name match that stops matching looks exactly like
+    # a clean estate.
     attention = ["%s: boxes removed but no lockup drawn on %s"
                  % (path, ", ".join(s.rsplit("/", 1)[-1] for s in slides))
                  for path, slides in no_lockup]
     if not args.chapter:
         attention += coverage_attention(
-            entries, chapters, series, with_decks,
-            "new chapters would still be cloned from the OLD footer")
+            scan, "new chapters would still be cloned from the OLD footer")
     if attention:
         print("\nATTENTION — the sweep did not cover the whole estate:")
         for line in attention:

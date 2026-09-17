@@ -14,8 +14,8 @@ instead would miss a deck an organizer had already half-corrected, and matching
 
 Two guards, because this rewrites copy a human may have touched:
 
-- A roster whose items are not all names on ROSTER's own list is **left alone
-  and reported**. That is a chapter that wrote its own line (a local project, a
+- A roster whose items are not all on `KNOWN` — `PROJECTS` plus the long forms
+  of the same projects — is **left alone and reported**. That is a chapter that wrote its own line (a local project, a
   different ordering with commentary), and overwriting it would be a silent
   edit of someone's words. Adding a project to `PROJECTS` therefore never
   clobbers a hand-written line — it skips it and tells you where to look.
@@ -23,9 +23,10 @@ Two guards, because this rewrites copy a human may have touched:
   drawn in. The box is widened to fit, but never past the gutter in front of
   whatever is to its right (on the About slide, the `OPEN / BY DEFAULT` stat), so
   a widened roster cannot collide with the stat column. If even that is too
-  narrow, the run is stepped down in point size instead and the file is flagged,
-  because a shrunk roster is a design decision an operator should see, not a
-  silent one.
+  narrow, the run is stepped down in point size instead, and a roster that
+  still does not fit at the smallest size this script will use is reported as
+  **overflowing** rather than quietly written — a roster that is shrunk, or that
+  will collide, is a design decision an operator should see.
 
 Widths are estimated, not measured — there is no font engine here. `PROP_EM` is
 a deliberate over-estimate of Instrument Sans Bold's average advance (measured
@@ -39,7 +40,7 @@ walk and reported on by its estate-coverage checks — the same ones
 that must be hit: miss it and every chapter created afterwards is minted
 four-projects-old.
 
-The durable fix is the **TemplateCity edit**; this script is what brings the ~100
+The durable fix is the **TemplateCity edit**; this script is what brings the
 copies already out there up to it. Nothing detects drift on its own — when the
 foundation takes on another project, edit `PROJECTS` and run a plan sweep.
 
@@ -54,13 +55,13 @@ Usage:
   # Apply to the whole estate:
   python backfill_projects.py --write
 
-  # One chapter (matches the Drive folder name, case-insensitive):
+  # One chapter (matches anywhere in the Drive path, case-insensitive):
   python backfill_projects.py --chapter "New York City" --write
 
   # Test the XML engine on a local .pptx, no Drive at all:
   python backfill_projects.py --rewrite-local ./Slides.pptx
 """
-import argparse, os, re, shutil, sys, tempfile, zipfile
+import argparse, collections, os, re, shutil, sys, tempfile, zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -85,20 +86,35 @@ LABEL = "THE PROJECTS"
 #: template's gap is 274320 EMU (0.3"); half an inch of slack covers a deck
 #: whose spacing was nudged, without reaching the line *below* the roster.
 MAX_LABEL_GAP = 457200
+#: How far the roster's left edge may differ from the eyebrow's and still count
+#: as the same column: 0.02". Google Slides rewrites geometry on every open, so
+#: an exact compare reads a rounding nudge as "this deck has no roster".
+LEFT_TOLERANCE = 18288
 #: Clear space kept in front of whatever sits to the roster's right: 0.2",
 #: which is what the six-project line leaves before the About slide's OPEN stat
 #: at the template's own geometry. Widening this to a quarter inch pushes that
-#: line one estimated character over the limit and steps the whole estate's
-#: roster down a point size for no visible gain — the estimate is wide by ~4%
-#: already (see PROP_EM), so the space actually rendered is far bigger.
+#: line just past the limit — by a fraction of one estimated character — and so
+#: steps the whole estate's roster down a point size for no visible gain; the
+#: estimate is wide by ~4% already (see PROP_EM), so the rendered gap is bigger
+#: than either number suggests.
 GUTTER = 182880
 #: Average advance of Instrument Sans Bold as a fraction of the point size,
 #: rounded UP from ~0.50 measured on a Slides render. See the docstring.
 PROP_EM = 0.52
 #: Point sizes (in hundredths) the roster may be stepped down to when even the
 #: full width will not hold it, largest first. Below the founding-members line's
-#: 900 the roster stops reading as the stronger of the two, so that is the floor.
+#: 900 the roster stops reading as the stronger of the two, so that is the floor
+#: — for a roster that starts above it. Nothing steps a roster UP, so a roster
+#: already at or below 900 has no candidate but its own size, and one that still
+#: overruns is reported rather than resized (see fit).
 FALLBACK_SIZES = (1300, 1200, 1100, 1000, 900)
+
+#: The statuses rewrite_slide may return, and the subset that means "this slide's
+#: new XML must be kept". Declared once: the "did it change" test is made in four
+#: places, and a status added later without updating all four silently drops a
+#: rewritten part from the upload while the summary prints "already current".
+STATUSES = ("none", "orphan", "current", "custom", "updated", "shrunk")
+CHANGED = {"updated", "shrunk"}
 
 SZ_ATTR_RE = re.compile(r'\bsz="\d+"')
 SLD_SZ_RE = re.compile(r'<p:sldSz[^>]*\bcx="(\d+)"')
@@ -107,6 +123,20 @@ SLD_SZ_RE = re.compile(r'<p:sldSz[^>]*\bcx="(\d+)"')
 #: available_cx() depends on it, and that fallback only applies to a roster with
 #: nothing to its right at all.
 DEFAULT_SLIDE_CX = 9144000
+
+#: Exit codes. 0 is "nothing left to do"; a plan run that found work is not a
+#: failure but must not read as done; anything the scan could not cover — or any
+#: file a human has to look at — is the loud one.
+EXIT_PENDING, EXIT_COVERAGE = 1, 2
+#: The template that carries the About slide. Every chapter folder also holds
+#: hero, square-hero and carousel decks, which have no About slide and are
+#: rightly reported as having no roster — so they are the wrong denominator for
+#: the two "has the matcher stopped matching?" checks below, and the wrong file
+#: to judge TemplateCity by.
+ROSTER_DECK = "Slides.pptx"
+#: Above this share of ROSTER_DECK files showing no roster at all, the matcher
+#: is the suspect rather than the estate: they are all clones of one design.
+UNRECOGNISED_RATIO = 0.2
 
 
 # ----------------------------------------------------------------------------
@@ -125,24 +155,38 @@ def find_roster(shp):
     starts on the same left edge. Both conditions matter: "nearest below" alone
     would pick up the founding-members line on a deck whose roster had been
     deleted, and re-rostering that line would replace a sentence about members
-    with a list of projects."""
+    with a list of projects.
+
+    The left edge is matched within LEFT_TOLERANCE rather than exactly: Google
+    Slides rewrites geometry when anyone opens a deck, and an exact EMU compare
+    turns a roster nudged by a rounding error into "this deck has no roster" —
+    which the caller would otherwise count as a clean file."""
     label = next((i for i, s in enumerate(shp)
                   if s.box and s.text.upper() == LABEL), None)
     if label is None:
         return None
     lab = shp[label].box
     below = [i for i, s in enumerate(shp)
-             if s.text and s.box and s.box.x == lab.x
+             if s.text and s.box and abs(s.box.x - lab.x) <= LEFT_TOLERANCE
              and lab.y < s.box.y <= lab.y + MAX_LABEL_GAP]
     return min(below, key=lambda i: shp[i].box.y) if below else None
 
 
+def has_label(shp):
+    """Whether the `THE PROJECTS` eyebrow is on this slide at all. What tells an
+    About slide whose roster moved out of reach (report it — the matcher has
+    stopped matching) from a slide that simply is not the About slide."""
+    return any(s.box and s.text.upper() == LABEL for s in shp)
+
+
 def roster_items(text):
-    """The roster read as a list of project names, or None if it is not a
-    separated list at all. Both the template's "·" and a plain comma count — a
-    deck re-typed by hand may use either."""
+    """The roster read as a list of names, or [] if it is not a list at all.
+    Both the template's "·" and a plain comma count — a deck re-typed by hand
+    may use either. A single name IS a list of one: a chapter that trimmed the
+    line to "MCP" wrote a roster, not prose, and reporting it as someone's own
+    wording sends the operator looking for words that are not there."""
     parts = [p.strip() for p in re.split(r"[·,]", text)]
-    return parts if all(parts) and len(parts) > 1 else None
+    return parts if parts and all(parts) else []
 
 
 def is_stock(text):
@@ -156,8 +200,13 @@ def available_cx(shp, roster, slide_cx):
     """How WIDE the roster may grow: up to the left edge of the nearest shape
     sharing any part of its horizontal band, less one gutter. Falls back to the
     slide's right edge when the band is clear all the way across. A width, not
-    an x — the two differ by the roster's own left inset, and confusing them
-    lets a roster grow one inset past the shape it must clear."""
+    an x — the two differ by the roster's own left edge (`box.x`), and confusing
+    them lets a roster grow one whole left-offset past the shape it must clear.
+
+    Shapes with no geometry of their own are invisible here: their position is
+    inherited from a layout this script does not resolve. rewrite_slide counts
+    them (see de.unmeasured) so a widened roster says what it could not see,
+    rather than reporting empty space it never measured."""
     box = shp[roster].box
     right = min((s.box.x for i, s in enumerate(shp)
                  if i != roster and s.box and s.box.x > box.x
@@ -167,52 +216,90 @@ def available_cx(shp, roster, slide_cx):
 
 
 def fit(sz, limit_cx):
-    """(size, width) for the roster inside `limit_cx`: its own size when it fits,
-    else the largest fallback that does, else the floor. Never returns a width
-    wider than `limit_cx` unless nothing fits, which the caller reports."""
+    """(size, width, overflows) for the roster inside `limit_cx`.
+
+    Its own size when it fits, else the largest fallback that does, else the
+    smallest size it tried — the FALLBACK_SIZES floor when the roster started
+    above it, and the roster's own size when it started at or below it, because
+    nothing steps a roster UP.
+
+    `overflows` is returned rather than left for the caller to infer from "did
+    the size change": a roster already at the smallest size changes no size and
+    still overruns, which is exactly the case an operator must be told about."""
     cands = (sz,) + tuple(s for s in FALLBACK_SIZES if s < sz)
     for cand in cands:
         w = text_width(ROSTER, cand)
         if w <= limit_cx:
-            return cand, w
-    return cands[-1], w
+            return cand, w, False
+    return cands[-1], w, True
 
 
 def rewrite_slide(xml, slide_cx=DEFAULT_SLIDE_CX):
-    """Return (new xml, status, detail).
+    """Return (new xml, status, detail). `status` is one of STATUSES:
 
-    status is one of: "none" (no roster on this slide), "current" (already the
-    six, already fitting), "custom" (a hand-written roster, left alone),
-    "updated", or "shrunk" (updated, but only by stepping the type down)."""
+    - "none"    — not the About slide: no `THE PROJECTS` eyebrow on it.
+    - "orphan"  — the eyebrow is here but no roster was found under it. The
+                  matcher has stopped matching, which looks identical to a clean
+                  file unless it is reported, so the caller must surface it.
+    - "current" — already the six, already fitting.
+    - "custom"  — a hand-written roster, left alone.
+    - "updated" / "shrunk" — rewritten, the second only by stepping the type
+                  down. Both keep the new XML (see CHANGED)."""
     shp = de.shapes(xml)
     roster = find_roster(shp)
     if roster is None:
-        return xml, "none", ""
+        return xml, ("orphan" if has_label(shp) else "none"), ""
     old = shp[roster].text
     if not is_stock(old):
         return xml, "custom", old
     box = shp[roster].box
-    sz = de.font_size(shp[roster].body)
+    # default=None, not the 1100 fallback: a run that declares no size inherits
+    # one, and there is no sz attribute to rewrite on it — so a step-down would
+    # report a size change that never happened. Such a roster is measured at the
+    # fallback but never resized; see the `resizable` guard below.
+    sz = de.font_size(shp[roster].body, default=None)
+    resizable = sz is not None
+    sz = sz if resizable else de.font_size(shp[roster].body)
     limit = available_cx(shp, roster, slide_cx)
-    new_sz, width = fit(sz, limit)
+    new_sz, width, overflows = fit(sz, limit)
+    if not resizable:
+        # No sz attribute to rewrite, so the ladder is not available: the line
+        # is measured at the size it actually inherits, and whether THAT fits
+        # is the only question left.
+        new_sz = sz
+        width = text_width(ROSTER, sz)
+        overflows = width > limit
     # Never narrow the box: it is the drawn design when the line already fits,
     # and shrinking it to the text would re-wrap a deck whose roster someone
     # later lengthens by a word.
     new_cx = max(box.cx, min(width, max(limit, 0)))
-    if old == ROSTER and new_sz == sz and new_cx == box.cx:
+    shrunk = new_sz != sz
+    if old == ROSTER and not shrunk and new_cx == box.cx and not overflows:
         return xml, "current", old
 
-    shrunk = new_sz != sz
     body = de.retext(shp[roster].body, ROSTER)
     if shrunk:
         body = SZ_ATTR_RE.sub('sz="%d"' % new_sz, body)
     if new_cx != box.cx:
         body = de.resize(body, new_cx)
-    start, end = shp[roster].span
-    detail = "%s -> %s" % (old, ROSTER)
+
+    if old == ROSTER:
+        detail = "%s (roster unchanged; the box was)" % ROSTER
+    else:
+        detail = "%s -> %s" % (old, ROSTER)
     if shrunk:
         detail += "  (%dpt -> %dpt to fit)" % (sz / 100, new_sz / 100)
-    return (xml[:start] + body + xml[end:],
+    if overflows:
+        detail += ("  OVERFLOWS its band by %d EMU at %dpt — it will collide with "
+                   "the shape to its right%s"
+                   % (width - limit, new_sz / 100,
+                      "" if resizable else "; its run declares no size, so this "
+                                           "script cannot step it down"))
+    blind = de.unmeasured(shp)
+    if blind and new_cx != box.cx:
+        detail += ("  (widened past %d shape(s) whose geometry is inherited and "
+                   "could not be measured)" % blind)
+    return (de.splice(xml, shp, {roster: body}),
             "shrunk" if shrunk else "updated", detail)
 
 
@@ -230,18 +317,30 @@ def rewrite_pptx(src, dst, repack=True):
         # The real slide width, not the default: available_cx() measures the
         # right margin from it, and a deck authored at another size would get a
         # margin from the wrong edge.
+        slide_cx, why = DEFAULT_SLIDE_CX, ""
         try:
             m = SLD_SZ_RE.search(zin.read("ppt/presentation.xml").decode("utf-8"))
-            slide_cx = int(m.group(1)) if m else DEFAULT_SLIDE_CX
+            if m:
+                slide_cx = int(m.group(1))
+            else:
+                why = "ppt/presentation.xml declares no <p:sldSz cx=...>"
         except KeyError:
-            slide_cx = DEFAULT_SLIDE_CX
+            why = "the package has no ppt/presentation.xml"
+        if why:
+            # Reported, not just defaulted: a 4:3 deck measured against a 10in
+            # slide is granted 2.5in of room past its own right edge, and the
+            # roster runs off the slide with nothing in the output to say so.
+            report["<presentation>"] = ("assumed-width",
+                "%s — the right margin was measured from the default %d EMU (10in); "
+                "if this deck is not that wide the roster may have been widened past "
+                "its slide edge" % (why, DEFAULT_SLIDE_CX))
         for name in zin.namelist():
             if not de.SLIDE_RE.match(name):
                 continue
             new, status, detail = rewrite_slide(zin.read(name).decode("utf-8"), slide_cx)
             if status != "none":
                 report[name] = (status, detail)
-            if status in ("updated", "shrunk"):
+            if status in CHANGED:
                 new_parts[name] = new.encode("utf-8")
     if new_parts and repack:
         # create_chapter's repacker: it preserves each member's compression and
@@ -252,6 +351,51 @@ def rewrite_pptx(src, dst, repack=True):
     return report
 
 
+def classify(report):
+    """What one file's report means, as one word: "changed", "custom", "orphan",
+    "current" or "clean". Every consumer of a status goes through here, so a
+    status added to STATUSES without a rule lands in "unknown" and is printed,
+    rather than falling into "already current" and disappearing."""
+    statuses = {s for s, _d in report.values()}
+    unknown = statuses - set(STATUSES) - {"assumed-width"}
+    if unknown:
+        return "unknown"
+    if statuses & CHANGED:
+        return "changed"
+    for kind in ("custom", "orphan"):
+        if kind in statuses:
+            return kind
+    return "current" if statuses else "clean"
+
+
+def notices(report):
+    """The (status, detail) pairs a human has to read even on a good run."""
+    return [(s, d) for s, d in report.values()
+            if s in ("custom", "orphan", "assumed-width") or "OVERFLOWS" in d
+            or "to fit)" in d]
+
+
+def estate_attention(counts, city):
+    """The lines that say the *matcher* — not the estate — may be what changed.
+
+    `coverage_attention` checks which folders the scan reached; these two check
+    what it found once it got there, which is the half that looks identical to a
+    clean run: a deck whose eyebrow was retyped reports "no roster here", and a
+    hundred of them report a finished sweep."""
+    out = []
+    if city["scanned"] and not city["roster"]:
+        out.append("%s's %s was scanned but no roster was recognised in it — the "
+                   "eyebrow text or the shape geometry has changed, and new chapters "
+                   "will still be minted with the old roster"
+                   % (de.TEMPLATE_CITY, ROSTER_DECK))
+    if counts["decks"] and counts["deck_clean"] > UNRECOGNISED_RATIO * counts["decks"]:
+        out.append("%d of %d %s showed no About roster at all — above the %d%% this "
+                   "one design should ever produce; has the eyebrow or the layout "
+                   "changed?" % (counts["deck_clean"], counts["decks"], ROSTER_DECK,
+                                 UNRECOGNISED_RATIO * 100))
+    return out
+
+
 def rewrite_local(path):
     """--rewrite-local: run the XML engine on one file, no Drive access at all."""
     dst = re.sub(r"\.pptx$", "", path) + "-projects.pptx"
@@ -259,11 +403,14 @@ def rewrite_local(path):
     if not report:
         print("%s: no THE PROJECTS roster found — nothing to rewrite" % path)
         return 0
-    if any(s in ("updated", "shrunk") for s, _d in report.values()):
+    if any(st in CHANGED for st, _d in report.values()):
         print("%s -> %s" % (path, dst))
     for part, (status, detail) in sorted(report.items()):
         print("   %s: %s%s" % (part, status, "  " + detail if detail else ""))
-    return 1 if any(s == "custom" for s, _d in report.values()) else 0
+    # Non-zero for anything a human has to look at, not only a custom roster:
+    # this is the path an author runs before a sweep, so an overflow or an
+    # orphaned eyebrow has to fail here too, or the sweep is the first to know.
+    return 1 if notices(report) else 0
 
 
 def main():
@@ -282,75 +429,97 @@ def main():
 
     if args.rewrite_local:
         return rewrite_local(args.rewrite_local)
+    if args.jobs < 1:
+        sys.exit("ABORT: --jobs must be at least 1 (got %d)." % args.jobs)
 
     print("Scanning the Community Events tree for event templates...")
-    entries, chapters, series, with_decks = de.walk_templates(de.COMMUNITY_ROOT,
-                                                              max(args.jobs, 8))
+    scan = de.walk_templates(de.COMMUNITY_ROOT, max(args.jobs, 8))
+    entries = scan.templates
     if args.chapter:
         needle = args.chapter.lower()
-        entries = [e for e in entries if needle in e["path"].lower()]
+        entries = [e for e in entries if needle in e.path.lower()]
     if not entries:
         print("No templates matched." if args.chapter else
               "No templates found — has the Community Events tree moved?")
-        return 1
+        return EXIT_COVERAGE
     print("Found %d template file(s).%s\n"
-          % (len(entries), "" if args.write else "  PLAN ONLY — nothing will be written."))
+          % (len(entries), "" if args.write else
+             "  PLAN ONLY — nothing will be written, and the repack step is not "
+             "exercised (only --write repacks)."))
     print("Roster: %s\n" % ROSTER)
 
-    changed = current = clean = failed = 0
-    custom, shrunk = [], []
+    counts = collections.Counter()
+    # `city` counts how many of TemplateCity's own copies of the roster deck
+    # were scanned and how many held a roster, so "its roster moved" is told
+    # from "it was never reached" (coverage_attention's job) and from "that
+    # deck has no About slide by design".
+    flagged, city = [], collections.Counter()
     with tempfile.TemporaryDirectory() as tmpdir, \
             ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for entry, report, err in pool.map(
-                lambda e: de.process(e, tmpdir, args.write,
-                                     lambda src, dst: rewrite_pptx(src, dst, args.write)),
-                entries):
-            if err is not None:
-                failed += 1
-                print("  FAILED  %s\n            %s" % (entry["path"], err))
-                continue
-            statuses = {s for s, _d in report.values()}
-            for part, (status, detail) in sorted(report.items()):
-                if status == "custom":
-                    custom.append((entry["path"], part, detail))
-                elif status == "shrunk":
-                    shrunk.append((entry["path"], part, detail))
-            if statuses & {"updated", "shrunk"}:
-                changed += 1
-                print("  %s  %s  (%s)"
-                      % ("REWRITTEN" if args.write else "would rewrite", entry["path"],
-                         "; ".join("%s: %s" % (p.rsplit("/", 1)[-1], d)
-                                   for p, (s, d) in sorted(report.items())
-                                   if s in ("updated", "shrunk"))))
-            elif "custom" in statuses:
-                print("  SKIPPED   %s  (own roster: %s)"
-                      % (entry["path"], "; ".join(d for s, d in report.values()
-                                                  if s == "custom")))
-            elif report:
-                current += 1
-            else:
-                clean += 1
+        results = pool.map(
+            lambda e: de.process(e, tmpdir, args.write,
+                                 lambda src, dst: rewrite_pptx(src, dst, args.write)),
+            entries)
+        try:
+            for entry, report, err in results:
+                report = report or {}
+                if err is not None:
+                    counts["failed"] += 1
+                    print("  FAILED  %s\n            %s" % (entry.path, err))
+                    continue
+                kind = classify(report)
+                counts[kind] += 1
+                for status, detail in notices(report):
+                    flagged.append((entry.path, status, detail))
+                if entry.name == ROSTER_DECK:
+                    counts["decks"] += 1
+                    counts["deck_clean"] += kind == "clean"
+                    if entry.owner == de.TEMPLATE_CITY:
+                        city["scanned"] += 1
+                        city["roster"] += kind != "clean"
+                if kind == "changed":
+                    print("  %s  %s  (%s)"
+                          % ("REWRITTEN" if args.write else "would rewrite", entry.path,
+                             "; ".join("%s: %s" % (p.rsplit("/", 1)[-1], d)
+                                       for p, (st, d) in sorted(report.items())
+                                       if st in CHANGED)))
+                elif kind in ("custom", "orphan", "unknown"):
+                    print("  %-9s %s  (%s)"
+                          % (kind.upper(), entry.path,
+                             "; ".join("%s: %s" % (st, d) for st, d in report.values())))
+        finally:
+            # Even a run that dies mid-sweep has already uploaded files, and the
+            # summary and ATTENTION block are the only record of how far it got,
+            # so they are printed before the exception leaves this function.
+            print("\n%d rewritten, %d already current, %d without an About roster, "
+                  "%d with their own roster, %d orphaned, %d failed."
+                  % (counts["changed"], counts["current"], counts["clean"],
+                     counts["custom"], counts["orphan"], counts["failed"]))
 
-    print("\n%d rewritten, %d already current, %d without an About roster, %d failed."
-          % (changed, current, clean, failed))
-
-    # A folder-name match that stops matching looks exactly like a clean estate,
-    # so name what the scan could not see instead of letting it read as done.
-    attention = ["%s (%s): left alone — %s" % (p, part.rsplit("/", 1)[-1], d)
-                 for p, part, d in custom]
-    attention += ["%s (%s): %s" % (p, part.rsplit("/", 1)[-1], d)
-                  for p, part, d in shrunk]
+    attention = ["%s: %s — %s" % (path, status, detail)
+                 for path, status, detail in flagged]
+    attention += estate_attention(counts, city)
     if not args.chapter:
+        # A folder-name match that stops matching looks exactly like a clean
+        # estate, so name what the scan could not see rather than letting it
+        # read as done.
         attention += de.coverage_attention(
-            entries, chapters, series, with_decks,
-            "new chapters would still be minted with the old roster")
+            scan, "new chapters would still be minted with the old roster")
     if attention:
         print("\nATTENTION — read before calling this done:")
         for line in attention:
             print("  - %s" % line)
-    if changed and not args.write:
+    if counts["changed"] and not args.write:
         print("Re-run with --write to apply.")
-    return 1 if (failed or attention) else 0
+
+    # Three outcomes, three codes, so a wrapper can tell them apart: a sweep
+    # that could not cover the estate is not the same as one with work left to
+    # do, and neither is the same as an advisory an operator has already read.
+    if counts["failed"] or attention:
+        return EXIT_COVERAGE
+    if counts["changed"] and not args.write:
+        return EXIT_PENDING
+    return 0
 
 
 if __name__ == "__main__":
