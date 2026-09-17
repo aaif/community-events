@@ -48,14 +48,12 @@ Usage:
 import argparse
 import json
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "..", "lib"))
 
-from aaif_events.slack import scrubbed_env  # noqa: E402
 # SOURCE / H_EMAIL / H_DRIVE_EMAIL / NO_GRANT are owned by sync_access, which
 # READS this column to decide where a grant goes — the sentinel's exact spelling
 # is load-bearing in both scripts, so there is one definition of it.
@@ -71,25 +69,39 @@ from sync_crm import (TEMPLATE_FOLDER, list_chapter_folders,  # noqa: E402
 # The flag and the helpers it governs come from ONE module on purpose: a helper
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
+from aaif_events import gws as gwsmod  # noqa: E402
+from aaif_events.sheets import col_letter  # noqa: E402
 from aaif_events.redact import add_redact_flag, redact_email, set_redaction  # noqa: E402
 
 
 def gws(args):
-    out = subprocess.run(["gws"] + args, capture_output=True, text=True,
-                         env=scrubbed_env())
-    if out.returncode != 0:
-        sys.exit("gws error: %s...\n%s" % (" ".join(args[:4]), out.stderr.strip()[:400]))
-    txt = out.stdout
+    """Run a prepared `gws` argument list and parse whatever JSON comes back.
+
+    A thin boundary over `aaif_events.gws.run`, keeping two behaviours this
+    script relies on: it exits with a sentence rather than a traceback, and an
+    empty body is `{}` rather than an error, because a values `update` answers
+    with nothing useful.
+
+    This used to be a bare `subprocess.run` with no retry handling, so a single
+    intermittent 503 — which the sync engines have always ridden out — failed
+    the whole run. It now retries on the shared table.
+    """
+    try:
+        txt = gwsmod.clean_stdout(gwsmod.run(["gws"] + args))
+    except gwsmod.GwsError as exc:
+        sys.exit(str(exc))
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
     return json.loads(txt[i:]) if i >= 0 else {}
 
 
 def colletter(n):
-    s = ""
-    while n:
-        n, r = divmod(n - 1, 26)
-        s = chr(65 + r) + s
-    return s
+    """1-based column number -> A1 letter.
+
+    The shared helper is 0-based (it is fed header-row indexes); this script's
+    call sites count from 1, so the offset is applied here rather than at four
+    call sites. A third spelling of the same conversion is how they drift.
+    """
+    return col_letter(n - 1)
 
 
 def grant_by_person():

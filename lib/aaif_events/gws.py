@@ -1,0 +1,153 @@
+"""One `gws` subprocess client for every script that reaches Google.
+
+Everything in this repo talks to Google Workspace by shelling out to the `gws`
+CLI (a third-party client, not an official Google tool). Four scripts had grown
+their own wrapper around that subprocess: two near-identical full versions with
+retries and backoff, and two weaker ones with no retry handling at all, so
+whether a run survived a 503 depended on which script you happened to be in.
+
+The two full copies had also drifted. One retried on `Internal error` and the
+other did not, which is the quiet kind of divergence: the run just fails, and
+nothing says it would have succeeded under the sibling's table.
+
+Three layers, each the one below plus a little:
+
+    run(...)        -> stdout, with retries and a scrubbed environment
+    json_out(...)   -> that stdout parsed as JSON
+    values(...)     -> one A1 range read as a list of rows
+
+Errors raise `GwsError`. Callers that want to abort with a friendlier message
+catch it at their own boundary — an audit engine exits, a sync engine lets it
+propagate — because that choice is about the caller, not about `gws`.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+from .slack import scrubbed_env
+
+#: Substrings that mean "the API was sick, ask again". The union of the two
+#: tables that existed before; `Internal error` came from only one of them, and
+#: its absence in the other is the drift this module removes.
+TRANSIENT = ("timed out", "internalError", "Internal error", "HTTP request failed",
+             "Connection reset", "Connection refused", "Connection aborted",
+             "temporarily", "rateLimit", "userRateLimit", "backendError")
+
+#: Bare `500`/`502` as substrings match any range or quota id that happens to
+#: contain those digits, so a permanent error would burn the full backoff before
+#: failing. Match them only as standalone HTTP statuses.
+#:
+#: Both inherited copies excluded an adjacent *digit* only, and carried a
+#: comment claiming `A500:K500 exceeds grid limits` was handled — it was not.
+#: `500` there is preceded by `A` and followed by `:`, so it matched, and that
+#: permanent error retried five times over 20 seconds before failing anyway.
+#: Letters are excluded on both sides now, which is what the comment always
+#: said.
+TRANSIENT_STATUS = re.compile(r"(?<![0-9A-Za-z])(?:429|500|502|503|504)(?![0-9A-Za-z])")
+
+#: Default attempts, including the first. Backoff is 2s, 4s, 6s, 8s.
+RETRIES = 5
+
+
+class GwsError(RuntimeError):
+    """A `gws` call failed, or returned something that was not the JSON asked for."""
+
+
+def transient(msg):
+    """True when a failure message looks retryable rather than final."""
+    return any(k in msg for k in TRANSIENT) or bool(TRANSIENT_STATUS.search(msg))
+
+
+def run(cmd, retries=RETRIES, cwd=None):
+    """Run a `gws` command line, returning stdout.
+
+    `cwd` exists because `gws` rejects `--output`/`--upload` paths outside its
+    working directory, so the file helpers below run it from the file's own
+    directory and pass a bare basename.
+
+    Retries are announced on stderr: a silent 30-second backoff looks like a
+    hang, and a run that succeeds on attempt 4 should still leave a trace that
+    the API was sick.
+    """
+    attempts = max(1, retries)
+    for i in range(attempts):
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
+                              env=scrubbed_env())
+        if proc.returncode == 0:
+            return proc.stdout
+        msg = (proc.stderr or "") + (proc.stdout or "")
+        if i < attempts - 1 and transient(msg):
+            print("  gws call failed (attempt %d/%d), retrying in %ds: %s"
+                  % (i + 1, attempts, 2 * (i + 1), msg.strip()[:120]), file=sys.stderr)
+            time.sleep(2 * (i + 1))
+            continue
+        raise GwsError("gws failed (%s): %s" % (proc.returncode, msg.strip()[:400]))
+    raise GwsError("gws exhausted %d attempt(s): %s" % (attempts, " ".join(cmd[:4])))
+
+
+def clean_stdout(out):
+    """`gws` stdout minus the keyring notice, ready to parse.
+
+    Split on `"\\n"` only — NOT `splitlines()`, which also splits on U+2028 and
+    friends *inside* cell values, corrupting the JSON when the lines are
+    rejoined. A sheet holding a form answer with a line separator in it is not
+    hypothetical here.
+    """
+    return "\n".join(ln for ln in out.split("\n") if "keyring backend" not in ln).strip()
+
+
+def json_out(*args, params=None, body=None, retries=RETRIES, what=None):
+    """Run `gws <args>` and parse its stdout as JSON.
+
+    `what` names the thing being fetched for the error message; it defaults to
+    the command line, which is usually enough to find the call.
+    """
+    cmd = ["gws", *args]
+    if params is not None:
+        cmd += ["--params", json.dumps(params)]
+    if body is not None:
+        cmd += ["--json", json.dumps(body)]
+    label = what or " ".join(args)
+    text = clean_stdout(run(cmd, retries=retries))
+    if not text:
+        raise GwsError("gws produced no JSON output for: %s" % label)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        # Every other failure names what was being read; a stray non-JSON line
+        # on stdout should not be the one that dies as a bare traceback.
+        raise GwsError("gws returned non-JSON output for %s (%s): %s"
+                       % (label, exc, text[:400]))
+
+
+def values(sheet_id, rng, retries=RETRIES):
+    """Read one A1 range, returning a list of rows (missing range -> `[]`)."""
+    res = json_out("sheets", "spreadsheets", "values", "batchGet",
+                   params={"spreadsheetId": sheet_id, "ranges": [rng]},
+                   retries=retries, what="%s!%s" % (sheet_id, rng))
+    ranges = res.get("valueRanges") or [{}]
+    return ranges[0].get("values", [])
+
+
+def download(file_id, path):
+    """Fetch a Drive file's bytes to `path` and return them."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    run(["gws", "drive", "files", "get", "--params",
+         json.dumps({"fileId": file_id, "supportsAllDrives": True, "alt": "media"}),
+         "--output", os.path.basename(path)], cwd=os.path.dirname(path) or ".")
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def upload(file_id, path, raw, content_type):
+    """Replace a Drive file's content with `raw` (staged at `path` for gws)."""
+    with open(path, "wb") as fh:
+        fh.write(raw)
+    run(["gws", "drive", "files", "update", "--params",
+         json.dumps({"fileId": file_id, "supportsAllDrives": True}),
+         "--upload", os.path.basename(path), "--upload-content-type", content_type],
+        cwd=os.path.dirname(path) or ".")

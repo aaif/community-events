@@ -13,12 +13,9 @@ any non-read method.
 import argparse
 import datetime as dt
 import html
-import json
 import os
 import re
-import subprocess
 import sys
-import time
 import unicodedata
 from collections import defaultdict
 from typing import NamedTuple
@@ -30,10 +27,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                 "..", "..", "aaif-sync-chapters", "scripts"))
 
+from aaif_events import gws as gwsmod  # noqa: E402
+from aaif_events import sheets as _sheets  # noqa: E402
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import (Slack, SlackError, channels,  # noqa: E402
-                               lookup_emails, members, scrubbed_env)
+                               lookup_emails, members)
 import resolve_slack_ids as rsi  # noqa: E402
 
 read_cache, write_cache, cache_age = jsoncache.read, jsoncache.write, jsoncache.age
@@ -111,71 +110,28 @@ e = html.escape
 # Sheets, via the gws CLI (the repo's only sanctioned Drive path)
 # --------------------------------------------------------------------------
 
-#: Same retry/JSON pattern as aaif-sync-chapters — the Sheets API returns
-#: intermittent 500s, and a one-shot read turns a blip into a failed audit.
-_TRANSIENT = ("timed out", "internalError", "Internal error", "HTTP request failed",
-              "Connection reset", "Connection refused", "Connection aborted",
-              "temporarily", "rateLimit", "userRateLimit", "backendError")
-# Bare "500"/"502" as substrings match any range or quota id containing those
-# digits ("A500:K500 exceeds grid limits"), so a permanent error would burn the
-# full backoff. Match them only as standalone HTTP statuses.
-_TRANSIENT_STATUS = re.compile(r"(?<![0-9])(?:429|500|502|503|504)(?![0-9])")
-
-
-def _transient(msg):
-    return any(k in msg for k in _TRANSIENT) or bool(_TRANSIENT_STATUS.search(msg))
-
-
 def gws_values(sheet_id, rng, retries=5):
-    """Read one A1 range through `gws`, returning a list of rows."""
-    cmd = ["gws", "sheets", "spreadsheets", "values", "batchGet",
-           "--params", json.dumps({"spreadsheetId": sheet_id, "ranges": [rng]})]
-    for attempt in range(retries):
-        # gws never needs the Slack/Luma tokens; don't let a child inherit them.
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=scrubbed_env())
-        if proc.returncode == 0:
-            break
-        msg = (proc.stderr or "") + (proc.stdout or "")
-        if attempt < retries - 1 and _transient(msg):
-            # Announce it: a silent backoff looks like a hang, and a run that
-            # succeeds on attempt 4 should still leave a trace the API was sick.
-            print("  gws read failed (attempt %d/%d), retrying in %ds: %s"
-                  % (attempt + 1, retries, 2 * (attempt + 1), msg.strip()[:120]),
-                  file=sys.stderr)
-            time.sleep(2 * (attempt + 1))
-            continue
-        raise SystemExit("gws failed reading %s!%s:\n%s" % (sheet_id, rng, msg.strip()[:400]))
-    # Split on "\n" only — NOT splitlines(), which also splits on U+2028 and
-    # friends INSIDE cell values, corrupting the JSON when rejoined.
-    text = "\n".join(ln for ln in proc.stdout.split("\n")
-                     if "keyring backend" not in ln).strip()
-    if not text:
-        raise SystemExit("gws produced no JSON reading %s!%s" % (sheet_id, rng))
+    """Read one A1 range through `gws`, returning a list of rows.
+
+    A thin boundary over `aaif_events.gws.values`: the retry/backoff plumbing
+    is shared, and only the failure *style* is this engine's — an audit that
+    cannot read its own sheet should exit with a sentence, not a traceback.
+
+    This module used to carry its own copy of that plumbing, and the two copies
+    had drifted: this one retried on `Internal error` and the sync engine's did
+    not, so the same sick API failed one run and not the other.
+    """
     try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        # Every other gws failure names the sheet and range; a stray non-JSON
-        # line on stdout should not be the one that dies as a bare traceback.
-        raise SystemExit("gws returned non-JSON reading %s!%s (%s). First 400 chars:\n%s"
-                         % (sheet_id, rng, exc, text[:400]))
-    ranges = parsed.get("valueRanges") or [{}]
-    return ranges[0].get("values", [])
+        return gwsmod.values(sheet_id, rng, retries=retries)
+    except gwsmod.GwsError as exc:
+        raise SystemExit(str(exc))
 
 
-def cell(row, i):
-    return (row[i] if i < len(row) else "").strip()
-
-
-def header_index(headers, tab, *names):
-    idx = {}
-    for name in names:
-        if headers.count(name) > 1:
-            raise SystemExit("ABORT: %r appears twice in %s — reads would be ambiguous."
-                             % (name, tab))
-        if name not in headers:
-            raise SystemExit("ABORT: %s has no %r column." % (tab, name))
-        idx[name] = headers.index(name)
-    return idx
+# `header_index` here returns a dict keyed by column name — this engine's call
+# sites read `idx["City"]`. The sync engine wants the positional list, and both
+# shapes come off the same lookup in `aaif_events.sheets`.
+header_index = _sheets.header_map
+cell = _sheets.cell
 
 
 def load_config(sheet_id=None):

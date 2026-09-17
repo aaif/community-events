@@ -300,7 +300,10 @@ check("MLOps history untouched on new rows", vals[LAYOUT["index"]["MLOps Communi
 
 # --- gws_json survives U+2028 inside JSON string values (the splitlines() bug) ---
 raw = '{"a": "line1\u2028line2"}\n'
-with mock.patch.object(sync_chapters.subprocess, "run",
+# Kept here as well as in the library's own tests: this is the path the feed
+# actually reads through, and a cell holding a line separator is real data.
+from aaif_events import gws as _gwsmod  # noqa: E402
+with mock.patch.object(_gwsmod.subprocess, "run",
                        return_value=mock.Mock(returncode=0, stdout=raw)):
     check("gws_json keeps U+2028 inside values", sync_chapters.gws_json("sheets", "get"),
           {"a": "line1\u2028line2"})
@@ -547,22 +550,26 @@ check("the malformed cell and free text print as [redacted]",
 check("the redacted report still names the city", "Boston" in _text, True)
 
 # --- gws subprocesses never inherit the Slack/Luma secrets --------------------
+# The scrubbing itself is `aaif_events.gws`'s, and tested there. What is pinned
+# here is that this module's `gws_json` really is that client — an alias could
+# be pointed somewhere else in a refactor, and nothing else would notice.
+check("gws_json is the shared client, not a local copy",
+      (sync_chapters.gws_json is _gwsmod.json_out,
+       sync_chapters.get_values is _gwsmod.values), (True, True))
 with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "xoxb-secret",
                                   "AAIF_SLACK_READ_TOKEN": "xoxp-secret",
                                   "LUMA_API_KEY": "luma-secret", "KEEP_ME": "1"}):
-    _env = sync_chapters._scrubbed_env()
-    check("_scrubbed_env drops the Slack tokens and the Luma key",
-          [k for k in _env if k.startswith("AAIF_SLACK_") or k == "LUMA_API_KEY"], [])
-    check("_scrubbed_env keeps everything else", _env.get("KEEP_ME"), "1")
     _seen = {}
     def _fake_run(cmd, **kw):
         _seen["env"] = kw.get("env")
         return mock.Mock(returncode=0, stdout="{}")
-    with mock.patch.object(sync_chapters.subprocess, "run", _fake_run):
+    with mock.patch.object(_gwsmod.subprocess, "run", _fake_run):
         sync_chapters.gws_json("sheets", "get")
     check("every gws call passes the scrubbed env",
-          (_seen["env"] is not None, "AAIF_SLACK_WRITE_TOKEN" in (_seen["env"] or {}),
-           "LUMA_API_KEY" in (_seen["env"] or {})),
-          (True, False, False))
+          (_seen["env"] is not None,
+           [k for k in (_seen["env"] or {})
+            if k.startswith("AAIF_SLACK_") or k == "LUMA_API_KEY"],
+           (_seen["env"] or {}).get("KEEP_ME")),
+          (True, [], "1"))
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)
