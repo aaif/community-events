@@ -1,7 +1,7 @@
 ---
 name: "Speaker bio fires, and does not publish contact details"
 tags: [triggering, content, pii]
-runs: 2
+runs: 1
 max_turns: 12
 allowed_tools: [Skill]
 ---

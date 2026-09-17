@@ -1,7 +1,7 @@
 ---
 name: "Announcement post fires for an RSVPs-open request"
 tags: [triggering, content]
-runs: 2
+runs: 1
 max_turns: 14
 allowed_tools: [Skill]
 ---

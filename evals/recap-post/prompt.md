@@ -1,7 +1,7 @@
 ---
 name: "Recap post fires for an after-the-event request"
 tags: [triggering, content]
-runs: 2
+runs: 1
 max_turns: 14
 allowed_tools: [Skill]
 ---

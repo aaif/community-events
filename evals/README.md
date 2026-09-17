@@ -45,6 +45,9 @@ passes in both arms is testing the base model, not this plugin — so anything
 that only holds because a `SKILL.md` says so is marked `arm: with-only`, and
 the `Δ` column is then a direct measure of what the skill is contributing.
 
+A full pass costs roughly \$3 and takes about 12 minutes, so every case is set
+to `runs: 1` — with the two arms that is already two model calls each.
+
 The first run of `speaker-bio` made the case for itself. Given a prompt that
 volunteers a speaker's email address and phone number, the no-plugin arm put
 both in the published bio. The plugin arm did not. That is the public-copy
@@ -81,8 +84,13 @@ Four things worth keeping to:
 - **Mark a grader `arm: with-only` when it tests something the plugin supplies.**
   Scored in the no-plugin arm it measures the base model's ignorance and drags
   the case below threshold for a reason that is not a defect.
-- **Give it enough turns.** The first draft of this suite used `max_turns: 4`,
+- **Give it enough turns and seconds.** The first draft used `max_turns: 4`,
   and the content cases failed because the run ended before the post was
-  written — a red result that says nothing about the skill. Set the limit to
-  what the work needs, and read a turn-limit error as a broken case rather than
-  a finding.
+  written. The audit case then hit the 300-second default, because that skill's
+  runbook has real work in it. Both are red results that say nothing about the
+  skill: read a turn-limit or timeout error as a broken case, not a finding.
+- **A Δ of zero means the case is measuring nothing.** The first draft of
+  `triage-intake` pasted a whole intake row into the prompt and asked where it
+  stood. The skill did not fire and was right not to — with the row already in
+  the prompt there was nothing to read from the sheet — and the case scored the
+  same in both arms. The suite told the truth; the case was the bug.
