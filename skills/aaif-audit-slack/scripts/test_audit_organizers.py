@@ -325,7 +325,7 @@ def test_an_absent_config_tab_names_the_migration():
 def test_the_config_labels_match_the_migration_that_wrote_them():
     """Both skills must spell the row labels and sentinel the same way."""
     here = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, os.path.join(here, "..", "..", "aaif-sync-chapters", "scripts"))
+    sys.path.insert(0, os.path.join(here, "..", "..", "aaif-sync-chapters", "migrations"))
     import migrate_resource_columns as mig
     check("labels agree", sorted(ao.CONFIG_LABELS),
           sorted(mig.CONFIG_LABELS.values()))

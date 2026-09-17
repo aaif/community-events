@@ -328,6 +328,8 @@ check("the read allowlist still cannot post", "chat.postMessage" in prov.slackmo
 
 
 # --- the config key exists on both sides of the sheet contract ----------------
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "migrations"))
 import migrate_resource_columns as mig  # noqa: E402
 check("the ops roster is a known Slack Config label",
       ao.CONFIG_LABELS.get("Ops staff email"), "ops_staff_emails")

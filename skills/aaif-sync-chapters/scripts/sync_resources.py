@@ -311,7 +311,7 @@ def read_grid(city_filter=None):
 
     missing = [c for c in RESOURCE_COLUMNS if c not in headers]
     if missing:
-        sys.exit("ABORT: %s missing from %s. Run migrate_resource_columns.py "
+        sys.exit("ABORT: %s missing from %s. Run migrations/migrate_resource_columns.py "
                  "first — it opens these columns and seeds them."
                  % (", ".join(map(repr, missing)), CHAPTERS_TAB))
 

@@ -498,7 +498,11 @@ def assert_all_accepted(grants):
     # gate has to be at least as narrow as the thing it guards.
     ok, refused = {}, {}
     for tab in ACCESS_TABS:
-        rows = get_values(INTAKE_ID, "%s!A:BB" % tab)
+        # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+        # first, which is the one a reader is most likely to have just added — and
+        # `header_index` then aborts with "layout changed" pointing at a column that
+        # is right there on the sheet. Read wide; resolve by header name.
+        rows = get_values(INTAKE_ID, "%s!A:CZ" % tab)
         if not rows:
             sys.exit("ABORT: intake tab %r came back empty — cannot verify grants." % tab)
         headers = [h.strip() for h in rows[0]]

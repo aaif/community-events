@@ -328,7 +328,11 @@ def read_intake():
                    placed, inferred}]                               needs a human
     malformed  = [{row, name, city, why}]      public-unsafe text — never written
     """
-    rows = get_values(INTAKE_ID, "%s!A:U" % INTAKE_TAB)
+    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = get_values(INTAKE_ID, "%s!A:AZ" % INTAKE_TAB)
     if not rows:
         sys.exit("ABORT: intake tab %r came back empty." % INTAKE_TAB)
     i_status, i_name, i_g, i_h, i_events, i_why = header_index(

@@ -146,7 +146,7 @@ def load_config(sheet_id=None):
         raise SystemExit(
             "ABORT: no %r tab on the Chapters List (or it is empty). The channel "
             "matching config lives there now; run\n"
-            "  python3 skills/aaif-sync-chapters/scripts/migrate_resource_columns.py "
+            "  python3 skills/aaif-sync-chapters/migrations/migrate_resource_columns.py "
             "--write\nto create it." % SLACK_CONFIG_TAB)
 
     headers = [h.strip() for h in rows[0]]
@@ -251,7 +251,11 @@ def read_chapters():
 
 
 def read_intake():
-    rows = gws_values(INTAKE_ID, "%s!A:U" % INTAKE_TAB)
+    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = gws_values(INTAKE_ID, "%s!A:AZ" % INTAKE_TAB)
     if not rows:
         raise SystemExit("ABORT: intake tab %r came back empty." % INTAKE_TAB)
     headers = [h.strip() for h in rows[0]]

@@ -961,7 +961,11 @@ def read_survey_interests():
     is the latest answer only because the form appends chronologically — a
     sorted or hand-reordered tab would silently change which answer is used.
     """
-    rows = get_values(INTAKE_ID, "'Form Responses'!A:CO")
+    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = get_values(INTAKE_ID, "'Form Responses'!A:EZ")
     if not rows:
         sys.exit("ABORT: 'Form Responses' came back empty.")
     i_email, i_what = header_index(rows[0], "Form Responses",
@@ -986,7 +990,11 @@ def read_role_tab(tab, interests, include_pipeline=False):
     must never reach one. Only sync_crm's own run() opts in, and it still gates
     pipeline ORGANIZERS per chapter afterwards (gate_pipeline_organizers).
     """
-    rows = get_values(INTAKE_ID, "%s!A:BB" % tab)
+    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = get_values(INTAKE_ID, "%s!A:CZ" % tab)
     if not rows:
         sys.exit("ABORT: intake tab %r came back empty." % tab)
     headers = [h.strip() for h in rows[0]]

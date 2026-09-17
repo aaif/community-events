@@ -111,7 +111,11 @@ def load_topics(sheet_id=None):
     is the half of "read by header name" that still breaks when someone inserts
     a column, which is exactly how the Chapters restructure broke sync-chapters.
     """
-    rows = gws_values(sheet_id or CHAPTERS_ID, "'%s'!A:Z" % TOPICS_TAB)
+    # Unbounded on purpose. A hardcoded right edge truncates the NEWEST column
+    # first, which is the one a reader is most likely to have just added — and
+    # `header_index` then aborts with "layout changed" pointing at a column that
+    # is right there on the sheet. Read wide; resolve by header name.
+    rows = gws_values(sheet_id or CHAPTERS_ID, "'%s'!A:AZ" % TOPICS_TAB)
     if not rows:
         raise SystemExit(
             "ABORT: no %r tab on the Chapters List (or it is empty).\n"

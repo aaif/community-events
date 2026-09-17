@@ -77,8 +77,12 @@ jobs:
       - name: Design tokens match the design system
         run: python scripts/extract_design_tokens.py --check
       - name: Skill script and repo-check tests
+        # migrations/ is in the glob too. Those four scripts have already run,
+        # but two live engines name them as the fix when a sheet is missing its
+        # columns, and two tests cross-check their constants — so they are still
+        # reachable code, and untested reachable code is the worse trade.
         run: |
-          for t in skills/*/scripts/test_*.py scripts/test_*.py; do
+          for t in skills/*/scripts/test_*.py skills/*/migrations/test_*.py scripts/test_*.py; do
             echo "== $t =="
             python "$t"
           done

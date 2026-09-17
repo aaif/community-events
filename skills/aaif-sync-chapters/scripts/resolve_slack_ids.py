@@ -34,7 +34,7 @@ Everyone else is reported, never written:
   * a **miss** may just mean they joined Slack under an address the intake has
     never seen, which is not the same fact as "has no Slack".
 
-Apply a reviewed suggestion with `--apply FILE`, a JSON list of
+Apply a reviewed suggestion with `--apply FILE --write`, a JSON list of
 `{"row": N, "slack_id": "U…"}` — the same review-then-write shape `clean.py`
 uses.
 
@@ -42,7 +42,7 @@ Usage:
     python3 resolve_slack_ids.py                  # report, changes nothing
     python3 resolve_slack_ids.py --suggest        # + name-match candidates
     python3 resolve_slack_ids.py --write          # fill ids resolved by email
-    python3 resolve_slack_ids.py --apply ids.json # write reviewed suggestions
+    python3 resolve_slack_ids.py --apply ids.json --write  # reviewed suggestions
 """
 
 import argparse
@@ -533,10 +533,18 @@ def main():
     ap.add_argument("--suggest", action="store_true",
                     help="also list name-match candidates for the unresolved")
     ap.add_argument("--apply", metavar="FILE",
-                    help="write a reviewed [{row, slack_id}] JSON list")
+                    help="write a reviewed [{row, slack_id}] JSON list "
+                         "(needs --write, like every other write here)")
     add_redact_flag(ap, masks="emails (a***@***.tld), names (first initial) and Slack ids")
     a = ap.parse_args()
     set_redaction(a.redact)
+    # `--apply` used to write on its own. Every other script in this skill, and
+    # the SKILL.md that documents them, treats `--write` as the single answer to
+    # "does this invocation touch the sheet?" — a second, quieter write path
+    # means that question cannot be answered by reading the command line.
+    if a.apply and not a.write:
+        sys.exit("REFUSING: --apply writes to the sheet, so it needs --write too.\n"
+                 "  python3 resolve_slack_ids.py --apply ids.json --write")
     run(write=a.write, want_suggest=a.suggest, apply_path=a.apply)
 
 

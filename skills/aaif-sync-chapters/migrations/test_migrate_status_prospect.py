@@ -19,7 +19,13 @@ import os
 import sys
 import zipfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# The engines this migration reads its schema from live one level up, in
+# scripts/. This file sits in migrations/ because it has already run: it is
+# kept as the remediation path a live engine names when a sheet is missing
+# its columns, not as tooling anyone reaches for in a normal week.
+sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
+sys.path.insert(0, _HERE)
 import migrate_status_prospect as mig
 from migrate_status_prospect import (CF_TOKEN_NEW, CF_TOKEN_OLD, HOWTO_TEXTS,
                                      CrmStatusSheet, cf_refusal, dv_list,
