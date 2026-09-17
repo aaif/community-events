@@ -6,6 +6,70 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+### Fixed
+- **A worked example in `aaif-community-pulse` had been pasted from a real
+  posted update**, naming real organizers in a public repo. Replaced with the
+  synthetic cast the other content skills use. The Luma links in it are public
+  pages and stay.
+- **`gws` calls retried on a permanent error.** Both copies of the
+  transient-failure test excluded only an adjacent *digit* from the HTTP-status
+  match, under a comment claiming `A500:K500 exceeds grid limits` was handled.
+  It was not — that `500` is preceded by `A` and followed by `:`, so a permanent
+  grid-limit error burned the full 20-second backoff before failing anyway.
+- **Seven sheet reads had a hardcoded right edge** (`A:U`, `A:BB`, `A:CO`),
+  which truncates the newest column first — the one someone has just added — so
+  the layout check then aborted naming a column visibly present on the sheet.
+  All now read wide and resolve by header name.
+- **`resolve_slack_ids.py --apply` wrote to the sheet without `--write`**, so
+  whether an invocation writes could not be answered by reading the command
+  line. It now refuses and prints the corrected command.
+- **`sync_chapters` had no duplicate-header guard.** Its header lookup resolved
+  silently to the first of two identically named columns; the audit skill's copy
+  had aborted on this all along. Both now use the shared lookup, which aborts.
+- **Three skills were missing from the README's standalone-zip caveat**, so
+  zipping one of them for claude.ai would have failed at import. Also corrected:
+  the skill count (18 → 20), the legal-footer note (three skills named, four
+  carry it), and two `gws`-dependent skills filed under "no setup required".
+
+### Added
+- **`lib/aaif_events/redact.py`** — one redaction surface. Nine scripts carried
+  their own copy of `--redact`'s flag and helpers, and one had already lost its
+  address masker. `scripts/check_no_local_redaction.py` keeps it single.
+- **`lib/aaif_events/gws.py`** and **`lib/aaif_events/sheets.py`** — one `gws`
+  client and one header-name lookup for the skills already coupled to `lib`.
+  The previous copies had drifted into *different* retry tables and *different*
+  safety guards, so which script you were in decided whether a 503 was survived.
+  Two wrappers that had no retry handling at all now have it.
+- **Tests for `audit_members.py` and `audit_activity.py`**, which had none
+  between them despite feeding a leadership-facing report.
+- **`scripts/check_portable_skills.py`** — a skill's `lib` coupling must match
+  the README's list, so giving up portability stays a decision someone makes on
+  purpose rather than an accident one import at a time.
+- **The public-copy rule and the attendee legal footer are now enforced
+  banners.** They existed as nine and four hand-written variants;
+  `check_tooling_banner.py` covers all three shared banners instead of one.
+- **An eval suite (`evals/`)** — the first check here that asks whether the
+  right skill *fires*, and whether an agent reading a `SKILL.md` does what it
+  says. Every other check is deterministic and stays green through a
+  description edit that stops a skill triggering. Each case runs with and
+  without the plugin and reports the delta, so a grader that passes either way
+  is visibly testing the base model rather than this plugin. It needs model
+  access and so cannot run in `validate.yml`, which holds no credential because
+  it runs on fork PRs; run it locally before editing any `description:`.
+
+### Changed
+- **The content skills fetch their own inputs.** All eight labelled their fields
+  "from the event tracker" with no way to reach one, so the honest outcome was
+  to ask for a paste and stop. Each now points at `aaif-event-status`.
+- **The two big ops skills separate runbook from record.** `aaif-sync-chapters`
+  moves 300 lines of naming history and applied-migration prose into
+  `references/`, and its four completed one-shots move from `scripts/` to
+  `migrations/` — kept, not deleted, because a live engine names one of them as
+  the fix when a sheet is missing its columns. `aaif-audit-slack` moves its
+  sheet-schema spec the same way. Both frontmatter descriptions were over 800
+  characters on one line, which is the field that decides whether a skill
+  activates at all.
+
 ### Changed
 - **The About slide's `THE PROJECTS` roster names all six hosted projects.** The
   decks were drawn when AAIF hosted four (`MCP · goose · AGENTS.md ·
