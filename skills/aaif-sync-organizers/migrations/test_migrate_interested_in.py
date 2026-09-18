@@ -297,6 +297,27 @@ check("...and the merged rule keeps its sqref AND its list",
        if dv.get("sqref") == "C2:D1000"],
       [("C2:D1000", OLD_DV)])
 
+# ...but ONE column written as several ranges is not that case. Excel splits a
+# sqref at every row that does not exist, so an ordinary one-column dropdown in
+# a sheet with a gap arrives as "D2:D8 D10:D1000". Reading the space as "spans
+# several columns" blocked it, apply_dropdowns refused it, and sync_crm's
+# identical test reported it stale — on every run, with no way to clear it.
+names, parts = make_pre_xlsx()
+parts["xl/worksheets/sheet1.xml"] = parts["xl/worksheets/sheet1.xml"].replace(
+    b'sqref="D2:D1000"', b'sqref="D2:D8 D10:D1000"')
+att_g = Attendees(parts, sheet_part(parts, "Attendees"), require=mig.PRE_SPLIT_HEADERS)
+check("a gapped one-column sqref resolves to that column",
+      [mig._dv_column(dv) for dv in mig._dv_elements(att_g)
+       if dv.get("sqref") == "D2:D8 D10:D1000"], [3])
+mig.add_column(att_g)
+check("a gapped one-column sqref is due, never blocked",
+      (sorted(h for h, _ in mig.dv_plan(att_g)[0]), mig.dv_plan(att_g)[1]),
+      (sorted(["Status", NEW_COLUMN]), []))
+check("...and it is rewritten rather than refused",
+      mig.apply_dropdowns(att_g), [])
+check("...leaving both lists correct and the gap closed",
+      mig.dv_plan(att_g), ([], []))
+
 # REGRESSION (found in review, after this had already run on 83 workbooks).
 # A workbook with NO <dataValidations> block got one via ET.SubElement, which
 # appends to the end of <worksheet> — after <pageMargins>. CT_Worksheet is a

@@ -278,11 +278,19 @@ def _dv_elements(att):
 
 
 def _dv_column(dv):
-    """The single column a dataValidation covers, or None if it spans several."""
+    """The single column a dataValidation covers, or None if it spans several.
+
+    Several space-separated ranges can still cover ONE column: Excel splits a
+    sqref at every row that does not exist, so a plain one-column dropdown is
+    written `E2:E8 E10:E1002` the moment row 9 is absent. Treating the space
+    itself as "spans several columns" made `dv_plan` mark such a column blocked,
+    which `apply_dropdowns` then refused — permanently, since nothing else
+    rewrites it. Union the ranges and judge the columns instead.
+    """
     sqref = (dv.get("sqref") or "").strip()
-    if not sqref or " " in sqref:
+    if not sqref:
         return None
-    cols = {col_of(end) for end in sqref.split(":")}
+    cols = {col_of(end) for end in re.split(r"[\s:]+", sqref) if end}
     # -1 is col_of's "no column letter here". Returning it would let an
     # unparsable sqref match a real column index and be rewritten.
     return cols.pop() if len(cols) == 1 and -1 not in cols else None
