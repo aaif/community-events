@@ -45,8 +45,10 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
 
 ## Update the tracker
 
-- [ ] **1. Fetch the tracker** into a private temp directory:
+- [ ] **1. Fetch the tracker** into a temp directory you name, so the later
+      Luma steps can write `new.md` / `new.png` beside it:
       ```bash
+      WORK=$(mktemp -d)
       python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
       ```
       Never commit a `tracker.docx` / `luma.md` / `banner.png` / `new.*`.

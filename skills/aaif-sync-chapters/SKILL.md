@@ -125,8 +125,10 @@ and assets, and its Luma page created by hand, both before step 7 can find them.
 
 ## Commands
 
-Every engine takes `--city <name>` to scope to one chapter, and `--redact` to
-mask emails and names (on by default when `CI` is `1`/`true`/`yes`).
+Every engine takes `--redact` to mask emails and names (on by default when `CI`
+is `1`/`true`/`yes`). **`--city <name>` scopes to one chapter on `sync_about`,
+`sync_crm`, `sync_resources` and `invite_organizers` only** — `sync_chapters` and
+`sync_access` have no such flag and always run the whole estate.
 
 ```bash
 # 3. Chapters feed

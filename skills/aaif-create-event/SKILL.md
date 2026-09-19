@@ -48,13 +48,14 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
 
 ## Add the event to the tracker
 
-- [ ] **1. Fetch the tracker.** One command resolves the folder and downloads it
-      to a private temp directory:
+- [ ] **1. Fetch the tracker.** One command resolves the folder and downloads
+      it. `--keep` puts it in a directory you name, so the later Luma steps can
+      write `luma.md` and `banner.png` beside it:
       ```bash
+      WORK=$(mktemp -d)
       python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
       ```
-      Or set `WORK=$(mktemp -d)` first if you want to control the path. These
-      downloads hold organizer, speaker and venue details — **never commit
+      These downloads hold organizer, speaker and venue details — **never commit
       them** (or any `tracker.docx` / `luma.md` / `banner.png` / `new.*`).
 - [ ] **2. Preview** the edit. `--dry-run` writes nothing, not even locally:
       ```bash
