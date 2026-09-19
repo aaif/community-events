@@ -102,7 +102,8 @@ be deleted — that exit code is the evidence they are waiting on.
   `City | Organizers | Previous MLOps Organizers | Chapter Luma Link` into an
   11-column website feed, and then again when the four resource columns were
   **inserted after `Country`**, shifting everything from the old `D` rightwards.
-  The canonical column list lives in `HEADERS` in `scripts/test_sync_chapters.py`,
+  The canonical column list lives in `HEADERS` in `aaif-sync-chapters`'
+  `scripts/test_sync_chapters.py`,
   which is executable and therefore can't go stale.
   The old hardcoded `B`/`A:D` writes are why nothing may be addressed by letter again —
   and the insert is why that rule now has teeth: every in-repo reader survived it

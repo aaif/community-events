@@ -13,6 +13,14 @@ so the cleaned values flow through to the computed role tabs. Every applied chan
 is noted per row in an **`Autofixes`** column on `Form Responses` (created on first
 use) — provenance for what the cleanup touched.
 
+**This is phase 1 of the estate sync.** `aaif-sync` runs the whole pipeline and
+calls `clean.py scan` here first, for a reason worth knowing: **an unresolved
+city is invisible to every step below it.** A row whose `City` is `Other` with
+no `Extracted City` resolves to no chapter, so it never reaches the Chapters
+List, never reaches a CRM, and never earns a Drive grant — silently, as an
+absence rather than an error. Fix it here and the rest of the pipeline sees the
+person.
+
 Prereq: the `gws` CLI must be installed and authenticated (`gws-cli-access` memory).
 See `aaif-intake-ops-sheet` memory for the sheet's structure. All reads/writes go
 by **header name**, never column letter.

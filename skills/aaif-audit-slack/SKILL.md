@@ -8,6 +8,13 @@ argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME
 
 Three engines over one workspace, same house rules — **everything is read-only**.
 
+**This is phase 8 of the estate sync**, the independent check: `aaif-sync` runs
+the pipeline and finishes here, deliberately from a different code path than the
+engines that did the writing. "The filter that built the list says the list is
+fine" is not a check. Findings are fixed **at the source** — an unresolved city
+in the intake row (`aaif-clean-data`), a missing chapter row on the Chapters List
+(`aaif-sync-chapters`) — and then the pipeline is re-run.
+
 **Three reports, one measurement layer.**
 
 | Report | Script | Answers |

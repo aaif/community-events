@@ -37,7 +37,8 @@ Naming, and the one rule that is not obvious:
 > chapter in a stranger's room.
 
 > **The resource columns were opened by a one-shot that has already run.** If a
-> column is missing, `references/completed-migrations.md` has the fix; nothing
+> column is missing, `aaif-sync-organizers`' `references/completed-migrations.md`
+> has the fix; nothing
 > in the normal pipeline needs it.
 
 ## Creating the planned channels (`provision_channels.py`)

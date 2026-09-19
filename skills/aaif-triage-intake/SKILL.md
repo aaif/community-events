@@ -12,6 +12,25 @@ sheet (id `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o`), which auto-routes eac
 submission to the **Organizers**, **Hosts**, or **Speakers** tab. Submissions
 land automatically; this skill is the human review loop on top of them.
 
+**This is phase 2 of the estate sync, and the only phase a human owns.**
+`aaif-sync` runs the whole pipeline and calls `intake.py` here **read-only** —
+it can show you the queue, never decide it. Everything downstream keys off the
+decision made here: only `Accepted` / `Existing (from MLOps)` reach the Chapters
+List, the About docs, the CRMs and the Drive grants. So an untriaged queue does
+not make the sync fail; it makes the sync report "in sync" while the queue sits
+untouched.
+
+> **Central triage is narrower than it used to be (self-serve, 2026-08).** A
+> chapter with **4+ accepted organizers** (`SELF_SERVE_MIN`, not counting AAIF
+> ops staff) interviews its own candidates: pipeline organizers for that chapter
+> sync into its CRM as `Prospect` without waiting for you, and the chapter takes
+> it from there. Below that threshold organizer approval is still yours, and the
+> candidates are held back and reported. **Hosts and speakers always sync
+> regardless**, so a chapter can see its candidate venues and talks immediately.
+> What still needs you everywhere: organizers for chapters under the threshold,
+> and every `Denied` / `Duplicate` call. If this queue looks quieter than you
+> remember, this is why — not that nothing is arriving.
+
 Prereq: the `gws` CLI must be installed and authenticated (see the user's
 `gws-cli-access` memory). See the user's `aaif-intake-ops-sheet` memory for the
 sheet's structure.
@@ -57,7 +76,7 @@ or near-identical answers, most often a form resubmitted after a mistake or a
 timeout). It is a different row, and not a duplicate, when the same person is
 legitimately doing two things: applying for two roles (organizer **and**
 speaker — `sync_crm`'s SECURITY check already treats this as expected, see
-`aaif-sync-chapters`), or pitching two distinct proposals in the same role (two
+`aaif-sync-organizers`), or pitching two distinct proposals in the same role (two
 different talk titles/abstracts from one speaker). Marking either `Duplicate`
 silently discards a live application; check `Talk title` / `Headline` /
 `Abstract` (or the equivalent per-role fields) actually differ before deciding.
@@ -163,9 +182,14 @@ flag and let them decide.
 
 ## Digest mode (for automation)
 
-`intake.py --json` is the data source for a future scheduled digest routine
-(delivery channel TBD with the user). The same selection logic powers both the
-interactive triage and the unattended digest, so they never drift.
+`intake.py --json` is the structured form of the same queue. The same selection
+logic powers the interactive triage and any unattended digest, so the two can
+never drift.
+
+This already runs unattended: `aaif-sync` and `nightly.py` call `intake.py` as
+pipeline phase 2, **read-only** — the queue shows up in every sync report
+without anything being decided for you. A delivery channel for a standalone
+digest (Slack, mail) is still TBD with the user.
 
 ## Gotchas
 

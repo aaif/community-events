@@ -129,7 +129,7 @@ pytest is what actually catches a broken import or a stale module name:
 
 ```bash
 PYTHONPATH=lib python -m pytest lib/aaif_events/tests -q    # shared library
-python skills/aaif-sync-chapters/scripts/test_sync_crm.py   # per-skill tests:
+python skills/aaif-sync-organizers/scripts/test_sync_crm.py # per-skill tests:
                                                             # plain scripts, exit 1 on failure
 python scripts/test_check_portable_skills.py                # the repo guards
 ```
@@ -146,7 +146,7 @@ done
 `migrations/` holds one-shots that have already run against the live estate.
 They stay tested because two live engines name one of them as the fix when a
 sheet is missing its columns — see
-`skills/aaif-sync-chapters/references/completed-migrations.md`.
+`skills/aaif-sync-organizers/references/completed-migrations.md`.
 
 ### Evals — the check for whether a skill actually fires
 
