@@ -272,10 +272,21 @@ def exit_code(by_name):
 
 
 def guard_report_dir(report_dir):
-    """Refuse to write PII logs anywhere git would happily commit them."""
+    """Refuse to write PII logs anywhere git would happily commit them.
+
+    The probe carries a TRAILING SEPARATOR, and that is the whole trick.
+    `sync-reports/` in .gitignore is a directory-only pattern, and
+    `git check-ignore` treats a path that does not exist yet as a *file* — so
+    on a fresh checkout, before the first run has created the directory, the
+    pattern does not match and this guard aborts the very run it exists to
+    protect. `nightly.py` carried this bug unnoticed for as long as the
+    directory happened to already exist on the machine it ran on. Asking about
+    `<path>/` matches the directory pattern whether or not anything is there.
+    """
     probe = os.path.abspath(report_dir)
     if probe.startswith(REPO + os.sep):
-        if subprocess.run(["git", "-C", REPO, "check-ignore", "-q", probe]).returncode:
+        if subprocess.run(["git", "-C", REPO, "check-ignore", "-q",
+                           probe + os.sep]).returncode:
             sys.exit("ABORT: %s is inside the repo but NOT gitignored — these "
                      "logs hold names and emails and this repo is public. Add it "
                      "to .gitignore (sync-reports/ already is) or point "

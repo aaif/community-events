@@ -227,6 +227,40 @@ check("nightly always passes --unattended", "--unattended" in _seen["argv"], Tru
 check("nightly keeps its own report dir",
       "nightly-reports" in " ".join(_seen["argv"]), True)
 
+# --- the gitignore guard works BEFORE the directory exists ---------------------
+# `sync-reports/` is a directory-only pattern and `git check-ignore` treats a
+# path that does not exist yet as a file, so the guard has to probe with a
+# trailing separator. Without it, the very first run on a fresh checkout aborts
+# — which is how this went unnoticed in nightly.py for as long as the directory
+# happened to already exist on the machine it ran on.
+_probe = []
+with mock.patch.object(sync.subprocess, "run",
+                       lambda cmd, **kw: _probe.append(cmd) or
+                       type("R", (), {"returncode": 0})()):
+    sync.guard_report_dir(os.path.join(sync.REPO, "sync-reports"))
+check("the ignore probe carries a trailing separator",
+      _probe and _probe[0][-1].endswith(os.sep), True)
+check("...and the real .gitignore actually covers it",
+      sync.subprocess.run(["git", "-C", sync.REPO, "check-ignore", "-q",
+                           os.path.join(sync.REPO, "sync-reports") + os.sep],
+                          capture_output=True).returncode, 0)
+# A dir git would happily commit must abort, not warn.
+_aborted = []
+with mock.patch.object(sync.subprocess, "run",
+                       lambda cmd, **kw: type("R", (), {"returncode": 1})()):
+    try:
+        sync.guard_report_dir(os.path.join(sync.REPO, "not-ignored"))
+    except SystemExit as e:
+        _aborted.append("ABORT" in str(e))
+check("a committable report dir aborts the run", _aborted, [True])
+# Outside the repo there is nothing to commit to, so no check is made at all.
+_outside = []
+with mock.patch.object(sync.subprocess, "run",
+                       lambda cmd, **kw: _outside.append(cmd) or
+                       type("R", (), {"returncode": 1})()):
+    sync.guard_report_dir("/tmp/aaif-sync-elsewhere")
+check("a report dir outside the repo is never second-guessed", _outside, [])
+
 # --- each skill's SKILL.md names every test beside it --------------------------
 # It had drifted before: three tests existed that the list did not mention,
 # including the one for provision_channels.py, the most dangerous script here.
