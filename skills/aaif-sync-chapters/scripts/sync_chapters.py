@@ -50,6 +50,53 @@ SLUG_OVERRIDES = {"denver": "colorado"}
 # Blank-on-new-row columns a human must fill before the row goes live on the site.
 EDITORIAL_COLUMNS = ("Country", "Generated Geolocation", "Summary", "Image")
 
+#: The chapter lifecycle column, added 2026-09-18. Set by a HUMAN, exactly like
+#: the organizer `Status` it is modelled on — and for the same reason: the
+#: estate holds no reliable chapter-founding date, so "provisioned last week"
+#: and "died a year ago" are indistinguishable from data. Both candidate
+#: proxies measure infrastructure, not chapters: channel creation clusters on
+#: the bulk provisioning runs, and all 98 Drive folders carry just 9 distinct
+#: creation dates, the oldest 92 days old — younger than events already on the
+#: Past Events tab. A script that guessed would mislabel ~30 chapters.
+#:
+#: **NO script writes this column.** Every chapter is therefore born blank, and
+#: blank counts as live (see RETIRED_STATUSES). Stamping `Provisioned` at
+#: creation is the obvious producer — it is the one instant the answer is known
+#: — but create_chapter.py does not write the feed row today (sync_chapters'
+#: new-row path does), so wiring that up is its own change. Until then, moving a
+#: chapter out of blank is entirely manual, and chapter_health.py exists to rank
+#: which ones to look at.
+H_STATUS = "Status"
+#: Companion to Status="Merged": the City this chapter folded into. Coalescing a
+#: satellite into its metro (Noida -> Delhi NCR) is otherwise unrecorded, and
+#: "where did this chapter go" is the question a retired row has to answer.
+H_MERGED_INTO = "Merged Into"
+
+CHAPTER_STATUSES = ("Active", "Provisioned", "Dormant", "Merged", "Deprecated")
+
+#: Statuses that RETIRE a chapter — they stop counting toward the cap. Anything
+#: else counts, INCLUDING blank: an untriaged chapter is a live one until a
+#: human says otherwise, and the alternative (blank = free slot) would let the
+#: estate grow past the cap simply by nobody filling the column in.
+RETIRED_STATUSES = ("Merged", "Deprecated")
+
+#: Hard ceiling on live chapters (set 2026-09-18). The point is not the number:
+#: it is that growth has to be paid for by sunsetting or coalescing something,
+#: which is a decision somebody has to make rather than a queue that silently
+#: grows.
+#:
+#: The count is **rows on the chapters tab**, and the feed row is the only place
+#: that count changes — so this engine's new-row path is the real chokepoint.
+#: create_chapter.py checks the same cap before building a Drive folder, but be
+#: precise about what that check is worth: making a folder does not add a row,
+#: so it cannot detect its own predecessors. Three `create_chapter --write` runs
+#: at 99 live chapters each read 99, each pass, and each build a folder; the
+#: next sync run then refuses all three rows at once. The folder check is an
+#: early warning that saves the common single-run case, NOT a guarantee — the
+#: guarantee lives on the row. Closing that gap properly means create_chapter
+#: claiming its row as it creates the folder, which it does not do yet.
+CHAPTER_CAP = 100
+
 # Also blank on new rows, but read-only legacy history — never backfilled, so the
 # report must not tell an operator to fill it.
 NEVER_FILLED = ("MLOps Community Organizers",)
@@ -386,8 +433,105 @@ def read_intake():
         entries.append({"row": rownum, "name": name, "city": city, "status": status})
     return entries, unresolved, counts, dupes, malformed
 
+def census_of(chapters):
+    """(live, retired, by_status) over read_chapters()-shaped dicts.
+
+    The ONE place the cap's counting rule lives — both guards call it, because
+    two spellings of "which statuses count" is how the folder guard and the row
+    guard would come to disagree about whether the estate is full.
+
+    `live` is what the cap counts: every chapter whose Status is not in
+    RETIRED_STATUSES, blank included. `by_status` carries blanks under the key
+    "" so a caller can say how much of the estate is untriaged, which decides
+    whether a cap refusal is actionable or just a wall.
+
+    A status outside CHAPTER_STATUSES counts as LIVE but is reported separately
+    (see unknown_statuses below). The column is hand-edited and its dropdown is
+    advisory rather than strict, so `merged`, `Retired` or `Archived` are all
+    typeable — and each would otherwise fold silently into the live count with
+    nothing anywhere saying so.
+    """
+    by_status, live, retired = {}, 0, 0
+    for c in chapters:
+        if not (c.get("city") or "").strip():
+            continue
+        st = (c.get("status") or "").strip()
+        by_status[st] = by_status.get(st, 0) + 1
+        if st in RETIRED_STATUSES:
+            retired += 1
+        else:
+            live += 1
+    return live, retired, by_status
+
+
+def unknown_statuses(by_status):
+    """Statuses on the sheet that are not in the vocabulary, worst (most rows) first.
+
+    Split out so both the refusal and chapter_health can surface the same set
+    rather than each deciding for itself what counts as a typo.
+    """
+    # By COUNT descending, then name — "worst first" as the docstring says and
+    # as cap_refusal renders it. Sorting by the status string put a 40-chapter
+    # typo below a 1-chapter one, which is backwards for a list whose job is
+    # "fix this spelling and the count may change".
+    return sorted(((st, n) for st, n in by_status.items()
+                   if st and st not in CHAPTER_STATUSES),
+                  key=lambda kv: (-kv[1], kv[0]))
+
+
+def cap_refusal(live, by_status, what, incoming=1):
+    """The abort message when the cap is reached, or None when there is room.
+
+    `live` is the current count and `incoming` the rows about to be added
+    (default 1 — every caller is asking "may I add?"). They are separate
+    parameters because the caller used to smuggle the breakdown through `what`
+    while passing the SUM as `live`, so the headline printed "N live chapters"
+    for a number that was not live chapters.
+
+    Deliberately names the untriaged count and the retire-or-coalesce options: a
+    refusal that only says "full" leaves the reader with no next step, and the
+    next step is a decision about an EXISTING chapter, not a retry.
+    """
+    if live + incoming <= CHAPTER_CAP:
+        return None
+    # The arithmetic is only worth showing when it is not obvious: adding one
+    # more to N is, adding seven is not.
+    head = ("ABORT: %d live chapters" % live if incoming <= 1 else
+            "ABORT: %d live chapters + %d new = %d" % (live, incoming, live + incoming))
+    lines = ["%s — the cap is %d. Refusing to %s." % (head, CHAPTER_CAP, what),
+             "",
+             "Growth is paid for by retiring or coalescing an existing chapter:",
+             "  * set Status=Merged on the chapters tab (plus %r) to fold a "
+             "satellite into its metro, or" % H_MERGED_INTO,
+             "  * set Status=Deprecated to retire one outright."]
+    untriaged = by_status.get("", 0)
+    if untriaged:
+        lines += ["",
+                  "%d chapter(s) have a BLANK Status and have never been "
+                  "triaged — run chapter_health.py for the ranked evidence "
+                  "before deciding." % untriaged]
+    odd = unknown_statuses(by_status)
+    if odd:
+        lines += ["",
+                  "These Status values are not in the vocabulary and are being "
+                  "counted as LIVE — fix the spelling and the count may change:",
+                  "  " + ", ".join("%r (%d)" % (st, n) for st, n in odd)]
+    return "\n".join(lines)
+
+
+def assert_under_cap(what="create a new chapter", incoming=1):
+    """Abort unless there is room under CHAPTER_CAP. Reads the tab live."""
+    chapters, _last_row, _layout = read_chapters()
+    live, _retired, by_status = census_of(chapters)
+    msg = cap_refusal(live, by_status, what, incoming=incoming)
+    if msg:
+        sys.exit(msg)
+
+
 def read_chapters():
-    """Return (chapters, last_row, layout). chapters = [{row, city, organizers_raw}].
+    """Return (chapters, last_row, layout). chapters = [{row, city, organizers_raw,
+    status, merged_into, public}]. All keys are always present ("" when the
+    column is absent), so consumers subscript rather than .get().
 
     layout = {headers, index: {name -> 0-based col}} — the tab is a website feed
     whose columns have moved before, so read well past the current width and
@@ -415,13 +559,22 @@ def read_chapters():
     header_index(headers, CHAPTERS_TAB, *DERIVED_COLUMNS)
     layout = {"headers": headers, "index": {h: i for i, h in enumerate(headers) if h}}
     i_city, i_org = layout["index"]["City"], layout["index"]["Organizers"]
+    # .get, not [...]: a checkout pointed at a sheet from before 2026-09-18 has
+    # no Status column, and every read path here must keep working against it
+    # rather than abort on a column the cap happens to care about.
+    i_status = layout["index"].get(H_STATUS)
+    i_merged = layout["index"].get(H_MERGED_INTO)
+    i_pub = layout["index"].get("Slack Channel")
 
     chapters, last_row = [], 1
     for rownum, row in enumerate(rows[1:], start=2):
         city = cell(row, i_city)
         if not city:
             continue   # never append into a gap; find the true last City row
-        chapters.append({"row": rownum, "city": city, "organizers_raw": cell(row, i_org)})
+        chapters.append({"row": rownum, "city": city, "organizers_raw": cell(row, i_org),
+                         "status": cell(row, i_status) if i_status is not None else "",
+                         "merged_into": cell(row, i_merged) if i_merged is not None else "",
+                         "public": cell(row, i_pub) if i_pub is not None else ""})
         last_row = rownum
 
     # New rows are appended at last_row+1 and written FULL WIDTH, which clears
@@ -756,6 +909,21 @@ def main():
         return 2 if (drift or dead_luma) else 0
     if not drift:
         return 0
+
+    # The cap's second enforcement point. create_chapter.py guards the Drive
+    # folder; this guards the feed row. Checked here rather than in report mode
+    # on purpose — seeing WHICH cities are queued is how an operator decides
+    # what to retire, and refusing the report would remove the tool they need to
+    # comply. Counted against the estate as it stands plus the rows this run
+    # would append, so a run that would cross the line is refused before it
+    # writes any of them rather than half way through.
+    if state.new_rows:
+        live, _retired, by_status = census_of(state.chapters)
+        msg = cap_refusal(live, by_status,
+                          "append %d new chapter row(s)" % len(state.new_rows),
+                          incoming=len(state.new_rows))
+        if msg:
+            sys.exit(msg)
 
     # Luma page creation is manual, so "absent" is the NORMAL state for a net-new
     # city — without this gate the common path publishes a "Stay Updated" button

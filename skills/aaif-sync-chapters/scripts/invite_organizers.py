@@ -17,12 +17,22 @@ can change at any time, so resolving `@someone` back to an account would break
 silently the day they rename themselves — and "silently" here means an organizer
 quietly stops being invited to their own chapter's room.
 
-## Scope: `--scope organizer` (default), `--scope country`, or `--scope both`
+## Scope: `--scope organizer` (default), `country`, `both`, or `champs`
 
-- **`organizer`** targets each chapter's private `Organizer Channel` only. The
-  public chapter channel is for anyone to join when they choose; being an
-  organizer is not consent to be placed in a public room — that policy is
-  unchanged and is the default.
+- **`organizer`** targets each chapter's private `Organizer Channel` **and the
+  one workspace-wide `#local-champs` room**. The public chapter channel is for
+  anyone to join when they choose; being an organizer is not consent to be
+  placed in a public room — that policy is unchanged and is the default.
+
+  `#local-champs` joined the default scope on 2026-09-18, when the policy
+  changed to "every accepted organizer belongs in it". It used to be a curated
+  leadership room that nothing in this repo wrote to, which is exactly why it
+  drifted: 28 of 155 accepted organizers with a Slack account were missing from
+  it. A room kept in step by hand is a room that is out of step. Because it is
+  one room rather than a per-chapter column, it has no Chapters List cell — see
+  CHAMPS_COLUMN — and its roster is the union of every chapter's accepted
+  organizers, deduplicated by email, exactly as a shared Country Channel is.
+- **`champs`** targets that room alone, for when only it needs topping up.
 - **`country`** targets `Country Channel` instead — also a *public* room, and
   several chapters usually share one (`#españa` serves Madrid, Barcelona and
   Bilbao). This is the same class of override Rahul made 2026-08-25 for public
@@ -48,7 +58,8 @@ from mailing share notices by default. `--write` alone is not enough;
 `--i-have-approval` must be passed too, and the report must have been read.
 
 Usage:
-    python3 invite_organizers.py                         # who is missing (organizer channels)
+    python3 invite_organizers.py                         # who is missing (organizer + champs)
+    python3 invite_organizers.py --scope champs          # the champs room alone
     python3 invite_organizers.py --scope country
     python3 invite_organizers.py --scope both --city Berlin
     python3 invite_organizers.py --scope both --write --i-have-approval
@@ -90,6 +101,17 @@ NEEDED_SCOPES = ("groups:write.invites", "channels:write.invites")
 #: matters for the notification too: Slack renders a single batched invite as one
 #: event in the channel instead of N join lines.
 MAX_PER_CALL = 1000
+
+#: `--scope champs` targets ONE workspace-wide room, not a per-chapter channel,
+#: so unlike every other scope it has no Chapters List column to read. This
+#: sentinel stands in for a column name in SCOPE_COLUMNS, and collect() resolves
+#: it to a constant channel instead of a cell. It is deliberately not a legal
+#: column name, so a sheet that ever grows a real column cannot collide with it.
+#: The room's NAME comes from audit_organizers rather than being spelled again
+#: here: two definitions of it would let the audit and the invite path disagree
+#: about which room they mean, which is the whole class of bug that put the
+#: `--redact` flag and the gws retry table into one module each.
+CHAMPS_COLUMN = "*local-champs"
 
 
 def fetch(city_filter=None):
@@ -157,6 +179,10 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None):
     and the sheet again — pass it when collecting more than one column.
     """
     api, chapters, chans, by_city, resolved = fetched or fetch(city_filter)
+    # Once, not at each of the three places this used to be re-spelled: three
+    # comparisons against a magic string are three chances to typo the constant
+    # and get a silently-wrong branch.
+    is_champs = column == CHAMPS_COLUMN
 
     # Group chapters by the channel NAME they name in `column`, not by row:
     # several chapters can point at the same Country Channel.
@@ -165,14 +191,19 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None):
     for ch in chapters:
         if not by_city.get(fold_city(ch["city"])):
             continue                      # nobody accepted yet; nothing to do
-        name = ch["current"][column]
+        name = (ao.LOCAL_CHAMPS_CHANNEL if is_champs
+                else ch["current"][column])
         if not name or name == NO_RESOURCE:
             no_channel.append((ch["city"], "no %s on the sheet" % column))
             continue
         groups.setdefault(name, []).append(ch["city"])
 
     for name, cities in sorted(groups.items()):
-        label = ", ".join(sorted(cities))
+        # Every chapter points at the champs room, so the comma-joined city list
+        # would be all ~90 of them on one line. The room is workspace-wide; the
+        # cities are not the useful fact about it.
+        label = ("all chapters" if is_champs
+                 else ", ".join(sorted(cities)))
         chan = chans.get(name)
         if not chan:
             # Two indistinguishable causes: the channel genuinely doesn't exist,
@@ -212,10 +243,19 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None):
                 missing.append((p["name"], uid))
 
         known = {uid for _, uid in missing + present}
+        # `unaccounted` means "in this room although the intake never put them
+        # here", which is a finding for a chapter's own organizer channel. It is
+        # NOT one for the champs room: that room legitimately holds people who
+        # are not accepted organizers at all (as of 2026-09-18, 135 of its 290
+        # members), and folding them into the report's "the intake does not list
+        # them" tally would turn a real signal into noise the reader must learn
+        # to ignore. Adds-never-removes is unchanged either way; this only
+        # governs what gets reported.
+        unaccounted = [] if is_champs else sorted(members - known)
         rows.append({"city": label, "channel": name,
                      "channel_id": chan["id"], "is_private": chan["is_private"],
                      "missing": missing, "present": present,
-                     "unaccounted": sorted(members - known)})
+                     "unaccounted": unaccounted})
     return rows, unresolved, no_channel
 
 
@@ -289,11 +329,26 @@ def apply(rows, token):
 
 
 #: What each --scope value targets, and the label used in the report header.
+#: Each target named ONCE. `both` used to re-spell the other scopes' pairs
+#: verbatim, so adding the champs target meant editing two entries and the next
+#: target would have the same trap — which is why there is a test asserting
+#: `both` still covers all three.
+_ORG = ("Organizer Channel", "Organizer channel")
+_COUNTRY = ("Country Channel", "Country channel")
+_CHAMPS = (CHAMPS_COLUMN, "Local champs")
+
 SCOPE_COLUMNS = {
-    "organizer": [("Organizer Channel", "Organizer channel")],
-    "country": [("Country Channel", "Country channel")],
-    "both": [("Organizer Channel", "Organizer channel"),
-             ("Country Channel", "Country channel")],
+    # The champs room rides along with the DEFAULT scope (decided 2026-09-18):
+    # every accepted organizer belongs in it, so keeping it opt-in would mean it
+    # drifted out of date between the runs someone remembered to pass a flag to.
+    # It costs no extra fetch — run_scope() collects every column off one
+    # fetch(), measured: one additional conversations.members page — and it can
+    # only ever add ACCEPTED organizers, because ao.read_intake() filters to
+    # ACCEPTED before this module sees anyone.
+    "organizer": [_ORG, _CHAMPS],
+    "country": [_COUNTRY],
+    "both": [_ORG, _COUNTRY, _CHAMPS],
+    "champs": [_CHAMPS],
 }
 
 
@@ -324,9 +379,11 @@ def main():
                          "notification to a real person and cannot be unsent")
     ap.add_argument("--city", help="limit to one chapter")
     ap.add_argument("--scope", choices=sorted(SCOPE_COLUMNS), default="organizer",
-                    help="which channel to target: the private Organizer "
-                         "Channel (default), the public Country Channel, or "
-                         "both")
+                    help="which rooms to target. 'organizer' (default) is "
+                         "each chapter's private Organizer Channel AND the "
+                         "workspace-wide #local-champs; 'country' is the public "
+                         "Country Channel; 'both' is all three; 'champs' is "
+                         "#local-champs alone.")
     add_redact_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)

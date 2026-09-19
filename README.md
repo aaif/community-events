@@ -182,6 +182,14 @@ Code *plugin*:
   `scripts/check_portable_skills.py` keeps this list honest — adding a
   `lib/aaif_events` import to a skill that is not listed here fails the build,
   so giving up a skill's portability stays a decision someone makes on purpose.
+  **A second, narrower coupling the guard does not model:** a few scripts
+  import a *sibling skill's* module rather than `lib` —
+  `aaif-sync-chapters/scripts/invite_organizers.py` imports `audit_organizers`
+  from `aaif-audit-slack`, and `aaif-create-chapter/scripts/create_chapter.py`
+  imports `sync_chapters` from `aaif-sync-chapters` for the one definition of
+  `CHAPTER_CAP`. Both skills are already on the list above, so CI stays green —
+  but for the `lib` reason, not this one. Those skills additionally need the
+  sibling skill's folder present, not just `lib/`.
 - **Cursor** — Cursor uses its own `.cursor/rules/*.mdc` format and does **not**
   consume Claude Code plugins. You can copy a `SKILL.md`'s instructions into a
   Cursor rule, but it won't run the bundled scripts the same way.
