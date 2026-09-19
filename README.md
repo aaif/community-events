@@ -123,40 +123,168 @@ python3 skills/aaif-sync/scripts/sync.py --write    # apply, after approval
 
 ```mermaid
 flowchart TD
-    INTAKE[("Intake Ops sheet<br/><i>public form responses</i>")] --> P1
+    START(["<b>aaif-sync</b><br/>report-only unless --write"]) --> C
 
-    P1["<b>1 · clean</b><br/>aaif-clean-data<br/><i>resolve cities</i>"]
-    P2["<b>2 · triage</b><br/>aaif-triage-intake<br/><i>accept / deny</i>"]
-    P3["<b>3 · chapters</b><br/>aaif-sync-chapters<br/><i>cities → Chapters List rows</i>"]
-    P4["<b>4 · organizers</b><br/>aaif-sync-organizers<br/><i>About docs · CRMs · Drive grants</i>"]
-    P5["<b>5 · resources</b><br/>aaif-sync-slack<br/><i>folder + channel map</i>"]
-    P6["<b>6 · slack</b><br/>aaif-sync-slack<br/><i>create rooms · invite · directory</i>"]
-    P7["<b>7 · luma</b><br/>aaif-sync-chapters<br/><i>every page still live?</i>"]
-    P8["<b>8 · verify</b><br/>aaif-audit-slack<br/><i>independent check</i>"]
+    C["<b>1 · clean</b><br/>clean.py scan"]
+    Cq{"city resolved?"}
+    Cfix["write <b>Extracted City</b><br/>from the row's free text"]
+    C --> Cq
+    Cq -->|"no"| Cfix --> C
 
-    P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8
-    P8 -.->|findings| P1
+    T["<b>2 · triage</b><br/>intake.py — the queue"]
+    Tq{"the human's decision"}
+    Tno["Denied · Inactive · Duplicate<br/><i>never syncs anywhere</i>"]
+    Cq -->|"yes"| T --> Tq
+    Tq -->|"no"| Tno
 
-    P3 --> SHEET[("Chapters List<br/><i>the website feed</i>")]
-    P4 --> DRIVE[("Chapter folders<br/><i>About.docx · CRM.xlsx · ACLs</i>")]
-    P5 --> SHEET
-    P6 --> SLACK[("Slack<br/><i>chapter · organizer · country rooms</i>")]
-    P7 -.->|reads| LUMA[("Luma<br/><i>chapter pages</i>")]
+    CH["<b>3 · chapters</b><br/>sync_chapters.py"]
+    CHq{"city already has a<br/>Chapters List row?"}
+    CHmerge["merge names into <b>Organizers</b>"]
+    CHnew["append a row<br/><i>a near-miss is reported, never matched</i>"]
+    Tq -->|"Accepted ·<br/>Existing (from MLOps)"| CH --> CHq
+    CHq -->|"yes"| CHmerge
+    CHq -->|"no"| CHnew
 
-    NEWCITY["aaif-create-chapter<br/><i>Drive folder + assets</i>"] -.->|a net-new city<br/>needs this first| P5
+    Fq{"does the chapter have a<br/><b>Drive folder</b> yet?"}
+    NEW["<b>aaif-create-chapter</b><br/>clone TemplateCity, rebrand,<br/>move the slide-5 map dot"]
+    CHmerge --> Fq
+    CHnew --> Fq
+    Fq -->|"<b>no</b> — an orphan"| NEW --> ORG
+    Fq -->|"yes"| ORG
+
+    ORG["<b>4 · organizers</b><br/>About doc · CRM · Slack ID · Drive grant<br/><i>detail below ↓</i>"]
+    Tq -->|"still in pipeline<br/><i>CRM only, self-serve chapters</i>"| ORG
+
+    RES["<b>5 · resources</b><br/>sync_resources.py — folder + channels<br/><i>exact matches only; detail below ↓</i>"]
+    ORG --> RES
+
+    Gq{"has a human passed<br/><b>--i-have-approval</b>?"}
+    HOLD["report and stop<br/><i>a scheduled job is nobody's approval</i>"]
+    RES --> Gq
+    Gq -->|"no"| HOLD
+    Gq -->|"yes"| SL
+
+    SL["<b>6 · slack</b><br/>provision → invite → directory<br/><i>renames before creates</i>"]
+    L["<b>7 · luma</b><br/>--audit-luma"]
+    Lq{"429 from luma.com?"}
+    Lp["stop, mark <b>PARTIAL</b><br/><i>one upstream fact must not<br/>become ninety findings</i>"]
+    SL --> L --> Lq
+    Lq -->|"yes"| Lp
+
+    V["<b>8 · verify</b><br/>audit_organizers.py"]
+    Vq{"findings?"}
+    Lq -->|"no"| V --> Vq
+    Vq -->|"yes — fix at the source"| C
+    Vq -->|"no"| DONE(["estate in step"])
 
     classDef human fill:#fde68a,stroke:#a16207,color:#000
     classDef approval fill:#fecaca,stroke:#b91c1c,color:#000
-    classDef ro fill:#e0e7ff,stroke:#4338ca,color:#000
-    classDef store fill:#f5f5f4,stroke:#57534e,color:#000
+    classDef stop fill:#e5e5e5,stroke:#737373,color:#000
     classDef side fill:#fff,stroke:#a8a29e,color:#000,stroke-dasharray:4 3
-
-    class P2 human
-    class P6 approval
-    class P1,P7,P8 ro
-    class INTAKE,SHEET,DRIVE,SLACK,LUMA store
-    class NEWCITY side
+    class T,Tq,Gq human
+    class SL approval
+    class Tno,HOLD,Lp stop
+    class NEW side
 ```
+
+Two branches are worth calling out, because they are where a run stops being a
+straight line:
+
+- **A chapter with no Drive folder is an orphan.** Its About doc and its CRM
+  live *inside* that folder, so phase 4 has nowhere to write. The run reports
+  it and **`aaif-create-chapter` has to go first** — clone TemplateCity,
+  rebrand every asset, move the slide-5 map dot — and only then do organizers
+  sync.
+- **A near-miss city is never matched.** `Delhi` against an existing
+  `Delhi NCR` row is reported for a human to confirm, never written: a
+  near-miss has no override flag, so a wrong guess does not cost one
+  confirmation, it blocks that city permanently.
+
+#### Inside phase 4 — what happens to one person
+
+This is where most of the branching lives, and where the identity questions get
+answered: *which Slack account is this*, and *which Google address can actually
+be granted*.
+
+```mermaid
+flowchart TD
+    P(["one accepted person,<br/>one chapter"]) --> A1
+
+    A1["<b>sync_about.py</b> — rewrite the<br/>Organizers list in About.docx"]
+    A2{"doc has an<br/>Organizers heading?"}
+    A3["skip, with a reason<br/><i>matched on text, not style — never guessed at</i>"]
+    A1 --> A2
+    A2 -->|"no"| A3
+    A2 -->|"yes"| M1
+
+    M1["<b>sync_crm.py</b> — match to the chapter CRM<br/><b>by email</b>, the dedupe key"]
+    M2{"workbook has the<br/><b>Interested in</b> column?"}
+    M3["refuse — run migrations/<br/>migrate_interested_in.py first<br/><i>never write by column letter</i>"]
+    M4{"already in this CRM?"}
+    M5["fill <b>blank cells only</b><br/><i>Signal is never written</i>"]
+    M6["add a row:<br/>Status · Interested in · Notes"]
+    M1 --> M2
+    M2 -->|"no"| M3
+    M2 -->|"yes"| M4
+    M4 -->|"yes"| M5
+    M4 -->|"no"| M6
+
+    S1["<b>resolve_slack_ids.py</b><br/>find their <b>Slack ID</b>"]
+    S2{"users.lookupByEmail hit?<br/><i>exact — a Gmail dot misses</i>"}
+    S3["write <b>Slack ID</b> + <b>Slack Email</b><br/><i>the id, never the @handle</i>"]
+    S4["a name match is only a <b>suggestion</b><br/>--suggest, then --apply --write<br/><i>two people really do share a name</i>"]
+    M5 --> S1
+    M6 --> S1
+    S1 --> S2
+    S2 -->|"yes"| S3
+    S2 -->|"no"| S4
+
+    G1["<b>sync_access.py</b><br/>find the address to grant"]
+    G2{"a human recorded a<br/><b>Drive Email</b>?"}
+    G3["grant that one<br/><i>the intake Email is never rewritten</i>"]
+    G4["grant the intake <b>Email</b>"]
+    G5{"does it have a<br/><b>Google account</b>?"}
+    G6["skip + report<br/><i>Drive would have to email them<br/>— never a side effect of a sync</i>"]
+    G7["PHASE 1 — grant <i>writer</i><br/>on their own chapter folder"]
+    S3 --> G1
+    S4 --> G1
+    G1 --> G2
+    G2 -->|"yes"| G3
+    G2 -->|"no"| G4
+    G3 --> G5
+    G4 --> G5
+    G5 -->|"no"| G6
+    G5 -->|"yes"| G7
+
+    L1{"every grant<br/>succeeded?"}
+    L2["refuse to lock<br/><i>locking now leaves them no access at all</i>"]
+    L3["PHASE 2 — remove anyone:reader<br/>from the Chapters folder"]
+    G7 --> L1
+    L1 -->|"no"| L2
+    L1 -->|"yes"| L3
+
+    D1["<b>track_drive_email.py</b><br/>read each folder's ACL back"]
+    D2{"an ACL entry matches<br/>some spelling of them?"}
+    D3["record it in <b>Drive Email</b>"]
+    D4["write <b>(no grant)</b><br/><i>they cannot open it —<br/>an access request is coming</i>"]
+    L3 --> D1 --> D2
+    D2 -->|"yes"| D3
+    D2 -->|"no"| D4
+
+    classDef stop fill:#e5e5e5,stroke:#737373,color:#000
+    classDef flag fill:#fecaca,stroke:#b91c1c,color:#000
+    class A3,M3,G6,L2,S4 stop
+    class D4 flag
+```
+
+The three findings this produces are the ones an operator acts on:
+**`(no grant)`** in `Drive Email` means no permission on their chapter folder
+matches any spelling of their address — they cannot open it, and an access
+request is coming. A **name-match suggestion** means an email lookup missed and
+a human has to confirm the account before it is written, because two people
+genuinely do share a name. And a **skipped grant** means the address has no
+Google account behind it; the fix that emails nobody is to record a
+Google-backed address in `Drive Email` and re-run.
 
 Reading the colours — they are the **gates**, and they are why this is not a
 batch job:
