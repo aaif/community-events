@@ -110,8 +110,26 @@ check("--i-have-approval is never passed to a non-approval step",
 cmd, wm = sync.step_cmd(_by["luma"], write_mode=True, approved=True)
 check("a read-only step can never be made to write",
       ("--write" in cmd, wm), (False, False))
-check("triage is read-only — a decision is a human's",
-      _by["triage"].gate, sync.READ_ONLY)
+check("triage is HUMAN-gated — a decision is a person's, not a runner's",
+      _by["triage"].gate, sync.HUMAN)
+# The whole point of the gate: no argv exists that makes the runner execute it.
+cmd, wm = sync.step_cmd(_by["triage"], write_mode=True, approved=True)
+check("a HUMAN step can never be given a write mode", ("--write" in cmd, wm),
+      (False, False))
+_ran = []
+with mock.patch.object(sync.subprocess, "run",
+                       lambda *a, **k: _ran.append(a) or type("R", (), {"returncode": 0})()):
+    with tempfile.TemporaryDirectory() as _td:
+        code = sync.main(["triage", "--report-dir", _td])
+check("the runner never spawns a HUMAN step, even asked for by name", _ran, [])
+check("...and says so by exiting 2, not 0 — 'nobody triaged' is not 'all clear'",
+      code, 2)
+_notes = sync.summary_notes({"triage": sync.SKIPPED}, False)[0]
+check("...and the summary points at the skill, not at --i-have-approval",
+      "aaif-triage-intake" in _notes and "--i-have-approval" not in _notes, True)
+check("an approval-gated skip still names the flag that would help",
+      "--i-have-approval" in sync.summary_notes({"invite": sync.SKIPPED}, True)[0],
+      True)
 
 # The logs are 0600 files in a 0700 gitignored dir and the NEEDS-A-HUMAN note
 # needs real addresses, so the runner turns the engines' CI default OFF.
@@ -189,9 +207,6 @@ check("...and that run exits 2",
       sync.exit_code({"crm": sync.WROTE, "access": sync.DRIFT}), 2)
 check("access drift alone is not reported as generic drift",
       "drift" in sync.summary_notes({"access": sync.DRIFT}, True)[0], False)
-check("a gated step is named in the summary, not silently dropped",
-      "--i-have-approval" in sync.summary_notes({"invite": sync.SKIPPED}, True)[0],
-      True)
 check("...and a gated step makes the run exit 2, never 0",
       sync.exit_code({"chapters": sync.IN_SYNC, "invite": sync.SKIPPED}), 2)
 check("an all-clear run exits 0",

@@ -12,13 +12,18 @@ sheet (id `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o`), which auto-routes eac
 submission to the **Organizers**, **Hosts**, or **Speakers** tab. Submissions
 land automatically; this skill is the human review loop on top of them.
 
-**This is phase 2 of the estate sync, and the only phase a human owns.**
-`aaif-sync` runs the whole pipeline and calls `intake.py` here **read-only** —
-it can show you the queue, never decide it. Everything downstream keys off the
-decision made here: only `Accepted` / `Existing (from MLOps)` reach the Chapters
-List, the About docs, the CRMs and the Drive grants. So an untriaged queue does
-not make the sync fail; it makes the sync report "in sync" while the queue sits
-untouched.
+**This is phase 2 of the estate sync, and the one phase the runner will not
+touch.** `aaif-sync` marks it `human` and **never executes it** — not on a plain
+run, not under `--write`, not even when asked for by name. Triage is a judgement
+about a person, and a judgement nobody made is not a judgement, so there is no
+mode in which the pipeline supplies one. The run reports the step as needing a
+human and exits `2`.
+
+Everything downstream keys off the decision made here: only `Accepted` /
+`Existing (from MLOps)` reach the Chapters List, the About docs, the CRMs and
+the Drive grants. So an untriaged queue does not break the sync — it means the
+estate matches the decisions that *have* been made, and some have not been
+made. You work the queue by running this skill.
 
 > **Central triage is narrower than it used to be (self-serve, 2026-08).** A
 > chapter with **4+ accepted organizers** (`SELF_SERVE_MIN`, not counting AAIF
@@ -186,10 +191,11 @@ flag and let them decide.
 logic powers the interactive triage and any unattended digest, so the two can
 never drift.
 
-This already runs unattended: `aaif-sync` and `nightly.py` call `intake.py` as
-pipeline phase 2, **read-only** — the queue shows up in every sync report
-without anything being decided for you. A delivery channel for a standalone
-digest (Slack, mail) is still TBD with the user.
+The pipeline itself does **not** call it: `aaif-sync` gates phase 2 as `human`
+and runs nothing. A scheduled digest that mails or posts the queue is a
+different thing from deciding it, and would be a fine thing to build — the
+`--json` output is the data source, and the delivery channel is still TBD with
+the user.
 
 ## Gotchas
 

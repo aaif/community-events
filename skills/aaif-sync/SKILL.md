@@ -101,7 +101,7 @@ Exit codes are part of the contract: **`0`** in sync, **`2`** drift / writes
 applied / partial / a gate needs a human, **`1`** a step failed. A wrapper that
 treats `2` as an error misreads every report that proposes anything.
 
-## The four gates
+## The five gates
 
 `--write` does not mean the same thing to every step, and `sync.py` applies each
 gate in one place so no caller can route around one.
@@ -111,7 +111,8 @@ gate in one place so no caller can route around one.
 | **open** | `chapters`, `about`, `crm`, `resources` | `--write` passes through. |
 | **report-only** | `access` | **Never** receives `--write`, whatever the runner was told. Its grants hand standing Drive access to addresses typed into a public form, and Drive may email the person. Run `sync_access.py --write` by hand after reading `access.log`. |
 | **approval** | `provision`, `invite`, `directory` | Needs `--i-have-approval` too, and is refused outright under `--unattended`. These create rooms, add real people and post in shared channels. |
-| **read-only** | `clean`, `triage`, `luma`, `verify` | No write mode at all. |
+| **read-only** | `clean`, `luma`, `verify` | No write mode at all. |
+| **human** | `triage` | **The runner never executes it, in any mode** — not even when asked for by name. Triage is a judgement about a person, and a judgement nobody made is not a judgement, so there is no mode in which this pipeline supplies one. It is reported as needing a human and makes the run exit `2`. Work the queue with the **`aaif-triage-intake`** skill. |
 
 ```bash
 # the Slack phase, once the user has actually approved it
@@ -153,6 +154,11 @@ Slack audit's first run takes ~20 minutes on a 30k-member workspace.
   healthy one; fix the cause and re-run.
 - **A gated step exits `2`, not `0`.** "Nothing went wrong" and "the dangerous
   half never ran" are different facts.
+- **`triage` never runs here, and that is not a limitation to route around.**
+  `sync.py triage` still refuses. Nothing downstream moves until a human works
+  the queue, so a run that reports everything else in sync while the queue is
+  deep is telling you the truth: the estate matches the decisions that have
+  been made, and some have not been made.
 - **`--write` is not a Slack approval.** `--i-have-approval` is a claim that a
   human at the terminal agreed to notify or add real people; never pass it on
   your own initiative.

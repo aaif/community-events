@@ -36,6 +36,11 @@ Four gates, because "can this run unattended" is not one question:
   APPROVAL     needs --i-have-approval as well as --write, and is refused
                outright under --unattended: these notify or add real people.
   READ_ONLY    has no write mode at all.
+  HUMAN        the runner NEVER executes it. Triage is a judgement about a
+               person, and a judgement nobody made is not a judgement — so
+               there is no mode in which this pipeline supplies one. The step
+               is always reported as needing a human, with the command to run,
+               and it makes the run exit 2 the same way a gated step does.
 
 Exit codes, matching the per-engine convention:
     0  everything in sync
@@ -54,7 +59,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKILLS = os.path.abspath(os.path.join(HERE, "..", ".."))
 REPO = os.path.abspath(os.path.join(SKILLS, ".."))
 
-OPEN, REPORT_ONLY, APPROVAL, READ_ONLY = "open", "report-only", "approval", "read-only"
+OPEN, REPORT_ONLY, APPROVAL, READ_ONLY, HUMAN = (
+    "open", "report-only", "approval", "read-only", "human")
 
 #: Steps that take --redact/--no-redact. The runner passes --no-redact: the
 #: logs are 0600 files in a 0700 gitignored directory, the NEEDS-A-HUMAN note
@@ -90,7 +96,7 @@ PHASES = (
              "an unresolved city is invisible to every step below"),
     ]),
     ("triage", [
-        Step("triage", "aaif-triage-intake", "intake.py", [], READ_ONLY,
+        Step("triage", "aaif-triage-intake", "intake.py", [], HUMAN,
              "only Accepted / Existing (from MLOps) flow onward — a human decides"),
     ]),
     ("chapters", [
@@ -171,7 +177,7 @@ def step_cmd(step, write_mode, approved):
     Every gate is applied here, in one place, so no caller can route around one
     by assembling its own command line.
     """
-    if step.gate in (READ_ONLY, REPORT_ONLY):
+    if step.gate in (READ_ONLY, REPORT_ONLY, HUMAN):
         write_mode = False
     elif step.gate == APPROVAL and not approved:
         write_mode = False
@@ -242,7 +248,15 @@ def summary_notes(by_name, write_mode):
     if WROTE in results:
         notes.append("changes were applied and verified")
     pending_access = by_name.get("access") == DRIFT
-    gated = sorted(n for n, o in by_name.items() if o == SKIPPED)
+    # Two different reasons a step did not run, and conflating them tells an
+    # operator to pass a flag that would not have helped: `triage` is a
+    # judgement nobody can delegate to this runner, while the Slack steps are
+    # merely waiting on a human to say yes.
+    human_only = {s.name for _p, s in selected([], False) if s.gate == HUMAN}
+    gated = sorted(n for n, o in by_name.items()
+                   if o == SKIPPED and n not in human_only)
+    needs_human = sorted(n for n, o in by_name.items()
+                         if o == SKIPPED and n in human_only)
     other_drift = any(o == DRIFT for n, o in by_name.items() if n != "access")
     if other_drift:
         notes.append("drift remains — a step held back or re-proposed changes; "
@@ -256,6 +270,11 @@ def summary_notes(by_name, write_mode):
         notes.append("%s did not run — they add or notify real people and need "
                      "--i-have-approval from a human at the terminal"
                      % ", ".join(gated))
+    if needs_human:
+        notes.append("%s is never run by this runner — it is a decision about a "
+                     "person, so nothing downstream moves until someone works "
+                     "the queue themselves (the aaif-triage-intake skill)"
+                     % ", ".join(needs_human))
     if PARTIAL in results:
         notes.append("PARTIAL coverage — a step involuntarily skipped part of "
                      "its scope (usually Slack auth); fix it and re-run")
@@ -350,6 +369,12 @@ def main(argv=None):
         if phase != phase_shown:
             print("  [%s]" % phase)
             phase_shown = phase
+        if step.gate == HUMAN:
+            # Never executed, in any mode. See the gate table in the docstring.
+            by_name[step.name] = SKIPPED
+            print("    %-10s %-15s (needs a human — run the %s skill)"
+                  % (step.name, SKIPPED, step.skill))
+            continue
         if step.gate == APPROVAL and a.write and not a.approved:
             by_name[step.name] = SKIPPED
             print("    %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))

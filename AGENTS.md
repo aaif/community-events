@@ -83,8 +83,8 @@ installed — which is why skill scripts can reach outside their own folder.
 
 The ops skills have **one front door**, `aaif-sync`, and its `scripts/sync.py`
 is the single definition of the pipeline: which engines run, in what order, and
-behind which of the four gates (`open` / `report-only` / `approval` /
-`read-only`). `nightly.py` wraps that same script for CI rather than carrying
+behind which of the five gates (`open` / `report-only` / `approval` /
+`read-only` / `human` — the last one the runner never executes at all). `nightly.py` wraps that same script for CI rather than carrying
 its own copy, and the four phase skills — `aaif-sync-chapters`,
 `aaif-sync-organizers`, `aaif-sync-slack`, plus `aaif-audit-slack` for verify —
 each document one engine and never restate the order. The runner reaches them

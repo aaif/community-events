@@ -131,10 +131,10 @@ flowchart TD
     C --> Cq
     Cq -->|"no"| Cfix --> C
 
-    T["<b>2 · triage</b><br/>intake.py — the queue"]
+    T["<b>2 · triage</b> — <b>the runner stops here</b><br/>reported, never executed<br/><i>run the aaif-triage-intake skill yourself</i>"]
     Tq{"the human's decision"}
     Tno["Denied · Inactive · Duplicate<br/><i>never syncs anywhere</i>"]
-    Cq -->|"yes"| T --> Tq
+    Cq -->|"yes"| T -.->|"a person works the queue"| Tq
     Tq -->|"no"| Tno
 
     CH["<b>3 · chapters</b><br/>sync_chapters.py"]
@@ -292,7 +292,7 @@ batch job:
 | | Phase | Gate | Why |
 |---|---|---|---|
 | 🟦 | `clean`, `luma`, `verify` | **read-only** | no write mode exists at all |
-| 🟨 | `triage` | **human** | accepting an applicant is a decision, never a computation |
+| 🟨 | `triage` | **human** | the runner **never executes it, in any mode** — accepting an applicant is a judgement about a person, and a judgement nobody made is not a judgement. Reported, exits `2`, and you work the queue with `aaif-triage-intake`. |
 | ⬜ | `chapters`, `organizers`†, `resources` | **open** | `--write` passes through after you approve the report |
 | 🟥 | `slack` | **approval** | creates rooms, adds and notifies real people — needs `--i-have-approval`, and is refused outright in an unattended run |
 
