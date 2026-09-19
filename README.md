@@ -190,6 +190,15 @@ Code *plugin*:
   `CHAPTER_CAP`. Both skills are already on the list above, so CI stays green —
   but for the `lib` reason, not this one. Those skills additionally need the
   sibling skill's folder present, not just `lib/`.
+
+  **A third, softer one:** the eight content skills (`aaif-announcement-post`,
+  `aaif-attendee-reminder`, `aaif-carousel-copy`, `aaif-dayof-slides`,
+  `aaif-luma-description`, `aaif-recap-post`, `aaif-speaker-bio`,
+  `aaif-speaker-invite`) *name* `aaif-event-status`' `fetch_tracker.py` as the
+  way to read an event's tracker entry. They import nothing, so they still zip
+  and still work — the agent falls back to asking the user for the details,
+  which is what it did before the script existed. The command is a shortcut a
+  full checkout has and a zip does not, not a dependency.
 - **Cursor** — Cursor uses its own `.cursor/rules/*.mdc` format and does **not**
   consume Claude Code plugins. You can copy a `SKILL.md`'s instructions into a
   Cursor rule, but it won't run the bundled scripts the same way.

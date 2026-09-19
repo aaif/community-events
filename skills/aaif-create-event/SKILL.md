@@ -31,106 +31,112 @@ download whichever tracker the folder holds.
 deterministic docx edit on a local file.** Prereq: `gws` installed and authenticated
 (`gws-cli-access`).
 
-## Steps
 
-1. **Locate the tracker.** Chapters parent `1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx`, Online
-   parent `1g2vHrqDHfh9wBkDJryJIl8wqXA4J-d4i`. Find the named folder, then its
-   `Event Tracker.docx` id (see `aaif-event-status` for the exact `gws drive files list`
-   queries).
+## Preflight
 
-2. **Download it into a temp dir:**
+- [ ] `gws` installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] The chapter or series name **exactly as the Drive folder spells it**.
+- [ ] Know which kind of tracker you are editing. A **chapter** tracker has
+      `VENUE` / `LOCATION / CITY`; a **series** tracker has `PLATFORM` /
+      `STREAM / JOIN LINK`. Passing a flag whose label does not exist in that
+      tracker **aborts loudly** — it is never silently dropped.
+- [ ] For the Luma push: that calendar's API key in `LUMA_API_KEY` or keychain
+      item `luma-api-key`. Store it with
+      `security add-generic-password -s luma-api-key -a aaif -w` — **with no
+      value after `-w`**, so it prompts instead of landing in shell history.
+      Keys are per-calendar (Luma Plus).
 
-   ```
-   WORK=$(mktemp -d)
-   gws drive files get --params '{"fileId":"<DOC_ID>","alt":"media"}' --output $WORK/tracker.docx
-   ```
-   These downloads hold organizer, speaker, and venue details — keep them in the
-   temp dir and **never commit them** (or any `tracker.docx` / `luma.md` /
-   `banner.png` / `new.*`) to the repo.
+## Add the event to the tracker
 
-3. **Add the event (deterministic, local).** Aborts if the title already exists:
+- [ ] **1. Fetch the tracker.** One command resolves the folder and downloads it
+      to a private temp directory:
+      ```bash
+      python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
+      ```
+      Or set `WORK=$(mktemp -d)` first if you want to control the path. These
+      downloads hold organizer, speaker and venue details — **never commit
+      them** (or any `tracker.docx` / `luma.md` / `banner.png` / `new.*`).
+- [ ] **2. Preview** the edit. `--dry-run` writes nothing, not even locally:
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
+        --title "Eval Night · Builder Series" \
+        --date "Wed · August 12, 2026 · 18:00 — late" --dry-run
+      ```
+- [ ] **3. Apply** it locally (deterministic; aborts if the title already exists):
+      ```bash
+      # in-person (chapter) tracker
+      python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
+        --title "..." --date "..." \
+        [--theme ...] [--venue ...] [--location ...] [--speakers ...] \
+        [--luma ...] [--capacity ...] [--organizer ...]
 
-   ```
-   # in-person (chapter) tracker
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
-     --title "Eval Night · Builder Series" \
-     --date "Wed · August 12, 2026 · 18:00 — late" \
-     [--theme ...] [--venue ...] [--location ...] [--speakers ...] \
-     [--luma ...] [--capacity ...] [--organizer ...] [--dry-run]
+      # online (series) tracker — --platform / --join, NOT --venue / --location
+      python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
+        --title "..." --date "..." [--platform "Zoom Webinar"] [--join "lu.ma/..."]
+      ```
+      Omitted fields keep the example's text for the organizer to fill later.
+- [ ] **4. Upload it back:**
+      ```bash
+      gws drive files update --params '{"fileId":"<DOC_ID>"}' --upload $WORK/tracker.docx \
+        --upload-content-type application/vnd.openxmlformats-officedocument.wordprocessingml.document
+      ```
 
-   # online (series) tracker — use --platform / --join, NOT --venue / --location
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
-     --title "..." --date "..." [--platform "Zoom Webinar"] [--join "lu.ma/..."] ...
-   ```
-   Flags must match the tracker's labels: a chapter tracker has `VENUE` /
-   `LOCATION / CITY`; a series tracker has `PLATFORM` / `STREAM / JOIN LINK`. Passing
-   a flag whose label doesn't exist in that tracker **aborts loudly** (it is not
-   silently dropped). Omitted fields keep the example's text for the organizer to
-   fill later. Note: `--luma` sets the displayed URL text only; the clickable Luma
-   link target (per chapter/series) is not rewritten here — set it on the Luma page.
+## Put the event on Luma — LIVE, always confirm first
 
-4. **Upload it back:**
+Every event needs a Luma page. `luma_push.py` creates it on the chapter/series
+calendar from the tracker entry, **when Luma is connected**. The script detects
+this itself and its dry run says so.
 
-   ```
-   gws drive files update --params '{"fileId":"<DOC_ID>"}' --upload $WORK/tracker.docx \
-     --upload-content-type application/vnd.openxmlformats-officedocument.wordprocessingml.document
-   ```
+**Not connected → do NOT work around it.** Skip the automated push, ask the user
+to create the page by hand at luma.com from the proposal's details, and record
+the URL in the tracker's `LUMA URL` field (or set the key up and re-run).
 
-Use `--dry-run` in step 3 first if you want to preview without modifying the local file.
+- [ ] **1. Prepare the assets.** Write the page copy with `aaif-luma-description`
+      into `$WORK/luma.md`, and export the banner for the cover:
+      ```bash
+      PYTHONPATH=lib python3 -c "
+      from aaif_events.slides_export import render_slide_png
+      render_slide_png('<Banner.pptx file id>', '$WORK/banner.png', slide_index=0)
+      "
+      ```
+      Determine the city's IANA timezone yourself and include it in the proposal
+      for the user to check.
+- [ ] **2. Propose** — the default, sends nothing:
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_push.py $WORK/tracker.docx "Eval Night · Builder Series" \
+        --timezone America/Los_Angeles --description-file $WORK/luma.md --cover $WORK/banner.png \
+        --host "maya@example.com" --host "vol@example.com:check-in"
+      ```
+      It prints the full payload (the header shows the visibility), the hosts,
+      and which calendar the API key targets.
+- [ ] **3. Show the user all of it and get explicit approval.** Luma is live and
+      guest-facing. Never skip to `--create`.
+- [ ] **4. Create** — re-run the same command with `--create`. It uploads the
+      cover, creates the event **private** (the default), adds hosts, writes the
+      new URL into the tracker's `LUMA URL` field, and prints the URL.
+      Re-upload the docx to Drive afterwards.
+- [ ] **5. Verify, then publish.** Open the printed URL and check
+      name/time/venue/cover/description against the proposal, and that the hosts
+      appear. Then have **the user** set the page public on Luma.
 
-## Put the event on Luma (LIVE — always confirm first)
+## Gotchas
 
-Every event needs a Luma page. `scripts/luma_push.py` creates it on the
-chapter/series calendar from the tracker entry — **when Luma is connected**,
-i.e. that calendar's API key is in `LUMA_API_KEY` or the keychain. Store it with
-`security add-generic-password -s luma-api-key -a aaif -w` — with no value after
-`-w` the command prompts for the key interactively; **never paste the key into a
-command** (it would land in shell history and transcripts). Luma Plus, keys are
-per-calendar. The script detects this itself and its dry-run says so:
+- **The start time comes from the first `HH:MM` in `DATE & TIME`.** A second one
+  is read as the end time; otherwise `--duration-hours` (default 3).
+- **A `LUMA URL` that already holds an event page aborts the push.** `--force`
+  overrides — read why it is already filled before you use it.
+- **`--luma` and the write-back set the displayed URL *text* only.** If the
+  template pre-filled that cell as a hyperlink, the clickable target still points
+  at the old destination and must be fixed on the doc (or on the Luma page link).
+- **The page stays private until a human flips it**, so a mistaken push never
+  reaches guests. `--visibility public` exists but is not the norm.
+- **Later detail changes go through `aaif-update-event`**, which diffs against
+  the live page — never a re-push.
+- **Delete `$WORK` when done.** It holds organizer, speaker and venue details.
 
-- **Connected** → show the user the printed proposal; on their explicit approval
-  (and ONLY then — Luma is live and guest-facing) re-run with `--create`.
-- **Not connected** → do NOT try to work around it: skip the automated push and
-  ask the user to create the page manually at luma.com using the proposal's
-  details, then record the URL in the tracker's LUMA URL field (or set up the
-  key and re-run).
+## Verify
 
-1. **Prepare the assets**: write the page copy with `aaif-luma-description` and
-   save it as markdown; export the event banner to PNG for the cover via the
-   Slides API (see the tooling rule at the top of this file):
-   ```
-   PYTHONPATH=lib python3 -c "
-   from aaif_events.slides_export import render_slide_png
-   render_slide_png('<Banner.pptx file id>', '$WORK/banner.png', slide_index=0)
-   "
-   ```
-   Write the markdown to `$WORK/luma.md`. Determine the city's IANA timezone
-   yourself and include it in the proposal for the user to check.
-
-2. **Propose (default, sends nothing):**
-   ```
-   python3 ${CLAUDE_SKILL_DIR}/scripts/luma_push.py $WORK/tracker.docx "Eval Night · Builder Series" \
-     --timezone America/Los_Angeles --description-file $WORK/luma.md --cover $WORK/banner.png \
-     --host "maya@example.com" --host "vol@example.com:check-in"
-   ```
-   It prints the full payload (header shows the visibility), hosts, and which
-   calendar the API key targets.
-   Show all of it to the user. The start time comes from the first `HH:MM` in
-   DATE & TIME (a second one is the end time; else `--duration-hours`, default 3).
-   It aborts if the tracker's LUMA URL already holds an event page (`--force` to override).
-
-3. **Create — only after the user says yes:** re-run the same command with
-   `--create`. It uploads the cover, creates the event **private** (the default;
-   `--visibility public` is available but not the norm), adds hosts, writes the
-   new event URL into the tracker's LUMA URL field (re-upload the docx to Drive),
-   and prints the URL. The page stays private until the user has reviewed it on
-   Luma and flips it public there — so a mistaken push never reaches guests.
-   Note the same caveat as `--luma` in step 3 above: the write-back sets the
-   cell's **displayed URL text only** — if the template
-   pre-fills that cell as a hyperlink, the clickable link target still points at
-   the old destination and must be fixed on the doc (or on the Luma page link).
-
-4. **Verify, then publish**: open the printed URL and check name/time/venue/
-   cover/description against the proposal; confirm the hosts appear; then have
-   the user set the page public on Luma. Later detail changes go
-   through `aaif-update-event` (which diffs against the live page), not a re-push.
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_event.py
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_luma_push.py
+```

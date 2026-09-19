@@ -93,7 +93,10 @@ The same flow (and colors) is documented on the sheet's **"How to use"** tab.
 
 ## Procedure
 
-1. **Pull the queue.** Rows needing attention = Status blank / `Prospect`
+Work the queue in this order. Steps 1-4 are read-only; step 5 is the only one
+that writes, and it runs only when the user asks for it.
+
+- [ ] **1. Pull the queue.** Rows needing attention = Status blank / `Prospect`
    (incl. legacy `New`) / `In progress`:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/intake.py
@@ -102,7 +105,7 @@ The same flow (and colors) is documented on the sheet's **"How to use"** tab.
    `--status Accepted` to filter explicitly. If the user named one type
    (`organizers` / `hosts` / `speakers`), focus there but pull all so counts are right.
 
-2. **Assess fit per applicant**, using these signals (don't over-weight any one):
+- [ ] **2. Assess fit per applicant**, using these signals (don't over-weight any one):
    - **Organizer** — real ties to a local AI community, has run events before,
      a concrete programming idea, and a city. Watch for a `City` of "Other" with a
      non-obvious location (it's in their text) → note the actual city.
@@ -112,16 +115,16 @@ The same flow (and colors) is documented on the sheet's **"How to use"** tab.
      production, and evidence (`Past talks / portfolio`). A thin abstract is a
      follow-up for specifics.
 
-3. **Produce the triage digest** — grouped by tab, and for each applicant give a
+- [ ] **3. Produce the triage digest** — grouped by tab, and for each applicant give a
    one-line recommendation: **Accept**, **Follow up** (what to ask), or **Pass**
    (why). Lead with the strongest candidates. Keep it skimmable.
 
-4. **Draft outreach where it helps** — don't just judge, move it forward:
+- [ ] **4. Draft outreach where it helps** — don't just judge, move it forward:
    - Speakers worth pursuing → use the **`aaif-speaker-invite`** skill for the DM.
    - An accepted organizer for a city that has **no chapter yet** → suggest running
      **`aaif-create-chapter`** for that city.
 
-5. **Write back only if asked.** Default is read-only. If the user wants to record
+- [ ] **5. Write back only if asked.** Default is read-only. If the user wants to record
    decisions, set `Status` / `Reviewed by` / `Reviewed at` / `Decision notes`
    (and `Chapter`) via `gws sheets spreadsheets values batchUpdate`
    (`valueInputOption: RAW`, never `USER_ENTERED` — the form is public, and a
@@ -149,8 +152,11 @@ flag and let them decide.
 (delivery channel TBD with the user). The same selection logic powers both the
 interactive triage and the unattended digest, so they never drift.
 
-## Notes
+## Gotchas
 
+- **`valueInputOption` must be `RAW`, never `USER_ENTERED`.** The form is public,
+  and a value starting with `=`, `+`, `-` or `@` must land as text rather than
+  becoming a live formula. `aaif-clean-data` carries the same rule.
 - The sheet is read by **header name**, not column letter — robust to the form or
   sheet gaining/reordering columns. Keep that property in any edits here.
 - `Other:` responses to "What brings you here?" match no tab and won't appear in
