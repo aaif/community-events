@@ -860,11 +860,18 @@ def person_issues(p, c, is_accepted):
             issues.append("not in #%s (their chapter's public channel)" % c["public"])
         if c["organizers_channel"] and not p["in_organizers"]:
             issues.append("not in #%s (their organizer channel)" % c["organizers_channel"])
-        # Deliberately NOT an issue: local-champs is a small, curated
-        # leadership channel, not a room every accepted organizer belongs
-        # in. Flagging its absence here would tint nearly every row —
-        # the column above already shows it, which is the right amount
-        # of visibility for a fact that isn't a problem.
+        # Policy since 2026-09-18: every accepted organizer belongs in
+        # local-champs, and invite_organizers.py keeps it in step as part of its
+        # DEFAULT scope — so absence is a finding, and it tints a row only when
+        # that sync has not run.
+        #
+        # `in_local_champs` is TRI-STATE: None means the room could not be read
+        # this run (see local_champs_ids' contract), which is not evidence of
+        # absence. Only an explicit False is a finding — a truthiness test here
+        # would report all 155 accepted organizers as missing on a run where the
+        # room simply was not fetched.
+        if p["in_local_champs"] is False:
+            issues.append("not in #%s" % LOCAL_CHAMPS_CHANNEL)
     else:
         status = p.get("intake_status") or ""
         if not status:

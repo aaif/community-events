@@ -622,6 +622,68 @@ check("both columns' rows are concatenated, not overwritten",
 check("both columns' missing counts are summed, not overwritten",
       _both_total, 4)
 
+# --- the champs pseudo-column: ONE workspace-wide room, no sheet cell ---------
+# Every chapter points at it, so the row must be a single merged one whose
+# roster is the union across chapters — the same shape as a shared Country
+# Channel, but reached without any Chapters List column existing.
+_CHAMPS_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Boston"},
+                  {"email": "b@x.com", "name": "Bo", "city": "Madrid"}]
+
+
+def _run_collect_champs(members_in_room=()):
+    # NOTE the chapters carry NO champs key at all: resolving the room from a
+    # cell would raise KeyError here, which is the regression this guards.
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}},
+                {"city": "Madrid", "current": {"Organizer Channel": "madrid-organizers"}}]
+    chans = [{"name": "local-champs", "id": "C9", "is_private": True,
+              "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members",
+                            lambda api, cid: list(members_in_room)), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"},
+                                                 "b@x.com": {"id": "U2"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_CHAMPS_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.collect(column=inv.CHAMPS_COLUMN)
+
+
+_chrows, _, _ = _run_collect_champs()
+check("the champs column needs no sheet cell and yields ONE room",
+      len(_chrows), 1)
+check("the champs room is named from audit_organizers, not spelled again",
+      _chrows[0]["channel"], inv.ao.LOCAL_CHAMPS_CHANNEL)
+check("the champs row is labelled for the workspace, not all ~90 cities",
+      _chrows[0]["city"], "all chapters")
+check("the champs roster is the union of every chapter's accepted organizers",
+      sorted(n for n, _ in _chrows[0]["missing"]), ["Ada", "Bo"])
+
+# A leadership room legitimately holds people who are not accepted organizers.
+# Counting them as "in a channel the intake does not list them for" would put
+# ~135 false entries into that tally on the real workspace.
+_chrows2, _, _ = _run_collect_champs(members_in_room=["U1", "U2", "USTRANGER"])
+check("a non-organizer in the champs room is NOT reported as unaccounted",
+      _chrows2[0]["unaccounted"], [])
+check("but the same person IS still seen as present, not missing",
+      sorted(n for n, _ in _chrows2[0]["present"]), ["Ada", "Bo"])
+
+# --- the champs room rides along with the DEFAULT scope ----------------------
+check("the default scope includes the champs room",
+      inv.CHAMPS_COLUMN in [c for c, _ in inv.SCOPE_COLUMNS["organizer"]], True)
+check("the default scope still targets the organizer channel too",
+      "Organizer Channel" in [c for c, _ in inv.SCOPE_COLUMNS["organizer"]], True)
+check("--scope champs targets the room and nothing else",
+      [c for c, _ in inv.SCOPE_COLUMNS["champs"]], [inv.CHAMPS_COLUMN])
+check("--scope both still covers organizer, country and champs",
+      sorted(c for c, _ in inv.SCOPE_COLUMNS["both"]),
+      sorted([inv.CHAMPS_COLUMN, "Country Channel", "Organizer Channel"]))
+# The sentinel must never be mistakable for a real Chapters List column.
+check("the champs sentinel is not a legal column name",
+      inv.CHAMPS_COLUMN.startswith("*"), True)
+
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

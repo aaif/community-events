@@ -657,9 +657,31 @@ def test_person_issues_flags_absence_and_no_slack_account():
     check("present in organizers but absent from public channel is flagged for A",
           ao.person_issues(a, audit[0], True),
           ["not in #boston (their chapter's public channel)"])
-    check("local-champs absence is never flagged as an issue",
-          any("local-champs" in x or "local_champs" in x
-              for x in ao.person_issues(a, audit[0], True)), False)
+    # Policy changed 2026-09-18 (see person_issues): every accepted organizer
+    # belongs in local-champs, so absence IS a finding. Here the room was never
+    # read at all, so the value is None — "unknown", not "absent" — and an
+    # unread room must not manufacture a finding about every person alive.
+    check("an UNREAD champs room flags nobody",
+          any("local-champs" in x for x in ao.person_issues(a, audit[0], True)),
+          False)
+
+
+def test_local_champs_absence_is_a_finding_but_only_when_known():
+    rows = [_row("Boston", public="boston", org="boston-organizers")]
+    people = [{"name": "A", "email": "a@x.com", "status": "Accepted", "city": "Boston"},
+              {"name": "B", "email": "b@x.com", "status": "Accepted", "city": "Boston"}]
+    slack_ids = {"a@x.com": {"id": "U1"}, "b@x.com": {"id": "U2"}}
+    membership = {"boston": ["U1", "U2"], "boston-organizers": ["U1", "U2"]}
+    # A is in the champs room, B is not — and the room WAS read, so B's absence
+    # is a fact rather than an unknown.
+    audit, _ = ao.build_audit(rows, people, slack_ids, membership, {},
+                              "mlops.community", local_champs_ids=["U1"])
+    a, b = audit[0]["accepted"]
+    check("an accepted organizer missing from a READ champs room is flagged",
+          ao.person_issues(b, audit[0], True),
+          ["not in #%s" % ao.LOCAL_CHAMPS_CHANNEL])
+    check("an accepted organizer who IS in the champs room is not flagged",
+          ao.person_issues(a, audit[0], True), [])
 
 
 def test_unnamed_member_is_marked_unresolved_not_accused():
