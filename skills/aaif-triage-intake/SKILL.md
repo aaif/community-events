@@ -13,11 +13,11 @@ submission to the **Organizers**, **Hosts**, or **Speakers** tab. Submissions
 land automatically; this skill is the human review loop on top of them.
 
 **This is phase 2 of the estate sync, and the one phase the runner will not
-touch.** `aaif-sync` marks it `human` and **never executes it** — not on a plain
-run, not under `--write`, not even when asked for by name. Triage is a judgement
-about a person, and a judgement nobody made is not a judgement, so there is no
-mode in which the pipeline supplies one. The run reports the step as needing a
-human and exits `2`.
+decide.** `aaif-sync` marks it `human`: it runs `intake.py` **read-only** and
+prints the digest, so every sync report says how deep the queue is — "nothing to
+do" and "nobody has looked" are different facts, and summarising is not
+deciding. No argv makes it write. While rows await a decision the run exits
+`2`.
 
 Everything downstream keys off the decision made here: only `Accepted` /
 `Existing (from MLOps)` reach the Chapters List, the About docs, the CRMs and

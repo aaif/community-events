@@ -21,16 +21,29 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py --write    # apply, after approval
 | 1 | `clean` | resolve intake cities | `aaif-clean-data` |
 | 2 | `triage` | accept / deny — **a human decides** | `aaif-triage-intake` |
 | 3 | `chapters` | intake cities → rows on the Chapters List | `aaif-sync-chapters` |
-| 4 | `organizers` | accepted organizers → About docs, CRMs, Drive grants | `aaif-sync-organizers` |
-| 5 | `resources` | record each chapter's Drive folder + Slack channels | `aaif-sync-slack` |
-| 6 | `slack` | create the planned rooms, invite organizers, post directories | `aaif-sync-slack` |
-| 7 | `luma` | every chapter row's page is still live | `aaif-sync-chapters` |
-| 8 | `verify` | the independent check, from a different code path | `aaif-audit-slack` |
+| 4 | `organizers` | accepted organizers → About docs and their Drive grants | `aaif-sync-organizers` |
+| 5 | `people` | organizers, speakers and hosts → the chapter CRM | `aaif-sync-organizers` |
+| 6 | `resources` | record each chapter's Drive folder + Slack channels | `aaif-sync-slack` |
+| 7 | `slack` | create the planned rooms, invite organizers, post directories | `aaif-sync-slack` |
+| 8 | `luma` | every chapter row's page is still live | `aaif-sync-chapters` |
+| 9 | `verify` | the independent check, from a different code path | `aaif-audit-slack` |
 
 **The order is not negotiable.** An unresolved city is invisible to every step
-below it; a net-new city needs its feed row before anything can hang off it; the
-CRM decides who gets Drive access, so it lands before access does; and the
-resource map records what exists only once it exists.
+below it; a net-new city needs its feed row before anything can hang off it; and
+the resource map records what exists only once it exists.
+
+**Chapters, then organizers, then everyone else.** Only organizers get a name in
+an About doc and a grant on a chapter folder — `sync_access` reads
+`ACCESS_TABS = ("Organizers",)` from the **intake**, never the CRM, so phase 4
+does not wait on phase 5. Speakers and hosts reach exactly one surface, the
+chapter CRM, and they follow.
+
+**`people` is one pass and must not be split by role**, however much the phase
+name invites it. `merge_people` combines a person's rows *across* role tabs into
+a single CRM row — someone who applied as organizer and speaker gets one row
+reading `Organizer/Speaker`, with expertise joined from both. A role-scoped pass
+would write the narrower row, and the second pass cannot see the other
+application to widen it.
 
 `sync.py` is the **one definition** of that order. `nightly.py` wraps it for a
 scheduled job and `PHASES` in the script is what both read — never restate the
@@ -112,7 +125,7 @@ gate in one place so no caller can route around one.
 | **report-only** | `access` | **Never** receives `--write`, whatever the runner was told. Its grants hand standing Drive access to addresses typed into a public form, and Drive may email the person. Run `sync_access.py --write` by hand after reading `access.log`. |
 | **approval** | `provision`, `invite`, `directory` | Needs `--i-have-approval` too, and is refused outright under `--unattended`. These create rooms, add real people and post in shared channels. |
 | **read-only** | `clean`, `luma`, `verify` | No write mode at all. |
-| **human** | `triage` | **The runner never executes it, in any mode** — not even when asked for by name. Triage is a judgement about a person, and a judgement nobody made is not a judgement, so there is no mode in which this pipeline supplies one. It is reported as needing a human and makes the run exit `2`. Work the queue with the **`aaif-triage-intake`** skill. |
+| **human** | `triage` | **The runner summarises it, and never decides it.** It runs `intake.py` read-only, so a report says how deep the queue is — the difference between "nothing to do" and "nobody has looked". No argv makes it write. Rows awaiting a decision exit `2`; work them with the **`aaif-triage-intake`** skill. |
 
 ```bash
 # the Slack phase, once the user has actually approved it
@@ -128,7 +141,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py --write    # apply what is safe
 
 `nightly.py` is a thin wrapper: it adds `--unattended` and its own report
 directory, and owns no pipeline of its own. Unattended runs `clean`, `chapters`,
-`organizers`, `resources` only — `slack` is excluded because every step in it is
+`organizers`, `people`, `resources` only — `slack` is excluded because every step in it is
 approval-gated and a scheduled job is by definition nobody's approval, `luma`
 because luma.com rate-limits the sweep (a 96-row run draws a `429` with no
 `Retry-After`, so it would report PARTIAL every night), and `verify` because the

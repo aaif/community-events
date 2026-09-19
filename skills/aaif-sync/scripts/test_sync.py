@@ -67,16 +67,26 @@ check("but never beats FAILED, which is strictly worse news",
 # --- the pipeline order --------------------------------------------------------
 check("phase order is the documented pipeline order",
       sync.PHASE_NAMES,
-      ["clean", "triage", "chapters", "organizers", "resources", "slack",
-       "luma", "verify"])
-check("the organizers phase writes the CRM before it reads it for access",
-      [s.name for p, s in sync.selected(["organizers"], False)],
-      ["about", "crm", "access"])
+      ["clean", "triage", "chapters", "organizers", "people", "resources",
+       "slack", "luma", "verify"])
+# Organizers before everyone else: only they get a name in the About doc and a
+# grant on the folder. Speakers and hosts reach one surface, the CRM, and follow.
+check("the organizers phase is organizer-only work",
+      [s.name for _p, s in sync.selected(["organizers"], False)],
+      ["about", "access"])
+check("speakers and hosts land in their own later phase",
+      [s.name for _p, s in sync.selected(["people"], False)], ["crm"])
+check("...and organizers still come first",
+      sync.PHASE_NAMES.index("organizers") < sync.PHASE_NAMES.index("people"), True)
+# The CRM merges a person's rows ACROSS role tabs into one row, so it must stay
+# a single pass. A role-scoped split would write the narrower row twice.
+check("the CRM is ONE step, never split per role",
+      len([s for _p, s in sync.selected([], False) if s.script == "sync_crm.py"]), 1)
 # Selecting a subset must never let the caller reorder the pipeline: listing
 # access first does not grant access before the CRM holds the right people.
 check("a subset keeps pipeline order however it was typed",
       [s.name for _p, s in sync.selected(["access", "chapters", "crm"], False)],
-      ["chapters", "crm", "access"])
+      ["chapters", "access", "crm"])
 check("a phase name and a step name both select",
       [s.name for _p, s in sync.selected(["resources", "crm"], False)],
       ["crm", "resources"])
@@ -112,21 +122,54 @@ check("a read-only step can never be made to write",
       ("--write" in cmd, wm), (False, False))
 check("triage is HUMAN-gated — a decision is a person's, not a runner's",
       _by["triage"].gate, sync.HUMAN)
-# The whole point of the gate: no argv exists that makes the runner execute it.
+# The gate summarises but never decides: it runs, and no argv can make it write.
 cmd, wm = sync.step_cmd(_by["triage"], write_mode=True, approved=True)
 check("a HUMAN step can never be given a write mode", ("--write" in cmd, wm),
       (False, False))
-_ran = []
-with mock.patch.object(sync.subprocess, "run",
-                       lambda *a, **k: _ran.append(a) or type("R", (), {"returncode": 0})()):
-    with tempfile.TemporaryDirectory() as _td:
-        code = sync.main(["triage", "--report-dir", _td])
-check("the runner never spawns a HUMAN step, even asked for by name", _ran, [])
-check("...and says so by exiting 2, not 0 — 'nobody triaged' is not 'all clear'",
-      code, 2)
-_notes = sync.summary_notes({"triage": sync.SKIPPED}, False)[0]
-check("...and the summary points at the skill, not at --i-have-approval",
-      "aaif-triage-intake" in _notes and "--i-have-approval" not in _notes, True)
+check("...not even --i-have-approval reaches it",
+      "--i-have-approval" in cmd, False)
+
+
+def _drive_triage(code):
+    """Run the triage step with intake.py stubbed at a given exit code."""
+    seen = []
+
+    def fake_run(cmd, stdout=None, stderr=None, **kw):
+        seen.append(cmd)
+        if stdout is not None:
+            stdout.write("3 awaiting review\n")
+        return type("R", (), {"returncode": code})()
+
+    with mock.patch.object(sync.subprocess, "run", fake_run), \
+         tempfile.TemporaryDirectory() as td:
+        rc = sync.main(["triage", "--report-dir", td])
+    return rc, seen
+
+
+# A deep queue and an empty one must be distinguishable, which is the whole
+# reason the runner runs it at all rather than printing "ask a human".
+_rc, _seen = _drive_triage(2)
+check("the runner DOES run a HUMAN step — summarising is not deciding",
+      any("intake.py" in " ".join(c) for c in _seen), True)
+check("...with no --write in the argv it actually spawned",
+      any("--write" in c for c in _seen), False)
+check("rows awaiting a decision exit 2 — 'nobody looked' is not 'all clear'",
+      _rc, 2)
+_rc_empty, _ = _drive_triage(0)
+check("an empty queue exits 0 — there is genuinely nothing to do",
+      _rc_empty, 0)
+
+_notes = sync.summary_notes({"triage": sync.DRIFT}, False)[0]
+check("the summary says a human decides, and points at the skill",
+      "aaif-triage-intake" in _notes and "never decide" in _notes, True)
+check("...and never tells the operator to re-run triage with --write",
+      "--write" in _notes or "--i-have-approval" in _notes, False)
+# The generic drift note would say exactly that, so triage must stay out of it.
+check("a HUMAN step's DRIFT is not swept into the generic drift note",
+      "re-run the flagged step(s) with --write" in _notes, False)
+check("a real engine's drift still gets the generic note",
+      "re-run the flagged step(s) with --write"
+      in sync.summary_notes({"crm": sync.DRIFT}, False)[0], True)
 check("an approval-gated skip still names the flag that would help",
       "--i-have-approval" in sync.summary_notes({"invite": sync.SKIPPED}, True)[0],
       True)

@@ -14,7 +14,8 @@ The order is not arbitrary and must not be reordered:
     clean      an unresolved city is invisible to every step below
     triage     only Accepted / Existing (from MLOps) flow onward
     chapters   a net-new city needs its feed row before anything hangs off it
-    organizers the same accepted list reaches the About doc, the CRM and the grant
+    organizers the accepted-organizer list reaches the About doc and the grant
+    people     speakers and hosts join the organizers in the chapter CRM
     resources  records the folder and channels that now exist
     slack      creates what `resources --plan` named, then invites people into it
     luma       every chapter row's page is still live
@@ -36,11 +37,13 @@ Four gates, because "can this run unattended" is not one question:
   APPROVAL     needs --i-have-approval as well as --write, and is refused
                outright under --unattended: these notify or add real people.
   READ_ONLY    has no write mode at all.
-  HUMAN        the runner NEVER executes it. Triage is a judgement about a
-               person, and a judgement nobody made is not a judgement — so
-               there is no mode in which this pipeline supplies one. The step
-               is always reported as needing a human, with the command to run,
-               and it makes the run exit 2 the same way a gated step does.
+  HUMAN        runs, read-only, and **summarises without deciding**. Triage is
+               a judgement about a person, and a judgement nobody made is not a
+               judgement — so no mode of this runner supplies one. What it can
+               do with nobody watching is say how deep the queue is, which is
+               the difference between "nothing to do" and "nobody has looked".
+               The step exits 2 while rows await a decision, and the summary
+               names the skill a human runs to work them.
 
 Exit codes, matching the per-engine convention:
     0  everything in sync
@@ -103,13 +106,32 @@ PHASES = (
         Step("chapters", "aaif-sync-chapters", "sync_chapters.py", [], OPEN,
              "a net-new city needs its feed row before anything hangs off it"),
     ]),
+    # Organizers first, then everyone else. Only organizers get a name in the
+    # About doc and a grant on the chapter folder — `sync_access` reads
+    # ACCESS_TABS = ("Organizers",) from the INTAKE, never the CRM, so this
+    # phase does not depend on `people` having run. (The old pipeline claimed
+    # "the CRM decides who gets Drive access, so it lands first". It does not:
+    # looping every role tab there would have granted speakers and hosts the
+    # same writer role, which that script's own comment records as a shipped
+    # privilege escalation.)
     ("organizers", [
         Step("about", "aaif-sync-organizers", "sync_about.py", [], OPEN,
              "same accepted list as the feed, so doc and website row agree"),
-        Step("crm", "aaif-sync-organizers", "sync_crm.py", [], OPEN,
-             "the CRM decides who gets Drive access, so it lands first"),
         Step("access", "aaif-sync-organizers", "sync_access.py", [], REPORT_ONLY,
              "grants standing Drive access from a public form — a human every time"),
+    ]),
+    # Speakers and hosts reach exactly one surface: the chapter CRM. They never
+    # get a grant, a name in the About doc, or an organizer-room invite.
+    #
+    # This runs as ONE pass over all three role tabs and must not be split by
+    # role, however tempting the phase name makes it. `merge_people` combines a
+    # person's rows ACROSS tabs into a single CRM row — `Interested in` reads
+    # "Organizer/Speaker", and expertise is joined from both. A role-scoped pass
+    # would write the narrower row first and the second pass, which cannot see
+    # the other application, would compute a narrower value again.
+    ("people", [
+        Step("crm", "aaif-sync-organizers", "sync_crm.py", [], OPEN,
+             "one row per person per chapter, merged across every role they applied for"),
     ]),
     ("resources", [
         Step("resources", "aaif-sync-slack", "sync_resources.py", [], OPEN,
@@ -144,7 +166,7 @@ PHASE_NAMES = [p for p, _ in PHASES]
 #: unattended teaches operators to ignore the one signal it shares with real
 #: findings. Both stay manual. `verify` is absent because the Slack audit's
 #: first run takes ~20 minutes on a 30k-member workspace.
-UNATTENDED_PHASES = ("clean", "chapters", "organizers", "resources")
+UNATTENDED_PHASES = ("clean", "chapters", "organizers", "people", "resources")
 
 IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED = (
     "in sync", "DRIFT", "wrote+verified", "FAILED", "PARTIAL", "skipped")
@@ -255,9 +277,13 @@ def summary_notes(by_name, write_mode):
     human_only = {s.name for _p, s in selected([], False) if s.gate == HUMAN}
     gated = sorted(n for n, o in by_name.items()
                    if o == SKIPPED and n not in human_only)
+    # A HUMAN step reports DRIFT for "rows are waiting", not for "a proposal is
+    # ready to apply" — so it must not fall into the generic drift note, which
+    # would tell an operator to re-run it with --write. There is no --write.
     needs_human = sorted(n for n, o in by_name.items()
-                         if o == SKIPPED and n in human_only)
-    other_drift = any(o == DRIFT for n, o in by_name.items() if n != "access")
+                         if o in (DRIFT, SKIPPED) and n in human_only)
+    other_drift = any(o == DRIFT for n, o in by_name.items()
+                      if n != "access" and n not in human_only)
     if other_drift:
         notes.append("drift remains — a step held back or re-proposed changes; "
                      "read its log" if write_mode
@@ -271,9 +297,10 @@ def summary_notes(by_name, write_mode):
                      "--i-have-approval from a human at the terminal"
                      % ", ".join(gated))
     if needs_human:
-        notes.append("%s is never run by this runner — it is a decision about a "
-                     "person, so nothing downstream moves until someone works "
-                     "the queue themselves (the aaif-triage-intake skill)"
+        notes.append("%s has rows awaiting a decision — the runner summarised the "
+                     "queue but will never decide it; nothing downstream moves "
+                     "until a human works it (the aaif-triage-intake skill). The "
+                     "full digest is in its log"
                      % ", ".join(needs_human))
     if PARTIAL in results:
         notes.append("PARTIAL coverage — a step involuntarily skipped part of "
@@ -369,12 +396,6 @@ def main(argv=None):
         if phase != phase_shown:
             print("  [%s]" % phase)
             phase_shown = phase
-        if step.gate == HUMAN:
-            # Never executed, in any mode. See the gate table in the docstring.
-            by_name[step.name] = SKIPPED
-            print("    %-10s %-15s (needs a human — run the %s skill)"
-                  % (step.name, SKIPPED, step.skill))
-            continue
         if step.gate == APPROVAL and a.write and not a.approved:
             by_name[step.name] = SKIPPED
             print("    %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
@@ -385,6 +406,9 @@ def main(argv=None):
         note = ""
         if step.gate == REPORT_ONLY:
             note = "  (report mode — never written by this runner)"
+        elif step.gate == HUMAN:
+            note = ("  (summary only — a human decides)" if outcome == DRIFT
+                    else "  (summary only)")
         elif step.gate == READ_ONLY:
             note = "  (read-only)"
         print("    %-10s %-15s exit %d  %4.0fs  %s.log%s"

@@ -22,8 +22,14 @@ people.
 | Intake Ops (`Organizers`, `Form Responses`, role tabs) | `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o` | **read only, always** |
 | Chapters Drive folder | `1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx` | written |
 
-**Run them in this order: about → crm → access.** The CRM decides who gets Drive
-access, so it must hold the right people before a grant is issued.
+**Run them in this order: about → access → crm.** Organizers first — they are the
+only people who get a name in an About doc and a grant on a chapter folder.
+`sync_access` reads its accepted list from the **intake**
+(`ACCESS_TABS = ("Organizers",)`), never from the CRM, so a grant does not wait
+on the CRM. Speakers and hosts reach one surface only, the CRM, and follow.
+
+In the pipeline these are two phases — **4 `organizers`** (about, access) and
+**5 `people`** (crm) — because that is the order the work actually depends on.
 
 ## Untrusted input
 

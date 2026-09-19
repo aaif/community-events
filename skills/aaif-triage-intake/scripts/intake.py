@@ -222,6 +222,18 @@ def main():
     else:
         text_digest(data, label)
 
+    # Exit-code convention, shared with every engine in this estate: 0 means
+    # nothing needs doing, 2 means this report proposes work for a human. It is
+    # what lets `aaif-sync` summarise the queue without deciding it — the runner
+    # reads the code, not the prose, to tell a deep queue from an empty one.
+    #
+    # Only the default selection can mean "awaiting a decision". `--all` and an
+    # explicit `--status` are lookups: a non-empty answer there is the question
+    # being answered, not a queue, so they always exit 0.
+    if args.all or args.status is not None:
+        return 0
+    return 2 if sum(len(v) for v in data.values()) else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

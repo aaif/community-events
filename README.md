@@ -131,7 +131,7 @@ flowchart TD
     C --> Cq
     Cq -->|"no"| Cfix --> C
 
-    T["<b>2 · triage</b> — <b>the runner stops here</b><br/>reported, never executed<br/><i>run the aaif-triage-intake skill yourself</i>"]
+    T["<b>2 · triage</b><br/>intake.py — <b>summarises the queue</b><br/><i>never decides it</i>"]
     Tq{"the human's decision"}
     Tno["Denied · Inactive · Duplicate<br/><i>never syncs anywhere</i>"]
     Cq -->|"yes"| T -.->|"a person works the queue"| Tq
@@ -152,11 +152,13 @@ flowchart TD
     Fq -->|"<b>no</b> — an orphan"| NEW --> ORG
     Fq -->|"yes"| ORG
 
-    ORG["<b>4 · organizers</b><br/>About doc · CRM · Slack ID · Drive grant<br/><i>detail below ↓</i>"]
-    Tq -->|"still in pipeline<br/><i>CRM only, self-serve chapters</i>"| ORG
+    ORG["<b>4 · organizers</b><br/>About doc · Drive grant · Slack ID<br/><i>organizers only — detail below ↓</i>"]
+    PPL["<b>5 · people</b><br/>sync_crm.py — organizers, speakers, hosts<br/><i>one row per person, merged across roles</i>"]
+    ORG --> PPL
+    Tq -->|"still in pipeline<br/><i>CRM only, self-serve chapters</i>"| PPL
 
-    RES["<b>5 · resources</b><br/>sync_resources.py — folder + channels<br/><i>exact matches only; detail below ↓</i>"]
-    ORG --> RES
+    RES["<b>6 · resources</b><br/>sync_resources.py — folder + channels<br/><i>exact matches only</i>"]
+    PPL --> RES
 
     Gq{"has a human passed<br/><b>--i-have-approval</b>?"}
     HOLD["report and stop<br/><i>a scheduled job is nobody's approval</i>"]
@@ -164,14 +166,14 @@ flowchart TD
     Gq -->|"no"| HOLD
     Gq -->|"yes"| SL
 
-    SL["<b>6 · slack</b><br/>provision → invite → directory<br/><i>renames before creates</i>"]
-    L["<b>7 · luma</b><br/>--audit-luma"]
+    SL["<b>7 · slack</b><br/>provision → invite → directory<br/><i>renames before creates</i>"]
+    L["<b>8 · luma</b><br/>--audit-luma"]
     Lq{"429 from luma.com?"}
     Lp["stop, mark <b>PARTIAL</b><br/><i>one upstream fact must not<br/>become ninety findings</i>"]
     SL --> L --> Lq
     Lq -->|"yes"| Lp
 
-    V["<b>8 · verify</b><br/>audit_organizers.py"]
+    V["<b>9 · verify</b><br/>audit_organizers.py"]
     Vq{"findings?"}
     Lq -->|"no"| V --> Vq
     Vq -->|"yes — fix at the source"| C
@@ -199,6 +201,13 @@ straight line:
   `Delhi NCR` row is reported for a human to confirm, never written: a
   near-miss has no override flag, so a wrong guess does not cost one
   confirmation, it blocks that city permanently.
+- **Organizers are done before anyone else.** They are the only people who get a
+  name in an About doc and a grant on a chapter folder — `sync_access` reads its
+  list from the *intake*, never the CRM. Speakers and hosts reach exactly one
+  surface, the chapter CRM, and follow in phase 5. That phase is **one pass and
+  is not split by role**: `merge_people` combines a person's rows across role
+  tabs into a single row reading `Organizer/Speaker`, and a role-scoped pass
+  could only ever write the narrower half.
 
 #### Inside phase 4 — what happens to one person
 
@@ -292,7 +301,7 @@ batch job:
 | | Phase | Gate | Why |
 |---|---|---|---|
 | 🟦 | `clean`, `luma`, `verify` | **read-only** | no write mode exists at all |
-| 🟨 | `triage` | **human** | the runner **never executes it, in any mode** — accepting an applicant is a judgement about a person, and a judgement nobody made is not a judgement. Reported, exits `2`, and you work the queue with `aaif-triage-intake`. |
+| 🟨 | `triage` | **human** | the runner **summarises, and never decides**. It reports how deep the queue is — "nothing to do" and "nobody has looked" are different facts — and exits `2` while rows wait. Accepting an applicant is a judgement about a person; you make it with `aaif-triage-intake`. |
 | ⬜ | `chapters`, `organizers`†, `resources` | **open** | `--write` passes through after you approve the report |
 | 🟥 | `slack` | **approval** | creates rooms, adds and notifies real people — needs `--i-have-approval`, and is refused outright in an unattended run |
 
@@ -317,7 +326,7 @@ reorder it — `sync.py access crm` still runs `crm` first, and a test pins that
 | `aaif-create-event` | Add an event to a chapter/series Event Tracker (due-dates stamped from the event date), optionally creating the live Luma page on approval | Google Drive, Luma |
 | `aaif-update-event` | Edit an event's details or move its date (recomputing all task due-dates), flag stale assets, optionally sync the change to Luma | Google Drive, Luma |
 | `aaif-event-status` | Report overdue / due-soon event tasks by owner, plus read-only Luma registration stats | Google Drive, Luma |
-| **`aaif-sync`** | **The ops front door.** Runs the whole estate sync in dependency order — clean → triage → chapters → organizers → resources → slack → luma → verify — report-first, with a gate on anything that touches a real person | everything below |
+| **`aaif-sync`** | **The ops front door.** Runs the whole estate sync in dependency order — clean → triage → chapters → organizers → people → resources → slack → luma → verify — report-first, with a gate on anything that touches a real person | everything below |
 | `aaif-sync-chapters` | Phase 3: intake cities and organizer names → rows on the public Chapters List; audits every row's Luma page | Google Sheets |
 | `aaif-sync-organizers` | Phase 4: accepted and pipeline people → each chapter's About doc, its private CRM, and its per-chapter Drive grants | Google Sheets/Drive/Docs |
 | `aaif-sync-slack` | Phases 5-6: the chapter → Drive-folder/Slack-channel resource map, then creating those rooms and inviting organizers into them | Slack, Google Sheets |
