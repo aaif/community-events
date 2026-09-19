@@ -52,11 +52,38 @@ Prefer the guided UI flow? Run these inside Claude Code:
 
 ## What's inside
 
+The toolkit is **two separate halves**, and they are used at different times by
+different people:
+
+|  | ✍️ **Content skills** | 🛠️ **Ops skills** |
+|---|---|---|
+| Answer the question | "what do we *say* about this event?" | "is the estate actually in the state we think it is?" |
+| Scope | **one event** | **the whole estate** — ~100 chapters |
+| Run by | an organizer, per event | AAIF ops, on a cadence |
+| Setup | **none** — paste the details, get copy | `gws` auth, and a Slack or Luma token for some |
+| Writes to | nothing; they hand you text to edit and post | the Chapters List, chapter folders, CRMs, Drive ACLs, Slack |
+| Safety model | the public-copy rule — never publish a detail that is not already public | report → approve → write, plus a gate on anything that touches a real person |
+| Entry point | the individual skill | **`aaif-sync`**, the front door |
+
+They meet in exactly one place: the per-chapter **`Event Tracker.docx`**, which
+the ops side creates and the content side reads.
+
 ### ✍️ Content skills — no setup required
 Pure writing skills. They take the event details you give them and produce copy.
 Two of them (`aaif-carousel-copy`, `aaif-dayof-slides`) additionally *place* that
 copy into a Drive template, and that step needs `gws` like any ops skill; the
 writing itself does not.
+
+They read the event's details from its tracker entry with one command, so nobody
+has to paste them by hand:
+
+```bash
+python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter>" --event "<Event Title>"
+```
+
+Contact details (`SPEAKER EMAIL`, `DOOR CODE`, venue contact) are read but
+deliberately **withheld** and only named — the surest way to keep an address out
+of a published post is to keep it out of the agent's context in the first place.
 
 | Skill | What it writes |
 |---|---|
@@ -80,6 +107,77 @@ writing itself does not.
 ### 🛠️ Ops skills — need Google Workspace access
 These drive Google Drive / Sheets through the `gws` CLI (see below); a few also
 talk to Slack or Luma.
+
+#### The ops workflow
+
+`aaif-sync` is the front door. One command runs the whole thing in dependency
+order; `scripts/sync.py` is the single definition of that order, and
+`nightly.py` wraps the same script for a scheduled run rather than keeping a
+second copy of it.
+
+```bash
+python3 skills/aaif-sync/scripts/sync.py            # report everything, write nothing
+python3 skills/aaif-sync/scripts/sync.py chapters   # one phase, or one step
+python3 skills/aaif-sync/scripts/sync.py --write    # apply, after approval
+```
+
+```mermaid
+flowchart TD
+    INTAKE[("Intake Ops sheet<br/><i>public form responses</i>")] --> P1
+
+    P1["<b>1 · clean</b><br/>aaif-clean-data<br/><i>resolve cities</i>"]
+    P2["<b>2 · triage</b><br/>aaif-triage-intake<br/><i>accept / deny</i>"]
+    P3["<b>3 · chapters</b><br/>aaif-sync-chapters<br/><i>cities → Chapters List rows</i>"]
+    P4["<b>4 · organizers</b><br/>aaif-sync-organizers<br/><i>About docs · CRMs · Drive grants</i>"]
+    P5["<b>5 · resources</b><br/>aaif-sync-slack<br/><i>folder + channel map</i>"]
+    P6["<b>6 · slack</b><br/>aaif-sync-slack<br/><i>create rooms · invite · directory</i>"]
+    P7["<b>7 · luma</b><br/>aaif-sync-chapters<br/><i>every page still live?</i>"]
+    P8["<b>8 · verify</b><br/>aaif-audit-slack<br/><i>independent check</i>"]
+
+    P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8
+    P8 -.->|findings| P1
+
+    P3 --> SHEET[("Chapters List<br/><i>the website feed</i>")]
+    P4 --> DRIVE[("Chapter folders<br/><i>About.docx · CRM.xlsx · ACLs</i>")]
+    P5 --> SHEET
+    P6 --> SLACK[("Slack<br/><i>chapter · organizer · country rooms</i>")]
+    P7 -.->|reads| LUMA[("Luma<br/><i>chapter pages</i>")]
+
+    NEWCITY["aaif-create-chapter<br/><i>Drive folder + assets</i>"] -.->|a net-new city<br/>needs this first| P5
+
+    classDef human fill:#fde68a,stroke:#a16207,color:#000
+    classDef approval fill:#fecaca,stroke:#b91c1c,color:#000
+    classDef ro fill:#e0e7ff,stroke:#4338ca,color:#000
+    classDef store fill:#f5f5f4,stroke:#57534e,color:#000
+    classDef side fill:#fff,stroke:#a8a29e,color:#000,stroke-dasharray:4 3
+
+    class P2 human
+    class P6 approval
+    class P1,P7,P8 ro
+    class INTAKE,SHEET,DRIVE,SLACK,LUMA store
+    class NEWCITY side
+```
+
+Reading the colours — they are the **gates**, and they are why this is not a
+batch job:
+
+| | Phase | Gate | Why |
+|---|---|---|---|
+| 🟦 | `clean`, `luma`, `verify` | **read-only** | no write mode exists at all |
+| 🟨 | `triage` | **human** | accepting an applicant is a decision, never a computation |
+| ⬜ | `chapters`, `organizers`†, `resources` | **open** | `--write` passes through after you approve the report |
+| 🟥 | `slack` | **approval** | creates rooms, adds and notifies real people — needs `--i-have-approval`, and is refused outright in an unattended run |
+
+† except `access` inside it, which is **report-only**: its grants hand standing
+Drive access to addresses typed into a public form, and Drive may email the
+person as a side effect, so the runner never passes it `--write` at all. It
+reports, and a human runs the grant by hand.
+
+**The order is not negotiable.** An unresolved city is invisible to every step
+below it. A net-new city needs its feed row before anything can hang off it. The
+CRM decides who gets Drive access, so it lands before access does. And the
+resource map records what exists only once it exists. Selecting a subset cannot
+reorder it — `sync.py access crm` still runs `crm` first, and a test pins that.
 
 | Skill | What it does | Touches |
 |---|---|---|

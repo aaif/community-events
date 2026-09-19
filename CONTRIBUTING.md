@@ -105,7 +105,12 @@ below. These four are the ones whose mistake is invisible in the output:
   every `SKILL.md` that needs them (skills ship downstream without the repo
   docs): the tooling rule, the public-copy rule, and the attendee legal footer.
   Duplication is the decision; *drift* between the copies is the bug. **Edit
-  every copy together**, never just one.
+  every copy together**, never just one. Its sibling
+  **`check_tooling_banner_coverage.py`** catches the other half: a skill whose
+  scripts drive `gws` but whose `SKILL.md` carries no tooling rule at all.
+  Copies agreeing is worth nothing if a skill that needs one has none — which is
+  how splitting a sync skill into four lost the banner from every one of them
+  with the build still green.
 - **`check_no_local_redaction.py`** — `--redact` only works when the flag and
   the helpers that read it come from `lib/aaif_events/redact.py`. A helper
   reading a different module's flag is a helper `--redact` does not govern, and

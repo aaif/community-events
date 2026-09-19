@@ -127,6 +127,15 @@ tooling-rule banner, the public-copy rule and the attendee legal footer are each
 byte-identical everywhere they appear, and `scripts/check_tooling_banner.py`
 fails the build if any copy drifts. Edit all of them together.
 
+**Agreeing is not the same as being present.** That check deliberately does not
+police *which* skills carry a banner — an editorial call — which left a hole:
+splitting one sync skill into four dropped the tooling rule from all four and
+every check stayed green, banner count 12 → 11.
+`scripts/check_tooling_banner_coverage.py` closes exactly that and nothing
+wider: a skill whose own scripts drive `gws` must carry the tooling rule,
+because those skills write real Drive files and ship without this file. Extra
+carriers are never objected to.
+
 Anything a human looks at — every HTML report and the PDFs rendered from them —
 is drawn with the AAIF design system in `design/`, through
 `lib/aaif_events/report_style.py`. Skill scripts emit markup using its shared
@@ -168,6 +177,8 @@ python scripts/check_no_real_pii.py     # no real address/Slack id in tracked fi
 python scripts/test_check_no_real_pii.py # that guard's own tests
 python scripts/check_workflows.py       # workflows can't leak secrets/PII (needs pyyaml)
 python scripts/test_check_workflows.py  # the linter's own tests
+python scripts/check_tooling_banner_coverage.py   # a gws skill with no tooling rule
+python scripts/test_check_tooling_banner_coverage.py  # that guard's own tests
 python scripts/check_no_local_redaction.py   # --redact comes from lib, never a local copy
 python scripts/check_portable_skills.py      # lib coupling matches the README's caveat
 python scripts/extract_design_tokens.py --check  # design tokens aren't stale
