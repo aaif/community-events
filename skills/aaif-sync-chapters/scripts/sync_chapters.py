@@ -465,13 +465,18 @@ def census_of(chapters):
 
 
 def unknown_statuses(by_status):
-    """Statuses on the sheet that are not in the vocabulary, worst first.
+    """Statuses on the sheet that are not in the vocabulary, worst (most rows) first.
 
     Split out so both the refusal and chapter_health can surface the same set
     rather than each deciding for itself what counts as a typo.
     """
-    return sorted((st, n) for st, n in by_status.items()
-                  if st and st not in CHAPTER_STATUSES)
+    # By COUNT descending, then name — "worst first" as the docstring says and
+    # as cap_refusal renders it. Sorting by the status string put a 40-chapter
+    # typo below a 1-chapter one, which is backwards for a list whose job is
+    # "fix this spelling and the count may change".
+    return sorted(((st, n) for st, n in by_status.items()
+                   if st and st not in CHAPTER_STATUSES),
+                  key=lambda kv: (-kv[1], kv[0]))
 
 
 def cap_refusal(live, by_status, what, incoming=1):
@@ -525,7 +530,8 @@ def assert_under_cap(what="create a new chapter", incoming=1):
 
 def read_chapters():
     """Return (chapters, last_row, layout). chapters = [{row, city, organizers_raw,
-    status, merged_into}].
+    status, merged_into, public}]. All keys are always present ("" when the
+    column is absent), so consumers subscript rather than .get().
 
     layout = {headers, index: {name -> 0-based col}} — the tab is a website feed
     whose columns have moved before, so read well past the current width and

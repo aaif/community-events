@@ -1085,9 +1085,10 @@ report would remove the tool they need in order to comply.
 chapters on two signals — recorded events and last human Slack message — and
 never writes a `Status`. Both signals are needed: 14 chapters have no recorded
 event but a live public channel, so an events-only rule would retire chapters
-that are demonstrably running. The `Past Events` tab is hand-maintained (nothing
-in this repo reads or writes it), which is why its silence is weak evidence on
-its own.
+that are demonstrably running. The `Past Events` tab is hand-maintained — nothing in this
+repo *writes* it, and `chapter_health.py` is its only reader — which is why its
+silence is weak evidence on its own, and why an absence of events can never by
+itself put a chapter in the queue.
 
 **Not yet wired: the website.** The tab *is* the feed — the site reads the sheet
 directly and nothing here publishes to it. `Status` therefore has defined
@@ -1206,6 +1207,7 @@ After any run (and after editing the engine):
   ```bash
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_chapters.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_chapter_cap.py
+  python3 ${CLAUDE_SKILL_DIR}/scripts/test_chapter_health.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_about.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_crm.py
   python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_access.py

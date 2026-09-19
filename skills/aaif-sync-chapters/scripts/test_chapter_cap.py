@@ -69,10 +69,14 @@ check("OVER the cap also refuses",
 # --- the cap is defined once -------------------------------------------------
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "aaif-create-chapter", "scripts"))
 import create_chapter as cc  # noqa: E402
-check("create_chapter reads the cap from sync_chapters, not its own copy",
-      cc._chapters.CHAPTER_CAP is sc.CHAPTER_CAP, True)
-check("the status vocabulary is shared too",
-      cc._chapters.CHAPTER_STATUSES, sc.CHAPTER_STATUSES)
+# MODULE identity, not value identity. `cc._chapters.CHAPTER_CAP is
+# sc.CHAPTER_CAP` passes even between two independently-defined copies, because
+# 100 is a cached small int — the assertion could not fail, so it proved nothing
+# about the duplication its label names.
+check("create_chapter imports the very module that defines the cap",
+      cc._chapters is sc, True)
+check("the status vocabulary is the same object, not an equal copy",
+      cc._chapters.CHAPTER_STATUSES is sc.CHAPTER_STATUSES, True)
 
 # --- a sheet from before the migration must still read ----------------------
 # read_chapters() fills "status" with "" when the column is absent, so the
@@ -100,11 +104,14 @@ check("a single-chapter refusal keeps the plain headline",
 # The column is hand-edited and its dropdown is advisory, so `merged` (lower
 # case) or `Archived` are typeable. Folding them silently into the live count
 # is how the cap's counting rule becomes a spelling contest.
-live, retired, by = census([("A", "Active"), ("B", "merged"), ("C", "Archived")])
-check("an unrecognised Status still counts as live", live, 3)
+live, retired, by = census([("A", "Active"), ("B", "merged"), ("C", "Archived"),
+                            ("D", "merged"), ("E", "merged")])
+check("an unrecognised Status still counts as live", live, 5)
 check("...and retires nothing", retired, 0)
-check("unknown_statuses names them, worst first",
-      sc.unknown_statuses(by), [("Archived", 1), ("merged", 1)])
+# Unequal counts on purpose: with 1 and 1, alphabetical and count order coincide
+# and this assertion passed under either implementation.
+check("unknown_statuses is worst (most rows) first, not alphabetical",
+      sc.unknown_statuses(by), [("merged", 3), ("Archived", 1)])
 check("the vocabulary itself is not reported as unknown",
       sc.unknown_statuses({"Active": 5, "Merged": 1, "": 3}), [])
 odd = sc.cap_refusal(100, {"Archived": 2}, "x")

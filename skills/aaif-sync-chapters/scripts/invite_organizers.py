@@ -379,9 +379,11 @@ def main():
                          "notification to a real person and cannot be unsent")
     ap.add_argument("--city", help="limit to one chapter")
     ap.add_argument("--scope", choices=sorted(SCOPE_COLUMNS), default="organizer",
-                    help="which channel to target: the private Organizer "
-                         "Channel (default), the public Country Channel, or "
-                         "both")
+                    help="which rooms to target. 'organizer' (default) is "
+                         "each chapter's private Organizer Channel AND the "
+                         "workspace-wide #local-champs; 'country' is the public "
+                         "Country Channel; 'both' is all three; 'champs' is "
+                         "#local-champs alone.")
     add_redact_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)

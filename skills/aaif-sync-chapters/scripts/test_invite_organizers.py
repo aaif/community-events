@@ -653,8 +653,35 @@ def _run_collect_champs(members_in_room=()):
 _chrows, _, _ = _run_collect_champs()
 check("the champs column needs no sheet cell and yields ONE room",
       len(_chrows), 1)
-check("the champs room is named from audit_organizers, not spelled again",
+# Patched to a synthetic name below: comparing the output against the same
+# constant it came from passed identically for a hardcoded "local-champs" in
+# invite_organizers, so it never tested what its label claimed.
+check("the champs room is the one audit_organizers names",
       _chrows[0]["channel"], inv.ao.LOCAL_CHAMPS_CHANNEL)
+
+
+def _run_collect_champs_renamed():
+    with _mock.patch.object(inv.ao, "LOCAL_CHAMPS_CHANNEL", "leads-xyz"):
+        chapters = [{"city": "Boston",
+                     "current": {"Organizer Channel": "boston-organizers"}}]
+        chans = [{"name": "leads-xyz", "id": "C9", "is_private": True,
+                  "is_archived": False}]
+        with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+             _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+             _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+             _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+             _mock.patch.object(inv.slackmod, "lookup_emails",
+                                lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+             _mock.patch.object(inv.ao, "read_intake",
+                                lambda: ([{"email": "a@x.com", "name": "Ada",
+                                           "city": "Boston"}], 0, {})), \
+             _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+            return inv.collect(column=inv.CHAMPS_COLUMN)
+
+
+_renamed, _, _ = _run_collect_champs_renamed()
+check("...and FOLLOWS that constant rather than a local copy of the name",
+      _renamed[0]["channel"], "leads-xyz")
 check("the champs row is labelled for the workspace, not all ~90 cities",
       _chrows[0]["city"], "all chapters")
 check("the champs roster is the union of every chapter's accepted organizers",

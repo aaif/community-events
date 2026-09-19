@@ -679,13 +679,6 @@ def main():
     upper = name.upper()
     slug = a.slug.strip().lower() if a.slug is not None else slugify(name)
 
-    # Cap check before any Drive write. NOT on --resume (that finishes a chapter
-    # which already exists and is already counted) and not on --rebrand-local
-    # (no Drive, no chapter). Planning runs are exempt on purpose: seeing what a
-    # chapter WOULD look like is how someone decides which existing one to
-    # retire, and refusing the plan would remove the tool they need to comply.
-    if a.write and not a.resume and not a.rebrand_local:
-        _chapters.assert_under_cap("create the %r chapter folder" % name)
     if not SLUG_RE.match(slug):
         sys.exit("ABORT: invalid slug %r — must match %s (lowercase letters, digits, "
                  "hyphens) before it is used in a luma.com URL." % (slug, SLUG_RE.pattern))
@@ -756,6 +749,25 @@ def main():
             sys.exit("ABORT: a chapter folder named %r already exists (%s). To fill "
                      "in missing items from a failed/partial run, re-run with "
                      "--resume." % (name, existing[0]["id"]))
+
+    # Cap check: gated on resume_id, NOT on --resume. The flag only expresses an
+    # intention to finish an existing chapter; resume_id is whether one was
+    # actually found. Gating on the flag made `--write --resume` with no matching
+    # folder clone TemplateCity from scratch with the cap never consulted — a
+    # working bypass, because the lookup that sets resume_id runs after the point
+    # the old check sat at.
+    #
+    # Placed here so it runs after the flag validation above (a typo'd --slug
+    # dies on its regex rather than after a sheet read) and after the dry-run
+    # branch below is decided, but before any Drive write. Planning runs stay
+    # exempt on purpose: seeing what a chapter WOULD look like is how someone
+    # decides which existing one to retire, so refusing the plan would remove
+    # the tool they need in order to comply.
+    #
+    # NOTE this counts FEED ROWS, and creating a folder adds none — see
+    # sync_chapters.CHAPTER_CAP. It is an early warning, not a guarantee.
+    if a.write and not a.rebrand_local and not resume_id:
+        _chapters.assert_under_cap("create the %r chapter folder" % name)
 
     if not a.write:
         if resume_id:

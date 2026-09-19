@@ -756,7 +756,7 @@ def test_applicants_map_covers_every_row_not_just_accepted_ones():
     check("with its real status", applicants["bo@x.io"]["status"], "Prospect")
 
 
-MIN_TESTS = 59
+MIN_TESTS = 60
 
 
 def test_regional_alias_that_no_longer_resolves_aborts():
