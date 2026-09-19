@@ -26,6 +26,14 @@ Usage:
 """
 import argparse, fnmatch, html, json, math, os, re, shutil, subprocess, sys, tempfile, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
 
+# The 100-chapter cap is defined ONCE, in aaif-sync-chapters. A chapter comes
+# into existence in two places — the Drive folder this script makes and the feed
+# row that engine appends — and a second copy of the number here would let the
+# two disagree, which means a half-made chapter whose other half is refused.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "aaif-sync-chapters", "scripts"))
+import sync_chapters as _chapters  # noqa: E402
+
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "1PHvEgqnHo0RrsFyA47O9iRJGaKehC8Eg"   # the "TemplateCity" folder
 SOURCE_NAME, SOURCE_UPPER = "San Francisco", "SAN FRANCISCO"
@@ -670,6 +678,7 @@ def main():
     name = a.city.strip()
     upper = name.upper()
     slug = a.slug.strip().lower() if a.slug is not None else slugify(name)
+
     if not SLUG_RE.match(slug):
         sys.exit("ABORT: invalid slug %r — must match %s (lowercase letters, digits, "
                  "hyphens) before it is used in a luma.com URL." % (slug, SLUG_RE.pattern))
@@ -740,6 +749,25 @@ def main():
             sys.exit("ABORT: a chapter folder named %r already exists (%s). To fill "
                      "in missing items from a failed/partial run, re-run with "
                      "--resume." % (name, existing[0]["id"]))
+
+    # Cap check: gated on resume_id, NOT on --resume. The flag only expresses an
+    # intention to finish an existing chapter; resume_id is whether one was
+    # actually found. Gating on the flag made `--write --resume` with no matching
+    # folder clone TemplateCity from scratch with the cap never consulted — a
+    # working bypass, because the lookup that sets resume_id runs after the point
+    # the old check sat at.
+    #
+    # Placed here so it runs after the flag validation above (a typo'd --slug
+    # dies on its regex rather than after a sheet read) and after the dry-run
+    # branch below is decided, but before any Drive write. Planning runs stay
+    # exempt on purpose: seeing what a chapter WOULD look like is how someone
+    # decides which existing one to retire, so refusing the plan would remove
+    # the tool they need in order to comply.
+    #
+    # NOTE this counts FEED ROWS, and creating a folder adds none — see
+    # sync_chapters.CHAPTER_CAP. It is an early warning, not a guarantee.
+    if a.write and not a.rebrand_local and not resume_id:
+        _chapters.assert_under_cap("create the %r chapter folder" % name)
 
     if not a.write:
         if resume_id:

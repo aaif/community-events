@@ -718,17 +718,68 @@ class TestCloneResume(unittest.TestCase):
 
 
 class TestMainGuards(unittest.TestCase):
-    """Argument checks in main() that run before any network or Drive call,
-    and the plan-by-default / tempdir contract of a --write run."""
+    """Argument checks in main(), the plan-by-default / tempdir contract of a
+    --write run, and which invocations consult the 100-chapter cap."""
 
-    def run_main(self, argv, clone=None):
+    def run_main(self, argv, clone=None, cap_calls=None):
+        """Drive main() with every external call stubbed.
+
+        `assert_under_cap` joined that list when the 100-chapter cap landed: it
+        reads the live chapters tab through the `gws` CLI, so leaving it real
+        made this suite hit the network on a developer machine and fail outright
+        on CI, where `gws` is not installed. `cap_calls` collects the `what`
+        string so a test can assert WHETHER the cap was consulted.
+        """
         clone = clone or (lambda *a, **k: self.fail("clone_and_rebrand must not run"))
+        calls = cap_calls if cap_calls is not None else []
         with mock.patch.object(sys, "argv", ["x"] + argv), \
                 mock.patch.object(cc, "luma_status", lambda slug: "live"), \
                 mock.patch.object(cc, "list_children", lambda fid: []), \
                     mock.patch.object(cc, "resolve_latlon", lambda *a: (1.0, 2.0)), \
+                mock.patch.object(cc._chapters, "assert_under_cap",
+                                  lambda what="", **k: calls.append(what)), \
                 mock.patch.object(cc, "clone_and_rebrand", clone):
             cc.main()
+
+    def test_plan_runs_never_consult_the_cap(self):
+        """Seeing what a chapter WOULD look like is how someone decides which
+        existing one to retire, so refusing the plan would remove the tool they
+        need in order to comply."""
+        calls = []
+        self.run_main(["--city", "Zed"], cap_calls=calls)
+        self.assertEqual(calls, [])
+
+    def test_a_write_run_consults_the_cap_before_cloning(self):
+        calls = []
+        self.run_main(["--city", "Zed", "--write"],
+                      clone=lambda *a, **k: "new-id", cap_calls=calls)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Zed", calls[0])
+
+    def test_resume_with_no_existing_folder_still_consults_the_cap(self):
+        """The bypass this gating exists to close.
+
+        `--resume` only states an INTENTION to finish an existing chapter.
+        list_children returns [] here, so nothing was found and the run would
+        clone TemplateCity from scratch — a brand-new chapter. Gating on the
+        flag (rather than on whether a folder was actually found) let that
+        through with the cap never consulted.
+        """
+        calls = []
+        self.run_main(["--city", "Zed", "--write", "--resume"],
+                      clone=lambda *a, **k: "new-id", cap_calls=calls)
+        self.assertEqual(len(calls), 1)
+
+    def test_rebrand_local_never_consults_the_cap(self):
+        """No Drive, no chapter — and no reason to read the sheet."""
+        import tempfile
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            # --lat/--lon are required: --rebrand-local is offline-only and
+            # refuses to geocode, which is a separate guard from the cap.
+            self.run_main(["--city", "Zed", "--write", "--rebrand-local", d,
+                           "--lat", "1.0", "--lon", "2.0"], cap_calls=calls)
+        self.assertEqual(calls, [])
 
     def test_slug_must_match_safe_charset(self):
         for bad in ("a b", "x/../y", "ÄBC", "a?b=c", ""):
