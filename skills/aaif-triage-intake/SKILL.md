@@ -50,7 +50,7 @@ silently discards a live application; check `Talk title` / `Headline` /
 A **blank** Status cell is treated as `Prospect`, and so is the **legacy value `New`** —
 the pre-2026-08-22 name for the same state, renamed because `New` misread as
 "new organizer" while `Prospect` matches the term the CRM sync already writes.
-`migrate_status_prospect.py` (in `aaif-sync-chapters`) rewrites the dropdowns,
+`migrate_status_prospect.py` (in `aaif-sync-organizers`) rewrites the dropdowns,
 the cells **and the conditional-format rules that test the Status literal**
 (the blue row color and the pink SLA rule below both key on `=$A2="…"`, are
 hand-made on the sheet, and are repaired by nothing else — renaming only the

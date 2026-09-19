@@ -81,6 +81,17 @@ The repo root is simultaneously the marketplace and the single plugin
 (`marketplace.json` has `source: "./"`), so the *whole checkout* is what gets
 installed — which is why skill scripts can reach outside their own folder.
 
+The ops skills have **one front door**, `aaif-sync`, and its `scripts/sync.py`
+is the single definition of the pipeline: which engines run, in what order, and
+behind which of the four gates (`open` / `report-only` / `approval` /
+`read-only`). `nightly.py` wraps that same script for CI rather than carrying
+its own copy, and the four phase skills — `aaif-sync-chapters`,
+`aaif-sync-organizers`, `aaif-sync-slack`, plus `aaif-audit-slack` for verify —
+each document one engine and never restate the order. The runner reaches them
+by **subprocess**, not import, which is why one skill can drive four without
+inheriting their coupling. An order this load-bearing (the CRM must hold the
+right people before Drive access is granted) must have exactly one definition.
+
 Python lives in two tiers, and picking the right one is the main design decision
 in this repo:
 
@@ -150,7 +161,7 @@ Two test styles, because `lib` is a package and skill scripts are not:
 ```bash
 PYTHONPATH=lib python -m pytest lib/aaif_events/tests -q        # library
 PYTHONPATH=lib python -m pytest lib/aaif_events/tests/test_luma.py -q   # one file
-python skills/aaif-sync-chapters/scripts/test_sync_crm.py      # one skill test: plain script, exit 1 on failure
+python skills/aaif-sync-organizers/scripts/test_sync_crm.py    # one skill test: plain script, exit 1 on failure
 pre-commit run --all-files                                     # ruff, codespell, gitleaks, frontmatter, banner
 python scripts/check_no_secret_args.py  # no --token/--key style CLI flags
 python scripts/check_no_real_pii.py     # no real address/Slack id in tracked files

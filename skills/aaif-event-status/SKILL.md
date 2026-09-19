@@ -31,7 +31,7 @@ ever written back — not to Drive, not to the tracker, not to any sheet.
 
 - [ ] `gws` installed and authenticated (see the user's `gws-cli-access` memory).
 - [ ] The chapter or series name **exactly as the Drive folder spells it** —
-      `New York City`, not `NYC`. `aaif-sync-chapters`' resource map holds the
+      `New York City`, not `NYC`. `aaif-sync-slack`' resource map holds the
       folder URL for every chapter on the Chapters List.
 - [ ] Working from a full checkout (these scripts import `lib/aaif_events`).
 

@@ -37,7 +37,7 @@ Drop the flag once provisioning has run, so the abort protects the map again.
 
 > **The channel map lives on the Chapters List**, not in this repo: five
 > columns per row name that chapter's Drive folder and its public, organizer
-> and country channels. `aaif-sync-chapters`' resource engine fills them and
+> and country channels. `aaif-sync-slack`' resource engine fills them and
 > this engine only reads them, so the two can never disagree about which room
 > is whose. The columns, the `none` sentinel and the never-auto-map rule are in
 > `references/chapters-list-schema.md`.

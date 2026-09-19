@@ -91,7 +91,10 @@ talk to Slack or Luma.
 | `aaif-create-event` | Add an event to a chapter/series Event Tracker (due-dates stamped from the event date), optionally creating the live Luma page on approval | Google Drive, Luma |
 | `aaif-update-event` | Edit an event's details or move its date (recomputing all task due-dates), flag stale assets, optionally sync the change to Luma | Google Drive, Luma |
 | `aaif-event-status` | Report overdue / due-soon event tasks by owner, plus read-only Luma registration stats | Google Drive, Luma |
-| `aaif-sync-chapters` | Push intake decisions to the Chapters List, About docs, chapter CRMs, per-chapter Drive access and the resource map (report/propose by default) | Google Sheets/Drive/Docs, Slack |
+| **`aaif-sync`** | **The ops front door.** Runs the whole estate sync in dependency order — clean → triage → chapters → organizers → resources → slack → luma → verify — report-first, with a gate on anything that touches a real person | everything below |
+| `aaif-sync-chapters` | Phase 3: intake cities and organizer names → rows on the public Chapters List; audits every row's Luma page | Google Sheets |
+| `aaif-sync-organizers` | Phase 4: accepted and pipeline people → each chapter's About doc, its private CRM, and its per-chapter Drive grants | Google Sheets/Drive/Docs |
+| `aaif-sync-slack` | Phases 5-6: the chapter → Drive-folder/Slack-channel resource map, then creating those rooms and inviting organizers into them | Slack, Google Sheets |
 | `aaif-audit-slack` | Audit the community Slack workspace — chapter/organizer channel coverage and member/channel health — as a self-contained HTML report | Slack, Google Sheets |
 | `aaif-community-pulse` | Draft the periodic "AAIF Community Organizer Update" Slack post from recent chapter events, community news, and the Luma calendar | Slack, Google Drive, Luma |
 | `aaif-sync-badges` | Generate and sync chapter organizer badges (SVG + PNG) into the chapter-badges Drive folder | Google Drive |
@@ -178,18 +181,26 @@ Code *plugin*:
   need the full checkout (or plugin install), since the zip won't contain
   `lib/`. Those are `aaif-audit-slack`, `aaif-community-pulse`,
   `aaif-create-chapter`, `aaif-create-event`, `aaif-event-status`,
-  `aaif-sync-badges`, `aaif-sync-chapters` and `aaif-update-event`.
+  `aaif-sync-badges`, `aaif-sync-chapters`, `aaif-sync-organizers`,
+  `aaif-sync-slack` and `aaif-update-event`.
   `scripts/check_portable_skills.py` keeps this list honest — adding a
   `lib/aaif_events` import to a skill that is not listed here fails the build,
   so giving up a skill's portability stays a decision someone makes on purpose.
   **A second, narrower coupling the guard does not model:** a few scripts
   import a *sibling skill's* module rather than `lib` —
-  `aaif-sync-chapters/scripts/invite_organizers.py` imports `audit_organizers`
+  the four sync skills read each other's engines — `aaif-sync-slack`'s scripts
+  import `sync_chapters` (chapters) and `sync_crm` (organizers),
+  `aaif-audit-slack` imports `resolve_slack_ids` (organizers),
+  `aaif-sync-slack/scripts/invite_organizers.py` imports `audit_organizers`
   from `aaif-audit-slack`, and `aaif-create-chapter/scripts/create_chapter.py`
-  imports `sync_chapters` from `aaif-sync-chapters` for the one definition of
-  `CHAPTER_CAP`. Both skills are already on the list above, so CI stays green —
-  but for the `lib` reason, not this one. Those skills additionally need the
-  sibling skill's folder present, not just `lib/`.
+  imports `sync_chapters` for the one definition of `CHAPTER_CAP`. All are
+  already on the list above, so CI stays green — but for the `lib` reason, not
+  this one. Those skills additionally need the sibling skill's folder present,
+  not just `lib/`.
+
+  The front-door skill is deliberately absent from that list: it runs every
+  engine as a **subprocess**, importing none of them, which is what lets one
+  runner drive four skills without taking on any of their coupling.
 
   **A third, softer one:** the eight content skills (`aaif-announcement-post`,
   `aaif-attendee-reminder`, `aaif-carousel-copy`, `aaif-dayof-slides`,
@@ -224,8 +235,11 @@ meetups/
 ├── skills/
 │   ├── aaif-announcement-post/SKILL.md
 │   ├── aaif-create-chapter/{SKILL.md, scripts/}
-│   ├── aaif-sync-chapters/{SKILL.md, scripts/, migrations/, references/}
-│   └── …  (20 skills total)
+│   ├── aaif-sync/{SKILL.md, scripts/}          # the ops front door
+│   ├── aaif-sync-chapters/{SKILL.md, scripts/, references/}
+│   ├── aaif-sync-organizers/{SKILL.md, scripts/, migrations/, references/}
+│   ├── aaif-sync-slack/{SKILL.md, scripts/, references/}
+│   └── …  (23 skills total)
 └── README.md
 ```
 

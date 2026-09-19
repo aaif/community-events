@@ -49,7 +49,7 @@ a half-typed row must not quietly widen the matcher.
 `load_config` also aborts on a row whose `Setting` label names nothing it knows —
 a typo'd label would silently drop a prefix and change what matches.
 
-Proposals come from `aaif-sync-chapters`' `sync_resources.py`, which writes a cell
+Proposals come from `aaif-sync-slack`' `sync_resources.py`, which writes a cell
 only on an **exact** channel-name hit and prints everything weaker as a candidate.
 
 **Never auto-map an alias.** Every channel named on a chapter row is a human

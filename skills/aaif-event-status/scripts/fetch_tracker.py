@@ -89,7 +89,7 @@ def find_folder(name):
     raise SystemExit(
         "! no chapter or online series folder named %r.\n"
         "  The name must match the Drive folder exactly (e.g. 'New York City',\n"
-        "  not 'NYC'). `aaif-sync-chapters`' resource map holds the folder URL\n"
+        "  not 'NYC'). `aaif-sync-slack`' resource map holds the folder URL\n"
         "  for every chapter on the Chapters List." % name)
 
 
