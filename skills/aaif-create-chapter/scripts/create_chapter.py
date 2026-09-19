@@ -26,6 +26,14 @@ Usage:
 """
 import argparse, fnmatch, html, json, math, os, re, shutil, subprocess, sys, tempfile, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
 
+# The 100-chapter cap is defined ONCE, in aaif-sync-chapters. A chapter comes
+# into existence in two places — the Drive folder this script makes and the feed
+# row that engine appends — and a second copy of the number here would let the
+# two disagree, which means a half-made chapter whose other half is refused.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "aaif-sync-chapters", "scripts"))
+import sync_chapters as _chapters  # noqa: E402
+
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "1PHvEgqnHo0RrsFyA47O9iRJGaKehC8Eg"   # the "TemplateCity" folder
 SOURCE_NAME, SOURCE_UPPER = "San Francisco", "SAN FRANCISCO"
@@ -670,6 +678,14 @@ def main():
     name = a.city.strip()
     upper = name.upper()
     slug = a.slug.strip().lower() if a.slug is not None else slugify(name)
+
+    # Cap check before any Drive write. NOT on --resume (that finishes a chapter
+    # which already exists and is already counted) and not on --rebrand-local
+    # (no Drive, no chapter). Planning runs are exempt on purpose: seeing what a
+    # chapter WOULD look like is how someone decides which existing one to
+    # retire, and refusing the plan would remove the tool they need to comply.
+    if a.write and not a.resume and not a.rebrand_local:
+        _chapters.assert_under_cap("create the %r chapter folder" % name)
     if not SLUG_RE.match(slug):
         sys.exit("ABORT: invalid slug %r — must match %s (lowercase letters, digits, "
                  "hyphens) before it is used in a luma.com URL." % (slug, SLUG_RE.pattern))
