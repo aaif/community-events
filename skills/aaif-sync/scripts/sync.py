@@ -86,17 +86,17 @@ STAGES = (GATHER, PLAN, EXECUTE)
 #: previous run. Every conclusion comes from data observed during the run that
 #: printed it.
 #:
-#: One thing does outlive a run and had to be handled rather than wished away:
-#: `.slack-audit-cache/`. Six steps read it — users.json alone takes ~20 minutes
-#: to page on a 30k-member workspace, so refetching it per step is not an
-#: option, and deleting it per run is not either. It is a memo of the WORKSPACE,
-#: not state of the pipeline, and the property that matters is that a run's
-#: findings come from data this run saw.
+#: One thing does outlive a run, deliberately: `.slack-audit-cache/`. Six steps
+#: read it, and users.json alone takes ~20 minutes to page on a 30k-member
+#: workspace, so caching it locally is the point. It is a memo of the WORKSPACE,
+#: not state of the pipeline.
 #:
-#: So: the FIRST cache-backed step in a run is given `--refresh`, rebuilding the
-#: cache once; every later step in the same run reuses what that step just
-#: fetched. Across runs nothing carries. `refresh_plan()` decides which step
-#: that is, and warns when the selection starts with a step that cannot refresh.
+#: The expiry lives in the shared `jsoncache` module (MAX_AGE, one day) rather than
+#: here, because it has to hold for a standalone `audit_topics.py` run too, not
+#: only for steps this runner happens to schedule. A cache past it is discarded
+#: and refetched by whichever step reads it first, announced on that step's log.
+#: The runner therefore needs no refresh policy of its own, and must not force
+#: one: throwing away an hour-old pull on every run is the opposite of caching.
 
 #: Steps that take --redact/--no-redact. The runner passes --no-redact: the
 #: logs are 0600 files in a 0700 gitignored directory, the NEEDS-A-HUMAN note
@@ -276,35 +276,7 @@ def classify(code, wrote_marker, write_mode, partial_marker=False):
     return DRIFT
 
 
-def refresh_plan(steps):
-    """(name of the step that gets --refresh, warning or None).
-
-    The first cache-backed step in a run rebuilds `.slack-audit-cache`; every
-    later one reuses what it just fetched. That is what keeps a run's findings
-    from resting on a cache a previous run left behind, without paying the
-    ~20-minute users.list page more than once.
-
-    When the run's first cache-backed step cannot refresh (`chapter_health` and
-    `resolve_slack_ids` take no such flag), nothing in the run rebuilds the
-    cache and its answers may predate the run. That is reported, not silently
-    accepted — a stale measurement reads exactly like a fresh one.
-    """
-    cached = [s for _p, s in steps if s.cached]
-    if not cached:
-        return None, None
-    first = cached[0]
-    if first.refreshable:
-        return first.name, None
-    later = next((s.name for s in cached[1:] if s.refreshable), None)
-    return later, (
-        "%s reads the shared Slack cache and cannot refresh it, so this run's "
-        "first measurement may predate the run%s"
-        % (first.name,
-           " (%s rebuilds it further down)" % later if later else
-           " — and nothing in this selection rebuilds it"))
-
-
-def step_cmd(step, write_mode, approved, refresh_step=None):
+def step_cmd(step, write_mode, approved):
     """The argv for one step, and the write mode it actually ran under.
 
     Every gate is applied here, in one place, so no caller can route around one
@@ -321,17 +293,11 @@ def step_cmd(step, write_mode, approved, refresh_step=None):
             cmd.append("--i-have-approval")
     if step.name in REDACTING:
         cmd.append("--no-redact")
-    # `refreshable` is checked as well as the name: a step that does not define
-    # the flag would die on an argparse usage error, and the runner would report
-    # it as a FAILED measurement rather than as the wiring mistake it is. The
-    # --no-redact set made exactly this mistake against two Slack scripts.
-    if refresh_step is not None and step.name == refresh_step and step.refreshable:
-        cmd.append("--refresh")
     return cmd, write_mode
 
 
-def run_step(step, log_path, write_mode, approved, refresh_step=None):
-    cmd, write_mode = step_cmd(step, write_mode, approved, refresh_step)
+def run_step(step, log_path, write_mode, approved):
+    cmd, write_mode = step_cmd(step, write_mode, approved)
     t0 = time.monotonic()
     # 0o600: the log holds names and emails; no other local user gets to read
     # it just because the checkout happens to be world-readable.
@@ -542,11 +508,6 @@ def main(argv=None):
           % ("write" if a.write else "report",
              ", unattended" if a.unattended else "", len(steps)))
     print("full reports (contain names/emails — NOT for public logs): %s" % run_dir)
-    refresh_step, stale_warning = refresh_plan(steps)
-    if refresh_step:
-        print("shared Slack cache rebuilt once, by %r" % refresh_step)
-    if stale_warning:
-        print("NOTE: %s" % stale_warning)
     print()
 
     by_name, phase_shown, stage_shown = {}, None, None
@@ -562,8 +523,7 @@ def main(argv=None):
             print("      %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
             continue
         outcome, code, secs = run_step(
-            step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved,
-            refresh_step)
+            step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved)
         by_name[step.name] = outcome
         note = ""
         if step.gate == REPORT_ONLY:

@@ -93,6 +93,18 @@ repos:
         pass_filenames: false
         files: '^skills/.*\.(py|md)$'
 
+  # Caching locally is deliberate; the cache reaching git is not. The runtime
+  # guards all read .gitignore, so one tidy-up of that file disarms every one of
+  # them at once — this asserts the file itself.
+  - repo: local
+    hooks:
+      - id: check-state-never-committed
+        name: caches and reports can never be committed
+        entry: python3 scripts/check_state_never_committed.py
+        language: python
+        pass_filenames: false
+        files: '^\.gitignore$'
+
   # --- Secrets never travel on argv (env vars only; see AGENTS.md) ----------
   - repo: local
     hooks:

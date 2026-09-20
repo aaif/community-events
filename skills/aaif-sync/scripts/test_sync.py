@@ -344,29 +344,24 @@ check("argv is a pure function of the step and the flags",
       sync.step_cmd(_by_name2["crm"], True, False),
       sync.step_cmd(_by_name2["crm"], True, False))
 
-_refresh, _warn = sync.refresh_plan(_full)
-check("a full run rebuilds the shared cache", _refresh, "coverage")
-check("...and nothing warns, because the first cache step can refresh", _warn, None)
-_n = sum("--refresh" in sync.step_cmd(s, False, False, _refresh)[0]
-         for _p, s in _full)
-check("--refresh is passed exactly once in a full run — not per step", _n, 1)
-check("...and it goes to the EARLIEST cache-backed step, so later ones reuse it",
-      next(s.name for _p, s in _full if s.cached), _refresh)
-
-# A selection whose first cache-backed step cannot refresh must say so: a stale
-# measurement reads exactly like a fresh one, which is the whole hazard.
-_r2, _w2 = sync.refresh_plan(sync.selected(["organizers"], False))
-check("a selection that cannot rebuild the cache warns", bool(_w2), True)
-check("...and names the step responsible", "identity" in _w2, True)
-check("...and passes --refresh to nobody", _r2, None)
-_r3, _w3 = sync.refresh_plan(sync.selected(["preflight"], False))
-check("a selection with no cache-backed step neither refreshes nor warns",
-      (_r3, _w3), (None, None))
-# --refresh must never reach a step that does not take the flag.
-for _p, _s in _full:
-    if not _s.refreshable:
-        check("%s never receives --refresh" % _s.name,
-              "--refresh" in sync.step_cmd(_s, False, False, _s.name)[0], False)
+# The cache outlives a run on purpose — a 20-minute directory pull should not be
+# paid twice in a day. What must not outlive it is a STALE one, and that expiry
+# lives in jsoncache so a standalone audit run obeys it too, not only a step this
+# runner scheduled. The runner must therefore force no refresh of its own.
+# (The one-day expiry itself is asserted in lib/aaif_events/tests/test_jsoncache.py.
+# Importing that module HERE would give this skill the lib coupling the runner
+# exists without: it drives every engine by subprocess, never by import, which
+# is what lets one skill drive four without inheriting any of their imports.)
+check("the runner forces no refresh — that would defeat the caching",
+      any("--refresh" in sync.step_cmd(s, False, False)[0] for _p, s in _full),
+      False)
+check("...and holds no refresh policy of its own",
+      hasattr(sync, "refresh_plan"), False)
+# Steps still declare that they read the shared cache, so the fact stays
+# visible to a reader even though the runner no longer acts on it.
+check("the cache-backed steps are still declared",
+      sorted(s.name for _p, s in _full if s.cached),
+      ["activity", "coverage", "health", "identity", "members", "topics"])
 
 # --- the gitignore guard works BEFORE the directory exists ---------------------
 # `sync-reports/` is a directory-only pattern and `git check-ignore` treats a

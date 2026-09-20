@@ -163,7 +163,7 @@ because luma.com rate-limits the sweep (a 96-row run draws a `429` with no
 `Retry-After`, so it would report PARTIAL every night), and `verify` because the
 Slack audit's first run takes ~20 minutes on a 30k-member workspace.
 
-## State, and why there is none
+## State: cached, dated, and never committable
 
 **This runner keeps nothing between runs but the data itself.** No checkpoint,
 no resume, no memo — it writes logs and reads back only the one it just wrote.
@@ -171,26 +171,31 @@ Two consecutive runs against an unchanged estate produce the same plan, and each
 engine verifies its own idempotence after a write ("a fresh run proposes zero
 changes").
 
-One thing genuinely outlives a run, and it is handled rather than wished away:
-**`.slack-audit-cache/`**. Six gather steps read it, and `users.json` alone takes
-about 20 minutes to page on a 30k-member workspace — refetching per step is not
-an option, and deleting it per run is not either. It is a memo of the
-*workspace*, not state of the pipeline, and the property that matters is that a
-run's findings come from data that run observed.
+**Caching the workspace locally is deliberate.** Six gather steps read
+`.slack-audit-cache/`, and `users.json` alone pages for ~20 minutes on a
+30k-member workspace; paying that twice in a day would be the bug. It is a memo
+of the *workspace*, not state of the pipeline.
 
-So the **first cache-backed step in a run is given `--refresh`** and rebuilds the
-cache once; every later step reuses what it just fetched. Across runs, nothing
-carries. The header line names the step that did it.
+**A cache is trusted for one day and not a minute past it.** The expiry is
+`MAX_AGE` in the shared `jsoncache` module, not here, so a standalone
+`audit_topics.py` obeys it too — not only a step this runner scheduled. Past it,
+whichever step reads it first discards and refetches, announced on that step's
+log. A cache that cannot be dated is treated as too old: `read()` returning a
+payload is a claim it is recent enough to publish.
 
-Two selections cannot rebuild it, because their first cache-backed step takes no
-such flag — `sync.py organizers` (starts at `identity`) and `sync.py events`
-(starts at `health`). Those runs print a `NOTE:` saying their measurements may
-predate the run. A stale measurement reads exactly like a fresh one, so it is
-reported rather than assumed away.
+The runner therefore forces no refresh of its own, and must not: throwing away
+an hour-old pull on every run is the opposite of caching.
 
-Everything else written is **output, not state**: `sync-reports/<stamp>/` logs
-and `backups/` copies. Nothing reads them on a later run. Delete them when done
-— they hold names and emails.
+**None of it can be committed.** This repo is public and these files hold the
+member directory, every synced person's name and address, and per-person diffs.
+Three layers: `.gitignore` covers every cache and report path; the audits and
+this runner refuse to start if their directory is committable; and
+`scripts/check_state_never_committed.py` asserts the `.gitignore` rules
+themselves, because the first two read that file at run time and one tidy-up of
+it would disarm them all at once.
+
+Everything written is **output, not state** — `sync-reports/<stamp>/` logs,
+`backups/` copies. Nothing reads them on a later run. Delete them when done.
 
 ## Gotchas
 

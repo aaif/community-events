@@ -10,6 +10,9 @@ becoming that answer.
 import datetime as dt
 import json
 import os
+import shutil
+import tempfile
+import unittest
 
 import pytest
 
@@ -153,3 +156,78 @@ def test_age_tolerates_a_naive_timestamp(tmp_path):
 
 def test_age_of_an_absent_file(tmp_path):
     assert jsoncache.age(str(tmp_path / "nope.json")) == "absent"
+
+
+class TestMaxAge(unittest.TestCase):
+    """A cache may be reused for a day, and not a minute past it.
+
+    Caching locally is the point of the module; an unbounded cache is how a
+    report comes to describe last week's workspace in the present tense.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "users.json")
+        self.now = dt.datetime(2026, 9, 20, 12, 0, tzinfo=dt.timezone.utc)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write_aged(self, delta):
+        jsoncache.write(self.path, [1, 2, 3], team_id="T1")
+        env = json.load(open(self.path, encoding="utf-8"))
+        env["written_utc"] = (self.now - delta).isoformat()
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(env, fh)
+
+    def test_fresh_cache_is_reused(self):
+        self._write_aged(dt.timedelta(hours=3))
+        self.assertEqual(
+            jsoncache.read(self.path, team_id="T1", now=self.now), [1, 2, 3])
+
+    def test_just_under_a_day_is_reused(self):
+        self._write_aged(dt.timedelta(hours=23, minutes=59))
+        self.assertEqual(
+            jsoncache.read(self.path, team_id="T1", now=self.now), [1, 2, 3])
+
+    def test_over_a_day_is_discarded(self):
+        self._write_aged(dt.timedelta(days=1, minutes=1))
+        self.assertIsNone(jsoncache.read(self.path, team_id="T1", now=self.now))
+
+    def test_a_discarded_cache_says_why_and_how_old(self):
+        self._write_aged(dt.timedelta(days=3, hours=2))
+        said = []
+        jsoncache.read(self.path, team_id="T1", note=said.append, now=self.now)
+        self.assertTrue(said, "discarding a pull must never be silent")
+        self.assertIn("3d 2h", said[0])
+        self.assertIn("older than", said[0])
+
+    def test_an_undated_cache_is_treated_as_too_old(self):
+        # Undatable is not "probably fine": read() returning a payload is a
+        # claim that it is recent enough to publish.
+        jsoncache.write(self.path, [1], team_id="T1")
+        env = json.load(open(self.path, encoding="utf-8"))
+        env.pop("written_utc")
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(env, fh)
+        self.assertIsNone(jsoncache.read(self.path, team_id="T1", now=self.now))
+
+    def test_max_age_none_opts_out(self):
+        self._write_aged(dt.timedelta(days=400))
+        self.assertEqual(
+            jsoncache.read(self.path, team_id="T1", max_age=None, now=self.now),
+            [1, 2, 3])
+
+    def test_refresh_still_wins_over_a_fresh_cache(self):
+        self._write_aged(dt.timedelta(minutes=1))
+        self.assertIsNone(
+            jsoncache.read(self.path, refresh=True, team_id="T1", now=self.now))
+
+    def test_the_default_is_one_day(self):
+        self.assertEqual(jsoncache.MAX_AGE, dt.timedelta(days=1))
+
+    def test_written_at_and_age_agree_about_the_same_file(self):
+        # The staleness decision and the line describing it read one stamp.
+        self._write_aged(dt.timedelta(days=2))
+        self.assertIsNotNone(jsoncache.written_at(self.path))
+        self.assertIn("2 days", jsoncache.age(self.path, now=self.now))

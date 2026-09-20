@@ -177,6 +177,7 @@ python scripts/check_no_real_pii.py     # no real address/Slack id in tracked fi
 python scripts/test_check_no_real_pii.py # that guard's own tests
 python scripts/check_workflows.py       # workflows can't leak secrets/PII (needs pyyaml)
 python scripts/test_check_workflows.py  # the linter's own tests
+python scripts/check_state_never_committed.py  # caches/reports stay uncommittable
 python scripts/check_tooling_banner_coverage.py   # a gws skill with no tooling rule
 python scripts/test_check_tooling_banner_coverage.py  # that guard's own tests
 python scripts/check_no_local_redaction.py   # --redact comes from lib, never a local copy

@@ -36,6 +36,20 @@ import tempfile
 #: cleanly and be reported on. A mismatch is a miss, not an error.
 FORMAT = 2
 
+#: How long a cached pull may be trusted. Caching locally is the point of this
+#: module — a directory pull takes twenty minutes — but a cache with no expiry
+#: is how a report comes to describe last week's workspace in the present tense,
+#: and a stale measurement reads exactly like a fresh one.
+#:
+#: A day is chosen because that is the granularity the estate actually moves at:
+#: channels are provisioned in bulk passes, organizers are triaged in sittings,
+#: and nothing here is minute-to-minute. Past it, `read()` discards and the
+#: caller re-fetches — announced through `note`, never silently.
+#:
+#: Pass `max_age=None` to opt out, for a caller that genuinely wants whatever is
+#: on disk regardless of age. Nothing in this repo does.
+MAX_AGE = dt.timedelta(days=1)
+
 _MISS = object()   # distinguishes "no payload key" from a stored None
 
 
@@ -80,7 +94,26 @@ def _envelope(path):
     return envelope if isinstance(envelope, dict) else None
 
 
-def read(path, refresh=False, team_id=None, note=None):
+def written_at(path):
+    """The UTC datetime a cache was written, or None if it cannot be dated.
+
+    Shared by `read()` (which enforces MAX_AGE) and `age()` (which renders it),
+    so the staleness decision and the line describing it cannot disagree.
+    """
+    if not os.path.exists(path):
+        return None
+    envelope = _envelope(path)
+    stamp = envelope.get("written_utc") if envelope else None
+    if not isinstance(stamp, str):
+        return None
+    try:
+        written = dt.datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return written.replace(tzinfo=dt.timezone.utc) if written.tzinfo is None else written
+
+
+def read(path, refresh=False, team_id=None, note=None, max_age=MAX_AGE, now=None):
     """Return the cached payload, or None to signal 'fetch it'.
 
     Test the result with `is None`, never for truthiness: an empty list is a
@@ -112,8 +145,31 @@ def read(path, refresh=False, team_id=None, note=None):
         # cannot prove it matches, and a wrong-tenant join reads as a coherent,
         # entirely wrong report.
         return discard("no workspace stamp, expected %s" % team_id)
+    if max_age is not None:
+        written = written_at(path)
+        if written is None:
+            # An undated cache cannot be shown to be within MAX_AGE, and this
+            # module's whole claim is that a reused payload is recent enough to
+            # publish. Undatable is treated as too old, not as "probably fine".
+            return discard("undated, so its age cannot be checked")
+        old = (now or dt.datetime.now(dt.timezone.utc)) - written
+        if old > max_age:
+            return discard("written %s ago, older than the %s limit"
+                           % (_duration(old), _duration(max_age)))
     payload = envelope.get("payload", _MISS)
     return None if payload is _MISS else payload
+
+
+def _duration(delta):
+    """`2d 3h` / `5h` / `12m` — enough to judge a cache, short enough for a line."""
+    total = int(delta.total_seconds())
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    if days:
+        return "%dd %dh" % (days, hours) if hours else "%dd" % days
+    if hours:
+        return "%dh" % hours
+    return "%dm" % max(1, rem // 60)
 
 
 def age(path, now=None):
