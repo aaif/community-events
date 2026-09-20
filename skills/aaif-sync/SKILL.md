@@ -16,38 +16,54 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py chapters   # one phase, or one step
 python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py --write    # apply, after approval
 ```
 
-| # | Phase | Does | Detail lives in |
+| # | Phase | Subject | Engines live in |
 |---|---|---|---|
-| 1 | `clean` | resolve intake cities | `aaif-clean-data` |
-| 2 | `triage` | accept / deny — **a human decides** | `aaif-triage-intake` |
-| 3 | `chapters` | intake cities → rows on the Chapters List | `aaif-sync-chapters` |
-| 4 | `organizers` | accepted organizers → About docs and their Drive grants | `aaif-sync-organizers` |
-| 5 | `people` | organizers, speakers and hosts → the chapter CRM | `aaif-sync-organizers` |
-| 6 | `resources` | record each chapter's Drive folder + Slack channels | `aaif-sync-slack` |
-| 7 | `slack` | create the planned rooms, invite organizers, post directories | `aaif-sync-slack` |
-| 8 | `luma` | every chapter row's page is still live | `aaif-sync-chapters` |
-| 9 | `verify` | the independent check, from a different code path | `aaif-audit-slack` |
+| 1 | `preflight` | is the source sound? intake data + the decision queue | `aaif-clean-data`, `aaif-triage-intake` |
+| 2 | `chapters` | does the chapter exist — on the sheet, in Drive, in Slack? | `aaif-sync-chapters`, `aaif-sync-slack`, `aaif-audit-slack` |
+| 3 | `organizers` | who runs it, and can they reach their own things? | `aaif-sync-organizers`, `aaif-sync-slack` |
+| 4 | `events` | is every chapter's page live, and is it still running events? | `aaif-sync-chapters` |
+| 5 | `speakers` | what does the community talk about? | `aaif-audit-slack` |
+| 6 | `hosts` | where does it meet? *(no estate-wide engine yet)* | — |
+| 7 | `workspace` | what does an ordinary member see? | `aaif-audit-slack` |
 
-**The order is not negotiable.** An unresolved city is invisible to every step
-below it; a net-new city needs its feed row before anything can hang off it; and
-the resource map records what exists only once it exists.
+**Each phase runs its stages in order: `gather` → `plan` → `execute`.**
 
-**Chapters, then organizers, then everyone else.** Only organizers get a name in
-an About doc and a grant on a chapter folder — `sync_access` reads
-`ACCESS_TABS = ("Organizers",)` from the **intake**, never the CRM, so phase 4
-does not wait on phase 5. Speakers and hosts reach exactly one surface, the
-chapter CRM, and they follow.
+| Stage | Is | Writes |
+|---|---|---|
+| `gather` | measure the world | never, in any mode |
+| `plan` | propose changes against what gather found — the report | only under `--write` |
+| `execute` | apply them | subject to the step's gate |
 
-**`people` is one pass and must not be split by role**, however much the phase
-name invites it. `merge_people` combines a person's rows *across* role tabs into
-a single CRM row — someone who applied as organizer and speaker gets one row
-reading `Organizer/Speaker`, with expertise joined from both. A role-scoped pass
-would write the narrower row, and the second pass cannot see the other
-application to widen it.
+The engines already worked this way without naming it — report → approve →
+write *is* plan → execute. What the axis adds is `gather`: measurement that used
+to live in one audit skill at the end, where a finding about chapters arrived
+long after the chapters work was done. `--stage gather` now measures the whole
+estate and proposes nothing.
 
-`sync.py` is the **one definition** of that order. `nightly.py` wraps it for a
-scheduled job and `PHASES` in the script is what both read — never restate the
-order anywhere else.
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py --stage gather   # measure everything
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py chapters         # one phase
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py --write          # apply, after approval
+```
+
+**The Slack audit is not a phase.** Its engines answer questions belonging to
+different subjects — "does this chapter have a room" is a chapters question,
+"is the right person in it" an organizers question, "are the subject rooms
+alive" a topics question — and `audit_organizers.render_body()` already returns
+the first two as separate fragments for exactly that reason. Each engine now
+gathers for the phase whose question it answers.
+
+**A phase is a subject, so phases mix gates.** `chapters` holds an open plan and
+an approval-gated provision. That is deliberate: grouping by gate instead would
+scatter one subject across the pipeline, which is the arrangement this model
+replaces.
+
+**Two phases have no execute yet, and the reason is a schema, not an oversight.**
+Speakers and hosts reach exactly one surface, the chapter CRM, and that write
+cannot be scoped by role: `merge_people` combines a person's rows *across* role
+tabs into a single row reading `Organizer/Speaker`. `sync_crm`'s own held-row
+message names the prerequisite — *"held until per-role CRM tabs exist"* — so
+per-role execution is unblocked by that migration, not by this runner.
 
 ## Untrusted input
 
@@ -141,7 +157,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py --write    # apply what is safe
 
 `nightly.py` is a thin wrapper: it adds `--unattended` and its own report
 directory, and owns no pipeline of its own. Unattended runs `clean`, `chapters`,
-`organizers`, `people`, `resources` only — `slack` is excluded because every step in it is
+`preflight`, `chapters`, `organizers` only — the audit-heavy phases are excluded because every step in it is
 approval-gated and a scheduled job is by definition nobody's approval, `luma`
 because luma.com rate-limits the sweep (a 96-row run draws a `429` with no
 `Retry-After`, so it would report PARTIAL every night), and `verify` because the

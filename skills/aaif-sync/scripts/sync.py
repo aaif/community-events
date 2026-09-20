@@ -65,6 +65,22 @@ REPO = os.path.abspath(os.path.join(SKILLS, ".."))
 OPEN, REPORT_ONLY, APPROVAL, READ_ONLY, HUMAN = (
     "open", "report-only", "approval", "read-only", "human")
 
+#: The second axis. A phase is a SUBJECT (chapters, organizers, hosts); a stage
+#: is the verb applied to it, and every phase runs its stages in this order.
+#:
+#: The engines already worked this way without naming it — report -> approve ->
+#: write IS plan -> execute — so a stage is a label on work that exists, not a
+#: new kind of run. What the axis buys is the missing half: `gather` steps,
+#: which measure and never propose, were previously scattered into one audit
+#: skill at the end, where a finding about chapters arrived long after the
+#: chapters work had been done.
+#:
+#:   gather   measure the world. Read-only in every mode, always runs.
+#:   plan     propose changes against what gather found. The report.
+#:   execute  apply them, subject to the step's gate.
+GATHER, PLAN, EXECUTE = "gather", "plan", "execute"
+STAGES = (GATHER, PLAN, EXECUTE)
+
 #: Steps that take --redact/--no-redact. The runner passes --no-redact: the
 #: logs are 0600 files in a 0700 gitignored directory, the NEEDS-A-HUMAN note
 #: needs the real addresses in access.log, and the engines' CI default (redact
@@ -75,16 +91,16 @@ OPEN, REPORT_ONLY, APPROVAL, READ_ONLY, HUMAN = (
 #: those two would die on a usage error — the test pins this set against the
 #: scripts' own source so the two cannot drift apart again.
 REDACTING = frozenset({
-    "chapters", "about", "crm", "access", "resources", "invite",
+    "chapters", "resources", "about", "access", "crm", "invite", "luma",
 })
 
 
 class Step:
     """One script in the pipeline: where it lives, how it is called, its gate."""
 
-    def __init__(self, name, skill, script, args=(), gate=OPEN, why=""):
+    def __init__(self, name, skill, script, args=(), gate=OPEN, stage=PLAN, why=""):
         self.name, self.skill, self.script = name, skill, script
-        self.args, self.gate, self.why = list(args), gate, why
+        self.args, self.gate, self.stage, self.why = list(args), gate, stage, why
 
     @property
     def path(self):
@@ -92,67 +108,106 @@ class Step:
         return os.path.join(SKILLS, self.skill, sub, self.script)
 
 
-#: The pipeline. Phase name -> the steps it runs, in order.
+#: The pipeline, on two axes: PHASE (the subject) x STAGE (the verb).
+#:
+#: Phase order is dependency order and is not negotiable. Stage order within a
+#: phase is always gather -> plan -> execute, so a phase measures the world
+#: before it proposes anything, and proposes before it writes.
+#:
+#: The Slack audit is deliberately NOT a phase. Its engines answer questions
+#: that belong to different subjects — "does this chapter have a room" is a
+#: chapters question, "is the right person in it" is an organizers question,
+#: "are the subject rooms alive" is a topics question — and
+#: `audit_organizers.render_body()` already returns those first two as separate
+#: fragments for exactly that reason. Each engine now gathers for the phase
+#: whose question it answers.
 PHASES = (
-    ("clean", [
-        Step("clean", "aaif-clean-data", "clean.py", ["scan"], READ_ONLY,
-             "an unresolved city is invisible to every step below"),
+    # 1. Is the source sound? Everything below reads the intake, so a header
+    #    that moved or a city that never resolved is a bug the whole pipeline
+    #    inherits. Cheapest place to find it is before anything acts on it.
+    ("preflight", [
+        Step("clean", "aaif-clean-data", "clean.py", ["scan"], READ_ONLY, GATHER,
+             "unresolved cities and malformed rows, before anything reads them"),
+        Step("triage", "aaif-triage-intake", "intake.py", [], HUMAN, GATHER,
+             "how deep the decision queue is — summarised, never decided"),
     ]),
-    ("triage", [
-        Step("triage", "aaif-triage-intake", "intake.py", [], HUMAN,
-             "only Accepted / Existing (from MLOps) flow onward — a human decides"),
-    ]),
+    # 2. Chapters: does the chapter exist, on the sheet, in Drive, in Slack?
+    #    `--planned-ok` is what lets the audit gather here rather than only at
+    #    the end: without it, a sheet naming channels that provisioning has not
+    #    created yet aborts the run.
     ("chapters", [
-        Step("chapters", "aaif-sync-chapters", "sync_chapters.py", [], OPEN,
+        Step("coverage", "aaif-audit-slack", "audit_organizers.py", ["--planned-ok"],
+             READ_ONLY, GATHER,
+             "which chapters have a room and a folder, from live Slack and Drive"),
+        Step("chapters", "aaif-sync-chapters", "sync_chapters.py", [], OPEN, PLAN,
              "a net-new city needs its feed row before anything hangs off it"),
+        Step("resources", "aaif-sync-slack", "sync_resources.py", [], OPEN, PLAN,
+             "records the folder and channels that now exist"),
+        Step("provision", "aaif-sync-slack", "provision_channels.py", [], APPROVAL,
+             EXECUTE, "creates and renames real rooms; renames before creates"),
     ]),
-    # Organizers first, then everyone else. Only organizers get a name in the
-    # About doc and a grant on the chapter folder — `sync_access` reads
-    # ACCESS_TABS = ("Organizers",) from the INTAKE, never the CRM, so this
-    # phase does not depend on `people` having run. (The old pipeline claimed
-    # "the CRM decides who gets Drive access, so it lands first". It does not:
-    # looping every role tab there would have granted speakers and hosts the
-    # same writer role, which that script's own comment records as a shipped
-    # privilege escalation.)
+    # 3. Organizers: the only people who get a name in an About doc and a grant
+    #    on a chapter folder. `sync_access` reads ACCESS_TABS = ("Organizers",)
+    #    from the INTAKE, never the CRM, so this phase waits on nothing below.
     ("organizers", [
-        Step("about", "aaif-sync-organizers", "sync_about.py", [], OPEN,
+        Step("identity", "aaif-sync-organizers", "resolve_slack_ids.py", [],
+             READ_ONLY, GATHER,
+             "which accepted organizer maps to which Slack account, by email"),
+        Step("about", "aaif-sync-organizers", "sync_about.py", [], OPEN, PLAN,
              "same accepted list as the feed, so doc and website row agree"),
         Step("access", "aaif-sync-organizers", "sync_access.py", [], REPORT_ONLY,
-             "grants standing Drive access from a public form — a human every time"),
-    ]),
-    # Speakers and hosts reach exactly one surface: the chapter CRM. They never
-    # get a grant, a name in the About doc, or an organizer-room invite.
-    #
-    # This runs as ONE pass over all three role tabs and must not be split by
-    # role, however tempting the phase name makes it. `merge_people` combines a
-    # person's rows ACROSS tabs into a single CRM row — `Interested in` reads
-    # "Organizer/Speaker", and expertise is joined from both. A role-scoped pass
-    # would write the narrower row first and the second pass, which cannot see
-    # the other application, would compute a narrower value again.
-    ("people", [
-        Step("crm", "aaif-sync-organizers", "sync_crm.py", [], OPEN,
-             "one row per person per chapter, merged across every role they applied for"),
-    ]),
-    ("resources", [
-        Step("resources", "aaif-sync-slack", "sync_resources.py", [], OPEN,
-             "records the folder and channels that now exist"),
-    ]),
-    ("slack", [
-        Step("provision", "aaif-sync-slack", "provision_channels.py", [], APPROVAL,
-             "creates and renames real rooms; renames run before creates"),
+             PLAN, "grants standing Drive access from a public form — a human every time"),
+        Step("crm", "aaif-sync-organizers", "sync_crm.py", [], OPEN, EXECUTE,
+             "one row per person per chapter, merged across every role — see the note below"),
         Step("invite", "aaif-sync-slack", "invite_organizers.py", [], APPROVAL,
-             "adds real people to a channel — needs the channels from provision"),
-        Step("directory", "aaif-sync-slack", "post_country_directory.py", [], APPROVAL,
-             "posts in a shared country room, after its people are in it"),
+             EXECUTE, "adds real people to their organizer room"),
+        Step("directory", "aaif-sync-slack", "post_country_directory.py", [],
+             APPROVAL, EXECUTE, "a shared country room needs its people before its signpost"),
     ]),
-    ("luma", [
+    # 4. Events: estate-wide only. Everything per-event (create_event,
+    #    update_event, luma_push) is interactive one-event work and is NOT a
+    #    sync step. What IS estate-wide: is every chapter's page still live, and
+    #    which chapters have gone quiet. There is no execute — making a Luma
+    #    page is manual, and nothing in this repo writes the Past Events tab.
+    ("events", [
+        Step("health", "aaif-sync-chapters", "chapter_health.py", [], READ_ONLY,
+             GATHER, "recorded events and last human Slack message, per chapter"),
         Step("luma", "aaif-sync-chapters", "sync_chapters.py", ["--audit-luma"],
-             READ_ONLY,
-             "every chapter row's Stay Updated page is still live"),
+             READ_ONLY, GATHER,
+             "every chapter row's Stay Updated page — a dead CTA is invisible otherwise"),
     ]),
-    ("verify", [
-        Step("verify", "aaif-audit-slack", "audit_organizers.py", [], READ_ONLY,
-             "the independent check, from a different code path"),
+    # 5. Speakers and topics: what the community talks about. The subject rooms
+    #    are the estate-wide half of this question; the Speakers tab is the
+    #    per-person half.
+    #
+    #    No execute of its own YET. Speakers reach exactly one surface, the
+    #    chapter CRM, and that write cannot be scoped by role: `merge_people`
+    #    combines a person's rows ACROSS role tabs into a single row reading
+    #    "Organizer/Speaker", with expertise joined from both. A role-scoped
+    #    pass would write the narrower half and the next pass could not see the
+    #    other application to widen it. `sync_crm`'s own held-row message names
+    #    the prerequisite — "held until per-role CRM tabs exist" — so per-role
+    #    execution is unblocked by that migration, not by this file.
+    ("speakers", [
+        # activity precedes topics and must: its cache is where the dormancy
+        # numbers on the topic report come from, and running topics first
+        # publishes a page with those figures missing.
+        Step("activity", "aaif-audit-slack", "audit_activity.py", [], READ_ONLY,
+             GATHER, "last human message and posting volume — the measurement layer"),
+        Step("topics", "aaif-audit-slack", "audit_topics.py", [], READ_ONLY, GATHER,
+             "are the subject rooms alive, and can a newcomer find them"),
+    ]),
+    # 6. Hosts: venues. Same shared-write constraint as speakers, and thinner
+    #    still — there is no estate-wide venue engine yet, so this phase has
+    #    only what the CRM pass already carries. It exists as a named phase so
+    #    the gap is visible rather than implied.
+    ("hosts", []),
+    # 7. The workspace itself, which belongs to no single subject: accounts,
+    #    channel counts, what an ordinary member sees.
+    ("workspace", [
+        Step("members", "aaif-audit-slack", "audit_members.py", [], READ_ONLY,
+             GATHER, "accounts, channel sizes, the newcomer experience — reads "
+             "the activity cache the speakers phase filled"),
     ]),
 )
 
@@ -166,7 +221,7 @@ PHASE_NAMES = [p for p, _ in PHASES]
 #: unattended teaches operators to ignore the one signal it shares with real
 #: findings. Both stay manual. `verify` is absent because the Slack audit's
 #: first run takes ~20 minutes on a 30k-member workspace.
-UNATTENDED_PHASES = ("clean", "chapters", "organizers", "people", "resources")
+UNATTENDED_PHASES = ("preflight", "chapters", "organizers")
 
 IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED = (
     "in sync", "DRIFT", "wrote+verified", "FAILED", "PARTIAL", "skipped")
@@ -238,7 +293,26 @@ def run_step(step, log_path, write_mode, approved):
 STEP_NAMES = [s.name for _, steps in PHASES for s in steps]
 
 
-def selected(names, unattended):
+def assert_stage_order():
+    """Every phase lists its steps gather -> plan -> execute.
+
+    The order is data, not code, so nothing stops a step being added in the
+    wrong place — and the failure would be silent and wrong in the worst way:
+    a plan proposing changes against a world it had not measured yet.
+    """
+    for phase, steps in PHASES:
+        seen = [STAGES.index(x.stage) for x in steps]
+        if seen != sorted(seen):
+            raise AssertionError(
+                "phase %r lists its steps out of stage order (%s); a phase must "
+                "measure before it proposes and propose before it writes"
+                % (phase, ", ".join("%s:%s" % (x.name, x.stage) for x in steps)))
+
+
+assert_stage_order()
+
+
+def selected(names, unattended, stages=None):
     """The (phase, step) pairs to run, in pipeline order.
 
     A name may be a PHASE (`organizers`) or a single STEP (`crm`). Both are
@@ -252,6 +326,8 @@ def selected(names, unattended):
     out = []
     for phase, steps in PHASES:
         for s in steps:
+            if stages and s.stage not in stages:
+                continue
             if phase in want or s.name in want:
                 out.append((phase, s))
     return out
@@ -282,12 +358,23 @@ def summary_notes(by_name, write_mode):
     # would tell an operator to re-run it with --write. There is no --write.
     needs_human = sorted(n for n, o in by_name.items()
                          if o in (DRIFT, SKIPPED) and n in human_only)
+    # A gather step has no write mode at all, so its DRIFT means "here is a
+    # finding", never "a proposal is ready to apply". Telling an operator to
+    # re-run `luma` with --write names a flag that does not exist — the same
+    # mistake the HUMAN gate made before it was split out.
+    measured = {s.name for _p, s in selected([], False) if s.stage == GATHER}
+    findings = sorted(n for n, o in by_name.items()
+                      if o == DRIFT and n in measured and n not in human_only)
     other_drift = any(o == DRIFT for n, o in by_name.items()
-                      if n != "access" and n not in human_only)
+                      if n != "access" and n not in human_only and n not in measured)
     if other_drift:
         notes.append("drift remains — a step held back or re-proposed changes; "
                      "read its log" if write_mode
                      else "drift — re-run the flagged step(s) with --write after review")
+    if findings:
+        notes.append("%s reported findings — these steps only measure, so there "
+                     "is nothing to apply; fix each at its source and re-measure"
+                     % ", ".join(findings))
     if pending_access:
         notes.append("access has pending Drive grants/lock — NEEDS A HUMAN: read "
                      "access.log, then run sync_access.py --write by hand (this "
@@ -354,6 +441,9 @@ def build_parser():
     ap.add_argument("--i-have-approval", action="store_true", dest="approved",
                     help="the human at the terminal has approved the Slack "
                          "writes: creating rooms, adding people, posting.")
+    ap.add_argument("--stage", action="append", choices=STAGES, dest="stages",
+                    help="run only these stages (repeatable). `--stage gather` "
+                         "measures the whole estate and proposes nothing.")
     ap.add_argument("--unattended", action="store_true",
                     help="scheduled-job mode: runs %s only, and refuses the "
                          "Slack approval gate outright."
@@ -379,7 +469,7 @@ def main(argv=None):
                  "Slack steps notify and add real people, and a scheduled job "
                  "is by definition nobody's approval.")
 
-    steps = selected(a.phases, a.unattended)
+    steps = selected(a.phases, a.unattended, a.stages)
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     run_dir = os.path.join(a.report_dir, stamp)
     guard_report_dir(a.report_dir)
@@ -391,14 +481,17 @@ def main(argv=None):
              ", unattended" if a.unattended else "", len(steps)))
     print("full reports (contain names/emails — NOT for public logs): %s\n" % run_dir)
 
-    by_name, phase_shown = {}, None
+    by_name, phase_shown, stage_shown = {}, None, None
     for phase, step in steps:
         if phase != phase_shown:
             print("  [%s]" % phase)
-            phase_shown = phase
+            phase_shown, stage_shown = phase, None
+        if step.stage != stage_shown:
+            print("    · %s" % step.stage)
+            stage_shown = step.stage
         if step.gate == APPROVAL and a.write and not a.approved:
             by_name[step.name] = SKIPPED
-            print("    %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
+            print("      %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
             continue
         outcome, code, secs = run_step(
             step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved)
@@ -411,7 +504,7 @@ def main(argv=None):
                     else "  (summary only)")
         elif step.gate == READ_ONLY:
             note = "  (read-only)"
-        print("    %-10s %-15s exit %d  %4.0fs  %s.log%s"
+        print("      %-10s %-15s exit %d  %4.0fs  %s.log%s"
               % (step.name, outcome, code, secs, step.name, note))
 
     print()

@@ -67,17 +67,32 @@ check("but never beats FAILED, which is strictly worse news",
 # --- the pipeline order --------------------------------------------------------
 check("phase order is the documented pipeline order",
       sync.PHASE_NAMES,
-      ["clean", "triage", "chapters", "organizers", "people", "resources",
-       "slack", "luma", "verify"])
-# Organizers before everyone else: only they get a name in the About doc and a
-# grant on the folder. Speakers and hosts reach one surface, the CRM, and follow.
-check("the organizers phase is organizer-only work",
-      [s.name for _p, s in sync.selected(["organizers"], False)],
-      ["about", "access"])
-check("speakers and hosts land in their own later phase",
-      [s.name for _p, s in sync.selected(["people"], False)], ["crm"])
-check("...and organizers still come first",
-      sync.PHASE_NAMES.index("organizers") < sync.PHASE_NAMES.index("people"), True)
+      ["preflight", "chapters", "organizers", "events", "speakers", "hosts",
+       "workspace"])
+check("every phase measures before it proposes and proposes before it writes",
+      sync.assert_stage_order(), None)
+# The stage axis is the point: `--stage gather` must measure the whole estate
+# and propose nothing, so it can never contain a step that writes.
+_g = sync.selected([], False, [sync.GATHER])
+check("a gather-only run touches every phase that has an engine",
+      sorted({p for p, _s in _g}),
+      ["chapters", "events", "organizers", "preflight", "speakers", "workspace"])
+for _p, _s in _g:
+    _cmd, _wm = sync.step_cmd(_s, write_mode=True, approved=True)
+    check("gather step %r can never write" % _s.name, ("--write" in _cmd, _wm),
+          (False, False))
+# Dependencies that live in the ORDER rather than in any one script.
+_names = [s.name for _p, s in sync.selected([], False)]
+check("activity is measured before topics reports its dormancy numbers",
+      _names.index("activity") < _names.index("topics"), True)
+check("...and before members, which reads the same cache",
+      _names.index("activity") < _names.index("members"), True)
+check("chapter coverage is gathered before the chapters plan proposes rows",
+      _names.index("coverage") < _names.index("chapters"), True)
+check("organizers are done before speakers",
+      sync.PHASE_NAMES.index("organizers") < sync.PHASE_NAMES.index("speakers"), True)
+check("events sits after chapters and organizers, as asked",
+      sync.PHASE_NAMES.index("events") > sync.PHASE_NAMES.index("organizers"), True)
 # The CRM merges a person's rows ACROSS role tabs into one row, so it must stay
 # a single pass. A role-scoped split would write the narrower row twice.
 check("the CRM is ONE step, never split per role",
@@ -85,11 +100,16 @@ check("the CRM is ONE step, never split per role",
 # Selecting a subset must never let the caller reorder the pipeline: listing
 # access first does not grant access before the CRM holds the right people.
 check("a subset keeps pipeline order however it was typed",
-      [s.name for _p, s in sync.selected(["access", "chapters", "crm"], False)],
-      ["chapters", "access", "crm"])
+      [s.name for _p, s in sync.selected(["crm", "about", "access"], False)],
+      ["about", "access", "crm"])
 check("a phase name and a step name both select",
       [s.name for _p, s in sync.selected(["resources", "crm"], False)],
-      ["crm", "resources"])
+      ["resources", "crm"])
+# `chapters` names both a phase and a step inside it. The phase wins, which is
+# what someone typing it means; pinned so the collision stays deliberate.
+check("a name that is both a phase and a step selects the whole phase",
+      [s.name for _p, s in sync.selected(["chapters"], False)],
+      ["coverage", "chapters", "resources", "provision"])
 check("no argument selects every step",
       len(sync.selected([], False)), len(sync.STEP_NAMES))
 
@@ -167,6 +187,14 @@ check("...and never tells the operator to re-run triage with --write",
 # The generic drift note would say exactly that, so triage must stay out of it.
 check("a HUMAN step's DRIFT is not swept into the generic drift note",
       "re-run the flagged step(s) with --write" in _notes, False)
+# A gather step measures and cannot write, so its DRIFT is a finding, not a
+# proposal — naming --write there sends the operator after a flag that does not
+# exist. Same shape as the HUMAN case above.
+_f = sync.summary_notes({"luma": sync.DRIFT}, False)[0]
+check("a gather step's drift reads as a finding, not an unapplied proposal",
+      "findings" in _f and "--write" not in _f, True)
+check("...and says to fix it at the source",
+      "at its source" in _f, True)
 check("a real engine's drift still gets the generic note",
       "re-run the flagged step(s) with --write"
       in sync.summary_notes({"crm": sync.DRIFT}, False)[0], True)
@@ -258,10 +286,28 @@ check("a failure outranks everything",
       sync.exit_code({"crm": sync.WROTE, "about": sync.FAILED}), 1)
 
 # --- unattended ----------------------------------------------------------------
-check("the unattended set excludes every approval-gated phase",
-      [p for p in sync.UNATTENDED_PHASES
-       if any(s.gate == sync.APPROVAL for _p, s in sync.selected([p], False))],
-      [])
+# A phase is a SUBJECT now, so phases mix gates — `chapters` contains both an
+# open plan and an approval-gated provision. The old invariant ("no unattended
+# phase contains an approval step") no longer fits and, worse, would push the
+# runner toward gate-homogeneous phases, which is the axis this model rejects.
+# What must hold is about execution, not composition: unattended, no approval
+# step can ever be handed a write.
+_appr = [s for _p, s in sync.selected(list(sync.UNATTENDED_PHASES), True)
+         if s.gate == sync.APPROVAL]
+check("the unattended set does contain approval steps, by design",
+      bool(_appr), True)
+for _s in _appr:
+    _cmd, _wm = sync.step_cmd(_s, write_mode=True, approved=False)
+    check("unattended, %r is never handed a write" % _s.name,
+          ("--write" in _cmd, _wm), (False, False))
+# ...and the flag that would authorise one is refused outright in that mode,
+# which is what makes the above unreachable rather than merely unused.
+_refused = []
+try:
+    sync.main(["--unattended", "--i-have-approval"])
+except SystemExit as e:
+    _refused.append(e.code)
+check("--unattended still refuses --i-have-approval", _refused, [2])
 check("unattended runs only the unattended phases",
       sorted({p for p, _s in sync.selected([], True)}),
       sorted(sync.UNATTENDED_PHASES))

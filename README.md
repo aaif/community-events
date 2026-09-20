@@ -123,70 +123,84 @@ python3 skills/aaif-sync/scripts/sync.py --write    # apply, after approval
 
 ```mermaid
 flowchart TD
-    START(["<b>aaif-sync</b><br/>report-only unless --write"]) --> C
+    START(["<b>aaif-sync</b><br/>report-only unless --write"]) --> P1
 
-    C["<b>1 · clean</b><br/>clean.py scan"]
-    Cq{"city resolved?"}
-    Cfix["write <b>Extracted City</b><br/>from the row's free text"]
-    C --> Cq
-    Cq -->|"no"| Cfix --> C
+    subgraph P1["1 · preflight — is the source sound?"]
+        direction LR
+        p1a["<b>gather</b><br/>clean.py scan<br/><i>unresolved cities, malformed rows</i>"]
+        p1b["<b>gather</b><br/>intake.py<br/><i>how deep the queue is</i>"]
+        p1a --- p1b
+    end
 
-    T["<b>2 · triage</b><br/>intake.py — <b>summarises the queue</b><br/><i>never decides it</i>"]
-    Tq{"the human's decision"}
-    Tno["Denied · Inactive · Duplicate<br/><i>never syncs anywhere</i>"]
-    Cq -->|"yes"| T -.->|"a person works the queue"| Tq
-    Tq -->|"no"| Tno
+    q1{"city resolved?"}
+    fix["write <b>Extracted City</b><br/><i>then re-measure</i>"]
+    P1 --> q1
+    q1 -->|"no"| fix --> P1
 
-    CH["<b>3 · chapters</b><br/>sync_chapters.py"]
-    CHq{"city already has a<br/>Chapters List row?"}
-    CHmerge["merge names into <b>Organizers</b>"]
-    CHnew["append a row<br/><i>a near-miss is reported, never matched</i>"]
-    Tq -->|"Accepted ·<br/>Existing (from MLOps)"| CH --> CHq
-    CHq -->|"yes"| CHmerge
-    CHq -->|"no"| CHnew
+    subgraph P2["2 · chapters — does it exist, on the sheet, in Drive, in Slack?"]
+        direction LR
+        p2a["<b>gather</b><br/>audit_organizers --planned-ok<br/><i>which chapters have a room</i>"]
+        p2b["<b>plan</b><br/>sync_chapters · sync_resources<br/><i>rows, folder + channel map</i>"]
+        p2c["<b>execute</b><br/>provision_channels<br/><i>renames before creates</i>"]
+        p2a --> p2b --> p2c
+    end
+    q1 -->|"yes"| P2
 
-    Fq{"does the chapter have a<br/><b>Drive folder</b> yet?"}
-    NEW["<b>aaif-create-chapter</b><br/>clone TemplateCity, rebrand,<br/>move the slide-5 map dot"]
-    CHmerge --> Fq
-    CHnew --> Fq
-    Fq -->|"<b>no</b> — an orphan"| NEW --> ORG
-    Fq -->|"yes"| ORG
+    q2{"chapter has a<br/><b>Drive folder</b>?"}
+    NEW["<b>aaif-create-chapter</b><br/><i>clone TemplateCity, rebrand</i>"]
+    P2 --> q2
+    q2 -->|"no — an orphan"| NEW --> P3
+    q2 -->|"yes"| P3
 
-    ORG["<b>4 · organizers</b><br/>About doc · Drive grant · Slack ID<br/><i>organizers only — detail below ↓</i>"]
-    PPL["<b>5 · people</b><br/>sync_crm.py — organizers, speakers, hosts<br/><i>one row per person, merged across roles</i>"]
-    ORG --> PPL
-    Tq -->|"still in pipeline<br/><i>CRM only, self-serve chapters</i>"| PPL
+    subgraph P3["3 · organizers — who runs it, and can they reach their things?"]
+        direction LR
+        p3a["<b>gather</b><br/>resolve_slack_ids<br/><i>which Slack account is this</i>"]
+        p3b["<b>plan</b><br/>sync_about · sync_access<br/><i>names, grants</i>"]
+        p3c["<b>execute</b><br/>sync_crm · invite · directory"]
+        p3a --> p3b --> p3c
+    end
 
-    RES["<b>6 · resources</b><br/>sync_resources.py — folder + channels<br/><i>exact matches only</i>"]
-    PPL --> RES
+    subgraph P4["4 · events — is the page live, is it still running events?"]
+        direction LR
+        p4a["<b>gather</b><br/>chapter_health<br/><i>events + last message</i>"]
+        p4b["<b>gather</b><br/>--audit-luma<br/><i>a dead CTA is invisible otherwise</i>"]
+        p4a --- p4b
+    end
+    P3 --> P4
 
-    Gq{"has a human passed<br/><b>--i-have-approval</b>?"}
-    HOLD["report and stop<br/><i>a scheduled job is nobody's approval</i>"]
-    RES --> Gq
-    Gq -->|"no"| HOLD
-    Gq -->|"yes"| SL
+    subgraph P5["5 · speakers &amp; topics — what does it talk about?"]
+        direction LR
+        p5a["<b>gather</b><br/>audit_activity<br/><i>the measurement layer</i>"]
+        p5b["<b>gather</b><br/>audit_topics<br/><i>are the subject rooms alive</i>"]
+        p5a --> p5b
+    end
+    P4 --> P5
 
-    SL["<b>7 · slack</b><br/>provision → invite → directory<br/><i>renames before creates</i>"]
-    L["<b>8 · luma</b><br/>--audit-luma"]
-    Lq{"429 from luma.com?"}
-    Lp["stop, mark <b>PARTIAL</b><br/><i>one upstream fact must not<br/>become ninety findings</i>"]
-    SL --> L --> Lq
-    Lq -->|"yes"| Lp
+    P6["6 · hosts — where does it meet?<br/><i>no estate-wide engine yet</i>"]
+    P5 --> P6
 
-    V["<b>9 · verify</b><br/>audit_organizers.py"]
-    Vq{"findings?"}
-    Lq -->|"no"| V --> Vq
-    Vq -->|"yes — fix at the source"| C
-    Vq -->|"no"| DONE(["estate in step"])
+    subgraph P7["7 · workspace — what does an ordinary member see?"]
+        direction LR
+        p7a["<b>gather</b><br/>audit_members"]
+    end
+    P6 --> P7
 
-    classDef human fill:#fde68a,stroke:#a16207,color:#000
-    classDef approval fill:#fecaca,stroke:#b91c1c,color:#000
-    classDef stop fill:#e5e5e5,stroke:#737373,color:#000
+    P7 --> OUT{"findings?"}
+    OUT -->|"yes — fix at the source"| P1
+    OUT -->|"no"| DONE(["estate in step"])
+
+    classDef phase fill:#faf9f6,stroke:#57534e,color:#000
+    classDef gather fill:#e0e7ff,stroke:#4338ca,color:#000
+    classDef plan fill:#fff,stroke:#57534e,color:#000
+    classDef exec fill:#fecaca,stroke:#b91c1c,color:#000
+    classDef decide fill:#fff,stroke:#0369a1,color:#000
     classDef side fill:#fff,stroke:#a8a29e,color:#000,stroke-dasharray:4 3
-    class T,Tq,Gq human
-    class SL approval
-    class Tno,HOLD,Lp stop
-    class NEW side
+    class P1,P2,P3,P4,P5,P7 phase
+    class p1a,p1b,p2a,p3a,p4a,p4b,p5a,p5b,p7a gather
+    class p2b,p3b plan
+    class p2c,p3c exec
+    class q1,q2,OUT decide
+    class NEW,P6 side
 ```
 
 Two branches are worth calling out, because they are where a run stops being a
