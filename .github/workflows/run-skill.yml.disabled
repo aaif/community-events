@@ -92,9 +92,9 @@ jobs:
           case "$ENGINE" in
             nightly)
               if [ "$WRITE" = "true" ]; then
-                python skills/aaif-sync-chapters/scripts/nightly.py --write
+                python skills/aaif-sync/scripts/nightly.py --write
               else
-                python skills/aaif-sync-chapters/scripts/nightly.py
+                python skills/aaif-sync/scripts/nightly.py
               fi ;;
             audit-organizers) python skills/aaif-audit-slack/scripts/audit_organizers.py ;;
             audit-members)    python skills/aaif-audit-slack/scripts/audit_members.py ;;

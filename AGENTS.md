@@ -86,8 +86,8 @@ is the single definition of the pipeline: which engines run, in what order, and
 behind which of the five gates (`open` / `report-only` / `approval` /
 `read-only` / `human` — the last one summarises but never decides). `nightly.py` wraps that same script for CI rather than carrying
 its own copy, and the four phase skills — `aaif-sync-chapters`,
-`aaif-sync-organizers`, `aaif-sync-slack`, plus `aaif-audit-slack` for verify —
-each document one engine and never restate the order. The runner reaches them
+`aaif-sync-organizers`, `aaif-sync-slack`, plus `aaif-audit-slack` for the
+gather steps — each document one engine and never restate the order. The runner reaches them
 by **subprocess**, not import, which is why one skill can drive four without
 inheriting their coupling. An order this load-bearing (the CRM must hold the
 right people before Drive access is granted) must have exactly one definition.

@@ -162,17 +162,16 @@ flowchart TD
 
     subgraph P4["4 · events — is the page live, is it still running events?"]
         direction LR
-        p4a["<b>gather</b><br/>chapter_health<br/><i>events + last message</i>"]
-        p4b["<b>gather</b><br/>--audit-luma<br/><i>a dead CTA is invisible otherwise</i>"]
-        p4a --- p4b
+        p4a["<b>gather</b><br/>audit_activity<br/><i>the measurement layer</i>"]
+        p4b["<b>gather</b><br/>chapter_health<br/><i>events + last message</i>"]
+        p4c["<b>gather</b><br/>--audit-luma<br/><i>a dead CTA is invisible otherwise</i>"]
+        p4a --> p4b --- p4c
     end
     P3 --> P4
 
     subgraph P5["5 · speakers &amp; topics — what does it talk about?"]
         direction LR
-        p5a["<b>gather</b><br/>audit_activity<br/><i>the measurement layer</i>"]
-        p5b["<b>gather</b><br/>audit_topics<br/><i>are the subject rooms alive</i>"]
-        p5a --> p5b
+        p5a["<b>gather</b><br/>audit_topics<br/><i>are the subject rooms alive</i>"]
     end
     P4 --> P5
 
@@ -196,7 +195,7 @@ flowchart TD
     classDef decide fill:#fff,stroke:#0369a1,color:#000
     classDef side fill:#fff,stroke:#a8a29e,color:#000,stroke-dasharray:4 3
     class P1,P2,P3,P4,P5,P7 phase
-    class p1a,p1b,p2a,p3a,p4a,p4b,p5a,p5b,p7a gather
+    class p1a,p1b,p2a,p3a,p4a,p4b,p4c,p5a,p7a gather
     class p2b,p3b plan
     class p2c,p3c exec
     class q1,q2,OUT decide
@@ -314,12 +313,13 @@ batch job:
 
 | | Phase | Gate | Why |
 |---|---|---|---|
-| 🟦 | `clean`, `luma`, `verify` | **read-only** | no write mode exists at all |
+| 🟦 | every `gather` step | **read-only** | no write mode exists at all; a finding is fixed at its source |
 | 🟨 | `triage` | **human** | the runner **summarises, and never decides**. It reports how deep the queue is — "nothing to do" and "nobody has looked" are different facts — and exits `2` while rows wait. Accepting an applicant is a judgement about a person; you make it with `aaif-triage-intake`. |
-| ⬜ | `chapters`, `organizers`†, `resources` | **open** | `--write` passes through after you approve the report |
-| 🟥 | `slack` | **approval** | creates rooms, adds and notifies real people — needs `--i-have-approval`, and is refused outright in an unattended run |
+| ⬜ | `chapters`, `resources`, `about`, `crm` | **open** | `--write` passes through after you approve the report |
+| 🟧 | `access` | **report-only** | never receives `--write` from the runner — see † |
+| 🟥 | `provision`, `invite`, `directory` | **approval** | creates rooms, adds and notifies real people — needs `--i-have-approval`; an unattended run only reports them |
 
-† except `access` inside it, which is **report-only**: its grants hand standing
+† `access` is **report-only**: its grants hand standing
 Drive access to addresses typed into a public form, and Drive may email the
 person as a side effect, so the runner never passes it `--write` at all. It
 reports, and a human runs the grant by hand.
@@ -340,10 +340,10 @@ reorder it — `sync.py access crm` still runs `crm` first, and a test pins that
 | `aaif-create-event` | Add an event to a chapter/series Event Tracker (due-dates stamped from the event date), optionally creating the live Luma page on approval | Google Drive, Luma |
 | `aaif-update-event` | Edit an event's details or move its date (recomputing all task due-dates), flag stale assets, optionally sync the change to Luma | Google Drive, Luma |
 | `aaif-event-status` | Report overdue / due-soon event tasks by owner, plus read-only Luma registration stats | Google Drive, Luma |
-| **`aaif-sync`** | **The ops front door.** Runs the whole estate sync in dependency order — clean → triage → chapters → organizers → people → resources → slack → luma → verify — report-first, with a gate on anything that touches a real person | everything below |
-| `aaif-sync-chapters` | Phase 3: intake cities and organizer names → rows on the public Chapters List; audits every row's Luma page | Google Sheets |
-| `aaif-sync-organizers` | Phase 4: accepted and pipeline people → each chapter's About doc, its private CRM, and its per-chapter Drive grants | Google Sheets/Drive/Docs |
-| `aaif-sync-slack` | Phases 5-6: the chapter → Drive-folder/Slack-channel resource map, then creating those rooms and inviting organizers into them | Slack, Google Sheets |
+| **`aaif-sync`** | **The ops front door.** Runs the whole estate sync in dependency order — preflight → chapters → organizers → events → speakers → hosts → workspace, each phase gather → plan → execute — report-first, with a gate on anything that touches a real person | everything below |
+| `aaif-sync-chapters` | Phases `chapters` + `events`: intake cities and organizer names → rows on the public Chapters List; audits every row's Luma page | Google Sheets |
+| `aaif-sync-organizers` | Phase `organizers`: accepted and pipeline people → each chapter's About doc, its private CRM, and its per-chapter Drive grants | Google Sheets/Drive/Docs |
+| `aaif-sync-slack` | Phases `chapters` + `organizers`: the chapter → Drive-folder/Slack-channel resource map, then creating those rooms and inviting organizers into them | Slack, Google Sheets |
 | `aaif-audit-slack` | Audit the community Slack workspace — chapter/organizer channel coverage and member/channel health — as a self-contained HTML report | Slack, Google Sheets |
 | `aaif-community-pulse` | Draft the periodic "AAIF Community Organizer Update" Slack post from recent chapter events, community news, and the Luma calendar | Slack, Google Drive, Luma |
 | `aaif-sync-badges` | Generate and sync chapter organizer badges (SVG + PNG) into the chapter-badges Drive folder | Google Drive |

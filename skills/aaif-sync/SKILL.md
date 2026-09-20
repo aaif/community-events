@@ -1,12 +1,12 @@
 ---
 name: aaif-sync
-description: Run the whole AAIF estate sync in order — resolve intake cities, triage decisions, push chapters onto the Chapters List, then organizers into About docs, CRMs and Drive access, then the Slack channel map and channel provisioning, then check every chapter's Luma page, then verify. Reports and proposes by default; writes only on explicit approval. Use when asked to sync the estate, run the sync, sync everything, do the chapter/organizer sync, or bring the sheets, Drive, Slack and Luma back in step.
+description: Run the whole AAIF estate sync in order — check the intake and the decision queue, then chapters onto the Chapters List with their Drive folders and Slack rooms, then organizers into About docs, CRMs, Drive access and organizer rooms, then every chapter's Luma page and event health, then the Slack topic rooms and workspace. Each phase measures before it proposes and proposes before it writes. Reports by default; writes only on explicit approval. Use when asked to sync the estate, run the sync, sync everything, do the chapter/organizer sync, or bring the sheets, Drive, Slack and Luma back in step.
 argument-hint: '[phase|step ...] [--write] [--i-have-approval]'
 ---
 
 # Sync the AAIF estate
 
-**This is the front door.** One pipeline, one script, eight phases, run in
+**This is the front door.** One pipeline, one script, seven phases, run in
 dependency order. Each phase has its own skill that documents the engine in
 detail; this skill drives them.
 
@@ -21,7 +21,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py --write    # apply, after approval
 | 1 | `preflight` | is the source sound? intake data + the decision queue | `aaif-clean-data`, `aaif-triage-intake` |
 | 2 | `chapters` | does the chapter exist — on the sheet, in Drive, in Slack? | `aaif-sync-chapters`, `aaif-sync-slack`, `aaif-audit-slack` |
 | 3 | `organizers` | who runs it, and can they reach their own things? | `aaif-sync-organizers`, `aaif-sync-slack` |
-| 4 | `events` | is every chapter's page live, and is it still running events? | `aaif-sync-chapters` |
+| 4 | `events` | is every chapter's page live, and is it still running events? | `aaif-audit-slack`, `aaif-sync-chapters` |
 | 5 | `speakers` | what does the community talk about? | `aaif-audit-slack` |
 | 6 | `hosts` | where does it meet? *(no estate-wide engine yet)* | — |
 | 7 | `workspace` | what does an ordinary member see? | `aaif-audit-slack` |
@@ -93,7 +93,9 @@ accepted — needs your decision") and leave the row as it is.
 ## Preflight
 
 - [ ] `gws` CLI installed and authenticated (see the user's `gws-cli-access` memory).
-- [ ] For phases 5-8: `$AAIF_SLACK_WRITE_TOKEN` in the repo-root `.env`.
+- [ ] For every step that reads Slack: `$AAIF_SLACK_WRITE_TOKEN` in the
+      repo-root `.env`. Without it the Slack gathers **FAIL** and `resources`
+      reports **PARTIAL**, and neither counts as a pass.
       **Never `export` it on the command line** — shell history and the session
       transcript both keep it.
 - [ ] Working from a full checkout (every engine imports `lib/aaif_events`).
@@ -112,7 +114,7 @@ accepted — needs your decision") and leave the row as it is.
 - [ ] **2. Read the RESULT line**, then the log of anything that is not
       `in sync`. Outcomes: `in sync`, `DRIFT` (it proposes changes),
       `wrote+verified`, `PARTIAL` (it could not check everything — usually Slack
-      auth), `skipped` (gated), `FAILED`.
+      auth), `skipped` (gated, needs approval), `FAILED`.
 - [ ] **3. Show the user what would change and get explicit approval.** The
       per-phase skills describe what each engine's report means.
 - [ ] **4. Write.** `--write` applies everything it is allowed to:
@@ -139,13 +141,14 @@ gate in one place so no caller can route around one.
 |---|---|---|
 | **open** | `chapters`, `about`, `crm`, `resources` | `--write` passes through. |
 | **report-only** | `access` | **Never** receives `--write`, whatever the runner was told. Its grants hand standing Drive access to addresses typed into a public form, and Drive may email the person. Run `sync_access.py --write` by hand after reading `access.log`. |
-| **approval** | `provision`, `invite`, `directory` | Needs `--i-have-approval` too, and is refused outright under `--unattended`. These create rooms, add real people and post in shared channels. |
-| **read-only** | `clean`, `luma`, `verify` | No write mode at all. |
+| **approval** | `provision`, `invite`, `directory` | Needs `--i-have-approval` too. These create rooms, add real people and post in shared channels. Under `--unattended` they run read-only, like `access`. |
+| **read-only** | every `gather` step | No write mode at all. `DRIFT` from one of these is a finding to fix at its source, not a proposal to apply. |
 | **human** | `triage` | **The runner summarises it, and never decides it.** It runs `intake.py` read-only, so a report says how deep the queue is — the difference between "nothing to do" and "nobody has looked". No argv makes it write. Rows awaiting a decision exit `2`; work them with the **`aaif-triage-intake`** skill. |
 
 ```bash
-# the Slack phase, once the user has actually approved it
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py slack --write --i-have-approval
+# the Slack writes, once the user has actually approved them — named as steps,
+# because they live in two phases (chapters, organizers) and stay in order
+python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py provision invite directory --write --i-have-approval
 ```
 
 ## Unattended
@@ -156,12 +159,10 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py --write    # apply what is safe
 ```
 
 `nightly.py` is a thin wrapper: it adds `--unattended` and its own report
-directory, and owns no pipeline of its own. Unattended runs `clean`, `chapters`,
-`preflight`, `chapters`, `organizers` only — the audit-heavy phases are excluded because every step in it is
-approval-gated and a scheduled job is by definition nobody's approval, `luma`
-because luma.com rate-limits the sweep (a 96-row run draws a `429` with no
-`Retry-After`, so it would report PARTIAL every night), and `verify` because the
-Slack audit's first run takes ~20 minutes on a 30k-member workspace.
+directory, and owns no pipeline of its own. Unattended runs `preflight`,
+`chapters` and `organizers` only, and the approval steps inside them run
+read-only — a scheduled job is nobody's approval. `references/nightly.md` has
+what is left out and why, and what a night costs.
 
 ## State: cached, dated, and never committable
 
@@ -177,11 +178,13 @@ changes").
 of the *workspace*, not state of the pipeline.
 
 **A cache is trusted for one day and not a minute past it.** The expiry is
-`MAX_AGE` in the shared `jsoncache` module, not here, so a standalone
-`audit_topics.py` obeys it too — not only a step this runner scheduled. Past it,
-whichever step reads it first discards and refetches, announced on that step's
-log. A cache that cannot be dated is treated as too old: `read()` returning a
-payload is a claim it is recent enough to publish.
+`MAX_AGE` in the shared `jsoncache` module, not here, so a standalone audit
+obeys it too — not only a step this runner scheduled. Past it, the step that
+produces the file discards and refetches, announced on its log. A step that
+only *consumes* one (`health`, `topics`, `members` reading `activity.json`)
+reads it at any age and dates the sweep on its report instead: it cannot
+refetch, and a dated finding beats no finding. A cache that cannot be dated is
+treated as too old.
 
 The runner therefore forces no refresh of its own, and must not: throwing away
 an hour-old pull on every run is the opposite of caching.
@@ -217,11 +220,10 @@ Everything written is **output, not state** — `sync-reports/<stamp>/` logs,
   healthy one; fix the cause and re-run.
 - **A gated step exits `2`, not `0`.** "Nothing went wrong" and "the dangerous
   half never ran" are different facts.
-- **`triage` never runs here, and that is not a limitation to route around.**
-  `sync.py triage` still refuses. Nothing downstream moves until a human works
-  the queue, so a run that reports everything else in sync while the queue is
-  deep is telling you the truth: the estate matches the decisions that have
-  been made, and some have not been made.
+- **A deep triage queue is not a limitation to route around.** Nothing
+  downstream moves until a human works it, so a run that reports everything
+  else in sync while the queue is deep is telling you the truth: the estate
+  matches the decisions that have been made, and some have not been made.
 - **`--write` is not a Slack approval.** `--i-have-approval` is a claim that a
   human at the terminal agreed to notify or add real people; never pass it on
   your own initiative.
