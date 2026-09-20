@@ -279,6 +279,12 @@ check("a PARTIAL: line is seen even after a blank line",
       (sync.PARTIAL, 2))
 check("accented engine output does not crash the log re-read",
       drive("españa Montréal Logroño\nVerified: ok\n", True), (sync.WROTE, 0))
+# sync_chapters indents its Luma-sweep marker two spaces. A column-zero match
+# read a rate-limited sweep as DRIFT (live, 2026-09-20): a half-checked run
+# passing as a finding is exactly what the marker exists to prevent.
+check("an indented PARTIAL marker still counts",
+      drive("Luma audit: 75 checked\n  PARTIAL: rate-limited at row 77\n",
+            False, code=2), (sync.PARTIAL, 2))
 
 
 def access_drive(log_text, code):

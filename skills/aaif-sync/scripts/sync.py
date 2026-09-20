@@ -311,8 +311,12 @@ def run_step(step, log_path, write_mode, approved, unattended=False):
     # ASCII and crash the runner AFTER a step already applied its writes.
     with open(log_path, encoding="utf-8", errors="replace") as log:
         lines = log.readlines()
-    return (classify(code, any(l.startswith("Verified:") for l in lines),
-                     write_mode, any(l.startswith("PARTIAL:") for l in lines)),
+    # lstrip: the marker is the first word of a line, wherever the engine
+    # indents it. sync_chapters prints its Luma-sweep PARTIAL two spaces in,
+    # and a column-zero match classified a rate-limited sweep as DRIFT
+    # (verified live 2026-09-20) — the one outcome the marker exists to prevent.
+    marked = lambda tag: any(l.lstrip().startswith(tag) for l in lines)  # noqa: E731
+    return (classify(code, marked("Verified:"), write_mode, marked("PARTIAL:")),
             code, time.monotonic() - t0)
 
 
