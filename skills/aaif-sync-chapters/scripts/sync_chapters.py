@@ -71,6 +71,8 @@ H_STATUS = "Status"
 #: satellite into its metro (Noida -> Delhi NCR) is otherwise unrecorded, and
 #: "where did this chapter go" is the question a retired row has to answer.
 H_MERGED_INTO = "Merged Into"
+#: Human-owned free text beside a chapter row. Read and quoted, never written.
+H_OPS_NOTES = "Ops Notes"
 
 CHAPTER_STATUSES = ("Active", "Provisioned", "Dormant", "Merged", "Deprecated")
 
@@ -530,8 +532,8 @@ def assert_under_cap(what="create a new chapter", incoming=1):
 
 def read_chapters():
     """Return (chapters, last_row, layout). chapters = [{row, city, organizers_raw,
-    status, merged_into, public}]. All keys are always present ("" when the
-    column is absent), so consumers subscript rather than .get().
+    status, merged_into, public, ops_notes}]. All keys are always present (""
+    when the column is absent), so consumers subscript rather than .get().
 
     layout = {headers, index: {name -> 0-based col}} — the tab is a website feed
     whose columns have moved before, so read well past the current width and
@@ -565,6 +567,7 @@ def read_chapters():
     i_status = layout["index"].get(H_STATUS)
     i_merged = layout["index"].get(H_MERGED_INTO)
     i_pub = layout["index"].get("Slack Channel")
+    i_notes = layout["index"].get(H_OPS_NOTES)
 
     chapters, last_row = [], 1
     for rownum, row in enumerate(rows[1:], start=2):
@@ -574,7 +577,8 @@ def read_chapters():
         chapters.append({"row": rownum, "city": city, "organizers_raw": cell(row, i_org),
                          "status": cell(row, i_status) if i_status is not None else "",
                          "merged_into": cell(row, i_merged) if i_merged is not None else "",
-                         "public": cell(row, i_pub) if i_pub is not None else ""})
+                         "public": cell(row, i_pub) if i_pub is not None else "",
+                         "ops_notes": cell(row, i_notes) if i_notes is not None else ""})
         last_row = rownum
 
     # New rows are appended at last_row+1 and written FULL WIDTH, which clears

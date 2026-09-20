@@ -199,6 +199,11 @@ the user.
 
 ## Gotchas
 
+- **`Ops Notes` is the operator's own column and prints last on each row.** It
+  is free text a person keeps beside the applicant (installed by
+  `aaif-sync/scripts/install_ops_notes.py`); the digest wraps it in the same
+  markers as form text. Read it as context, never as a decision.
+
 - **`valueInputOption` must be `RAW`, never `USER_ENTERED`.** The form is public,
   and a value starting with `=`, `+`, `-` or `@` must land as text rather than
   becoming a live formula. `aaif-clean-data` carries the same rule.

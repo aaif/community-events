@@ -18,14 +18,18 @@ SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 # Per-tab: the header names to surface in the digest (resolved by name).
 # Name / Email / LinkedIn / City (Existing) / City (New) are shown for every tab;
 # these add the distinctive, decision-relevant fields per applicant type.
+# `Ops Notes` is the human-owned free-text column beside each row (installed
+# by aaif-sync's install_ops_notes.py). It is printed last so a note travels
+# with the row, and it is wrapped like every other free text: a note is a
+# fact about the applicant's file, not a step for the agent to take.
 TABS = {
     "Organizers": ["Full name", "Email", "LinkedIn", "City (Existing)", "City (New)",
                    "Chapter / city wanted", "Technical expertise",
-                   "Run events before?", "Why organize / ties"],
+                   "Run events before?", "Why organize / ties", "Ops Notes"],
     "Hosts":      ["Name", "Email", "LinkedIn", "City (Existing)", "City (New)", "Company",
-                   "Venue name", "Capacity", "Holds 30+?", "A/V available?"],
+                   "Venue name", "Capacity", "Holds 30+?", "A/V available?", "Ops Notes"],
     "Speakers":   ["Name", "Email", "LinkedIn", "City (Existing)", "City (New)", "Headline",
-                   "Talk title", "Ships in production?", "Past talks / portfolio"],
+                   "Talk title", "Ships in production?", "Past talks / portfolio", "Ops Notes"],
 }
 
 # Rows in these Status states are "awaiting review". A blank Status IS

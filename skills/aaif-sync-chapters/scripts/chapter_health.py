@@ -78,7 +78,7 @@ from sync_chapters import (CHAPTER_CAP, CHAPTERS_ID, H_MERGED_INTO,  # noqa: E40
                            NO_RESOURCE, cell, census_of, fold_city, get_values,
                            header_index, read_chapters, unknown_statuses)
 from aaif_events import jsoncache  # noqa: E402
-from aaif_events.redact import (add_redact_flag, redact_name,  # noqa: E402
+from aaif_events.redact import (add_redact_flag, redact_name, redact_text,  # noqa: E402
                                 set_redaction)
 
 #: One verdict per chapter, so "a row is in exactly one bucket" is a property of
@@ -305,6 +305,7 @@ def build(window, cache_dir):
             verdict = QUIET
         rows.append({"city": ch["city"], "status": ch.get("status", ""),
                      "merged_into": ch.get("merged_into", ""),
+                     "ops_notes": ch.get("ops_notes", ""),
                      "events": n, "event_days": e_days, "slack_days": s_days,
                      "members": members, "verdict": verdict,
                      "why": unknown_why, "undated": key in undated})
@@ -387,6 +388,10 @@ def main():
                  ("%dd" % r["slack_days"]) if r["slack_days"] is not None else "never",
                  r["members"] if r["members"] is not None else "-",
                  r["status"] or "(untriaged)", redact_name(r["merged_into"]) if r["merged_into"] else ""))
+        # The operator's own note on the row, quoted so it travels with the
+        # verdict. Free text: it is shown, never acted on.
+        if r["ops_notes"]:
+            print("  %-22s   ops notes: %s" % ("", redact_text(r["ops_notes"])))
 
     if cannot_say:
         print("\nCANNOT SAY (%d) — no activity found, but the evidence is "
