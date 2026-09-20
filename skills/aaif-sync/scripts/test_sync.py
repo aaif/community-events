@@ -406,7 +406,24 @@ check("...and holds no refresh policy of its own",
 # visible to a reader even though the runner no longer acts on it.
 check("the cache-backed steps are still declared",
       sorted(s.name for _p, s in _full if s.cached),
-      ["activity", "coverage", "health", "identity", "members", "topics"])
+      ["activity", "coverage", "health", "identity", "members", "report", "topics"])
+
+# --- HTML lands in the run directory --------------------------------------------
+# Every RENDERS_HTML step really takes --out (pinned against its source, as for
+# REDACTING), the runner points it at <run_dir>/<step>, and nothing else gets
+# an --out it would reject.
+for _name in sync.RENDERS_HTML:
+    with open(_by[_name].path, encoding="utf-8") as _fh:
+        check("%s takes --out" % _name, '"--out"' in _fh.read(), True)
+for _p, _s in sync.selected([], False):
+    _cmd, _wm = sync.step_cmd(_s, False, False, out_dir="/x/run")
+    check("%s gets --out iff it renders HTML" % _s.name,
+          "--out" in _cmd, _s.name in sync.RENDERS_HTML)
+    if _s.name in sync.RENDERS_HTML:
+        check("...pointed at the run dir", _cmd[_cmd.index("--out") + 1],
+              os.path.join("/x/run", _s.name))
+check("the composed report is the last step of the pipeline",
+      [s.name for _p, s in sync.selected([], False)][-1], "report")
 
 # --- the gitignore guard works BEFORE the directory exists ---------------------
 # `sync-reports/` is a directory-only pattern and `git check-ignore` treats a

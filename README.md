@@ -181,6 +181,8 @@ flowchart TD
     subgraph P7["7 · workspace — what does an ordinary member see?"]
         direction LR
         p7a["<b>gather</b><br/>audit_members"]
+        p7b["<b>gather</b><br/>summarize_audits<br/><i>one HTML for the run</i>"]
+        p7a --> p7b
     end
     P6 --> P7
 
@@ -195,7 +197,7 @@ flowchart TD
     classDef decide fill:#fff,stroke:#0369a1,color:#000
     classDef side fill:#fff,stroke:#a8a29e,color:#000,stroke-dasharray:4 3
     class P1,P2,P3,P4,P5,P7 phase
-    class p1a,p1b,p2a,p3a,p4a,p4b,p4c,p5a,p7a gather
+    class p1a,p1b,p2a,p3a,p4a,p4b,p4c,p5a,p7a,p7b gather
     class p2b,p3b plan
     class p2c,p3c exec
     class q1,q2,OUT decide

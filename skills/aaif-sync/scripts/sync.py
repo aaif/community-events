@@ -104,6 +104,13 @@ REDACTING = frozenset({
     "chapters", "resources", "about", "access", "crm", "invite", "luma",
 })
 
+#: Steps that render an HTML report and take `--out <basename>`. The runner
+#: points each at `<run_dir>/<step>` so the page lands beside the step's log
+#: instead of at the engine's default in the repo root, where a run's pages
+#: pile up undated and the runner's stdout never mentions them. The test pins
+#: this set against the scripts' own source, as it does for REDACTING.
+RENDERS_HTML = frozenset({"coverage", "activity", "topics", "members", "report"})
+
 
 class Step:
     """One script in the pipeline: where it lives, how it is called, its gate."""
@@ -229,6 +236,13 @@ PHASES = (
              GATHER, "accounts, channel sizes, the newcomer experience — reads "
              "the activity cache the events phase filled",
              cached=True),
+        # Last, because it composes: one HTML for the run, opening on where to
+        # focus, with the four audits above as its appendices. It re-renders
+        # from the caches those steps just filled, so it needs nothing but
+        # the order it sits in.
+        Step("report", "aaif-audit-slack", "summarize_audits.py", [], READ_ONLY,
+             GATHER, "the one HTML to hand over — the four audits as appendices",
+             cached=True),
     ]),
 )
 
@@ -269,7 +283,7 @@ def classify(code, wrote_marker, write_mode, partial_marker=False):
     return DRIFT
 
 
-def step_cmd(step, write_mode, approved, unattended=False):
+def step_cmd(step, write_mode, approved, unattended=False, out_dir=None):
     """The argv for one step, and the write mode it actually ran under.
 
     Every gate is applied here, in one place, so no caller can route around one
@@ -291,11 +305,14 @@ def step_cmd(step, write_mode, approved, unattended=False):
             cmd.append("--i-have-approval")
     if step.name in REDACTING:
         cmd.append("--no-redact")
+    if step.name in RENDERS_HTML and out_dir:
+        cmd += ["--out", os.path.join(out_dir, step.name)]
     return cmd, write_mode
 
 
 def run_step(step, log_path, write_mode, approved, unattended=False):
-    cmd, write_mode = step_cmd(step, write_mode, approved, unattended)
+    cmd, write_mode = step_cmd(step, write_mode, approved, unattended,
+                               os.path.dirname(log_path))
     t0 = time.monotonic()
     # 0o600: the log holds names and emails; no other local user gets to read
     # it just because the checkout happens to be world-readable.
@@ -535,12 +552,16 @@ def main(argv=None):
                     else "  (summary only)")
         elif step.gate == READ_ONLY:
             note = "  (read-only)"
+        if step.name in RENDERS_HTML and outcome != FAILED:
+            note += "  + %s.html" % step.name
         print("      %-10s %-15s exit %d  %4.0fs  %s.log%s"
               % (step.name, outcome, code, secs, step.name, note))
 
     print()
     for line in summary_notes(by_name, a.write):
         print(line)
+    if by_name.get("report") not in (None, FAILED):
+        print("HTML report: %s" % os.path.join(run_dir, "report.html"))
     return exit_code(by_name)
 
 

@@ -24,7 +24,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py --write    # apply, after approval
 | 4 | `events` | is every chapter's page live, and is it still running events? | `aaif-audit-slack`, `aaif-sync-chapters` |
 | 5 | `speakers` | what does the community talk about? | `aaif-audit-slack` |
 | 6 | `hosts` | where does it meet? *(no estate-wide engine yet)* | — |
-| 7 | `workspace` | what does an ordinary member see? | `aaif-audit-slack` |
+| 7 | `workspace` | what does an ordinary member see? — then one HTML for the whole run | `aaif-audit-slack` |
 
 **Each phase runs its stages in order: `gather` → `plan` → `execute`.**
 
@@ -111,6 +111,10 @@ accepted — needs your decision") and leave the row as it is.
       stdout is a per-step outcome table and **never names a person**. The full
       reports — which do carry names, emails and per-person diffs — land in
       `sync-reports/<UTC stamp>/<step>.log`, `0600` inside a `0700` directory.
+      The audit gathers also write their HTML there (`coverage.html`,
+      `activity.html`, `topics.html`, `members.html`), and the last step
+      composes them into one page, `report.html`, whose full path is the last
+      line of stdout. That page is the thing to hand over.
 - [ ] **2. Read the RESULT line**, then the log of anything that is not
       `in sync`. Outcomes: `in sync`, `DRIFT` (it proposes changes),
       `wrote+verified`, `PARTIAL` (it could not check everything — usually Slack
