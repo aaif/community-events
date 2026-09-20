@@ -46,8 +46,10 @@ FORMAT = 2
 #: and nothing here is minute-to-minute. Past it, `read()` discards and the
 #: caller re-fetches — announced through `note`, never silently.
 #:
-#: Pass `max_age=None` to opt out, for a caller that genuinely wants whatever is
-#: on disk regardless of age. Nothing in this repo does.
+#: Pass `max_age=None` to opt out. The scripts that only CONSUME a cache
+#: another audit produces (chapter_health, audit_topics, audit_members reading
+#: activity.json) do: they cannot refetch, and each dates the sweep itself, so
+#: discarding would turn a dated finding into no finding at all.
 MAX_AGE = dt.timedelta(days=1)
 
 _MISS = object()   # distinguishes "no payload key" from a stored None

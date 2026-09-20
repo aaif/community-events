@@ -9,17 +9,10 @@ order, behind which gate" reads `PHASES` below rather than restating it —
 a second copy of an order this load-bearing is how two callers come to
 disagree about whether the CRM is written before access is granted.
 
-The order is not arbitrary and must not be reordered:
-
-    clean      an unresolved city is invisible to every step below
-    triage     only Accepted / Existing (from MLOps) flow onward
-    chapters   a net-new city needs its feed row before anything hangs off it
-    organizers the accepted-organizer list reaches the About doc and the grant
-    people     speakers and hosts join the organizers in the chapter CRM
-    resources  records the folder and channels that now exist
-    slack      creates what `resources --plan` named, then invites people into it
-    luma       every chapter row's page is still live
-    verify     the independent check, from a different code path
+The order is not arbitrary and must not be reordered: seven phases —
+preflight, chapters, organizers, events, speakers, hosts, workspace — each a
+subject, each running its steps gather -> plan -> execute. `PHASES` below
+carries the reason for every step and its place.
 
 Each step runs as a subprocess; its FULL report — which names real people and
 their email addresses — goes only to a log file under a gitignored directory.
@@ -28,14 +21,14 @@ log is a publication, so the summary is step names, outcomes, durations and log
 paths, nothing else. Any print added here must be composed only of fixed
 strings and values this script computed itself, never step output.
 
-Four gates, because "can this run unattended" is not one question:
+Five gates, because "can this run unattended" is not one question:
 
   OPEN         --write passes through.
   REPORT_ONLY  never receives --write, whatever the runner was told. `access`
                grants standing Drive access to addresses typed into a public
                form, and Drive may email the person as a side effect.
-  APPROVAL     needs --i-have-approval as well as --write, and is refused
-               outright under --unattended: these notify or add real people.
+  APPROVAL     needs --i-have-approval as well as --write: these notify or
+               add real people. Unattended it behaves as REPORT_ONLY.
   READ_ONLY    has no write mode at all.
   HUMAN        runs, read-only, and **summarises without deciding**. Triage is
                a judgement about a person, and a judgement nobody made is not a
@@ -116,13 +109,11 @@ class Step:
     """One script in the pipeline: where it lives, how it is called, its gate."""
 
     def __init__(self, name, skill, script, args=(), gate=OPEN, stage=PLAN, why="",
-                 cached=False, refreshable=False):
+                 cached=False):
         self.name, self.skill, self.script = name, skill, script
         self.args, self.gate, self.stage, self.why = list(args), gate, stage, why
-        #: Reads the shared `.slack-audit-cache`, which OUTLIVES a run.
+        #: Reads the shared `.slack-audit-cache` (see the cache note above).
         self.cached = cached
-        #: ...and accepts --refresh, so it can be the one step that rebuilds it.
-        self.refreshable = refreshable
 
     @property
     def path(self):
@@ -161,7 +152,7 @@ PHASES = (
         Step("coverage", "aaif-audit-slack", "audit_organizers.py", ["--planned-ok"],
              READ_ONLY, GATHER,
              "which chapters have a room and a folder, from live Slack and Drive",
-             cached=True, refreshable=True),
+             cached=True),
         Step("chapters", "aaif-sync-chapters", "sync_chapters.py", [], OPEN, PLAN,
              "a net-new city needs its feed row before anything hangs off it"),
         Step("resources", "aaif-sync-slack", "sync_resources.py", [], OPEN, PLAN,
@@ -194,6 +185,12 @@ PHASES = (
     #    which chapters have gone quiet. There is no execute — making a Luma
     #    page is manual, and nothing in this repo writes the Past Events tab.
     ("events", [
+        # activity comes first: `health` reads its cache for the last-human-
+        # message signal, and `topics` and `members` (later phases) take their
+        # dormancy numbers from the same file. Producer before consumers.
+        Step("activity", "aaif-audit-slack", "audit_activity.py", [], READ_ONLY,
+             GATHER, "last human message and posting volume — the measurement layer",
+             cached=True),
         Step("health", "aaif-sync-chapters", "chapter_health.py", [], READ_ONLY,
              GATHER, "recorded events and last human Slack message, per chapter",
              cached=True),
@@ -214,15 +211,11 @@ PHASES = (
     #    the prerequisite — "held until per-role CRM tabs exist" — so per-role
     #    execution is unblocked by that migration, not by this file.
     ("speakers", [
-        # activity precedes topics and must: its cache is where the dormancy
-        # numbers on the topic report come from, and running topics first
-        # publishes a page with those figures missing.
-        Step("activity", "aaif-audit-slack", "audit_activity.py", [], READ_ONLY,
-             GATHER, "last human message and posting volume — the measurement layer",
-             cached=True, refreshable=True),
+        # `activity` ran in the events phase; its cache is where the dormancy
+        # numbers on this report come from.
         Step("topics", "aaif-audit-slack", "audit_topics.py", [], READ_ONLY, GATHER,
              "are the subject rooms alive, and can a newcomer find them",
-             cached=True, refreshable=True),
+             cached=True),
     ]),
     # 6. Hosts: venues. Same shared-write constraint as speakers, and thinner
     #    still — there is no estate-wide venue engine yet, so this phase has
@@ -234,21 +227,21 @@ PHASES = (
     ("workspace", [
         Step("members", "aaif-audit-slack", "audit_members.py", [], READ_ONLY,
              GATHER, "accounts, channel sizes, the newcomer experience — reads "
-             "the activity cache the speakers phase filled",
-             cached=True, refreshable=True),
+             "the activity cache the events phase filled",
+             cached=True),
     ]),
 )
 
 PHASE_NAMES = [p for p, _ in PHASES]
 
-#: Phases a scheduled job runs. `slack` is absent because every step in it is
-#: APPROVAL-gated and a scheduled job must never hold that approval. `luma` is
-#: absent because luma.com rate-limits the sweep: a 96-row run draws a 429 with
-#: no Retry-After (measured 2026-09-17), so unattended it would stop at row 2
-#: and report PARTIAL every night — and a check that can never complete
-#: unattended teaches operators to ignore the one signal it shares with real
-#: findings. Both stay manual. `verify` is absent because the Slack audit's
-#: first run takes ~20 minutes on a 30k-member workspace.
+#: Phases a scheduled job runs. The APPROVAL steps inside them run read-only
+#: (see `step_cmd`). `events` is absent because luma.com rate-limits the
+#: `luma` sweep: a 96-row run draws a 429 with no Retry-After (measured
+#: 2026-09-17), so unattended it would report PARTIAL every night, and a check
+#: that can never complete teaches operators to ignore the one signal it
+#: shares with real findings. `speakers` and `workspace` are absent because
+#: they only publish audits. `coverage` is the one Slack pull that does run
+#: unattended (see the cache note above for what that costs cold).
 UNATTENDED_PHASES = ("preflight", "chapters", "organizers")
 
 IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED = (
@@ -276,15 +269,20 @@ def classify(code, wrote_marker, write_mode, partial_marker=False):
     return DRIFT
 
 
-def step_cmd(step, write_mode, approved):
+def step_cmd(step, write_mode, approved, unattended=False):
     """The argv for one step, and the write mode it actually ran under.
 
     Every gate is applied here, in one place, so no caller can route around one
     by assembling its own command line.
+
+    Unattended, an APPROVAL step is a REPORT_ONLY step: it runs read-only under
+    both a scheduled report and a scheduled write, so the two agree on what is
+    pending, and its DRIFT is the note that sends a human to a terminal — the
+    same contract `access` already has. A scheduled job is nobody's approval.
     """
     if step.gate in (READ_ONLY, REPORT_ONLY, HUMAN):
         write_mode = False
-    elif step.gate == APPROVAL and not approved:
+    elif step.gate == APPROVAL and (unattended or not approved):
         write_mode = False
     cmd = [sys.executable, step.path] + step.args
     if write_mode:
@@ -296,8 +294,8 @@ def step_cmd(step, write_mode, approved):
     return cmd, write_mode
 
 
-def run_step(step, log_path, write_mode, approved):
-    cmd, write_mode = step_cmd(step, write_mode, approved)
+def run_step(step, log_path, write_mode, approved, unattended=False):
+    cmd, write_mode = step_cmd(step, write_mode, approved, unattended)
     t0 = time.monotonic()
     # 0o600: the log holds names and emails; no other local user gets to read
     # it just because the checkout happens to be world-readable.
@@ -363,7 +361,7 @@ def selected(names, unattended, stages=None):
 
 def summary_notes(by_name, write_mode):
     """The PII-free RESULT lines for a run; pure, so the tests can pin them."""
-    results = [o for o in by_name.values() if o != SKIPPED]
+    results = list(by_name.values())
     if FAILED in results:
         return ["RESULT: failure — read the log(s) above. Later steps still "
                 "ran; the pipeline's report modes are read-only and independent."]
@@ -373,44 +371,41 @@ def summary_notes(by_name, write_mode):
     # mask a chapter stuck behind a missing Luma page.
     if WROTE in results:
         notes.append("changes were applied and verified")
-    pending_access = by_name.get("access") == DRIFT
-    # Two different reasons a step did not run, and conflating them tells an
-    # operator to pass a flag that would not have helped: `triage` is a
-    # judgement nobody can delegate to this runner, while the Slack steps are
-    # merely waiting on a human to say yes.
-    human_only = {s.name for _p, s in selected([], False) if s.gate == HUMAN}
-    gated = sorted(n for n, o in by_name.items()
-                   if o == SKIPPED and n not in human_only)
-    # A HUMAN step reports DRIFT for "rows are waiting", not for "a proposal is
-    # ready to apply" — so it must not fall into the generic drift note, which
-    # would tell an operator to re-run it with --write. There is no --write.
-    needs_human = sorted(n for n, o in by_name.items()
-                         if o in (DRIFT, SKIPPED) and n in human_only)
-    # A gather step has no write mode at all, so its DRIFT means "here is a
-    # finding", never "a proposal is ready to apply". Telling an operator to
-    # re-run `luma` with --write names a flag that does not exist — the same
-    # mistake the HUMAN gate made before it was split out.
-    measured = {s.name for _p, s in selected([], False) if s.stage == GATHER}
-    findings = sorted(n for n, o in by_name.items()
-                      if o == DRIFT and n in measured and n not in human_only)
-    other_drift = any(o == DRIFT for n, o in by_name.items()
-                      if n != "access" and n not in human_only and n not in measured)
-    if other_drift:
+
+    # Every note below is "(gate, outcome) -> what a human does next", because
+    # DRIFT means something different behind each gate: a proposal to apply
+    # (OPEN), a finding to fix at its source (READ_ONLY — there is no --write
+    # to name), a queue to work (HUMAN), a grant to make by hand (REPORT_ONLY),
+    # or a Slack change that needs BOTH flags (APPROVAL — --write alone skips
+    # it). Partitioning by gate once keeps each note from having to subtract
+    # every other note's set.
+    gate_of = {s.name: s.gate for _p, s in selected([], False)}
+
+    def names(outcome, gate):
+        return sorted(n for n, o in by_name.items()
+                      if o == outcome and gate_of.get(n) == gate)
+
+    if names(DRIFT, OPEN):
         notes.append("drift remains — a step held back or re-proposed changes; "
                      "read its log" if write_mode
                      else "drift — re-run the flagged step(s) with --write after review")
+    for outcome, reason in ((DRIFT, "propose Slack changes"), (SKIPPED, "did not run")):
+        gated = names(outcome, APPROVAL)
+        if gated:
+            notes.append("%s %s — they add or notify real people; apply with "
+                         "--write --i-have-approval from a human at the terminal"
+                         % (", ".join(gated), reason))
+    findings = names(DRIFT, READ_ONLY)
     if findings:
         notes.append("%s reported findings — these steps only measure, so there "
                      "is nothing to apply; fix each at its source and re-measure"
                      % ", ".join(findings))
+    pending_access = names(DRIFT, REPORT_ONLY)
     if pending_access:
-        notes.append("access has pending Drive grants/lock — NEEDS A HUMAN: read "
+        notes.append("%s has pending Drive grants/lock — NEEDS A HUMAN: read "
                      "access.log, then run sync_access.py --write by hand (this "
-                     "runner never grants Drive access)")
-    if gated:
-        notes.append("%s did not run — they add or notify real people and need "
-                     "--i-have-approval from a human at the terminal"
-                     % ", ".join(gated))
+                     "runner never grants Drive access)" % ", ".join(pending_access))
+    needs_human = names(DRIFT, HUMAN)
     if needs_human:
         notes.append("%s has rows awaiting a decision — the runner summarised the "
                      "queue but will never decide it; nothing downstream moves "
@@ -473,8 +468,8 @@ def build_parser():
                     help="run only these stages (repeatable). `--stage gather` "
                          "measures the whole estate and proposes nothing.")
     ap.add_argument("--unattended", action="store_true",
-                    help="scheduled-job mode: runs %s only, and refuses the "
-                         "Slack approval gate outright."
+                    help="scheduled-job mode: runs %s only; the Slack "
+                         "approval steps run read-only."
                          % "/".join(UNATTENDED_PHASES))
     ap.add_argument("--report-dir", default=os.path.join(REPO, "sync-reports"),
                     help="where the full (PII-carrying) logs land; must be "
@@ -518,16 +513,19 @@ def main(argv=None):
         if step.stage != stage_shown:
             print("    · %s" % step.stage)
             stage_shown = step.stage
-        if step.gate == APPROVAL and a.write and not a.approved:
+        if step.gate == APPROVAL and a.write and not a.approved and not a.unattended:
             by_name[step.name] = SKIPPED
             print("      %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
             continue
         outcome, code, secs = run_step(
-            step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved)
+            step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved,
+            a.unattended)
         by_name[step.name] = outcome
         note = ""
         if step.gate == REPORT_ONLY:
             note = "  (report mode — never written by this runner)"
+        elif step.gate == APPROVAL and a.unattended:
+            note = "  (report mode — never written unattended)"
         elif step.gate == HUMAN:
             note = ("  (summary only — a human decides)" if outcome == DRIFT
                     else "  (summary only)")

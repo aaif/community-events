@@ -188,8 +188,14 @@ def slack_activity(cache_dir, today, window):
     question wider than it looked, so the caller clamps to it rather than
     reporting an unanswerable window as silence.
     """
-    act = jsoncache.read(os.path.join(cache_dir, "activity.json"), note=print)
-    chans = jsoncache.read(os.path.join(cache_dir, "channels.json"), note=print)
+    # max_age=None: this script only CONSUMES the cache and cannot refetch, and
+    # it dates the sweep itself from the per-record `day` stamps below — an
+    # old sweep is clamped and announced, never mistaken for a fresh one. The
+    # shared one-day expiry is for producers, which discard and re-pull.
+    act = jsoncache.read(os.path.join(cache_dir, "activity.json"), note=print,
+                         max_age=None)
+    chans = jsoncache.read(os.path.join(cache_dir, "channels.json"), note=print,
+                           max_age=None)
     if act is None or chans is None:
         return None, {}
     swept = [r for r in act.values() if isinstance(r, dict) and r.get("day")]

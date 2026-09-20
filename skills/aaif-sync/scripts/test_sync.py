@@ -18,6 +18,8 @@ Five load-bearing seams, all pinned here:
     able to reorder it.
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -87,6 +89,8 @@ check("activity is measured before topics reports its dormancy numbers",
       _names.index("activity") < _names.index("topics"), True)
 check("...and before members, which reads the same cache",
       _names.index("activity") < _names.index("members"), True)
+check("...and before chapter health, which reads it",
+      _names.index("activity") < _names.index("health"), True)
 check("chapter coverage is gathered before the chapters plan proposes rows",
       _names.index("coverage") < _names.index("chapters"), True)
 check("organizers are done before speakers",
@@ -150,20 +154,28 @@ check("...not even --i-have-approval reaches it",
       "--i-have-approval" in cmd, False)
 
 
-def _drive_triage(code):
-    """Run the triage step with intake.py stubbed at a given exit code."""
+def _drive(argv, code=0, entry=None, log_text=""):
+    """Run the runner end to end with every engine stubbed at one exit code.
+
+    Returns (exit code, the argv of every subprocess it would have launched).
+    """
     seen = []
 
     def fake_run(cmd, stdout=None, stderr=None, **kw):
         seen.append(cmd)
-        if stdout is not None:
-            stdout.write("3 awaiting review\n")
+        if stdout is not None and log_text:
+            stdout.write(log_text)
         return type("R", (), {"returncode": code})()
 
     with mock.patch.object(sync.subprocess, "run", fake_run), \
-         tempfile.TemporaryDirectory() as td:
-        rc = sync.main(["triage", "--report-dir", td])
+         tempfile.TemporaryDirectory() as td, \
+         contextlib.redirect_stdout(io.StringIO()):
+        rc = (entry or sync.main)(list(argv) + ["--report-dir", td])
     return rc, seen
+
+
+def _drive_triage(code):
+    return _drive(["triage"], code, log_text="3 awaiting review\n")
 
 
 # A deep queue and an empty one must be distinguishable, which is the whole
@@ -201,6 +213,33 @@ check("a real engine's drift still gets the generic note",
 check("an approval-gated skip still names the flag that would help",
       "--i-have-approval" in sync.summary_notes({"invite": sync.SKIPPED}, True)[0],
       True)
+# In report mode an approval step runs read-only and can report DRIFT. The
+# remedy is BOTH flags: `--write` alone makes main() skip it, so the generic
+# "re-run with --write" note would send the operator to a flag that cannot help.
+_ad = sync.summary_notes({"invite": sync.DRIFT}, False)[0]
+check("approval-step drift names --i-have-approval, not just --write",
+      "--write --i-have-approval" in _ad, True)
+check("...and does not get the generic drift note",
+      "re-run the flagged step(s) with --write after review" in _ad, False)
+
+# --- unattended: the approval steps become report-only ----------------------
+# A scheduled job is nobody's approval, so `nightly.py --write` runs the Slack
+# steps read-only — the same contract `access` has. Both scheduled modes then
+# agree on what is pending, a clean night exits 0, and a pending room exits 2
+# with the note that sends a human to a terminal.
+_SLACK_WRITERS = ("provision_channels", "invite_organizers", "post_country_directory")
+_rc, _seen = _drive(["--write"], entry=nightly.main)
+check("a clean unattended write run exits 0", _rc, 0)
+_slack = [c for c in _seen if any(x in " ".join(c) for x in _SLACK_WRITERS)]
+check("...and ran the approval steps read-only", bool(_slack), True)
+check("...never with --write", [c for c in _slack if "--write" in c], [])
+check("...but did run the open writes",
+      any("sync_crm.py" in " ".join(c) and "--write" in c for c in _seen), True)
+_rc, _ = _drive(["--write"], code=2, entry=nightly.main)
+check("an unattended write with pending Slack changes exits 2", _rc, 2)
+_pending = sync.summary_notes({"invite": sync.DRIFT}, True)[0]
+check("...and its note sends a human to the terminal with both flags",
+      "--write --i-have-approval" in _pending, True)
 
 # The logs are 0600 files in a 0700 gitignored dir and the NEEDS-A-HUMAN note
 # needs real addresses, so the runner turns the engines' CI default OFF.
@@ -297,9 +336,9 @@ _appr = [s for _p, s in sync.selected(list(sync.UNATTENDED_PHASES), True)
 check("the unattended set does contain approval steps, by design",
       bool(_appr), True)
 for _s in _appr:
-    _cmd, _wm = sync.step_cmd(_s, write_mode=True, approved=False)
-    check("unattended, %r is never handed a write" % _s.name,
-          ("--write" in _cmd, _wm), (False, False))
+    _cmd, _wm = sync.step_cmd(_s, write_mode=True, approved=True, unattended=True)
+    check("unattended, %r is never handed a write, even if approval were claimed"
+          % _s.name, ("--write" in _cmd, _wm), (False, False))
 # ...and the flag that would authorise one is refused outright in that mode,
 # which is what makes the above unreachable rather than merely unused.
 _refused = []
