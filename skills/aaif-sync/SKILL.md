@@ -163,6 +163,35 @@ because luma.com rate-limits the sweep (a 96-row run draws a `429` with no
 `Retry-After`, so it would report PARTIAL every night), and `verify` because the
 Slack audit's first run takes ~20 minutes on a 30k-member workspace.
 
+## State, and why there is none
+
+**This runner keeps nothing between runs but the data itself.** No checkpoint,
+no resume, no memo — it writes logs and reads back only the one it just wrote.
+Two consecutive runs against an unchanged estate produce the same plan, and each
+engine verifies its own idempotence after a write ("a fresh run proposes zero
+changes").
+
+One thing genuinely outlives a run, and it is handled rather than wished away:
+**`.slack-audit-cache/`**. Six gather steps read it, and `users.json` alone takes
+about 20 minutes to page on a 30k-member workspace — refetching per step is not
+an option, and deleting it per run is not either. It is a memo of the
+*workspace*, not state of the pipeline, and the property that matters is that a
+run's findings come from data that run observed.
+
+So the **first cache-backed step in a run is given `--refresh`** and rebuilds the
+cache once; every later step reuses what it just fetched. Across runs, nothing
+carries. The header line names the step that did it.
+
+Two selections cannot rebuild it, because their first cache-backed step takes no
+such flag — `sync.py organizers` (starts at `identity`) and `sync.py events`
+(starts at `health`). Those runs print a `NOTE:` saying their measurements may
+predate the run. A stale measurement reads exactly like a fresh one, so it is
+reported rather than assumed away.
+
+Everything else written is **output, not state**: `sync-reports/<stamp>/` logs
+and `backups/` copies. Nothing reads them on a later run. Delete them when done
+— they hold names and emails.
+
 ## Gotchas
 
 - **Never reorder the pipeline**, and note that selecting a subset cannot

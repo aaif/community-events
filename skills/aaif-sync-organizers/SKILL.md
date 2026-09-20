@@ -161,7 +161,41 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/test_track_drive_email.py
 python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_status_prospect.py
 python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_interested_in.py
 python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_column_order.py
+python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_role_tabs.py
 ```
+
+## Per-role CRM tabs (`migrations/migrate_role_tabs.py`)
+
+Adds `Organizers`, `Speakers` and `Hosts` tabs to every chapter CRM, so a role
+gets its own row instead of being merged into one. It is the prerequisite
+`sync_crm` names when it holds back a second-role application — *"held until
+per-role CRM tabs exist to keep the two applications separate rather than
+merged into one row"*.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_role_tabs.py                # report
+python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_role_tabs.py --city Boston
+python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_role_tabs.py --write        # apply
+```
+
+- **`Attendees` is never touched.** It holds `Signal`, hand-typed notes and
+  corrected spellings no automation may author, and the Guide tab's dashboard
+  formulas point at it. The role tabs are **additive**; nothing is moved or
+  deleted, and a test asserts the source tab comes through byte-identical.
+- **Each tab is a CLONE of that workbook's own `Attendees` sheet**, data rows
+  cleared. That is the whole safety argument: the clone inherits the real
+  header row, both dropdowns, the conditional formats, the column widths and
+  the pre-materialised blank rows, so a role tab cannot drift from the tab it
+  was cut from. Authoring a sheet instead would mean re-deriving all of that
+  and getting it right ~100 times.
+- **A pre-split workbook is refused, not cloned** — cloning would propagate the
+  old schema into three new tabs. Run `migrate_interested_in.py` first.
+- Idempotent: a workbook that already carries the three tabs is reported as
+  done and not rewritten.
+
+**Not yet run against the estate.** It is tested against synthetic workbooks
+only; running it over ~100 live CRMs is a separate, deliberate act with the
+backups it writes to `backups/crm-role-tabs-<stamp>/`.
 
 ## References — load on demand
 

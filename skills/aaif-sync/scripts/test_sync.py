@@ -331,6 +331,43 @@ check("nightly always passes --unattended", "--unattended" in _seen["argv"], Tru
 check("nightly keeps its own report dir",
       "nightly-reports" in " ".join(_seen["argv"]), True)
 
+# --- no state survives a run -----------------------------------------------------
+# The runner must keep nothing between runs but the data itself. Two properties:
+# it is a pure function of its arguments, and the one thing that DOES outlive a
+# run (.slack-audit-cache) is rebuilt once per run rather than inherited.
+_full = sync.selected([], False)
+check("selection is deterministic — no memo between calls",
+      [s.name for _p, s in sync.selected([], False)],
+      [s.name for _p, s in sync.selected([], False)])
+_by_name2 = {s.name: s for _p, s in _full}
+check("argv is a pure function of the step and the flags",
+      sync.step_cmd(_by_name2["crm"], True, False),
+      sync.step_cmd(_by_name2["crm"], True, False))
+
+_refresh, _warn = sync.refresh_plan(_full)
+check("a full run rebuilds the shared cache", _refresh, "coverage")
+check("...and nothing warns, because the first cache step can refresh", _warn, None)
+_n = sum("--refresh" in sync.step_cmd(s, False, False, _refresh)[0]
+         for _p, s in _full)
+check("--refresh is passed exactly once in a full run — not per step", _n, 1)
+check("...and it goes to the EARLIEST cache-backed step, so later ones reuse it",
+      next(s.name for _p, s in _full if s.cached), _refresh)
+
+# A selection whose first cache-backed step cannot refresh must say so: a stale
+# measurement reads exactly like a fresh one, which is the whole hazard.
+_r2, _w2 = sync.refresh_plan(sync.selected(["organizers"], False))
+check("a selection that cannot rebuild the cache warns", bool(_w2), True)
+check("...and names the step responsible", "identity" in _w2, True)
+check("...and passes --refresh to nobody", _r2, None)
+_r3, _w3 = sync.refresh_plan(sync.selected(["preflight"], False))
+check("a selection with no cache-backed step neither refreshes nor warns",
+      (_r3, _w3), (None, None))
+# --refresh must never reach a step that does not take the flag.
+for _p, _s in _full:
+    if not _s.refreshable:
+        check("%s never receives --refresh" % _s.name,
+              "--refresh" in sync.step_cmd(_s, False, False, _s.name)[0], False)
+
 # --- the gitignore guard works BEFORE the directory exists ---------------------
 # `sync-reports/` is a directory-only pattern and `git check-ignore` treats a
 # path that does not exist yet as a file, so the guard has to probe with a
