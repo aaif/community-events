@@ -716,14 +716,27 @@ def build_findings(changes, flags):
         doc["findings"].append({"kind": "proposed fixes", "subject": header,
                                 "detail": f"{n} row(s) to normalize",
                                 "severity": "info", "action": "apply with clean.py apply"})
+    # Detail = the person's name (the text report prints it beside the row)
+    # and a fixed reason. `who` falls back to the address when the name is
+    # blank, and an address never leaves the sheet through this path.
+    reason = {"unresolved city": "the dropdown said Other and the free text did not resolve",
+              "LinkedIn not a profile URL": "not a linkedin.com/in/ profile link",
+              "missing email": "no address on the row",
+              "invalid email": "the address is not well-formed",
+              "missing name": "no name on the row"}
     for f in flags:
         kind = _flag_kind(f["issue"])
+        who = f.get("who", "")
+        name = "" if ("@" in who or who.startswith("row ")) else who
         if kind == "unresolved city":
-            detail, action = "", "run clean.py cities"
+            action = "run clean.py cities"
         elif kind == "duplicate email":
-            detail, action = f["issue"].split(" in ", 1)[1], "merge or mark the duplicate"
+            action = "merge or mark the duplicate"
         else:
-            detail, action = "", "fix on the row"
+            action = "fix on the row"
+        why = (f["issue"].split(" in ", 1)[1] if kind == "duplicate email"
+               else reason.get(kind, ""))
+        detail = " — ".join(p for p in (name, why) if p)
         doc["findings"].append({"kind": kind, "subject": f"row {f['row']}",
                                 "detail": detail, "severity": "warn", "action": action})
     return doc

@@ -838,8 +838,13 @@ class TestScanFindings(unittest.TestCase):
         self.assertEqual([(f["subject"], f["detail"], f["severity"]) for f in fixes],
                          [(self.CHANGES[0]["header"], "1 row(s) to normalize", "info")])
         blob = json.dumps(doc)
-        for value in ("a@x.com", "A@X.COM", "b@x.com", "c@x.com", "Ada", "Grace"):
+        for value in ("a@x.com", "A@X.COM", "b@x.com", "c@x.com"):
             self.assertNotIn(value, blob)
+        # The name the text report prints beside the row travels; a fixed
+        # reason says why, so no detail is ever blank.
+        self.assertEqual(by_subject["row 6"]["detail"],
+                         "Grace — the dropdown said Other and the free text did not resolve")
+        self.assertTrue(all(f["detail"] for f in doc["findings"]))
 
     def test_clean_sheet_is_ok_and_empty(self):
         doc = clean.build_findings([], [])
