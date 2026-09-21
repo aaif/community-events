@@ -406,30 +406,8 @@ Read-only throughout; no message text was retained.</footer>
 
 #: Appendices carry their own <h1>, so each starts a fresh printed page if the
 #: HTML is ever printed, and the document reads as four reports in one file
-#: rather than one long scroll.
-APPENDIX_CSS = """
-/* The appendix must re-create .wrap's vertical rhythm. .wrap is a flex column
-   whose 44px gap reaches its DIRECT children only, and an appendix nests its
-   whole report one level down — so every heading, table and card row inside it
-   lost the spacing the same markup has when rendered standalone, and the
-   appendices came out visibly cramped against the focus page. */
-.appendix{display:flex;flex-direction:column;gap:44px;
-  break-before:page;page-break-before:always;
-  border-top:2px solid var(--line-hard,#CFCFC9);
-  margin-top:3rem;padding-top:2rem}
-.appendix > .tag{margin-bottom:-32px}
-.appendix > .tag{display:inline-block;font-size:.72rem;letter-spacing:.08em;
-  text-transform:uppercase;opacity:.6;margin-bottom:.4rem}
-/* The sections index: a jump list, not prose — no bullets, no browser-blue
-   links (BASE_CSS's a{} already handles the color; this is layout only). */
-.toc{border:1px solid var(--line-1,#E5E5E2); padding:20px 24px}
-.toc > .tag{display:block; margin-bottom:10px; font-size:.72rem;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint,#8C8C8C)}
-.toc ul{list-style:none; margin:0; padding:0; display:flex;
-  flex-direction:column; gap:8px}
-.toc li{font-size:.95rem}
-"""
-
+#: rather than one long scroll. Their styles (.appendix, .toc) live in
+#: report_style's BASE_CSS, shared with the sync run report.
 
 def slug(label):
     return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
@@ -466,7 +444,7 @@ def build_document(focus_body, appendices):
             % "".join('<li><a href="#%s">%s</a></li>' % (e(slug(lbl)), e(lbl))
                      for lbl, _ in all_sections))
     parts = [index] + [appendix(lbl, b) for lbl, b in all_sections]
-    return rs.page("AAIF Slack Audit", "".join(parts), extra_css=APPENDIX_CSS)
+    return rs.page("AAIF Slack Audit", "".join(parts))
 
 
 def main():

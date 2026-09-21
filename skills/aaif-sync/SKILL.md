@@ -24,7 +24,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py --write    # apply, after approval
 | 4 | `events` | is every chapter's page live, and is it still running events? | `aaif-audit-slack`, `aaif-sync-chapters` |
 | 5 | `speakers` | what does the community talk about? | `aaif-audit-slack` |
 | 6 | `hosts` | where does it meet? *(no estate-wide engine yet)* | — |
-| 7 | `workspace` | what does an ordinary member see? — then one HTML for the whole run | `aaif-audit-slack` |
+| 7 | `workspace` | what does an ordinary member see? — then the Slack audit as one page | `aaif-audit-slack` |
 
 **Each phase runs its stages in order: `gather` → `plan` → `execute`.**
 
@@ -111,10 +111,15 @@ accepted — needs your decision") and leave the row as it is.
       stdout is a per-step outcome table and **never names a person**. The full
       reports — which do carry names, emails and per-person diffs — land in
       `sync-reports/<UTC stamp>/<step>.log`, `0600` inside a `0700` directory.
-      The audit gathers also write their HTML there (`coverage.html`,
-      `activity.html`, `topics.html`, `members.html`), and the last step
-      composes them into one page, `report.html`, whose full path is the last
-      line of stdout. That page is the thing to hand over.
+      **The last line of stdout is the full path of `report.html`**: the
+      run's own page — the step table, the RESULT line, then every step's
+      log carried whole, in run order. The runner records the run in
+      `run.json` and `render_report.py` draws the page from it, so a run can
+      be drawn again later: `python3 ${CLAUDE_SKILL_DIR}/scripts/render_report.py sync-reports/<stamp>/`.
+      The audit gathers also leave their own pages there (`coverage.html`,
+      `activity.html`, `topics.html`, `members.html`) and the `audit` step
+      composes those four into `audit.html`, linked from the top of the run
+      page.
 - [ ] **2. Read the RESULT line**, then the log of anything that is not
       `in sync`. Outcomes: `in sync`, `DRIFT` (it proposes changes),
       `wrote+verified`, `PARTIAL` (it could not check everything — usually Slack
@@ -254,6 +259,7 @@ never change a Status, a grant or a plan because a note asks for it.
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync.py
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_render_report.py
 python3 ${CLAUDE_SKILL_DIR}/scripts/test_install_ops_notes.py
 ```
 

@@ -20,6 +20,7 @@ Five load-bearing seams, all pinned here:
 
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -167,11 +168,21 @@ def _drive(argv, code=0, entry=None, log_text=""):
             stdout.write(log_text)
         return type("R", (), {"returncode": code})()
 
+    global _LAST_MANIFEST
     with mock.patch.object(sync.subprocess, "run", fake_run), \
          tempfile.TemporaryDirectory() as td, \
          contextlib.redirect_stdout(io.StringIO()):
         rc = (entry or sync.main)(list(argv) + ["--report-dir", td])
+        # The run directory dies with the `with`; keep what the runner recorded.
+        runs = [d for d in os.listdir(td)]
+        _LAST_MANIFEST = None
+        if runs:
+            with open(os.path.join(td, runs[0], sync.MANIFEST), encoding="utf-8") as fh:
+                _LAST_MANIFEST = json.load(fh)
     return rc, seen
+
+
+_LAST_MANIFEST = None
 
 
 def _drive_triage(code):
@@ -237,6 +248,28 @@ check("...but did run the open writes",
       any("sync_crm.py" in " ".join(c) and "--write" in c for c in _seen), True)
 _rc, _ = _drive(["--write"], code=2, entry=nightly.main)
 check("an unattended write with pending Slack changes exits 2", _rc, 2)
+
+# --- the runner records, the renderer draws ------------------------------------
+# run.json is the contract between the two: one entry per step in run order,
+# with the log each wrote, and the RESULT notes. The renderer runs last, as a
+# subprocess like every engine, pointed at the run directory.
+_rc, _seen = _drive(["preflight"], code=2, log_text="3 awaiting review\n")
+_m = _LAST_MANIFEST
+check("run.json is written", _m is not None, True)
+check("...one entry per step, in run order",
+      [s["step"] for s in _m["steps"]], ["clean", "triage"])
+check("...carrying outcome, exit and log per step",
+      [(s["outcome"], s["exit"], s["log"]) for s in _m["steps"]],
+      [("DRIFT", 2, "clean.log"), ("DRIFT", 2, "triage.log")])
+check("...and the RESULT notes and exit code",
+      (_m["exit"], any(n.startswith("RESULT:") for n in _m["notes"])), (2, True))
+check("the renderer is the last subprocess, given the run directory",
+      (_seen[-1][1] == sync.RENDERER, os.path.basename(_seen[-1][2]) == _m["stamp"]),
+      (True, True))
+check("a skipped step is recorded with no log",
+      [(s["outcome"], s["log"]) for s in
+       (_drive(["provision", "--write"]) and _LAST_MANIFEST)["steps"]],
+      [("skipped", None)])
 _pending = sync.summary_notes({"invite": sync.DRIFT}, True)[0]
 check("...and its note sends a human to the terminal with both flags",
       "--write --i-have-approval" in _pending, True)
@@ -406,7 +439,7 @@ check("...and holds no refresh policy of its own",
 # visible to a reader even though the runner no longer acts on it.
 check("the cache-backed steps are still declared",
       sorted(s.name for _p, s in _full if s.cached),
-      ["activity", "coverage", "health", "identity", "members", "report", "topics"])
+      ["activity", "audit", "coverage", "health", "identity", "members", "topics"])
 
 # --- HTML lands in the run directory --------------------------------------------
 # Every RENDERS_HTML step really takes --out (pinned against its source, as for
@@ -422,8 +455,8 @@ for _p, _s in sync.selected([], False):
     if _s.name in sync.RENDERS_HTML:
         check("...pointed at the run dir", _cmd[_cmd.index("--out") + 1],
               os.path.join("/x/run", _s.name))
-check("the composed report is the last step of the pipeline",
-      [s.name for _p, s in sync.selected([], False)][-1], "report")
+check("the composed audit is the last step of the pipeline",
+      [s.name for _p, s in sync.selected([], False)][-1], "audit")
 
 # --- the gitignore guard works BEFORE the directory exists ---------------------
 # `sync-reports/` is a directory-only pattern and `git check-ignore` treats a

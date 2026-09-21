@@ -181,12 +181,13 @@ flowchart TD
     subgraph P7["7 · workspace — what does an ordinary member see?"]
         direction LR
         p7a["<b>gather</b><br/>audit_members"]
-        p7b["<b>gather</b><br/>summarize_audits<br/><i>one HTML for the run</i>"]
+        p7b["<b>gather</b><br/>summarize_audits<br/><i>the Slack audit as one page</i>"]
         p7a --> p7b
     end
     P6 --> P7
 
-    P7 --> OUT{"findings?"}
+    P7 --> REPORT["<b>render_report</b><br/>run.json + every log → report.html"]
+    REPORT --> OUT{"findings?"}
     OUT -->|"yes — fix at the source"| P1
     OUT -->|"no"| DONE(["estate in step"])
 
@@ -432,8 +433,8 @@ Code *plugin*:
   need the full checkout (or plugin install), since the zip won't contain
   `lib/`. Those are `aaif-audit-slack`, `aaif-community-pulse`,
   `aaif-create-chapter`, `aaif-create-event`, `aaif-event-status`,
-  `aaif-sync-badges`, `aaif-sync-chapters`, `aaif-sync-organizers`,
-  `aaif-sync-slack` and `aaif-update-event`.
+  `aaif-sync` (its report renderer), `aaif-sync-badges`, `aaif-sync-chapters`,
+  `aaif-sync-organizers`, `aaif-sync-slack` and `aaif-update-event`.
   `scripts/check_portable_skills.py` keeps this list honest — adding a
   `lib/aaif_events` import to a skill that is not listed here fails the build,
   so giving up a skill's portability stays a decision someone makes on purpose.

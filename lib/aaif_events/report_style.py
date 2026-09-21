@@ -310,6 +310,35 @@ td.n{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
    it without reading every cell, using the same restrained warn/bad tokens
    the pills already use, never a new colour. */
 tr.has-issue td,tr.has-issue th{background:var(--warn-bg)}
+/* Composed reports: a page that carries other reports whole. Promoted here from
+   summarize_audits so the sync run report shares them rather than copying. */
+/* The appendix must re-create .wrap's vertical rhythm. .wrap is a flex column
+   whose 44px gap reaches its DIRECT children only, and an appendix nests its
+   whole report one level down — so every heading, table and card row inside it
+   lost the spacing the same markup has when rendered standalone, and the
+   appendices came out visibly cramped against the focus page. */
+.appendix{display:flex;flex-direction:column;gap:44px;
+  break-before:page;page-break-before:always;
+  border-top:2px solid var(--line-hard,#CFCFC9);
+  margin-top:3rem;padding-top:2rem}
+.appendix > .tag{margin-bottom:-32px}
+.appendix > .tag{display:inline-block;font-size:.72rem;letter-spacing:.08em;
+  text-transform:uppercase;opacity:.6;margin-bottom:.4rem}
+/* The sections index: a jump list, not prose — no bullets, no browser-blue
+   links (BASE_CSS's a{} already handles the color; this is layout only). */
+.toc{border:1px solid var(--line-1,#E5E5E2); padding:20px 24px}
+.toc > .tag{display:block; margin-bottom:10px; font-size:.72rem;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint,#8C8C8C)}
+.toc ul{list-style:none; margin:0; padding:0; display:flex;
+  flex-direction:column; gap:8px}
+.toc li{font-size:.95rem}
+/* An engine's own stdout, carried verbatim: monospace, wrapped so a long
+   proposal line never forces the page wide, in the sunken plate the tables
+   use for their header row. */
+.log{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.8rem;
+  line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere;
+  background:var(--sunken,#ECEBE6); border:1px solid var(--line-1,#E5E5E2);
+  padding:16px 20px; margin:0; max-height:70vh; overflow:auto}
 tr.has-issue:hover td,tr.has-issue:hover th{background:var(--warn-bg)}
 /* Not yet accepted — a fact about the ROW, not an issue by itself (a pending
    applicant with nothing else wrong gets no has-issue tint), so it gets its

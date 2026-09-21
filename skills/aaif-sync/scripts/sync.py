@@ -46,6 +46,7 @@ Exit codes, matching the per-engine convention:
 
 import argparse
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
@@ -109,7 +110,15 @@ REDACTING = frozenset({
 #: instead of at the engine's default in the repo root, where a run's pages
 #: pile up undated and the runner's stdout never mentions them. The test pins
 #: this set against the scripts' own source, as it does for REDACTING.
-RENDERS_HTML = frozenset({"coverage", "activity", "topics", "members", "report"})
+RENDERS_HTML = frozenset({"coverage", "activity", "topics", "members", "audit"})
+
+#: The run's own page. The runner RECORDS — outcomes, exit codes, durations,
+#: which log is whose — into run.json, and a separate script DRAWS report.html
+#: from that manifest and the logs. Two files, two jobs: the runner stays
+#: lib-free and subprocess-only (a test pins that), the renderer may use the
+#: design system, and a run can be re-rendered later from what it left behind.
+RENDERER = os.path.join(HERE, "render_report.py")
+MANIFEST = "run.json"
 
 
 class Step:
@@ -236,12 +245,13 @@ PHASES = (
              GATHER, "accounts, channel sizes, the newcomer experience — reads "
              "the activity cache the events phase filled",
              cached=True),
-        # Last, because it composes: one HTML for the run, opening on where to
-        # focus, with the four audits above as its appendices. It re-renders
-        # from the caches those steps just filled, so it needs nothing but
-        # the order it sits in.
-        Step("report", "aaif-audit-slack", "summarize_audits.py", [], READ_ONLY,
-             GATHER, "the one HTML to hand over — the four audits as appendices",
+        # Last, because it composes: the Slack audit as one page, opening on
+        # where to focus, with the four audits above as its appendices. It
+        # re-renders from the caches those steps just filled, so it needs
+        # nothing but the order it sits in. The RUN's page (every step, every
+        # log) is report.html, drawn by the renderer after the pipeline ends.
+        Step("audit", "aaif-audit-slack", "summarize_audits.py", [], READ_ONLY,
+             GATHER, "the Slack audit as one page — the four audits as appendices",
              cached=True),
     ]),
 )
@@ -527,6 +537,7 @@ def main(argv=None):
     print()
 
     by_name, phase_shown, stage_shown = {}, None, None
+    record = []   # what run.json carries: one entry per step, in run order
     for phase, step in steps:
         if phase != phase_shown:
             print("  [%s]" % phase)
@@ -534,14 +545,22 @@ def main(argv=None):
         if step.stage != stage_shown:
             print("    · %s" % step.stage)
             stage_shown = step.stage
+        entry = {"phase": phase, "stage": step.stage, "step": step.name,
+                 "gate": step.gate, "why": step.why, "log": step.name + ".log",
+                 "html": (step.name + ".html") if step.name in RENDERS_HTML else None}
+        record.append(entry)
         if step.gate == APPROVAL and a.write and not a.approved and not a.unattended:
             by_name[step.name] = SKIPPED
+            entry.update(outcome=SKIPPED, exit=None, seconds=0, log=None, html=None)
             print("      %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
             continue
         outcome, code, secs = run_step(
             step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved,
             a.unattended)
         by_name[step.name] = outcome
+        entry.update(outcome=outcome, exit=code, seconds=round(secs, 1))
+        if outcome == FAILED:
+            entry["html"] = None
         note = ""
         if step.gate == REPORT_ONLY:
             note = "  (report mode — never written by this runner)"
@@ -558,11 +577,51 @@ def main(argv=None):
               % (step.name, outcome, code, secs, step.name, note))
 
     print()
-    for line in summary_notes(by_name, a.write):
+    notes = summary_notes(by_name, a.write)
+    for line in notes:
         print(line)
-    if by_name.get("report") not in (None, FAILED):
-        print("HTML report: %s" % os.path.join(run_dir, "report.html"))
+    write_manifest(run_dir, stamp, a, record, notes, exit_code(by_name))
+    html = render(run_dir)
+    if html:
+        print("HTML report: %s" % html)
     return exit_code(by_name)
+
+
+def write_manifest(run_dir, stamp, a, record, notes, code):
+    """run.json: everything the renderer needs and nothing a person is named in.
+
+    Step names, outcomes, exit codes, durations, the log each step wrote, the
+    RESULT notes and the mode the run was in. The logs themselves stay separate
+    files: the manifest says where they are, and the renderer reads them.
+    """
+    doc = {"stamp": stamp, "mode": "write" if a.write else "report",
+           "unattended": bool(a.unattended), "approved": bool(a.approved),
+           "phases": list(a.phases) or None, "stages": a.stages,
+           "steps": record, "notes": notes, "exit": code}
+    fd = os.open(os.path.join(run_dir, MANIFEST),
+                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=1, ensure_ascii=False)
+
+
+def render(run_dir):
+    """Draw report.html from run.json and the logs; return its path, or None.
+
+    A subprocess, like every engine: the renderer imports the design system
+    and this file must not. Its own output goes to render.log — a failed
+    render is reported on stdout and never changes the run's exit code, which
+    is about the estate, not about the page.
+    """
+    log = os.path.join(run_dir, "render.log")
+    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        code = subprocess.run([sys.executable, RENDERER, run_dir],
+                              stdout=fh, stderr=subprocess.STDOUT).returncode
+    if code:
+        print("HTML report: render FAILED (exit %d) — see %s; re-run "
+              "render_report.py %s by hand" % (code, log, run_dir))
+        return None
+    return os.path.join(run_dir, "report.html")
 
 
 if __name__ == "__main__":
