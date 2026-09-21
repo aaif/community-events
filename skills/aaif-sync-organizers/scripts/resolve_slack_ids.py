@@ -55,7 +55,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
-from aaif_events import jsoncache  # noqa: E402
+from aaif_events import findings, jsoncache  # noqa: E402
 from aaif_events.slack import (Slack, SlackError, gmail_variants,  # noqa: E402
                                load_token, lookup_emails, users)
 # --- stdout redaction -------------------------------------------------------
@@ -403,7 +403,7 @@ def collect(hdr, rows, ci, cem=None):
     return out
 
 
-def run(write=False, want_suggest=False, apply_path=None):
+def run(write=False, want_suggest=False, apply_path=None, json_out=None):
     hdr, rows = read_source()
     cols = ensure_columns(hdr, (H_SLACK_ID, H_SLACK_EMAIL),
                           create=bool(write or apply_path))
@@ -413,14 +413,23 @@ def run(write=False, want_suggest=False, apply_path=None):
     records = collect(hdr, rows, ci, cem)
 
     if apply_path:
-        return apply_reviewed(apply_path, ci, cem, {r[0] for r in records})
+        n_ids, n_emails = apply_reviewed(apply_path, ci, cem, {r[0] for r in records})
+        rep = findings.Report("identity", "write")
+        rep.summary = "applied %d reviewed Slack id(s)" % n_ids
+        rep.measure("reviewed ids applied", n_ids, "ok")
+        rep.measure("Slack emails applied", n_emails)
+        rep.written = n_ids > 0
+        rep.write(json_out)
+        return
 
     todo = [r for r in records if not (r[3] and r[4])]
     print("%d row(s) with an email; %d already carry both %s and %s; "
           "%d to resolve.\n"
           % (len(records), len(records) - len(todo), H_SLACK_ID, H_SLACK_EMAIL,
              len(todo)))
+    mode = "write" if write else "report"
     if not todo:
+        build_findings(len(records), [], [], [], {}, mode).write(json_out)
         return
 
     api = Slack(load_token())
@@ -438,7 +447,7 @@ def run(write=False, want_suggest=False, apply_path=None):
             matched = got.get("matched_email") or email
             slack_emails.append((rn, matched))
             if matched.lower() != email.lower():
-                folded.append((name, email, matched))
+                folded.append((rn, name, email, matched))
         else:
             misses.append((rn, name, email))
 
@@ -446,7 +455,7 @@ def run(write=False, want_suggest=False, apply_path=None):
     if folded:
         print("\nMatched only after Gmail-canonicalizing the address — the intake "
               "spelling is the one to fix at the source:")
-        for name, was, now in folded:
+        for _rn, name, was, now in folded:
             print("   %-26s %-34s -> %s"
                   % (redact_name(name)[:26], redact_email(was),
                      redact_email(now)))
@@ -460,6 +469,7 @@ def run(write=False, want_suggest=False, apply_path=None):
         if len(misses) > 40:
             print("   … and %d more" % (len(misses) - 40))
 
+    cands = {}
     if want_suggest and misses:
         cands = suggest(misses, directory(api, who.get("team_id")))
         print("\nName-match candidates — SUGGESTIONS, never written automatically. "
@@ -475,9 +485,11 @@ def run(write=False, want_suggest=False, apply_path=None):
                          redact_name(u["real_name"])[:26],
                          redact_email(u["email"]) or "(no email visible)"))
 
+    report = build_findings(len(records), hits, folded, misses, cands, mode)
     if not write:
         print("\nReport only — nothing was written. Re-run with --write to fill "
               "the %d id(s) resolved by email." % len(hits))
+        report.write(json_out)
         return
 
     bad = [(rn, sid) for rn, sid in hits if not SLACK_ID_RE.match(sid)]
@@ -488,6 +500,44 @@ def run(write=False, want_suggest=False, apply_path=None):
     write_cells(cem, slack_emails)
     print("\nWrote %d %s and %d %s value(s)."
           % (len(hits), H_SLACK_ID, len(slack_emails), H_SLACK_EMAIL))
+    # gws exits the run on a failed batchUpdate, so reaching here means the
+    # cells landed; there is nothing to re-verify that the API did not already.
+    report.written = bool(hits)
+    report.write(json_out)
+
+
+def build_findings(n_rows, hits, folded, misses, cands, mode):
+    """The text report's counts and per-row calls as a `findings.Report`.
+
+    Pure: takes what `run()` has already computed and printed, so the same
+    numbers reach the page as reach the log. A row is the subject everywhere —
+    an address never is — and a name appears only where the text report
+    already prints it.
+    """
+    rep = findings.Report("identity", mode)
+    n_todo = len(hits) + len(misses)
+    rep.summary = ("%d row(s) to resolve: %d resolved by email, %d unresolved"
+                   % (n_todo, len(hits), len(misses)))
+    rep.measure("rows with an email", n_rows)
+    rep.measure("already resolved", n_rows - n_todo, "ok")
+    rep.measure("resolved by email", len(hits), "ok" if hits else None)
+    rep.measure("matched via Gmail spelling", len(folded), "warn" if folded else None)
+    rep.measure("name-match suggestions", len(cands), "warn" if cands else None)
+    rep.measure("no account at the address", len(misses), "warn" if misses else None)
+    for rn, name, _was, _now in folded:
+        rep.find("gmail spelling", "row %d" % rn, redact_name(name), "warn",
+                 "fix the intake spelling")
+    for rn in sorted(cands):
+        name = next(n for r, n, _e in misses if r == rn)
+        rep.find("name-match suggestion", "row %d" % rn,
+                 "%s: %d candidate(s)" % (redact_name(name), len(cands[rn])),
+                 "warn", "confirm the person, then --apply FILE --write")
+    if misses:
+        rep.find("no account", SOURCE,
+                 "%d row(s) resolve to no Slack account at the address on file "
+                 "(they may have joined under another address)" % len(misses),
+                 "info", "run with --suggest, or ask them to join Slack")
+    return rep
 
 
 def apply_reviewed(path, ci, cem, known_rows):
@@ -524,6 +574,7 @@ def apply_reviewed(path, ci, cem, known_rows):
     write_cells(cem, emails)
     print("Applied %d reviewed %s and %d %s value(s)."
           % (len(pairs), H_SLACK_ID, len(emails), H_SLACK_EMAIL))
+    return len(pairs), len(emails)
 
 
 def main():
@@ -536,6 +587,7 @@ def main():
                     help="write a reviewed [{row, slack_id}] JSON list "
                          "(needs --write, like every other write here)")
     add_redact_flag(ap, masks="emails (a***@***.tld), names (first initial) and Slack ids")
+    findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
     # `--apply` used to write on its own. Every other script in this skill, and
@@ -545,7 +597,8 @@ def main():
     if a.apply and not a.write:
         sys.exit("REFUSING: --apply writes to the sheet, so it needs --write too.\n"
                  "  python3 resolve_slack_ids.py --apply ids.json --write")
-    run(write=a.write, want_suggest=a.suggest, apply_path=a.apply)
+    run(write=a.write, want_suggest=a.suggest, apply_path=a.apply,
+        json_out=a.json_out)
 
 
 if __name__ == "__main__":

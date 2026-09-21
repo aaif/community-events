@@ -6,8 +6,10 @@ write allowlist cannot be bypassed, that a person with no account is reported
 rather than dropped, and that someone the intake does not know is never removed.
 """
 
+import json as _json
 import os
 import sys
+import tempfile as _tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -616,11 +618,67 @@ def _run_run_scope_both():
         return inv.run_scope("both")
 
 
-_both_rows, _both_total = _run_run_scope_both()
+_both_rows, _both_total, _both_rep = _run_run_scope_both()
 check("both columns' rows are concatenated, not overwritten",
       len(_both_rows), 2)
 check("both columns' missing counts are summed, not overwritten",
       _both_total, 4)
+check("run_scope() hands back the same report as data",
+      (_both_rep.step, _both_rep.mode), ("invite", "report"))
+
+# --- --json-out: the text report as data, same numbers, no addresses ---------
+# build_findings() is pure over what collect()/report() already produced, so
+# the page can never show a count the log did not print.
+_passes = [("Organizer channel",
+            [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
+              "is_private": True, "missing": [("Ada", "U1")],
+              "present": [("Bo", "U2")], "unaccounted": ["USTRANGER"]}],
+            [("Boston", "Cy")],
+            [("Madrid", "no Organizer Channel on the sheet")])]
+_rep = inv.build_findings(_passes, conflicts=1, mode="report")
+with _tempfile.TemporaryDirectory() as _d:
+    _out = os.path.join(_d, "invite.json")
+    inv.findings.Report.write(_rep, _out)
+    with open(_out, encoding="utf-8") as _fh:
+        _doc = _json.load(_fh)
+    check("the JSON is landed 0600", os.stat(_out).st_mode & 0o777, 0o600)
+check("the JSON carries the contract's format and this step's name",
+      (_doc["format"], _doc["step"], _doc["mode"]), (1, "invite", "report"))
+check("the summary is the one-line headline, counts only",
+      _doc["summary"],
+      "1 to invite across 1 live channel(s); 1 already in; "
+      "1 accepted organizer(s) with no Slack account")
+check("the tiles are the counts the text report prints, in reading order",
+      [(m["label"], m["value"]) for m in _doc["measured"]],
+      [("to invite", 1), ("already in", 1), ("no Slack account", 1),
+       ("Slack ID column conflicts", 1)])
+check("a pending invite is a warn finding on the CHANNEL, naming the person",
+      [(f["kind"], f["subject"], f["detail"], f["severity"])
+       for f in _doc["findings"] if f["kind"] == "invite"],
+      [("invite", "#boston-organizers", "Ada", "warn")])
+check("no-account is ONE row with the count, never a per-person list",
+      [(f["subject"], f["detail"]) for f in _doc["findings"]
+       if f["kind"] == "no Slack account"],
+      [("Organizer channel", "1 accepted organizer(s) cannot be invited")])
+check("a skipped chapter, a stranger in the room and a column conflict each land",
+      sorted(f["kind"] for f in _doc["findings"]),
+      ["Slack ID conflict", "channel skipped", "invite", "no Slack account",
+       "not on the intake"])
+check("a stranger in the room is info: an audit finding, not a task here",
+      [f["severity"] for f in _doc["findings"] if f["kind"] == "not on the intake"],
+      ["info"])
+check("no address reaches the JSON", "@" in _json.dumps(_doc), False)
+check("nothing was written, so the report says so", _doc["written"], False)
+check("Report.write() is a no-op without --json-out", _rep.write(None), None)
+
+# Under --redact the name in `detail` is masked exactly as the printed line is:
+# one flag governs both surfaces.
+_redact.set_redaction(True)
+try:
+    _masked = inv.build_findings(_passes, 0).findings[0]["detail"]
+finally:
+    _redact.set_redaction(False)
+check("--redact masks the name in the JSON too", _masked == "Ada", False)
 
 # --- the champs pseudo-column: ONE workspace-wide room, no sheet cell ---------
 # Every chapter points at it, so the row must be a single merged one whose

@@ -607,6 +607,64 @@ check("redacted report carries no fixture email",
 check("redacted report carries no full name",
       [w for w in ("Ada Lovelace", "Lovelace", "Grace Hopper", "Hopper") if w in _text], [])
 check("the redacted report still names the chapter", "Boston" in _text, True)
+# --- --json-out: the same report as data (aaif_events.findings) ----------------
+# Subjects are chapters or the parent folder, never an address; a name appears
+# only where the text report already prints one.
+import json as _json  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+_jplan = {"already_granted": [("Boston", "grace@x.com")],
+          "grants": [{"chapter": "Boston", "email": "ada@x.com", "intake_email": "ada@x.com",
+                      "via_column": False, "name": "Ada Lovelace", "role": "writer"},
+                     {"chapter": "Pune", "email": "b@x.com", "intake_email": "bo@x.com",
+                      "via_column": True, "name": "Bo", "role": "writer"}],
+          "public": [{"id": "anyone1", "type": "anyone", "role": "reader"}],
+          "parent": [], "near": [], "orphans": [{"city": "Lagos", "people": [{"name": "Cy"}]}],
+          "already_granted_ids": [], "stale": [("Berlin", "zed@x.com", "writer")],
+          "excused": [], "superseded": [("Pune", "bo@x.com", "b@x.com")],
+          "problems": ["IGNORED: row 4 ..."], "role": "writer"}
+with _tempfile.TemporaryDirectory() as _d:
+    _path = os.path.join(_d, "findings.json")
+    sync_access.build_findings(_jplan, "writer", "report", ("grant", "lock")).write(_path)
+    _doc = _json.load(open(_path))
+    check("json-out: 0600", oct(os.stat(_path).st_mode & 0o777), "0o600")
+check("json-out: format/step/mode", (_doc["format"], _doc["step"], _doc["mode"]),
+      (1, "access", "report"))
+check("json-out: summary is the text headline",
+      _doc["summary"], "2 new grant(s) across 2 chapter(s); 1 already in place; public share to remove")
+check("json-out: tiles in order",
+      [(m["label"], m["value"]) for m in _doc["measured"]],
+      [("grants in place", 1), ("new grants", 2), ("newer recorded address", 1),
+       ("unknown direct grants", 1), ("pending lock", 1)])
+_kinds = [(f["kind"], f["subject"], f["severity"]) for f in _doc["findings"]]
+check("json-out: one warn finding per new grant, subject = chapter",
+      [k for k in _kinds if k[0] == "new grant"],
+      [("new grant", "Boston", "warn"), ("new grant", "Pune", "warn")])
+check("json-out: the stale grant names the chapter and role, never the address",
+      [(f["subject"], f["detail"]) for f in _doc["findings"] if f["kind"] == "unknown direct grant"],
+      [("Berlin", "writer")])
+check("json-out: the lock is a finding on the parent",
+      ("public share", "Chapters/", "warn") in _kinds, True)
+check("json-out: no address anywhere in the file",
+      [f for f in _doc["findings"] if "@" in f["subject"] + f["detail"]], [])
+check("json-out: report mode never claims a write", _doc["written"], False)
+# --write --phase grant reports on grant only; written only after verify agreed.
+_g = sync_access.build_findings(_jplan, "writer", "write", ("grant",),
+                                failed=[("Pune", "Bo", "b@x.com", "no Google account")],
+                                written=True).to_dict()
+check("json-out: --phase grant carries no lock tile or finding",
+      ([m["label"] for m in _g["measured"] if "lock" in m["label"]],
+       [f for f in _g["findings"] if f["kind"] == "public share"]), ([], []))
+check("json-out: a failed grant is a bad finding with a bad tile",
+      ([f["severity"] for f in _g["findings"] if f["kind"] == "grant failed"],
+       [m["tone"] for m in _g["measured"] if m["label"] == "grants failed"]),
+      (["bad"], ["bad"]))
+check("json-out: write mode after verify is written", (_g["mode"], _g["written"]), ("write", True))
+_v = sync_access.build_findings(_jplan, "writer", "write", ("grant", "lock"),
+                                verify_bad=["x has no direct grant on Boston"]).to_dict()
+check("json-out: a verify failure is one bad finding, unwritten",
+      ([f["severity"] for f in _v["findings"] if f["kind"] == "verify failed"], _v["written"]),
+      (["bad"], False))
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

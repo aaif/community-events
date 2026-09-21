@@ -139,6 +139,7 @@ from sync_resources import (ERSTWHILE_COLUMN, FOLDER_URL,  # noqa: E402
 
 import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
+from aaif_events import findings  # noqa: E402
 
 API = "https://slack.com/api/"
 
@@ -986,11 +987,87 @@ def plan_ops_seed(api, tables, ops, channel_ids):
     return seed, skipped, n_read
 
 
+def build_findings(creates, renames, blocked, applied, merges, archives, already,
+                   refused, seed, pins, pins_skipped, write=False):
+    """The printed plan as data — a findings.Report for `--json-out`.
+
+    One row per thing the report lists a person acting on, and only counts
+    the report already prints. Nobody is named: an ops seed row carries how
+    many accounts a room is missing, not which, and a skipped folder link
+    keeps its reason but never the sheet cell that caused it.
+    """
+    rep = findings.Report("provision", "write" if write else "report")
+    held = [(o, n) for o, n in blocked] + [
+        (name, name) for name, action, _ in archives if action == "blocked"]
+    to_archive = [a for a in archives if a[1] == "archive"]
+    parts = ["%d to create" % len(creates), "%d to rename" % len(renames),
+             "%d to archive" % len(to_archive), "%d already exist" % len(already)]
+    if blocked:
+        parts.append("%d rename(s) blocked" % len(blocked))
+    if refused:
+        parts.append("%d refused" % len(refused))
+    rep.summary = "; ".join(parts)
+
+    rep.measure("to create", len(creates), "warn" if creates else "ok")
+    rep.measure("to rename", len(renames), "warn" if renames else "ok")
+    rep.measure("to archive", len(to_archive), "warn" if to_archive else None)
+    rep.measure("already exist", len(already), "ok")
+    rep.measure("held by another room", len(held), "warn" if held else "ok")
+    rep.measure("refused (erstwhile)", len(refused), "bad" if refused else "ok")
+
+    action = "apply with --write --i-have-approval"
+    for name, private, why in creates:
+        rep.find("create", "#" + name, "%s — %s" % ("private" if private else "public", why),
+                 "warn", action)
+    for old, new in renames:
+        rep.find("rename", "#" + old, "-> #%s (keeps members and history)" % new,
+                 "warn", action)
+    for old, new in blocked:
+        rep.find("held by another room", "#" + new,
+                 "#%s -> #%s: the target name is held and nothing frees it "
+                 "(an invisible private room, most likely)" % (old, new),
+                 "warn", "free or invite into the name from the Slack admin UI")
+    for old, new in applied:
+        rep.find("rename already applied", "#" + old,
+                 "-> #%s; the old name is re-occupied by the map itself" % new,
+                 "info", "nothing to do")
+    for kind, name, detail in refused:
+        rep.find("refused erstwhile name", "#" + name, "%s: %s" % (kind, detail),
+                 "bad", "fix the sheet (resource cell and Erstwhile Channels), not the plan")
+    for old, m in merges:
+        rep.find("merge", "#" + old,
+                 "into #%s, retired as #%s" % (m["into"], m["retire_as"]),
+                 "warn", "%s, then invite_organizers.py moves the members" % action)
+    for name, act, detail in archives:
+        if act == "archive":
+            rep.find("archive", "#" + name, detail, "warn", action)
+        elif act == "blocked":
+            rep.find("archive blocked", "#" + name, detail, "warn",
+                     "clear the reason, then re-run")
+        else:
+            rep.find("archive skipped", "#" + name, detail, "info", "nothing to do")
+    for name, _cid, missing in seed:
+        rep.find("ops seed", "#" + name, "%d ops account(s) to add" % len(missing),
+                 "warn", action)
+    for city, channel, _, _fid, existing_ts in pins:
+        rep.find("folder link", "#" + channel,
+                 "%s: %s" % (city, "already posted — pin only"
+                             if existing_ts is not None else "post and pin"),
+                 "warn", action)
+    for city, why in pins_skipped:
+        # The no-Drive-id reason quotes the cell; the cell is sheet text.
+        if "Drive id" in why:
+            why = "Chapter Folder cell holds no Drive id"
+        rep.find("folder link skipped", city, why, "info", "check the row or the token's scopes")
+    return rep
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--i-have-approval", action="store_true",
                     help="required alongside --write; see the module docstring")
+    findings.add_flag(ap)
     a = ap.parse_args()
 
     # This estate's CLI credential expired for good in 2026-08 and cannot be
@@ -1171,8 +1248,14 @@ def main():
               "so --write may also seed and post into the %d room(s) listed under "
               "CREATE." % len(creates))
 
+    # The plan as data, for the sync runner's page — built after every printed
+    # section so it carries only what was printed.
+    rep = build_findings(creates, renames, blocked, applied, merges, archives,
+                         already, refused, seed, pins, pins_skipped, write=a.write)
+
     if not a.write:
         print("\nReport only. Nothing was sent to Slack.")
+        rep.write(a.json_out)
         return 0
     if not a.i_have_approval:
         sys.exit("\nREFUSING: --write needs --i-have-approval too. This is the "
@@ -1414,6 +1497,15 @@ def main():
           "above, into organizer rooms. `Organizer Handles` on the Chapters List "
           "says who belongs in each organizer channel; inviting them is "
           "invite_organizers.py's job, still separate and still a human's call.")
+    # Each applied call was checked (`ok` from Slack) as it ran; a run that
+    # applied nothing is not a write. Failures are counted, not quoted — the
+    # messages above can name a room's member and the log already has them.
+    rep.written = done > 0
+    if failed:
+        rep.find("write failed", "Slack",
+                 "%d applied, %d failed — the log names each" % (done, len(failed)),
+                 "bad", "read the log, fix the cause, re-run")
+    rep.write(a.json_out)
     # The return code is the ONLY signal a caller or && chain gets — a run
     # where every rename failed must not read as success.
     return 1 if failed else 0

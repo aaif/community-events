@@ -66,6 +66,7 @@ must be passed too, and the report must have been read.
 Usage:
     python3 post_country_directory.py                  # what would change
     python3 post_country_directory.py --write --i-have-approval
+    python3 post_country_directory.py --json-out directory.json   # the report as data too
 """
 
 import argparse
@@ -84,7 +85,7 @@ from sync_chapters import NO_RESOURCE  # noqa: E402
 from sync_resources import read_grid  # noqa: E402
 from provision_channels import call_write, write_token, WRITE_METHODS  # noqa: E402
 
-from aaif_events import slack as slackmod  # noqa: E402
+from aaif_events import findings, slack as slackmod  # noqa: E402
 
 #: A directory-style post is recognised by mentioning at least one channel
 #: (`<#C...>`) and using the word "chapter" — loose on purpose: the workspace
@@ -112,6 +113,12 @@ ACTION_CREATE = "create"
 ACTION_ADD_ON = "add-on"
 ACTION_UP_TO_DATE = "up to date"
 ACTION_HUMAN_AUTHORED = "human-authored — not touched"
+
+#: The one skip that is NOT a problem: the country room already is the whole
+#: answer (see the module docstring). Named so the JSON report can file it as
+#: `info` and every other skip reason — a room this token cannot see, a scan
+#: that hit its cap — as `warn`, by identity rather than by matching prose.
+SKIP_NO_CITY_ROOM = "no distinct, live city channel to link"
 
 MARKER = ":wave: Looking for your local AAIF community?"
 
@@ -201,7 +208,7 @@ def collect():
             if c and c["id"] not in wanted_ids:
                 wanted_ids[c["id"]] = city
         if not wanted_ids:
-            skipped.append((name, "no distinct, live city channel to link"))
+            skipped.append((name, SKIP_NO_CITY_ROOM))
             continue
 
         # Scan every self-authored, directory-shaped post (not just the
@@ -289,6 +296,54 @@ def report(rows, skipped):
     return todo
 
 
+def build_findings(rows, skipped, mode="report"):
+    """The text report as data: a `findings.Report` for step `directory`.
+
+    Pure over what collect() returned, so every tile is a count report()
+    already printed and every finding is a row it already listed. The subject
+    is always the channel; the post text itself stays out (it is the log's to
+    show, and the page has no reason to repeat a message to a room).
+    """
+    rep = findings.Report("directory", mode)
+    by_action = {a: sum(1 for r in rows if r["action"] == a)
+                 for a in (ACTION_CREATE, ACTION_ADD_ON, ACTION_UP_TO_DATE,
+                           ACTION_HUMAN_AUTHORED)}
+    rep.summary = ("%d live country channel(s): %d to create, %d to add-on, "
+                   "%d already correct, %d human-authored; %d skipped"
+                   % (len(rows), by_action[ACTION_CREATE], by_action[ACTION_ADD_ON],
+                      by_action[ACTION_UP_TO_DATE], by_action[ACTION_HUMAN_AUTHORED],
+                      len(skipped)))
+    rep.measure("up to date", by_action[ACTION_UP_TO_DATE], "ok")
+    rep.measure("to create", by_action[ACTION_CREATE],
+                "warn" if by_action[ACTION_CREATE] else None)
+    rep.measure("to add-on", by_action[ACTION_ADD_ON],
+                "warn" if by_action[ACTION_ADD_ON] else None)
+    rep.measure("human-authored, not touched", by_action[ACTION_HUMAN_AUTHORED])
+    blocked = sum(1 for _, why in skipped if why != SKIP_NO_CITY_ROOM)
+    rep.measure("skipped", len(skipped), "warn" if blocked else None)
+
+    gate = "apply with --write --i-have-approval"
+    for r in sorted(rows, key=lambda x: x["channel"]):
+        if r["action"] == ACTION_CREATE:
+            rep.find("create", "#" + r["channel"],
+                     "no directory post yet; %d chapter mention(s)" % len(r["mentions"]),
+                     "warn", gate)
+        elif r["action"] == ACTION_ADD_ON:
+            rep.find("add-on", "#" + r["channel"],
+                     "%d chapter mention(s) missing from the existing post"
+                     % len(r["missing"]), "warn", gate)
+        elif r["action"] == ACTION_HUMAN_AUTHORED:
+            rep.find("human-authored", "#" + r["channel"],
+                     "a person wrote this room's directory post", "info",
+                     "leave it; update by hand if it is stale")
+    for name, why in sorted(skipped):
+        if why == SKIP_NO_CITY_ROOM:
+            rep.find("skipped", "#" + name, why, "info", "nothing to link")
+        else:
+            rep.find("skipped", "#" + name, why, "warn", "check the room by hand")
+    return rep
+
+
 def apply(todo, token):
     """Join (if needed), then post, one call per channel."""
     done, failed = 0, []
@@ -314,16 +369,22 @@ def main():
     ap.add_argument("--i-have-approval", action="store_true",
                     help="required alongside --write; a channel post is a "
                          "notification to everyone in it and cannot be unsent")
+    # The "--json-out" flag comes from lib: same shape for every engine, and
+    # the sync runner reads the file this writes.
+    findings.add_flag(ap)
     a = ap.parse_args()
 
     rows, skipped = collect()
     todo = report(rows, skipped)
+    rep = build_findings(rows, skipped, "write" if a.write else "report")
 
     if not a.write:
         print("\nReport only. Nothing was posted.")
+        rep.write(a.json_out)
         return 0
     if not todo:
         print("\nNothing to do.")
+        rep.write(a.json_out)
         return 0
     if not a.i_have_approval:
         sys.exit("REFUSING: --write needs --i-have-approval too. This posts "
@@ -336,6 +397,15 @@ def main():
     print("\nPosted %d, %d failed." % (done, len(failed)))
     for f in failed:
         print("  %s" % f)
+    # `written` means Slack acknowledged at least one post; the failures go on
+    # the page too, as rows, so a half-applied run reads as one.
+    rep.written = done > 0
+    rep.measure("posted", done, "ok" if done else None)
+    rep.measure("posts failed", len(failed), "bad" if failed else None)
+    for f in failed:
+        channel, _, why = f.partition(": ")
+        rep.find("post failed", "#" + channel, why, "bad", "retry, or post by hand")
+    rep.write(a.json_out)
     return 1 if failed else 0
 
 

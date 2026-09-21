@@ -75,6 +75,7 @@ import resolve_slack_ids as rsi  # noqa: E402
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, set_redaction)  # noqa: E402
+from aaif_events import findings  # noqa: E402
 
 
 FOLDER_COLUMN = "Chapter Folder"
@@ -756,6 +757,77 @@ def report(chapters, proposals, near, folderless, candidates, missing_countries,
               "\n  or write %r to record that there is none." % NO_RESOURCE)
 
 
+def build_findings(chapters, proposals, near, folderless, candidates,
+                   missing_countries, did_slack, malformed, unresolved,
+                   skipped_slack, write=False):
+    """The report() above as data — a findings.Report for `--json-out`.
+
+    Same numbers, same rows, nothing measured here that the text report does
+    not print. Two things it prints are deliberately NOT carried: a malformed
+    cell's value (free text from the sheet, untrusted) and the names of
+    organizers without a Slack account (one count, no roster — the text
+    report is the place that redacts).
+    """
+    rep = findings.Report("resources", "write" if write else "report")
+    parts = ["%d chapter rows" % len(chapters), "%d cell(s) proposed" % len(proposals)]
+    if malformed:
+        parts.append("%d malformed" % len(malformed))
+    if skipped_slack:
+        parts.append("Slack unavailable")
+    rep.summary = "; ".join(parts)
+
+    rep.measure("chapter rows", len(chapters))
+    for column in (FOLDER_COLUMN,) + CHANNEL_COLUMNS + (HANDLES_COLUMN,):
+        if column != FOLDER_COLUMN and not did_slack:
+            rep.measure(column, "not checked", "warn")
+            continue
+        mine = sum(1 for p in proposals if p["column"] == column)
+        filled = sum(1 for c in chapters if c["current"][column]
+                     and c["current"][column] != NO_RESOURCE)
+        none_ = sum(1 for c in chapters if c["current"][column] == NO_RESOURCE)
+        blank = sum(1 for c in chapters if not c["current"][column])
+        rep.measure(column, "%d filled / %d none / %d blank / %d proposed"
+                    % (filled, none_, blank, mine), "warn" if mine else None)
+    rep.measure("proposed cells", len(proposals), "warn" if proposals else "ok")
+
+    for p in sorted(proposals, key=lambda x: x["row"]):
+        subject = "%s · %s" % (p["city"], p["column"])
+        if p.get("was"):
+            # A rewrite: the old value is a sheet cell, so only the new roster
+            # (names the intake resolved) travels.
+            rep.find("rewrite", subject, p["value"], "warn", "apply with --write")
+        elif p.get("why") == "TO CREATE":
+            rep.find("planned channel", subject, p["value"], "warn",
+                     "create the channel, then apply with --write")
+        else:
+            rep.find("proposed cell", subject, "%s (%s)" % (p["value"], p["why"]),
+                     "warn", "apply with --write")
+    for city, cands in near:
+        rep.find("near-miss folder", city, ", ".join(cands), "warn",
+                 "confirm by hand — not written")
+    for city in folderless:
+        rep.find("no Drive folder", city, "", "info", "aaif-create-chapter queue")
+    for city, column, cands in candidates:
+        rep.find("possible channel", "%s · %s" % (city, column), ", ".join(cands),
+                 "warn", "confirm and type it in — not written")
+    for country, cities in sorted(missing_countries.items()):
+        rep.find("country without channel", country,
+                 "%d chapter(s): %s" % (len(cities), ", ".join(sorted(cities))),
+                 "warn", "create the channel, name the regional room, or write %r"
+                 % NO_RESOURCE)
+    for row, city, col, _value in malformed:
+        rep.find("malformed cell", "%s · %s" % (city, col), "row %d" % row, "bad",
+                 "fix by hand (or write %r)" % NO_RESOURCE)
+    if unresolved:
+        rep.find("no Slack account", "Slack",
+                 "%d accepted organizer(s) have no Slack account" % len(unresolved),
+                 "warn", "they must join Slack before they can be invited")
+    if skipped_slack:
+        rep.find("partial", "Slack", "Slack unavailable — channel columns not checked",
+                 "warn", "fix Slack auth and re-run")
+    return rep
+
+
 def apply(proposals, layout):
     """Write every proposal in one values batchUpdate.
 
@@ -807,6 +879,7 @@ def main():
                          "channels to be created, and the audit will abort until "
                          "they are — see the module docstring.")
     add_redact_flag(ap)
+    findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
 
@@ -855,15 +928,24 @@ def main():
         print("\nPARTIAL: Slack unavailable — the channel columns were NOT "
               "checked this run. Fix Slack auth and re-run for full coverage.")
 
+    # The same report as data, for the sync runner's page. Built here, after
+    # every printed section, so it can only ever carry what was printed; the
+    # PARTIAL run is a normal report too, and lands with its own warn finding.
+    rep = build_findings(chapters, proposals, near, folderless, candidates,
+                         missing_countries, did_slack, malformed, unresolved,
+                         skipped_slack, write=a.write)
+
     if not a.write:
         print("\nReport only (%d proposed). Re-run with --write to apply."
               % len(proposals))
+        rep.write(a.json_out)
         # Shared engine exit convention: report mode exits 0 when in sync, 2 when
         # anything needs a human or a write — a malformed cell is drift, and a
         # half-checked run is too.
         return 2 if (proposals or malformed or skipped_slack) else 0
     if not proposals:
         print("\nNo changes needed.")
+        rep.write(a.json_out)
         return 2 if skipped_slack else 0
 
     # Recompute from a fresh read before writing — the report above is the
@@ -885,13 +967,20 @@ def main():
         for p in stale:
             print("  row %d %s (now %r)"
                   % (p["row"], p["column"], now.get((p["row"], p["column"]))))
+            # The cell's new value is sheet text; only the row is recorded.
+            rep.find("dropped proposal", "%s · %s" % (p["city"], p["column"]),
+                     "row %d changed while the report was being read" % p["row"],
+                     "info", "re-run to re-propose")
     if not proposals:
         print("\nNothing left to write.")
+        rep.write(a.json_out)
         return 2 if skipped_slack else 0
 
     n = apply(proposals, layout)
     print("\nWrote %d cell(s)." % n)
     verify(proposals, a.city)
+    rep.written = True
+    rep.write(a.json_out)
     return 2 if skipped_slack else 0
 
 

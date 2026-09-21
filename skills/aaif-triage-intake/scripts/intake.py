@@ -11,7 +11,7 @@ Usage:
     intake.py --all           # every row, regardless of status
     intake.py --status Prospect "In progress"   # custom status filter
 """
-import argparse, json, os, subprocess, sys
+import argparse, json, os, subprocess, sys, tempfile
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 
@@ -174,7 +174,14 @@ def wrap_form_text(value):
     return f"{FORM_TEXT_OPEN} {value.replace('<<', '< <')} {FORM_TEXT_CLOSE}"
 
 
-def text_digest(data, label="awaiting review"):
+#: Rows printed per tab before the digest says "and N more". The digest is read
+#: by an agent, and every row is five lines of applicant text: 200 pending rows
+#: were 1,100 lines, ~27k tokens, on a run whose purpose was to see the queue.
+#: Counts are always for the whole selection; only the listing is paged.
+DEFAULT_LIMIT = 25
+
+
+def text_digest(data, label="awaiting review", limit=DEFAULT_LIMIT, offset=0):
     """`label` names the population actually selected — under --all or a custom
     --status filter, "awaiting review" would misdescribe every count printed.
 
@@ -191,8 +198,11 @@ def text_digest(data, label="awaiting review"):
     for tab, recs in data.items():
         if not recs:
             continue
-        print(f"== {tab} ({len(recs)}) ==")
-        for r in recs:
+        page = recs[offset:offset + limit] if limit else recs[offset:]
+        print(f"== {tab} ({len(recs)}) =="
+              + (f"  rows {offset + 1}-{offset + len(page)} of {len(recs)}"
+                 if len(page) < len(recs) else ""))
+        for r in page:
             name = r.get("Full name") or r.get("Name") or "(no name)"
             print(f"  • [{r['status']}] {wrap_form_text(name)} — {r.get('Email','')}"
                   f"  {(r.get('City (New)') or r.get('City (Existing)', ''))}  (row {r['row']})")
@@ -202,7 +212,54 @@ def text_digest(data, label="awaiting review"):
                     continue
                 if v:
                     print(f"      {f}: {wrap_form_text(truncate(v))}")
+        rest = len(recs) - offset - len(page)
+        if rest > 0:
+            print(f"  … and {rest} more on this tab — --offset {offset + len(page)} "
+                  f"for the next page, --limit 0 for all, or --json")
         print()
+
+
+# The dict shape `build_findings` emits is the contract with the sync runner's
+# findings module (`lib/…/findings.py`, format 1). This script stays portable —
+# it must run zipped on its own — so it carries this small writer instead of
+# importing that module; change the shape there and here together.
+FINDINGS_FORMAT = 1
+
+
+def build_findings(data, label="awaiting review"):
+    """The digest's headline as data: one tile and one finding per tab, each
+    carrying only the COUNT. There is deliberately no per-person row — the
+    digest above is the per-person view, and every value in it is
+    applicant-typed text the page must never have to wrap."""
+    total = sum(len(v) for v in data.values())
+    counts = " · ".join(f"{len(v)} {t.lower()}" for t, v in data.items())
+    doc = {"format": FINDINGS_FORMAT, "step": "triage", "mode": "report",
+           "summary": f"{total} {label} ({counts})",
+           "measured": [{"label": f"{tab.lower()} {label}", "value": len(recs),
+                         **({"tone": "warn"} if recs else {"tone": "ok"})}
+                        for tab, recs in data.items()],
+           "findings": [{"kind": label, "subject": tab,
+                         "detail": f"{len(recs)} row(s) on the {tab} tab",
+                         "severity": "warn", "action": "work the queue (aaif-triage-intake)"}
+                        for tab, recs in data.items() if recs],
+           "written": False}
+    return doc
+
+
+def write_findings(path, doc):
+    """Land the report 0600 and atomically: the file is complete or absent."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".findings-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=1, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def main():
@@ -212,6 +269,14 @@ def main():
     ap.add_argument("--status", nargs="*", default=None,
                     help="Status values to include (default: Prospect/In progress; "
                          "blank counts as Prospect)")
+    ap.add_argument("--json-out", metavar="PATH", default=None,
+                    help="also write the digest's per-tab counts as JSON to PATH "
+                         "(the sync runner passes this; no per-person rows)")
+    ap.add_argument("--limit", type=int, default=DEFAULT_LIMIT, metavar="N",
+                    help="rows listed per tab (default %d; 0 = all). Counts always "
+                         "cover the whole selection." % DEFAULT_LIMIT)
+    ap.add_argument("--offset", type=int, default=0, metavar="N",
+                    help="skip the first N rows of each tab's listing (paging)")
     args = ap.parse_args()
     sf = normalize_filter(args.status) if args.status is not None else DEFAULT_NEEDS_REVIEW
     data = collect(sf, args.all)
@@ -224,7 +289,9 @@ def main():
     if args.json:
         print(json.dumps(data, indent=1))
     else:
-        text_digest(data, label)
+        text_digest(data, label, args.limit, args.offset)
+    if args.json_out:
+        write_findings(args.json_out, build_findings(data, label))
 
     # Exit-code convention, shared with every engine in this estate: 0 means
     # nothing needs doing, 2 means this report proposes work for a human. It is

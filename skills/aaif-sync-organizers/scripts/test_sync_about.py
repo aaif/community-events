@@ -340,5 +340,83 @@ try:
     check("the redacted About report still names the chapter", "Boston" in _text, True)
 finally:
     _redact.REDACT = False
+
+# --- --json-out: the same report as data --------------------------------------
+# The chapter is the subject of every finding; a doc's current lines and the
+# malformed intake text (both free text) never reach `detail`.
+import json as _json  # noqa: E402
+_D = sync_about.Doc
+_docs = [
+    _D({"name": "Boston"}, {"id": "a-Boston"}, b"", "<old/>", ["Ada Lovelace", "Submitted"],
+       ["Grace Hopper"], "<new/>", None, ["Ada Lovelace"], ["Submitted"]),
+    _D({"name": "Pune"}, {"id": "a-Pune"}, b"", "<same/>", ["Asha Rao"],
+       ["Asha Rao"], "<same/>", None, [], []),
+    _D({"name": "Lagos"}, {"id": "a-Lagos"}, None, None, None, ["Bo Lin"], None,
+       "BadZipFile: truncated", [], []),
+    _D({"name": "Oslo"}, None, None, None, None, None, None,
+       "no About.docx in the folder", [], []),
+]
+_doc = sync_about.build_findings(
+    _docs, [{"city": "Lima", "names": ["Ada Lovelace"]}],
+    [{"city": "Bostn", "names": ["Grace Hopper"], "candidates": ["Boston"]}],
+    _MAL, ["Delhi"], ["Lagos"], "report").to_dict()
+check("about findings carry the shared format", _doc["format"], 1)
+check("about findings name the runner's step", _doc["step"], "about")
+check("the summary is the text report's headline",
+      _doc["summary"], "2 About doc(s) read; 1 would change; 1 unreadable; 1 held")
+_tiles = {m["label"]: (m["value"], m.get("tone")) for m in _doc["measured"]}
+check("tiles: read / to change / unreadable",
+      (_tiles["About docs read"][0], _tiles["would change"], _tiles["unreadable"]),
+      (2, (1, "warn"), (1, "bad")))
+_rows = {(f["kind"], f["subject"]): f for f in _doc["findings"]}
+check("a doc that would change is a warn on its chapter",
+      (_rows[("Organizers rewrite", "Boston")]["severity"],
+       _rows[("Organizers rewrite", "Boston")]["action"]),
+      ("warn", "apply with --write"))
+check("the rewrite names the accepted list, as the text report does",
+      _rows[("Organizers rewrite", "Boston")]["detail"], "2 line(s) -> Grace Hopper")
+check("an unreadable doc is bad", _rows[("unreadable", "Lagos")]["severity"], "bad")
+check("the unreadable doc is not also 'skipped'", ("skipped", "Lagos") in _rows, False)
+check("a doc with no About.docx is skipped", ("skipped", "Oslo") in _rows, True)
+check("an in-sync doc is not a finding",
+      [k for k in _rows if k[1] == "Pune"], [])
+check("the applicant disclosure is its own finding, as a count",
+      _rows[("non-accepted applicant named", "Boston")]["detail"],
+      "1 applicant(s) removed by the rewrite")
+check("held, near-miss, orphan and malformed rows each land",
+      sorted(k for k in _rows if k[0] in ("held", "near-miss city", "no chapter folder",
+                                          "malformed intake row")),
+      [("held", "Delhi"), ("malformed intake row", "intake row 3"),
+       ("near-miss city", "Bostn"), ("no chapter folder", "Lima")])
+check("the malformed row's text stays out of the page",
+      "<b>" in _json.dumps(_doc), False)
+check("a doc's current lines stay out of the page", "Submitted" in _json.dumps(_doc), False)
+check("nothing is written in report mode", _doc["written"], False)
+_w = sync_about.build_findings(_docs, [], [], [], [], ["Lagos"], "write",
+                               failed=[("Boston", "HTTPError: 500")], written=False).to_dict()
+check("a failed upload is a bad finding on its chapter",
+      _w["findings"][0], {"kind": "write failed", "subject": "Boston",
+                          "detail": "HTTPError: 500", "severity": "bad",
+                          "action": "re-run --write"})
+_w = sync_about.build_findings(_docs[:2], [], [], [], [], [], "write", written=True).to_dict()
+check("a verified write reads as done", (_w["written"], _w["findings"][0]["action"]),
+      (True, "written"))
+
+# through main(): the flag lands the file on both the report and the write path
+with tempfile.TemporaryDirectory() as _td:
+    _path = os.path.join(_td, "about.json")
+    _rc, _, _ = _run_main(["--json-out", _path])
+    with open(_path) as fh:
+        _got = _json.load(fh)
+    check("main() lands the report beside a non-zero report exit",
+          (_rc, _got["step"], _got["mode"], _got["written"]), (2, "about", "report", False))
+    check("the held chapter is a finding", ("held", "Boston") in
+          {(f["kind"], f["subject"]) for f in _got["findings"]}, True)
+    _rc, _, _ = _run_main(["--write", "--json-out", _path])
+    with open(_path) as fh:
+        _got = _json.load(fh)
+    check("main() lands the report after a verified write",
+          (_rc, _got["mode"], _got["written"]), (2, "write", True))
+
 print("\n%s (%d failure(s))" % ("ALL PASS" if not fails else "FAILURES", fails))
 sys.exit(1 if fails else 0)

@@ -63,6 +63,7 @@ Usage:
     python3 invite_organizers.py --scope country
     python3 invite_organizers.py --scope both --city Berlin
     python3 invite_organizers.py --scope both --write --i-have-approval
+    python3 invite_organizers.py --json-out invite.json   # the report as data too
 """
 
 import argparse
@@ -83,7 +84,7 @@ from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa:
 
 import audit_organizers as ao  # noqa: E402
 import resolve_slack_ids as rsi  # noqa: E402
-from aaif_events import slack as slackmod  # noqa: E402
+from aaif_events import findings, slack as slackmod  # noqa: E402
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
 # a CI log is a publication on a public repo) masks them in every printed line.
@@ -117,7 +118,11 @@ CHAMPS_COLUMN = "*local-champs"
 
 
 def fetch(city_filter=None):
-    """One Slack/Sheets round trip: (api, chapters, chans, by_city, resolved).
+    """One Slack/Sheets round trip: (api, chapters, chans, by_city, resolved, conflicts).
+
+    `conflicts` is the number of `Slack ID` cells that disagreed with the live
+    lookup (each is already printed to stderr here); it rides along so the
+    JSON report can count them without re-running the overlay.
 
     Split out of collect() so a multi-column run (`--scope both`) fetches this
     once, not once per column — the grid read, live-channel list, full intake
@@ -161,7 +166,7 @@ def fetch(city_filter=None):
         print("  CONFLICT: %s resolves live to %s but the %r column says %s — "
               "the live answer is used; fix the column."
               % (redact_email(email), live, rsi.H_SLACK_ID, col), file=sys.stderr)
-    return api, chapters, chans, by_city, resolved
+    return api, chapters, chans, by_city, resolved, len(conflicts)
 
 
 def collect(city_filter=None, column="Organizer Channel", fetched=None):
@@ -180,7 +185,7 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None):
     `fetched` reuses a prior fetch() call (see there) instead of hitting Slack
     and the sheet again — pass it when collecting more than one column.
     """
-    api, chapters, chans, by_city, resolved = fetched or fetch(city_filter)
+    api, chapters, chans, by_city, resolved, _ = fetched or fetch(city_filter)
     # Once, not at each of the three places this used to be re-spelled: three
     # comparisons against a magic string are three chances to typo the constant
     # and get a silently-wrong branch.
@@ -354,23 +359,77 @@ SCOPE_COLUMNS = {
 }
 
 
-def run_scope(scope, city_filter=None):
+def run_scope(scope, city_filter=None, mode="report"):
     """Collect and report every column `scope` targets, off ONE fetch.
 
-    Returns (all_rows, total) — `all_rows` concatenates every column's rows
-    (for `apply()`), `total` sums every column's missing-invite count (the
-    write gate below asks "how many people", not "how many columns").
-    Factored out of main() so a --scope both regression (e.g. `total =`
-    silently replacing `total +=`) fails a unit test, not a live run.
+    Returns (all_rows, total, report) — `all_rows` concatenates every column's
+    rows (for `apply()`), `total` sums every column's missing-invite count (the
+    write gate below asks "how many people", not "how many columns"), and
+    `report` is the same text report as data (see build_findings), for
+    `--json-out`. Factored out of main() so a --scope both regression (e.g.
+    `total =` silently replacing `total +=`) fails a unit test, not a live run.
     """
     fetched = fetch(city_filter)
-    all_rows, total = [], 0
+    all_rows, total, passes = [], 0, []
     for column, label in SCOPE_COLUMNS[scope]:
         rows, unresolved, no_channel = collect(city_filter, column=column, fetched=fetched)
         total += report(rows, unresolved, no_channel, label=label)
         all_rows += rows
+        passes.append((label, rows, unresolved, no_channel))
         print()
-    return all_rows, total
+    return all_rows, total, build_findings(passes, fetched[-1], mode)
+
+
+def build_findings(passes, conflicts, mode="report"):
+    """The text report as data: a `findings.Report` for step `invite`.
+
+    `passes` = [(label, rows, unresolved, no_channel)] — one per column
+    `run_scope()` reported, in report order — and `conflicts` is the count
+    fetch() returned. Pure: every number here is one report() already
+    printed, summed across passes the way the write gate sums them, so the
+    page never shows a figure the log cannot back. Names in `detail` go
+    through the same `--redact` the printed lines do; a person's email never
+    lands here at all — the subject is the channel.
+    """
+    rep = findings.Report("invite", mode)
+    to_add = sum(len(r["missing"]) for _, rows, _, _ in passes for r in rows)
+    present = sum(len(r["present"]) for _, rows, _, _ in passes for r in rows)
+    no_account = sum(len(u) for _, _, u, _ in passes)
+    channels = sum(len(rows) for _, rows, _, _ in passes)
+    rep.summary = ("%d to invite across %d live channel(s); %d already in; "
+                   "%d accepted organizer(s) with no Slack account"
+                   % (to_add, channels, present, no_account))
+    rep.measure("to invite", to_add, "warn" if to_add else "ok")
+    rep.measure("already in", present, "ok")
+    rep.measure("no Slack account", no_account, "warn" if no_account else None)
+    rep.measure("Slack ID column conflicts", conflicts, "bad" if conflicts else None)
+
+    gate = "apply with --write --i-have-approval"
+    for label, rows, unresolved, no_channel in passes:
+        for r in sorted(rows, key=lambda x: x["city"]):
+            for name, _uid in r["missing"]:
+                rep.find("invite", "#" + r["channel"], redact_name(name),
+                         "warn", gate)
+            if r["unaccounted"]:
+                rep.find("not on the intake", "#" + r["channel"],
+                         "%d member(s) the intake does not list for this room"
+                         % len(r["unaccounted"]), "info",
+                         "audit finding; see aaif-audit-slack")
+        if unresolved:
+            # One row with the count, not one per person: there is nothing to
+            # do per person from here (they have to join Slack), and the text
+            # report's per-name list is the place to read who.
+            rep.find("no Slack account", label,
+                     "%d accepted organizer(s) cannot be invited" % len(unresolved),
+                     "warn", "ask them to join Slack; then resolve_slack_ids.py")
+        for city, why in no_channel:
+            rep.find("channel skipped", city, why, "warn",
+                     "provision_channels.py, or fix the chapter row")
+    if conflicts:
+        rep.find("Slack ID conflict", rsi.H_SLACK_ID,
+                 "%d cell(s) disagree with the live lookup; the live answer "
+                 "was used" % conflicts, "warn", "fix the column (see the log)")
+    return rep
 
 
 def main():
@@ -387,16 +446,22 @@ def main():
                          "Country Channel; 'both' is all three; 'champs' is "
                          "#local-champs alone.")
     add_redact_flag(ap)
+    # The "--json-out" flag comes from lib: same shape for every engine, and
+    # the sync runner reads the file this writes.
+    findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
 
-    all_rows, total = run_scope(a.scope, a.city)
+    all_rows, total, rep = run_scope(a.scope, a.city,
+                                     mode="write" if a.write else "report")
 
     if not a.write:
         print("Report only. Nobody was invited to anything.")
+        rep.write(a.json_out)
         return 0
     if not total:
         print("Nothing to do.")
+        rep.write(a.json_out)
         return 0
     if not a.i_have_approval:
         sys.exit("REFUSING: --write needs --i-have-approval too. This sends a "
@@ -415,6 +480,15 @@ def main():
     print("\nInvited %d, %d invite(s) failed." % (done, len(failed)))
     for f in failed:
         print("  %s" % f)
+    # `written` means Slack acknowledged at least one invite; the failures go
+    # on the page too, as rows, so a half-applied run reads as one.
+    rep.written = done > 0
+    rep.measure("invited", done, "ok" if done else None)
+    rep.measure("invites failed", len(failed), "bad" if failed else None)
+    for f in failed:
+        channel, _, why = f.partition(": ")
+        rep.find("invite failed", "#" + channel, why, "bad", "retry, or invite by hand")
+    rep.write(a.json_out)
     # The return code is the ONLY signal a caller or && chain gets — a run
     # where every invite failed must not read as success.
     return 1 if failed else 0

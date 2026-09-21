@@ -47,6 +47,7 @@ from sync_chapters import (INTAKE_ID, INTAKE_TAB, SYNC_STATUSES, cell,
 # The flag and the helpers it governs come from ONE module on purpose: a helper
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
+from aaif_events import findings  # noqa: E402
 from aaif_events.redact import add_redact_flag, redact_name, set_redaction  # noqa: E402
 
 
@@ -452,6 +453,79 @@ def print_report(docs, counts, orphans, near):
         print("\nNo changes needed — every About doc matches the intake.")
 
 
+def build_findings(docs, orphans, near, malformed, held, unread, mode,
+                   failed=(), written=False):
+    """The text report's counts and per-chapter calls as a `findings.Report`.
+
+    Pure: takes what `compute()` and `main()` already worked out, so the page
+    and the log carry the same numbers. The chapter is the subject throughout.
+    A name appears only where `print_report` already prints it (the accepted
+    list a doc will carry), masked the same way; the lines a doc currently
+    holds and the malformed intake text stay out — both are free text.
+    """
+    rep = findings.Report("about", mode)
+    rep.written = bool(written)
+    edits = sorted((d for d in docs if changed(d)), key=lambda d: d.folder["name"])
+    noop = [d for d in docs if d.new_xml is not None and not changed(d)]
+    unread_set = set(unread)
+    skipped = sorted((d for d in docs
+                      if d.reason and d.folder["name"] not in unread_set),
+                     key=lambda d: d.folder["name"])
+    n_read = sum(1 for d in docs if d.xml is not None)
+    rep.summary = ("%d About doc(s) read; %d would change; %d unreadable; %d held"
+                   % (n_read, len(edits), len(unread), len(held)))
+    rep.measure("About docs read", n_read)
+    rep.measure("would change", len(edits), "warn" if edits else "ok")
+    rep.measure("already correct", len(noop), "ok" if noop else None)
+    rep.measure("no doc or no Organizers heading", len(skipped),
+                "warn" if skipped else None)
+    rep.measure("unreadable", len(unread), "bad" if unread else None)
+    rep.measure("held (malformed intake row)", len(held), "warn" if held else None)
+    rep.measure("near-miss cities", len(near), "warn" if near else None)
+    rep.measure("cities with no chapter folder", len(orphans),
+                "warn" if orphans else None)
+    failed_by = dict(failed)
+    for d in edits:
+        city = d.folder["name"]
+        why = failed_by.get(city)
+        if why:
+            rep.find("write failed", city, why, "bad", "re-run --write")
+            continue
+        rep.find("Organizers rewrite", city,
+                 "%d line(s) -> %s" % (len(d.current),
+                                       "; ".join(map(redact_name, d.names))),
+                 "info" if written else "warn",
+                 "written" if written else "apply with --write")
+        if d.applicants:
+            rep.find("non-accepted applicant named", city,
+                     "%d applicant(s) removed by the rewrite" % len(d.applicants),
+                     "warn", "approve the rewrite")
+        if d.unknown:
+            rep.find("line the intake cannot account for", city,
+                     "%d line(s) removed by the rewrite" % len(d.unknown),
+                     "warn", "check it is a sub-heading, not an organizer")
+    for name in unread:
+        rep.find("unreadable", name, "download or parse failed", "bad",
+                 "check gws, then re-run")
+    for d in skipped:
+        rep.find("skipped", d.folder["name"], d.reason, "warn", "fix the doc")
+    for name in held:
+        rep.find("held", name, "an intake row for this chapter is malformed",
+                 "warn", "fix the intake row, then re-run")
+    for m in malformed:
+        rep.find("malformed intake row", "intake row %d" % m["row"],
+                 "excluded until fixed", "warn", "fix the intake row")
+    for m in near:
+        rep.find("near-miss city", m["city"],
+                 "no exact folder; nearest: %s" % ", ".join(m["candidates"]),
+                 "warn", "fix the intake city, or create the folder")
+    for m in orphans:
+        rep.find("no chapter folder", m["city"],
+                 "%d accepted organizer(s)" % len(m["names"]), "warn",
+                 "run aaif-create-chapter")
+    return rep
+
+
 # ----------------------------------------------------------------------------
 # Run
 # ----------------------------------------------------------------------------
@@ -530,6 +604,7 @@ def main():
                     help="apply the proposed rewrites (default: report only)")
     ap.add_argument("--city", help="limit to one chapter folder")
     add_redact_flag(ap, masks="names (first initial)")
+    findings.add_flag(ap)
     args = ap.parse_args()
     set_redaction(args.redact)
 
@@ -574,12 +649,22 @@ def main():
             # from "only half-checked".
             print("\nPARTIAL: %d doc(s) could not be read — their state is "
                   "unknown, not clean: %s" % (len(unread), ", ".join(unread)))
+        mode = "write" if args.write else "report"
+
+        def emit(failed=(), written=False):
+            # Every normal ending lands the same report as data; an ABORT
+            # does not, because the run failed and the log says why.
+            build_findings(docs, orphans, near, malformed, held, unread, mode,
+                           failed, written).write(args.json_out)
+
         if not args.write:
             # Shared engine exit convention: report mode exits 0 when in sync,
             # 2 when it proposes changes (consumed by nightly.py). A held doc
             # is pending work exactly like a proposed change.
+            emit()
             return 2 if (drift or unread or held) else 0
         if not drift:
+            emit()
             return 2 if (unread or held) else 0
 
         print("\nWriting %d About doc(s)..." % sum(1 for d in docs if changed(d)))
@@ -614,6 +699,7 @@ def main():
                       % n)
             sys.exit(1)
         print("Verified: a fresh read of every written doc proposes zero changes.")
+        emit(failed, written=bool(ok))
         if failed:
             sys.exit(1)
         return 2 if (unread or held) else 0

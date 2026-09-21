@@ -1085,6 +1085,64 @@ with _ctx.redirect_stderr(_err):
     sync_crm.set_redaction(False)
 check("turning redaction off is silent", _err.getvalue(), "")
 check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
+# --- --json-out: the same report as data (aaif_events.findings) ----------------
+# Subjects are chapters, cities or the intake tab; detail is a row number or a
+# count — never an address, never a cell's free text.
+import json as _json  # noqa: E402
+_held = [{"city": "Boston", "email": "cy@x.io", "status": "Prospect"},
+         {"city": "boston", "email": "CY@x.io", "status": "Prospect"},   # same person, 2 rows
+         {"city": "Pune", "email": "di@x.io", "status": "New"}]
+_kw = dict(people=3, chapters=2, changes=[("Boston", {"clear": 1, "add": 2, "fill": 1})],
+           held=_held, rejected=[{"tab": "Organizers", "row": 5, "name": "Ed", "why": "no email"}],
+           skipped=[("Lagos", "no '<City> CRM.xlsx' in the folder")],
+           orphans=[{"city": "Oslo", "people": [{"name": "Fay"}]}],
+           near_misses=[{"city": "Pune ", "people": [{"name": "Di"}], "candidates": ["Pune"]}],
+           keepers=[("Boston", [{"row": 2, "name": "Gus", "email": "gus@x.io"}])],
+           demoted=[("Boston", "Status", "Accepted", "Prospect",
+                     {"rownum": 4, "name": "Hal", "email": "hal@x.io"})],
+           no_dropdown=[("Pune", ["Status"])], fallbacks=[{"name": "Ivy"}])
+with tempfile.TemporaryDirectory() as _d:
+    _path = os.path.join(_d, "findings.json")
+    sync_crm.build_findings("report", **_kw).write(_path)
+    _doc = _json.load(open(_path))
+    check("json-out: 0600", oct(os.stat(_path).st_mode & 0o777), "0o600")
+check("json-out: format/step/mode", (_doc["format"], _doc["step"], _doc["mode"]),
+      (1, "crm", "report"))
+check("json-out: summary is the text headline", _doc["summary"],
+      "3 people across 2 chapters; 1 workbook(s) would change")
+check("json-out: tiles in order, held counts distinct people",
+      [(m["label"], m["value"]) for m in _doc["measured"]],
+      [("people", 3), ("chapters", 2), ("workbooks to change", 1),
+       ("held under central approval", 2), ("not synced", 1), ("workbooks skipped", 1)])
+_byk = {}
+for _f in _doc["findings"]:
+    _byk.setdefault(_f["kind"], []).append((_f["subject"], _f["detail"], _f["severity"]))
+check("json-out: the workbook change names the chapter and the counts",
+      _byk["workbook change"], [("Boston", "2 new / 1 changed / 1 dummy cleared", "warn")])
+check("json-out: one info finding per held chapter, folded on city, distinct people",
+      _byk["held under central approval"],
+      [("Boston", "1 pipeline organizer(s)", "info"), ("Pune", "1 pipeline organizer(s)", "info")])
+check("json-out: a skipped workbook is bad", _byk["workbook skipped"][0][::2], ("Lagos", "bad"))
+check("json-out: demotion carries the row and the transition, no name",
+      _byk["status moved backwards"], [("Boston", "row 4: Status 'Accepted' -> 'Prospect'", "warn")])
+check("json-out: a kept row is a row number", _byk["real-looking row not touched"],
+      [("Boston", "row 2", "info")])
+check("json-out: no address or fixture name anywhere in the file",
+      [f for f in _doc["findings"]
+       if "@" in f["subject"] + f["detail"]
+       or any(n in f["detail"] for n in ("Ed", "Fay", "Gus", "Hal", "Ivy"))], [])
+check("json-out: report mode never claims a write", _doc["written"], False)
+_w = sync_crm.build_findings("write", written=["Boston"], verified=True, **_kw).to_dict()
+check("json-out: write mode after verify is written",
+      (_w["mode"], _w["written"], _w["summary"].endswith("; 1 written")), ("write", True, True))
+_w = sync_crm.build_findings("write", written=[], failed=[("Boston", "boom")],
+                             changed=["Pune"], **_kw).to_dict()
+check("json-out: a failed write is bad, a drifted workbook is warn, nothing written",
+      ([f["severity"] for f in _w["findings"] if f["kind"] == "write failed"],
+       [f["severity"] for f in _w["findings"] if f["kind"] == "workbook changed since plan"],
+       _w["written"], [m["value"] for m in _w["measured"] if m["label"] == "not written"]),
+      (["bad"], ["warn"], False, [2]))
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)

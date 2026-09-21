@@ -321,8 +321,19 @@ check("both blank -> unresolved", sync_chapters.resolve_city("", ""), "")
 # 0 = in sync, 2 = drift. Tested through main() with compute() mocked, because
 # the return statement IS the feature — a wrapper reading these codes must not
 # see 0 on a drifted report.
+def empty_state(**over):
+    """A real State, not a Mock: main() now builds the JSON findings from it
+    on every normal exit, so the fields have to be real lists."""
+    fields = dict(entries=[], unresolved=[], counts={s: 0 for s in sync_chapters.SYNC_STATUSES},
+                  dupes=[], chapters=[], last_row=1, adds=[], new_rows=[], near_misses=[],
+                  layout={"index": {"Organizers": 1}, "headers": ["City", "Organizers"]},
+                  malformed=[])
+    fields.update(over)
+    return sync_chapters.State(**fields)
+
+
 def exit_code(adds, new_rows, argv):
-    state = mock.Mock(adds=adds, new_rows=new_rows)
+    state = empty_state(adds=adds, new_rows=new_rows)
     with mock.patch.object(sync_chapters, "compute", return_value=state), \
          mock.patch.object(sync_chapters, "print_report", lambda s: None), \
          mock.patch.object(sys, "argv", ["sync_chapters.py"] + argv):
@@ -331,9 +342,132 @@ def exit_code(adds, new_rows, argv):
 
 check("report mode, in sync -> exit 0", exit_code([], [], []), 0)
 check("report mode, drift -> exit 2",
-      exit_code([{"row": 2}], [], []), 2)
+      exit_code([{"row": 2, "city": "Boston", "names": ["A"], "new_value": "A"}], [], []), 2)
 check("write mode with nothing to do -> exit 0",
       exit_code([], [], ["--write"]), 0)
+
+# --- --json-out: the same report as data, for the sync runner's page -----------
+import contextlib as _ctx  # noqa: E402
+import io as _io  # noqa: E402
+import json as _json  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+from aaif_events import findings as _findings  # noqa: E402
+
+_st = empty_state(
+    entries=[{"row": 2, "name": "Ada", "city": "Boston", "status": "Accepted"},
+             {"row": 3, "name": "Bob", "city": "Pune", "status": "Accepted"}],
+    unresolved=[{"row": 4, "name": "", "status": "Accepted", "g": "", "h": "",
+                 "events": "", "why": "", "placed": [], "inferred": []}],
+    chapters=[chap(2, "Boston", ""), chap(3, "Delhi NCR", "")], last_row=3,
+    adds=[{"row": 2, "city": "Boston", "names": ["Ada"], "new_value": "Ada"}],
+    new_rows=[{"row": 4, "city": "Pune", "names": ["Bob"], "slug": "pune", "luma": "absent"}],
+    near_misses=[{"city": "Delhi", "names": ["Cy"], "candidates": [("Delhi NCR", 3)]}],
+    malformed=[{"row": 9, "name": "<b>x</b>", "city": "Oslo",
+                "why": "name '<b>x</b>' contains control characters or angle brackets"}])
+_rep = sync_chapters.build_findings(_findings.Report("chapters"), _st)
+with _tempfile.TemporaryDirectory() as _d:
+    _path = os.path.join(_d, "chapters.json")
+    _rep.write(_path)
+    _doc = _json.load(open(_path, encoding="utf-8"))
+check("chapters JSON has the contract's format and step",
+      (_doc["format"], _doc["step"], _doc["mode"], _doc["written"]),
+      (1, "chapters", "report", False))
+check("chapters summary is the headline's counts, no names",
+      (_doc["summary"].startswith("2 qualifying organizers across 2 cities"),
+       "Ada" in _doc["summary"]), (True, False))
+check("chapters tiles are the report's counts, in order",
+      [(m["label"], m["value"]) for m in _doc["measured"]],
+      [("qualifying organizers", 2), ("cities", 2), ("chapter rows", 2), ("adds", 1),
+       ("new rows", 1), ("near-misses", 1), ("unresolved", 1)])
+_by_kind = {f["kind"]: f for f in _doc["findings"]}
+check("one finding per add / new row / near-miss / malformed row",
+      sorted(_by_kind), ["add", "malformed text", "near-miss", "new row"])
+check("an add is subject=city, severity warn, with the --write action",
+      (_by_kind["add"]["subject"], _by_kind["add"]["severity"], _by_kind["add"]["action"]),
+      ("Boston", "warn", "apply with --write"))
+check("a new row names the city and its Luma state",
+      (_by_kind["new row"]["subject"], "Luma page absent" in _by_kind["new row"]["detail"]),
+      ("Pune", True))
+check("a near-miss names the candidate row", _by_kind["near-miss"]["detail"], "Cy ~ Delhi NCR (row 3)")
+# The malformed VALUE is untrusted form text and stays out of the JSON entirely.
+check("a malformed row is reported by row number, never by value",
+      (_by_kind["malformed text"]["subject"], _by_kind["malformed text"]["severity"],
+       "<b>" in _json.dumps(_doc)), ("intake row 9", "bad", False))
+# Under --require-luma a held row is a held finding, not a new-row one.
+_held_rep = sync_chapters.build_findings(_findings.Report("chapters", "write"), _st,
+                                         held=[_st.new_rows[0]])
+check("a held row becomes a `held row` finding",
+      [f["kind"] for f in _held_rep.findings if f["subject"] == "Pune"], ["held row"])
+
+# The luma step: same flag, different step name, built from one sweep.
+_sweep = sync_chapters.LumaAudit(
+    checked=2, dead=[(2, "Boston", "https://luma.com/aaif-boston")],
+    unknown=[(3, "Pune", "https://luma.com/aaif-pune")], blank=[(4, "Oslo")], throttled_at=5)
+_ldoc = sync_chapters.luma_findings(_findings.Report("luma"), _sweep).to_dict()
+check("luma JSON step and tiles",
+      (_ldoc["step"], [(m["label"], m["value"]) for m in _ldoc["measured"]]),
+      ("luma", [("rows checked", 2), ("dead", 1), ("unverifiable", 1), ("no link", 1),
+                ("rate-limited at", "row 5")]))
+check("luma summary is the printed headline", _ldoc["summary"], sync_chapters.luma_headline(_sweep))
+check("a dead link is a bad finding on the city",
+      [(f["subject"], f["severity"]) for f in _ldoc["findings"] if f["kind"] == "dead link"],
+      [("Boston", "bad")])
+check("unverifiable, no-link and the rate-limit stop are warn findings",
+      sorted((f["kind"], f["subject"]) for f in _ldoc["findings"] if f["severity"] == "warn"),
+      [("no link", "Oslo"), ("sweep rate-limited", "row 5"), ("unverifiable link", "Pune")])
+# audit_luma(report) records the SAME sweep it prints — no second pass of HTTP.
+_lrep = _findings.Report("luma")
+with mock.patch.object(sync_chapters, "get_values",
+                       return_value=[["City", "Chapter Luma Link"], ["Boston", ""]]):
+    _pending = sync_chapters.audit_luma(_lrep)
+check("audit_luma fills the report it is given",
+      (_pending, [f["kind"] for f in _lrep.findings]), (1, ["no link"]))
+
+# main() lands the file on a normal exit in both modes, and skips it on abort.
+def json_out_after(states, argv):
+    """Run main() with compute() returning `states` in turn; (exit code, JSON)."""
+    with _tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "out.json")
+        with mock.patch.object(sync_chapters, "compute", side_effect=list(states)), \
+             mock.patch.object(sync_chapters, "print_report", lambda s: None), \
+             mock.patch.object(sync_chapters, "apply_changes", lambda *a: 1), \
+             mock.patch.object(sys, "argv", ["sync_chapters.py", "--json-out", path] + argv), \
+             _ctx.redirect_stdout(_io.StringIO()):
+            code = sync_chapters.main()
+        return code, _findings.read(path)
+
+
+_code, _out = json_out_after([empty_state()], [])
+check("report mode writes the JSON on exit 0", (_code, _out["step"], _out["mode"]),
+      (0, "chapters", "report"))
+# --write, nothing to do: still a normal exit, still lands the file, written stays False.
+_code, _out = json_out_after([empty_state()], ["--write"])
+check("write mode with nothing to do still lands the JSON, written=False",
+      (_code, _out["mode"], _out["written"]), (0, "write", False))
+# --write with one add: apply (mocked), then a clean re-read verifies -> written=True.
+_code, _out = json_out_after([empty_state(adds=_st.adds, chapters=_st.chapters), empty_state()],
+                             ["--write"])
+check("a verified write lands written=True on exit 0",
+      (_code, _out["mode"], _out["written"], [f["kind"] for f in _out["findings"]]),
+      (0, "write", True, ["add"]))
+# --audit-luma: same flag, the file is the `luma` step.
+with mock.patch.object(sync_chapters, "get_values",
+                       return_value=[["City", "Chapter Luma Link"], ["Boston", ""]]):
+    _code, _out = json_out_after([empty_state()], ["--audit-luma"])
+check("--audit-luma lands the luma step instead", (_code, _out["step"], _out["findings"][0]["kind"]),
+      (2, "luma", "no link"))
+# A failed verify aborts (sys.exit 1) and lands nothing: the log says why.
+with _tempfile.TemporaryDirectory() as _d:
+    _path = os.path.join(_d, "out.json")
+    with mock.patch.object(sync_chapters, "compute",
+                           side_effect=[empty_state(adds=_st.adds, chapters=_st.chapters),
+                                        empty_state(adds=_st.adds, chapters=_st.chapters)]), \
+         mock.patch.object(sync_chapters, "print_report", lambda s: None), \
+         mock.patch.object(sync_chapters, "apply_changes", lambda *a: 1), \
+         mock.patch.object(sys, "argv", ["sync_chapters.py", "--json-out", _path, "--write"]), \
+         _ctx.redirect_stdout(_io.StringIO()):
+        _aborted = aborts(sync_chapters.main)
+    check("a failed verify aborts and writes no JSON", (_aborted, os.path.exists(_path)), (True, False))
 
 # --- partition_new_rows: a city with no live Luma page holds back, not aborts ---
 # One pending page used to sys.exit the whole write, freezing every OTHER

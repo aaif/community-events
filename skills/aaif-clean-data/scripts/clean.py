@@ -17,7 +17,7 @@ Subcommands:
 Nothing is written unless you run `apply`, `install-flags`, or `install-colors`.
 `scan` only reports.
 """
-import argparse, json, os, re, subprocess, sys, unicodedata
+import argparse, json, os, re, subprocess, sys, tempfile, unicodedata
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 SOURCE = "Form Responses"
@@ -673,12 +673,101 @@ def scan():
     return changes, flags
 
 
-def print_scan(changes, flags):
+# The dict shape `build_findings` emits is the contract with the sync runner's
+# findings module (`lib/…/findings.py`, format 1). This script stays portable —
+# it must run zipped on its own — so it carries this small writer instead of
+# importing that module; change the shape there and here together.
+FINDINGS_FORMAT = 1
+
+
+def _flag_kind(issue):
+    """The flag's category with the offending cell value cut off: the text
+    report prints `invalid email: <address>`; the JSON carries only the kind,
+    because a cell value is a person's data and the page never needs it."""
+    if issue.startswith("city=Other"):
+        return "unresolved city"
+    return issue.split(":", 1)[0].split(" in rows", 1)[0].strip()
+
+
+def build_findings(changes, flags):
+    """The `scan` report as data (see `write_findings`), from the same two lists
+    `print_scan` prints. Row numbers are the subjects; no cell value — old or
+    new, name, address, link — leaves the sheet through this path."""
+    unresolved = [f for f in flags if _flag_kind(f["issue"]) == "unresolved city"]
+    doc = {"format": FINDINGS_FORMAT, "step": "clean", "mode": "report",
+           "summary": f"{len(changes)} proposed fixes, {len(flags)} flags",
+           "measured": [
+               {"label": "proposed fixes", "value": len(changes),
+                **({"tone": "warn"} if changes else {"tone": "ok"})},
+               {"label": "flags", "value": len(flags),
+                **({"tone": "warn"} if flags else {"tone": "ok"})},
+               {"label": "unresolved cities", "value": len(unresolved),
+                **({"tone": "warn"} if unresolved else {})},
+           ],
+           "findings": [], "written": False}
+    # Mechanical fixes are one finding per COLUMN with the count, not one per
+    # row: they are whitespace, case and a trailing slash, `apply` takes them
+    # from `scan --json` as a batch, and 347 rows of "LinkedIn URL normalized"
+    # on the page buried the 51 flags that actually need a person.
+    by_col = {}
+    for c in changes:
+        by_col[c["header"]] = by_col.get(c["header"], 0) + 1
+    for header, n in sorted(by_col.items(), key=lambda kv: -kv[1]):
+        doc["findings"].append({"kind": "proposed fixes", "subject": header,
+                                "detail": f"{n} row(s) to normalize",
+                                "severity": "info", "action": "apply with clean.py apply"})
+    for f in flags:
+        kind = _flag_kind(f["issue"])
+        if kind == "unresolved city":
+            detail, action = "", "run clean.py cities"
+        elif kind == "duplicate email":
+            detail, action = f["issue"].split(" in ", 1)[1], "merge or mark the duplicate"
+        else:
+            detail, action = "", "fix on the row"
+        doc["findings"].append({"kind": kind, "subject": f"row {f['row']}",
+                                "detail": detail, "severity": "warn", "action": action})
+    return doc
+
+
+def write_findings(path, doc):
+    """Land the report 0600 and atomically: the file is complete or absent."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".findings-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=1, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+#: Proposed normalizations shown per column before the scan says "and N more".
+#: They are mechanical (whitespace, case, a trailing slash on a URL) and `apply`
+#: takes them from `scan --json`, not from this listing, so the listing exists
+#: to be spot-checked — 347 of them were 300 lines, ~10k tokens, in an agent's
+#: context for a run whose point was the 51 flags below them.
+SAMPLE_PER_COLUMN = 3
+
+
+def print_scan(changes, flags, verbose=False):
     print(f"Cleanup scan of '{SOURCE}' — {len(changes)} proposed fixes, {len(flags)} flags\n")
     if changes:
         print("PROPOSED NORMALIZATIONS (apply to clean):")
+        by_col = {}
         for c in changes:
-            print(f"  row {c['row']:>3}  {c['header']:<13}  {c['old']!r}  ->  {c['new']!r}")
+            by_col.setdefault(c["header"], []).append(c)
+        for header, cs in sorted(by_col.items(), key=lambda kv: -len(kv[1])):
+            shown = cs if verbose else cs[:SAMPLE_PER_COLUMN]
+            print(f"  {header}: {len(cs)}")
+            for c in shown:
+                print(f"    row {c['row']:>3}  {c['old']!r}  ->  {c['new']!r}")
+            if len(cs) > len(shown):
+                print(f"    … and {len(cs) - len(shown)} more — --verbose lists them; "
+                      f"`scan --json` is what apply reads")
         print()
     if flags:
         print("FLAGS (need a human / judgment call):")
@@ -1080,6 +1169,13 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("scan"); sp.add_argument("--json", action="store_true")
+    sp.add_argument("--verbose", action="store_true",
+                    help="list every proposed normalization, not %d per column"
+                         % SAMPLE_PER_COLUMN)
+    sp.add_argument("--json-out", metavar="PATH", default=None,
+                    help="also write the scan's counts and per-row findings as JSON "
+                         "to PATH (the sync runner passes this; it names rows, so "
+                         "keep it private)")
     ap_apply = sub.add_parser("apply"); ap_apply.add_argument("file")
     ap_cities = sub.add_parser("cities")
     ap_cities.add_argument("--write", action="store_true")
@@ -1091,7 +1187,9 @@ def main():
         if a.json:
             print(json.dumps({"changes": changes, "flags": flags}, indent=1))
         else:
-            print_scan(changes, flags)
+            print_scan(changes, flags, a.verbose)
+        if a.json_out:
+            write_findings(a.json_out, build_findings(changes, flags))
     elif a.cmd == "apply":
         apply(a.file)
     elif a.cmd == "cities":

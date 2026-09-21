@@ -69,6 +69,7 @@ from sync_crm import (CHAPTERS_PARENT, SYNC_STATUSES, TEMPLATE_FOLDER,
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, set_redaction)  # noqa: E402
+from aaif_events import findings  # noqa: E402
 
 
 # Kept deliberately: this is the Linux Foundation's own staff access, not public
@@ -476,6 +477,76 @@ def report(p, role):
           % (len(p["grants"]) + len(p["already_granted"]), role))
 
 
+def build_findings(p, role, mode, phases, failed=(), verify_bad=(), written=False):
+    """The report() above as data, for `--json-out` (see aaif_events.findings).
+
+    Pure: takes the plan and whatever the write phases returned, touches no
+    network, so the test can drive it. Only counts report() already prints;
+    a subject is always a chapter or the parent folder, never an address —
+    `detail` carries a person's name only where the text report prints one.
+    `phases` is which of grant/lock this invocation reported on: report mode
+    covers both, `--write --phase X` only the one.
+    """
+    r = findings.Report("access", mode)
+    grants, in_place = p["grants"], p["already_granted"]
+    bits = []
+    if "grant" in phases:
+        bits.append("%d new grant(s) across %d chapter(s); %d already in place"
+                    % (len(grants), len({g["chapter"] for g in grants}), len(in_place)))
+        r.measure("grants in place", len(in_place), "ok")
+        r.measure("new grants", len(grants), "warn" if grants else "ok")
+        r.measure("newer recorded address", len(p.get("superseded", ())),
+                  "warn" if p.get("superseded") else None)
+        r.measure("unknown direct grants", len(p["stale"]), "warn" if p["stale"] else None)
+        if failed:
+            r.measure("grants failed", len(failed), "bad")
+    if "lock" in phases:
+        bits.append("public share %s" % ("to remove" if p["public"] else "already gone"))
+        r.measure("pending lock", len(p["public"]), "warn" if p["public"] else "ok")
+    r.summary = "; ".join(bits)
+
+    apply = "apply with --write"
+    if "grant" in phases:
+        for g in grants:
+            r.find("new grant", g["chapter"],
+                   "%s (%s%s)" % (g["name"], role,
+                                  ", via %s" % H_DRIVE_EMAIL if g.get("via_column") else ""),
+                   "warn", apply)
+        for ch, _old, _new in p.get("superseded", ()):
+            r.find("newer recorded address", ch,
+                   "the old grant stays in place and reads as stale",
+                   "warn", "remove the old grant by hand")
+        for ch, _em, q_role in sorted(p["stale"]):
+            r.find("unknown direct grant", ch, q_role, "warn", "audit this grant")
+        for ch, _em, q_role in sorted(p.get("excused", ())):
+            r.find("grant excused by %s" % H_DRIVE_EMAIL, ch, q_role,
+                   "info", "confirm the cell is right")
+        for o in p["orphans"]:
+            r.find("no chapter folder", o["city"],
+                   ", ".join(x["name"] for x in o["people"]),
+                   "warn", "run aaif-create-chapter")
+        for m in p["near"]:
+            r.find("near-miss chapter name", m["city"], "~ " + ", ".join(m["candidates"]),
+                   "warn", "fix the intake city or rename the folder")
+        if p.get("problems"):
+            # The problem lines quote (redacted) addresses; the page gets the count.
+            r.find("%s problem" % H_DRIVE_EMAIL, SOURCE,
+                   "%d cell(s) ignored or conflicting; the grant falls back to the "
+                   "intake address" % len(p["problems"]),
+                   "warn", "fix the rows")
+        for ch, name, _em, why in failed:
+            r.find("grant failed", ch, "%s: %s" % (name, why), "bad", "fix the intake row and re-run")
+    if "lock" in phases:
+        for x in p["public"]:
+            r.find("public share", "Chapters/", "%s:%s" % (x["type"], x["role"]), "warn", apply)
+    if verify_bad:
+        # The lines name addresses; the page gets the count and the log the rest.
+        r.find("verify failed", "Chapters/", "%d check(s) failed — see the log" % len(verify_bad),
+               "bad", "re-run")
+    r.written = bool(written)
+    return r
+
+
 def assert_all_accepted(grants):
     """Re-read the intake and confirm every grant target really is an accepted
     organizer, aborting on the first that isn't.
@@ -742,6 +813,7 @@ def main():
                     help="required alongside --notify or --mail-if-required: "
                          "both make Drive email real people, which cannot be unsent")
     add_redact_flag(ap)
+    findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
     # Emailing a real person is the line the Slack write steps already draw
@@ -758,6 +830,7 @@ def main():
     report(p, a.role)
     if not a.write:
         print("\nReport only — nothing was changed. Re-run with --write to apply.")
+        build_findings(p, a.role, "report", ("grant", "lock")).write(a.json_out)
         # Shared engine exit convention: report mode exits 0 when in sync, 2
         # when it proposes changes (consumed by nightly.py).
         return 2 if (p["grants"] or p["public"]) else 0
@@ -770,6 +843,7 @@ def main():
     if not a.phase and not (p["grants"] or p["public"]):
         print("\nNo changes needed — every accepted organizer holds their "
               "grant and the folder is not link-shared.")
+        build_findings(p, a.role, "write", ("grant", "lock")).write(a.json_out)
         return 0
 
     selected = phases_to_run(a.phase)
@@ -812,6 +886,8 @@ def main():
         print("VERIFY FAILED:")
         for b in bad:
             print("  " + b)
+        build_findings(p, a.role, "write", selected, failed=grant_failures,
+                       verify_bad=bad).write(a.json_out)
         return 1
     # Claim only what this run actually re-read.
     bits = []
@@ -820,6 +896,9 @@ def main():
     if "lock" in selected:
         bits.append("Chapters/ is not link-shared")
     print("Verified: %s." % "; ".join(bits))
+    # `written` only now: the phases applied AND the re-read agreed.
+    build_findings(p, a.role, "write", selected, failed=grant_failures,
+                   written=True).write(a.json_out)
     return 0
 
 

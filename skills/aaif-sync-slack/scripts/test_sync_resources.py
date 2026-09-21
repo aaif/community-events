@@ -455,6 +455,75 @@ finally:
     _redact.REDACT = False
 check("redaction off passes a name through", sr.redact_name("Ada Lovelace"), "Ada Lovelace")
 
+# --- --json-out: the report as data, same numbers, no sheet text, no names ----
+import json as _json  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+_rep = sr.build_findings(
+    chapters=[ch("Boston", "United States", row=2),
+              ch("Oslo", "Norway", row=3, slack="not a channel!"),
+              ch("Lima", "Peru", row=4, folder=sync_chapters.NO_RESOURCE)],
+    proposals=[{"row": 2, "city": "Boston", "column": "Slack Channel",
+                "value": "boston", "why": "exact"},
+               {"row": 3, "city": "Oslo", "column": "Organizer Handles",
+                "value": "@ada", "was": "@old-cell-text"}],
+    near=[("Lima", ["Lima Norte"])], folderless=["Boston"],
+    candidates=[("Oslo", "Slack Channel", ["oslo-ai"])],
+    missing_countries={"Peru": {"Lima"}},
+    did_slack=True,
+    malformed=[(3, "Oslo", "Slack Channel", "not a channel!")],
+    unresolved=[("Boston", "Ada Lovelace")],
+    skipped_slack=False)
+_doc = _rep.to_dict()
+check("findings: format 1, step resources, report mode",
+      (_doc["format"], _doc["step"], _doc["mode"]), (1, "resources", "report"))
+check("findings: the summary is the report's headline counts",
+      _doc["summary"], "3 chapter rows; 2 cell(s) proposed; 1 malformed")
+check("findings: one tile per resource column plus the row and proposal totals",
+      [m["label"] for m in _doc["measured"]],
+      ["chapter rows", "Chapter Folder", "Slack Channel", "Organizer Channel",
+       "Country Channel", "Organizer Handles", "proposed cells"])
+check("findings: a column tile carries filled/none/blank/proposed",
+      next(m["value"] for m in _doc["measured"] if m["label"] == "Chapter Folder"),
+      "0 filled / 1 none / 2 blank / 0 proposed")
+_by = {}
+for _f in _doc["findings"]:
+    _by.setdefault(_f["kind"], []).append(_f)
+check("findings: a proposed cell names city + column, never a row of people",
+      (_by["proposed cell"][0]["subject"], _by["proposed cell"][0]["severity"]),
+      ("Boston · Slack Channel", "warn"))
+check("findings: a malformed cell is bad and quotes the row, not the cell text",
+      (_by["malformed cell"][0]["subject"], _by["malformed cell"][0]["severity"],
+       _by["malformed cell"][0]["detail"]),
+      ("Oslo · Slack Channel", "bad", "row 3"))
+check("findings: a rewrite never carries the old cell text",
+      "@old-cell-text" in _json.dumps(_doc), False)
+check("findings: organizers without Slack are one count under subject Slack, no names",
+      ([f["subject"] for f in _by["no Slack account"]], "Ada" in _json.dumps(_doc)),
+      (["Slack"], False))
+check("findings: a country without a channel is one row per country",
+      (_by["country without channel"][0]["subject"],
+       _by["country without channel"][0]["detail"]),
+      ("Peru", "1 chapter(s): Lima"))
+check("findings: no partial finding when Slack was reached", "partial" in _by, False)
+
+_part = sr.build_findings([ch("Boston", row=2)], [], [], [], [], {}, did_slack=False,
+                          malformed=[], unresolved=[], skipped_slack=True).to_dict()
+check("findings: the PARTIAL run still lands, with a warn finding on subject Slack",
+      [(f["subject"], f["severity"], f["detail"]) for f in _part["findings"]],
+      [("Slack", "warn", "Slack unavailable — channel columns not checked")])
+check("findings: the PARTIAL run marks each channel column as not checked",
+      [m["value"] for m in _part["measured"] if m["label"] in sr.CHANNEL_COLUMNS],
+      ["not checked"] * 3)
+check("findings: PARTIAL is in the summary", "Slack unavailable" in _part["summary"], True)
+
+with _tempfile.TemporaryDirectory() as _d:
+    _path = os.path.join(_d, "resources.json")
+    _rep.write(_path)
+    check("findings: the JSON round-trips through the shared reader",
+          sr.findings.read(_path)["step"], "resources")
+    check("findings: the file is private (0600)", oct(os.stat(_path).st_mode & 0o777), "0o600")
+check("findings: write() without a path is a no-op", _rep.write(None), None)
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

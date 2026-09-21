@@ -359,6 +359,68 @@ for domain in ("@mlops.community", "@aihero.studio", "@linuxfoundation.org"):
     check("no %s address is hardcoded in provision_channels.py" % domain,
           domain in _SOURCE, False)
 
+# --- --json-out: the plan as data; a held name is a row, nobody is named --------
+import json as _json  # noqa: E402
+_rep = prov.build_findings(
+    creates=[("boston", False, "chapter channel for Boston"),
+             ("boston-organizers", True, "organizer channel for Boston")],
+    renames=[("austin-meetup", "austin")],
+    blocked=[("bern-organizers-old", "bern-organizers")],
+    applied=[("london-organizers", "london-organizers-deprecated")],
+    merges=[("lima-old", {"into": "lima", "retire_as": "lima-old-deprecated"})],
+    archives=[("oslo-deprecated", "archive", "public; pointer post -> #oslo, then archive"),
+              ("lima-deprecated", "blocked", "2 member(s) not yet in #lima — invite them across first"),
+              ("austin-deprecated", "skip", "pending rename to #austin — not retired")],
+    already=[("united-states", False, "country channel for Boston")],
+    refused=[("create", "munich", "chapter channel for Munich")],
+    seed=[("boston-organizers", "C1", [("a@x.com", "U1", "Ada"), ("b@x.com", "U2", "Bob")])],
+    pins=[("Boston", "boston-organizers", None, "FOLDERID", None),
+          ("Oslo", "oslo-organizers", None, "FOLDERID", "1.2")],
+    pins_skipped=[("Lima", "Chapter Folder cell holds no Drive id: 'typed junk'"),
+                  ("Bern", "no organizer channel on the sheet")])
+_doc = _rep.to_dict()
+check("findings: format 1, step provision, report mode",
+      (_doc["format"], _doc["step"], _doc["mode"]), (1, "provision", "report"))
+check("findings: the summary is the plan's counts",
+      _doc["summary"],
+      "2 to create; 1 to rename; 1 to archive; 1 already exist; 1 rename(s) blocked; 1 refused")
+check("findings: tiles are creates, renames, archives, already exist, held, refused",
+      [(m["label"], m["value"]) for m in _doc["measured"]],
+      [("to create", 2), ("to rename", 1), ("to archive", 1), ("already exist", 1),
+       ("held by another room", 2), ("refused (erstwhile)", 1)])
+_by = {}
+for _f in _doc["findings"]:
+    _by.setdefault(_f["kind"], []).append(_f)
+check("findings: each create is a row whose subject is the channel",
+      [(f["subject"], f["severity"]) for f in _by["create"]],
+      [("#boston", "warn"), ("#boston-organizers", "warn")])
+check("findings: a rename's subject is the room being renamed",
+      (_by["rename"][0]["subject"], _by["rename"][0]["detail"]),
+      ("#austin-meetup", "-> #austin (keeps members and history)"))
+check("findings: a name held by an invisible room is its own row, on the held name",
+      (_by["held by another room"][0]["subject"], _by["held by another room"][0]["severity"]),
+      ("#bern-organizers", "warn"))
+check("findings: a refused erstwhile name is bad and points at the sheet",
+      (_by["refused erstwhile name"][0]["subject"], _by["refused erstwhile name"][0]["severity"]),
+      ("#munich", "bad"))
+check("findings: the ops seed carries a count, never an address or a name",
+      (_by["ops seed"][0]["detail"], "a@x.com" in _json.dumps(_doc), "Ada" in _json.dumps(_doc)),
+      ("2 ops account(s) to add", False, False))
+check("findings: a skipped folder link never quotes the sheet cell",
+      ([f["detail"] for f in _by["folder link skipped"]], "typed junk" in _json.dumps(_doc)),
+      (["Chapter Folder cell holds no Drive id", "no organizer channel on the sheet"], False))
+check("findings: a folder link tells post-and-pin from pin-only",
+      [f["detail"] for f in _by["folder link"]],
+      ["Boston: post and pin", "Oslo: already posted — pin only"])
+check("findings: an already-applied rename is info, an archive skip is info",
+      (_by["rename already applied"][0]["severity"], _by["archive skipped"][0]["severity"]),
+      ("info", "info"))
+check("findings: written is False until a write is applied", _doc["written"], False)
+_empty = prov.build_findings([], [], [], [], [], [], [], [], [], [], []).to_dict()
+check("findings: an in-sync estate has ok tiles and no findings",
+      ({m.get("tone") for m in _empty["measured"]} - {"ok", None}, _empty["findings"]),
+      (set(), []))
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

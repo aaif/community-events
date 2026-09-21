@@ -7,8 +7,10 @@ and never edited or duplicated, that a human-authored post is left alone, and
 that the single-room and no-distinct-channel skips actually skip.
 """
 
+import json as _json
 import os
 import sys
+import tempfile as _tempfile
 from unittest import mock as _mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -284,6 +286,58 @@ finally:
 check("a benign already-in-channel race still posts",
       (done, failed, [c[0] for c in _rec.calls]),
       (1, [], ["conversations.join", "chat.postMessage"]))
+
+
+# --- --json-out: the text report as data, same buckets, subject = channel ----
+# build_findings() is pure over what collect() returned, so the page can
+# never show a count the log did not print.
+_rows = [
+    {"channel": "kenya", "channel_id": "CKE", "mentions": ["<#CNR>"],
+     "missing": ["<#CNR>"], "action": pcd.ACTION_CREATE, "post_text": "hello"},
+    {"channel": "brasil", "channel_id": "CBR", "mentions": ["<#C1>", "<#C2>"],
+     "missing": ["<#C2>"], "action": pcd.ACTION_ADD_ON, "post_text": "hi"},
+    {"channel": "india", "channel_id": "CIN", "mentions": ["<#C3>"],
+     "missing": [], "action": pcd.ACTION_UP_TO_DATE, "post_text": None},
+    {"channel": "peru", "channel_id": "CPE", "mentions": ["<#C4>"],
+     "missing": [], "action": pcd.ACTION_HUMAN_AUTHORED, "post_text": None},
+]
+_skipped = [("singapore", pcd.SKIP_NO_CITY_ROOM),
+            ("germany", "scanned 2000 messages with no directory post found "
+                        "and no more messages read; check by hand")]
+_rep = pcd.build_findings(_rows, _skipped, "report")
+with _tempfile.TemporaryDirectory() as _d:
+    _out = os.path.join(_d, "directory.json")
+    _rep.write(_out)
+    with open(_out, encoding="utf-8") as _fh:
+        _doc = _json.load(_fh)
+    check("the JSON is landed 0600", os.stat(_out).st_mode & 0o777, 0o600)
+check("the JSON carries the contract's format and this step's name",
+      (_doc["format"], _doc["step"], _doc["mode"]), (1, "directory", "report"))
+check("the summary is the one-line headline, counts only",
+      _doc["summary"],
+      "4 live country channel(s): 1 to create, 1 to add-on, 1 already correct, "
+      "1 human-authored; 2 skipped")
+check("the tiles are the buckets the text report prints",
+      [(m["label"], m["value"]) for m in _doc["measured"]],
+      [("up to date", 1), ("to create", 1), ("to add-on", 1),
+       ("human-authored, not touched", 1), ("skipped", 2)])
+check("a channel needing a post is a warn finding on the CHANNEL",
+      [(f["kind"], f["subject"], f["severity"]) for f in _doc["findings"]
+       if f["kind"] in ("create", "add-on")],
+      [("add-on", "#brasil", "warn"), ("create", "#kenya", "warn")])
+check("the post text itself stays out of the JSON",
+      "hello" in _json.dumps(_doc), False)
+check("an up-to-date channel is not a finding at all",
+      any(f["subject"] == "#india" for f in _doc["findings"]), False)
+check("a human-authored post is info: seen, not a task",
+      [f["severity"] for f in _doc["findings"] if f["subject"] == "#peru"], ["info"])
+check("a benign skip is info; a scan that could not conclude is warn",
+      [(f["subject"], f["severity"]) for f in _doc["findings"] if f["kind"] == "skipped"],
+      [("#germany", "warn"), ("#singapore", "info")])
+check("nothing was written, so the report says so", _doc["written"], False)
+check("Report.write() is a no-op without --json-out", _rep.write(None), None)
+check("the skip constant is the string collect() really emits",
+      pcd.SKIP_NO_CITY_ROOM, "no distinct, live city channel to link")
 
 
 if FAILS:

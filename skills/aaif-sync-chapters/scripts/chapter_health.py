@@ -77,7 +77,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 from sync_chapters import (CHAPTER_CAP, CHAPTERS_ID, H_MERGED_INTO,  # noqa: E402
                            NO_RESOURCE, cell, census_of, fold_city, get_values,
                            header_index, read_chapters, unknown_statuses)
-from aaif_events import jsoncache  # noqa: E402
+from aaif_events import findings, jsoncache  # noqa: E402
 from aaif_events.redact import (add_redact_flag, redact_name, redact_text,  # noqa: E402
                                 set_redaction)
 
@@ -312,6 +312,39 @@ def build(window, cache_dir):
     return rows, chapters, slack is not None, unparsed, meta
 
 
+def _days(d):
+    """The table's cell for an age in days, or `never`."""
+    return ("%dd" % d) if d is not None else "never"
+
+
+def build_findings(report, quiet, awake, cannot_say, untriaged):
+    """Record the ranked verdicts on a findings.Report (step `health`). Pure.
+
+    Takes the three buckets main() already split (after --untriaged filtering,
+    so the JSON shows what the text showed) and the blank-Status count from the
+    census. A QUIET chapter is `warn` with the table's four cells as detail —
+    the review queue, not a decision, exactly as the text says. CANNOT SAY is
+    `info` with its why: nothing to do but know that the evidence is missing.
+    Status, Merged Into and Ops Notes are hand-typed cells and stay out.
+    """
+    report.summary = ("%d quiet, %d cannot say, %d active; %d untriaged"
+                      % (len(quiet), len(cannot_say), len(awake), untriaged))
+    report.measure("quiet", len(quiet), "warn" if quiet else "ok")
+    report.measure("active", len(awake), "ok")
+    report.measure("cannot say", len(cannot_say), "warn" if cannot_say else None)
+    report.measure("untriaged", untriaged, "warn" if untriaged else None)
+    for r in quiet:
+        report.find("quiet", r["city"],
+                    "events %d / last event %s / last slack %s / members %s"
+                    % (r["events"], _days(r["event_days"]), _days(r["slack_days"]),
+                       r["members"] if r["members"] is not None else "-"),
+                    severity="warn", action="review; set Status by hand if retiring")
+    for r in sorted(cannot_say, key=lambda x: x["city"]):
+        report.find("cannot say", r["city"], r["why"] or "", severity="info",
+                    action="fix the evidence source, then re-run")
+    return report
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--window", type=int, default=DEFAULT_WINDOW,
@@ -324,6 +357,7 @@ def main():
     ap.add_argument("--cache", default=DEFAULT_CACHE,
                     help="aaif-audit-slack cache dir (default %s)" % DEFAULT_CACHE)
     add_redact_flag(ap)
+    findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
 
@@ -403,6 +437,10 @@ def main():
     print("\nACTIVE on at least one signal (%d): %s"
           % (len(awake), ", ".join(sorted(r["city"] for r in awake))))
     print("\nReport only — no Status cell was written.")
+    # The same report as data, for the sync runner's page. Always `report`
+    # mode and never `written`: this engine has no write path.
+    build_findings(findings.Report("health"), quiet, awake, cannot_say,
+                   by_status.get("", 0)).write(a.json_out)
     return 0
 
 

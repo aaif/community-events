@@ -806,5 +806,90 @@ class TestApplyEndToEnd(unittest.TestCase):
             self._apply([{"row": 2, "header": "Nope", "value": "X"}], [["t", "n", "", ""]])
 
 
+class TestScanFindings(unittest.TestCase):
+    """`scan --json-out` writes the same report as data (format 1, step
+    `clean`). Row numbers are the subjects; no cell value may leave through it."""
+
+    CHANGES = [{"row": 3, "header": "Email", "old": " A@X.COM ", "new": "a@x.com"}]
+    FLAGS = [{"row": 4, "who": "Ada", "issue": "missing email"},
+             {"row": 5, "who": "b@x.com", "issue": "invalid email: b@x.com"},
+             {"row": 6, "who": "Grace", "issue": "city=Other (run `clean.py cities` to derive it)"},
+             {"row": 7, "who": "c@x.com", "issue": "duplicate email in rows [7, 9]"}]
+
+    def test_shape_step_summary_and_tiles(self):
+        doc = clean.build_findings(self.CHANGES, self.FLAGS)
+        self.assertEqual(doc["format"], 1)
+        self.assertEqual(doc["step"], "clean")
+        self.assertEqual(doc["mode"], "report")
+        self.assertEqual(doc["summary"], "1 proposed fixes, 4 flags")
+        self.assertEqual([(m["label"], m["value"]) for m in doc["measured"]],
+                         [("proposed fixes", 1), ("flags", 4), ("unresolved cities", 1)])
+        self.assertFalse(doc["written"])
+
+    def test_findings_name_rows_and_kinds_never_cell_values(self):
+        doc = clean.build_findings(self.CHANGES, self.FLAGS)
+        by_subject = {f["subject"]: f for f in doc["findings"]}
+        self.assertEqual(by_subject["row 6"]["kind"], "unresolved city")
+        self.assertEqual(by_subject["row 6"]["severity"], "warn")
+        self.assertEqual(by_subject["row 5"]["kind"], "invalid email")
+        self.assertEqual(by_subject["row 7"]["kind"], "duplicate email")
+        self.assertNotIn("row 3", by_subject)   # a mechanical fix is not a per-row finding
+        fixes = [f for f in doc["findings"] if f["kind"] == "proposed fixes"]
+        self.assertEqual([(f["subject"], f["detail"], f["severity"]) for f in fixes],
+                         [(self.CHANGES[0]["header"], "1 row(s) to normalize", "info")])
+        blob = json.dumps(doc)
+        for value in ("a@x.com", "A@X.COM", "b@x.com", "c@x.com", "Ada", "Grace"):
+            self.assertNotIn(value, blob)
+
+    def test_clean_sheet_is_ok_and_empty(self):
+        doc = clean.build_findings([], [])
+        self.assertEqual(doc["findings"], [])
+        self.assertEqual([m.get("tone") for m in doc["measured"]], ["ok", "ok", None])
+
+    def test_write_lands_private_and_readable(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "findings.json")
+            clean.write_findings(path, clean.build_findings(self.CHANGES, self.FLAGS))
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["step"], "clean")
+            self.assertEqual(os.listdir(d), ["findings.json"])   # no temp file left
+
+
+class TestPrintScanCollapses(unittest.TestCase):
+    """Proposed normalizations print as per-column counts with samples; flags
+    print in full. Synthetic rows only."""
+
+    CHANGES = ([{"row": 10 + i, "header": "LinkedIn URL", "old": "x/%d/" % i,
+                 "new": "x/%d" % i} for i in range(8)]
+               + [{"row": 40, "header": "Full name", "old": "Ada ", "new": "Ada"}])
+    FLAGS = [{"row": 50, "issue": "missing email", "who": "Ada"},
+             {"row": 51, "issue": "city=Other", "who": "Bo"}]
+
+    def _scan(self, **kw):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            clean.print_scan(self.CHANGES, self.FLAGS, **kw)
+        return buf.getvalue()
+
+    def test_default_shows_counts_and_samples_not_every_row(self):
+        out = self._scan()
+        self.assertIn("9 proposed fixes, 2 flags", out)
+        self.assertIn("LinkedIn URL: 8", out)
+        self.assertIn("Full name: 1", out)
+        self.assertEqual(out.count("row  1"), clean.SAMPLE_PER_COLUMN)   # rows 10-12
+        self.assertIn("… and 5 more — --verbose lists them", out)
+
+    def test_flags_always_print_in_full(self):
+        out = self._scan()
+        self.assertIn("row  50  [missing email]", out)
+        self.assertIn("row  51  [city=Other]", out)
+
+    def test_verbose_lists_every_row(self):
+        out = self._scan(verbose=True)
+        self.assertEqual(out.count("row  1"), 8)
+        self.assertNotIn("more —", out)
+
+
 if __name__ == "__main__":
     unittest.main()

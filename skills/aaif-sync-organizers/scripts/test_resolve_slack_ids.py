@@ -310,6 +310,55 @@ _code, _ran = _main_with([])
 check("a bare run still reports without writing", _ran, True)
 
 
+# --- --json-out: the same report as data --------------------------------------
+# One row per human call, the row as the subject, never an address. The
+# candidate name reaches `detail` only because the text report already prints
+# it (and masked the same way when --redact is on).
+_hits = [(2, "U0AAAAAAAAA"), (3, "U02BBBBBBBB")]
+_folded = [(3, "Ada Lovelace", "a.da@x.com", "ada@x.com")]
+_misses = [(4, "Grace Hopper", "g@x.com"), (5, "Bo Lin", "b@x.com")]
+_cands = {4: [user("U0AAAAAAAAA", "Grace Hopper")]}
+_doc = r.build_findings(9, _hits, _folded, _misses, _cands, "report").to_dict()
+check("findings carry the shared format", _doc["format"], 1)
+check("findings name the runner's step", _doc["step"], "identity")
+check("findings carry the mode", _doc["mode"], "report")
+check("the summary is the text report's headline",
+      _doc["summary"], "4 row(s) to resolve: 2 resolved by email, 2 unresolved")
+check("nothing is written in report mode", _doc["written"], False)
+_tiles = {m["label"]: m["value"] for m in _doc["measured"]}
+check("tiles: resolved / suggestions / no account",
+      (_tiles["resolved by email"], _tiles["name-match suggestions"],
+       _tiles["no account at the address"]), (2, 1, 2))
+check("already-resolved is what the header line prints", _tiles["already resolved"], 5)
+_rows = {(f["kind"], f["subject"]): f for f in _doc["findings"]}
+check("a name-match suggestion is a warn on its row",
+      _rows[("name-match suggestion", "row 4")]["severity"], "warn")
+check("the suggestion names the person, as the text report does",
+      _rows[("name-match suggestion", "row 4")]["detail"].startswith("Grace Hopper"), True)
+check("a Gmail-spelling hit is a finding on its row",
+      _rows[("gmail spelling", "row 3")]["action"], "fix the intake spelling")
+check("the no-account count is ONE finding, not one per person",
+      sum(1 for f in _doc["findings"] if f["kind"] == "no account"), 1)
+check("no finding subject is an address",
+      [f["subject"] for f in _doc["findings"] if "@" in f["subject"]], [])
+check("no address reaches a finding at all",
+      [f for f in _doc["findings"] if "@" in f["detail"]], [])
+_none = r.build_findings(3, [], [], [], {}, "write").to_dict()
+check("an empty run still lands a summary and tiles",
+      (bool(_none["summary"]), len(_none["measured"]) >= 3, _none["findings"]),
+      (True, True, []))
+with tempfile.TemporaryDirectory() as _td:
+    _path = os.path.join(_td, "identity.json")
+    r.build_findings(9, _hits, _folded, _misses, _cands, "report").write(_path)
+    with open(_path) as fh:
+        check("write() lands the same document", json.load(fh), _doc)
+    check("the file is private to the operator", oct(os.stat(_path).st_mode & 0o777), "0o600")
+check("run() with no --json-out writes nothing",
+      r.findings.Report("identity").write(None), None)
+_code, _ran = _main_with(["--json-out", "x.json"])
+check("--json-out is accepted and reaches run()", _ran, True)
+
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

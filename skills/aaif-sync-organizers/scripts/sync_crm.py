@@ -91,6 +91,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, redacting,  # noqa: E402
                                 set_redaction)
+from aaif_events import findings  # noqa: E402
 
 
 #: Columns whose values are categorical, not personal — the only ones a
@@ -1650,6 +1651,80 @@ def write_workbooks(touched, workdir, backup_dir):
     return written, changed, failed
 
 
+def build_findings(mode, people, chapters, changes, held, rejected, skipped, orphans,
+                   near_misses, keepers, no_dropdown, demoted, fallbacks,
+                   written=(), changed=(), failed=(), stale=(), verified=False):
+    """_run()'s report as data, for `--json-out` (see aaif_events.findings).
+
+    Pure — takes the lists _run already printed from, so the test can drive it
+    without a workbook or the network. `changes` is [(chapter, {kind: n})] per
+    workbook that would change. Subjects are chapters, cities or the intake
+    tab; `detail` carries a row number or a count, never an address, and never
+    a cell's free text.
+    """
+    r = findings.Report("crm", mode)
+    n_held = len({fold_email(p["email"]) for p in held})
+    r.summary = "%d people across %d chapters; %d workbook(s) would change" % (
+        people, chapters, len(changes))
+    if mode == "write":
+        r.summary += "; %d written" % len(written)
+    r.measure("people", people)
+    r.measure("chapters", chapters, "ok")
+    r.measure("workbooks to change", len(changes), "warn" if changes else "ok")
+    r.measure("held under central approval", n_held, "warn" if n_held else None)
+    r.measure("not synced", len(rejected), "warn" if rejected else None)
+    if skipped:
+        r.measure("workbooks skipped", len(skipped), "bad")
+    if mode == "write":
+        r.measure("written", len(written), "ok" if written else None)
+        if failed or changed or stale:
+            r.measure("not written", len(failed) + len(changed) + len(stale), "bad")
+
+    for name, n in changes:
+        bits = ([("%d new" % n.get("add", 0))] if n.get("add") else []) \
+            + ([("%d changed" % n.get("fill", 0))] if n.get("fill") else []) \
+            + ([("%d dummy cleared" % n.get("clear", 0))] if n.get("clear") else [])
+        r.find("workbook change", name, " / ".join(bits), "warn", "apply with --write")
+    by_city = {}
+    for p in held:
+        by_city.setdefault(fold_city(p["city"]), [p["city"], set()])[1].add(fold_email(p["email"]))
+    for city, emails in sorted(by_city.values()):
+        r.find("held under central approval", city, "%d pipeline organizer(s)" % len(emails),
+               "info", "AAIF ops decides")
+    for name, why in skipped:
+        r.find("workbook skipped", name, why, "bad", "fix the workbook and re-run")
+    for m in near_misses:
+        r.find("near-miss chapter name", m["city"],
+               "%d people ~ %s" % (len(m["people"]), ", ".join(m["candidates"])),
+               "warn", "fix the intake city or rename the folder")
+    for o in orphans:
+        r.find("no chapter folder", o["city"], "%d person/people" % len(o["people"]),
+               "warn", "run aaif-create-chapter")
+    for name, rows in keepers:
+        for row in rows:
+            r.find("real-looking row not touched", name, "row %d" % row["row"],
+                   "info", "clear by hand if it is fixture data")
+    for name, header, old, new, op in demoted:
+        r.find("status moved backwards", name,
+               "row %d: %s %r -> %r" % (op["rownum"], header, old, new),
+               "warn", "check the intake row")
+    for name, cols in no_dropdown:
+        r.find("stale dropdown", name, ", ".join(cols), "warn",
+               "run migrate_interested_in.py --write")
+    if fallbacks:
+        r.find("no Form Responses match", "Form Responses",
+               "%d person/people get the generic branch text" % len(fallbacks),
+               "info", "check the intake email spelling")
+    for name in changed:
+        r.find("workbook changed since plan", name, "not written", "warn", "re-run to sync it")
+    for name, why in failed:
+        r.find("write failed", name, why, "bad", "fix and re-run")
+    for name, why in stale:
+        r.find("verify failed", name, why, "bad", "re-run")
+    r.written = bool(verified)
+    return r
+
+
 def run(args):
     # Every opened workbook — real names, emails and survey answers — lands in
     # this temp dir. Neither mode may strand ~80 of them there: the workdir is
@@ -1725,6 +1800,7 @@ def _run(args, workdir):
     print("Chapters: %d folder(s) in scope.\n" % len(folders))
 
     touched, skipped, no_dropdown, keepers, demoted = [], [], [], [], []
+    changes = []   # [(chapter, {kind: n})] — the per-workbook counts, for --json-out
     # Every folder is opened, not just the ones with people: every workbook
     # carries the template's fixture row and has to be checked for it, and the
     # read-only dropdown check has to reach chapters that gained nobody this
@@ -1755,6 +1831,7 @@ def _run(args, workdir):
         if not ops:
             continue
         n = {k: sum(1 for o in ops if o["kind"] == k) for k in OP_KINDS}
+        changes.append((folder["name"], n))
         bits = ([("%d dummy cleared" % n["clear"])] if n["clear"] else []) \
             + ([("%d new" % n["add"])] if n["add"] else []) \
             + ([("%d filled in" % n["fill"])] if n["fill"] else [])
@@ -1836,6 +1913,14 @@ def _run(args, workdir):
         print("\n%d intake row(s) not synced (not yet accepted, or no email/city) "
               "— --verbose lists them." % len(rejected))
 
+    def land_findings(**after):
+        """The report above as JSON, when --json-out asks (no-op otherwise).
+        Called on every path that ends in a report, never on an ABORT."""
+        build_findings("write" if args.write else "report",
+                       len(merged), len(by_folder), changes, held, rejected, skipped,
+                       orphans, near_misses, keepers, no_dropdown, demoted, fallbacks,
+                       **after).write(args.json_out)
+
     if not touched:
         # Never claim a clean sweep over chapters that were never opened: a
         # skipped workbook means people silently did not reach a CRM the
@@ -1843,11 +1928,14 @@ def _run(args, workdir):
         if skipped:
             print("\nNo changes needed for the chapters that could be opened — but "
                   "%d was/were SKIPPED above and are NOT in sync." % len(skipped))
+            land_findings()
             return 1
         print("\nNo changes needed — every chapter CRM is in sync with the intake.")
+        land_findings()
         return 0
     if not args.write:
         print("\n%d workbook(s) would change. Re-run with --write to apply." % len(touched))
+        land_findings()
         # Shared engine exit convention: report mode exits 0 when in sync,
         # 2 when it proposes changes (consumed by nightly.py).
         return 2
@@ -1882,8 +1970,11 @@ def _run(args, workdir):
                 print("  %s — %s" % (name, why))
         # `changed` was already reported above; it shares the failure exit so a
         # wrapper never reads a run with unwritten workbooks as complete.
+        land_findings(written=written, changed=changed, failed=failed, stale=stale)
         return 1
     print("Verified: a fresh read of every written workbook proposes zero changes.")
+    # `written` only now: the upload landed AND the re-read agreed.
+    land_findings(written=written, verified=True)
     return 0
 
 
@@ -1896,6 +1987,7 @@ def main():
     ap.add_argument("--verbose", action="store_true",
                     help="list every intake row that was not synced")
     add_redact_flag(ap)
+    findings.add_flag(ap)
     args = ap.parse_args()
     set_redaction(args.redact)
     sys.exit(run(args))
