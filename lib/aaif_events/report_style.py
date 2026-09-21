@@ -321,7 +321,6 @@ tr.has-issue td,tr.has-issue th{background:var(--warn-bg)}
   break-before:page;page-break-before:always;
   border-top:2px solid var(--line-hard,#CFCFC9);
   margin-top:3rem;padding-top:2rem}
-.appendix > .tag{margin-bottom:-32px}
 .appendix > .tag{display:inline-block;font-size:.72rem;letter-spacing:.08em;
   text-transform:uppercase;opacity:.6;margin-bottom:.4rem}
 /* The sections index: a jump list, not prose — no bullets, no browser-blue

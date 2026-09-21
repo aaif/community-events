@@ -53,12 +53,21 @@ import tempfile
 FORMAT = 1
 SEVERITIES = ("bad", "warn", "info")
 TONES = ("ok", "warn", "bad", None)
+MODES = ("report", "write")
+
+
+class FindingsError(ValueError):
+    """A findings file is present but not one this module can read."""
 
 
 class Report:
     """Collects one engine's measured tiles and findings, then writes them."""
 
     def __init__(self, step, mode="report"):
+        if not step or not isinstance(step, str):
+            raise ValueError("step must be a non-empty name, not %r" % (step,))
+        if mode not in MODES:
+            raise ValueError("mode must be one of %r, not %r" % (MODES, mode))
         self.step = step
         self.mode = mode
         self.summary = ""
@@ -70,6 +79,8 @@ class Report:
         """One stat tile. `value` is a number or a short string like '75 / 96'."""
         if tone not in TONES:
             raise ValueError("tone must be one of %r, not %r" % (TONES, tone))
+        if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+            raise ValueError("a tile's value is a number or a short string, not %r" % (value,))
         self.measured.append({"label": str(label), "value": value,
                               **({"tone": tone} if tone else {})})
         return self
@@ -78,12 +89,19 @@ class Report:
         """One finding row. `subject` is a chapter, channel, tab or row, never an address."""
         if severity not in SEVERITIES:
             raise ValueError("severity must be one of %r, not %r" % (SEVERITIES, severity))
+        if not str(subject).strip():
+            raise ValueError("a finding needs a subject (a chapter, channel, tab or row)")
         self.findings.append({"kind": str(kind), "subject": str(subject),
                               "detail": str(detail), "severity": severity,
                               "action": str(action)})
         return self
 
     def to_dict(self):
+        # `written` means "this run applied a write"; a report-mode run cannot
+        # have, and a page told otherwise would say the estate changed when
+        # nothing did.
+        if self.written and self.mode != "write":
+            raise ValueError("step %r: written=True in %r mode" % (self.step, self.mode))
         return {"format": FORMAT, "step": self.step, "mode": self.mode,
                 "summary": self.summary, "measured": list(self.measured),
                 "findings": list(self.findings), "written": bool(self.written)}
@@ -114,14 +132,31 @@ def write(path, doc):
 
 
 def read(path):
-    """The dict back, or None when the file is absent or not this format."""
+    """The dict back; None when the file is absent; FindingsError when present
+    but unreadable or of another format.
+
+    The three cases mean different things on the page: "this step wrote no
+    findings file", "the file is there but this reader cannot use it" (a
+    format bump nobody carried through, a truncated write) — and only the
+    first is silent by design.
+    """
+    if not os.path.exists(path):
+        return None
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
-    except (OSError, ValueError):
-        return None
+    except OSError as exc:
+        raise FindingsError("cannot read %s: %s" % (path, exc))
+    except ValueError as exc:
+        raise FindingsError("%s is not valid JSON: %s" % (path, exc))
     if not isinstance(doc, dict) or doc.get("format") != FORMAT:
-        return None
+        raise FindingsError("%s is format %r; this reader understands format %r"
+                            % (path, (doc or {}).get("format") if isinstance(doc, dict) else "?",
+                               FORMAT))
+    for f in doc.get("findings", ()):
+        if f.get("severity") not in SEVERITIES:
+            raise FindingsError("%s: finding %r has severity %r, not one of %r"
+                                % (path, f.get("kind"), f.get("severity"), SEVERITIES))
     return doc
 
 

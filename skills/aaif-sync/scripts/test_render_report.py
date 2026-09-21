@@ -43,11 +43,18 @@ MANIFEST = {
         {"phase": "workspace", "stage": "gather", "step": "audit", "gate": "read-only",
          "why": "one page", "log": "audit.log", "html": "audit.html",
          "findings": None, "outcome": "in sync", "exit": 0, "seconds": 3.0},
+        {"phase": "organizers", "stage": "execute", "step": "invite", "gate": "approval",
+         "why": "rooms", "log": "invite.log", "html": None,
+         "findings": "invite.json", "outcome": "FAILED", "exit": 1, "seconds": 9.0},
+        {"phase": "organizers", "stage": "plan", "step": "access", "gate": "report-only",
+         "why": "grants", "log": "access.log", "html": None,
+         "findings": "access.json", "outcome": "in sync", "exit": 0, "seconds": 1.0},
     ],
 }
 LOGS = {"clean.log": "$ python clean.py scan\n\nall cities resolved\n",
         "chapters.log": "$ python sync_chapters.py\n\nBoston: 1 new <b>row</b> for Ada\n",
-        "audit.log": "wrote audit.html\n"}
+        "audit.log": "wrote audit.html\n",
+        "invite.log": "3 invited, 1 failed\n", "access.log": "ok\n"}
 DOCS = {
     "clean": {"format": 1, "step": "clean", "mode": "report",
               "summary": "0 fixes, 0 flags", "written": False,
@@ -64,6 +71,14 @@ DOCS = {
                       "detail": "", "severity": "bad", "action": "fix the cell"},
                      {"kind": "held", "subject": "Austin", "detail": "fewer than 4",
                       "severity": "info", "action": ""}]},
+    # A failed step that still wrote its findings: the rows must reach the page.
+    "invite": {"format": 1, "step": "invite", "mode": "write",
+               "summary": "3 invited, 1 failed", "written": True,
+               "measured": [{"label": "invited", "value": 3, "tone": "ok"}],
+               "findings": [{"kind": "invite failed", "subject": "#boston-organizers",
+                             "detail": "Zed", "severity": "bad", "action": "retry"}]},
+    # A findings file that is present but unreadable, as read_docs reports it.
+    "access": {"error": "access.json is format 2; this reader understands format 1"},
 }
 
 page = rr.render(MANIFEST, LOGS, DOCS)
@@ -96,10 +111,32 @@ check("a step not selected this run is on the page and says so",
 check("an audit step links its own page instead of a findings file",
       "renders its own page" in page and 'href="audit.html"' in page, True)
 check("the lede counts what ran against the whole pipeline",
-      "4 of 5 step(s) ran" in page, True)
+      "6 of 7 step(s) ran" in page, True)
 check("the RESULT note is carried", "RESULT: drift" in page, True)
 check("the overview counts findings to act on (bad + warn)",
-      ">2</span><span class=\"k\">findings to act on<" in page, True)
+      ">3</span><span class=\"k\">findings to act on<" in page, True)
+check("a failed step still shows the findings it wrote",
+      ("Failed. The log in the appendix says why." in page, "invite failed" in page,
+       "<b>Applied.</b>" in page), (True, True, True))
+check("an unreadable findings file is a bad caveat, not 'no findings file'",
+      ("present but unreadable" in page, "format 2" in page,
+       page.count("wrote no findings file")), (True, True, 0))
+_odd = dict(DOCS, clean=dict(DOCS["clean"], findings=[
+    {"kind": "k", "subject": "row 1", "detail": "", "severity": "sevre", "action": ""}]))
+_p2 = rr.render(MANIFEST, LOGS, _odd)
+check("an unknown severity is counted as bad, never dropped",
+      ">4</span><span class=\"k\">findings to act on<" in _p2, True)
+_un = dict(MANIFEST, unattended=True, phases=["preflight", "chapters"])
+check("the lede says unattended and names the phases",
+      "report, unattended mode over preflight, chapters" in rr.render(_un, LOGS, DOCS), True)
+_long_log = "".join("line %d\n" % i for i in range(1000))
+_p3 = rr.render(MANIFEST, dict(LOGS, **{"clean.log": _long_log}), DOCS)
+check("a long log is clipped to head and tail with a pointer at the file",
+      ("line 0\n" in _p3, "line 999" in _p3, "line 500\n" in _p3,
+       "600 line(s) not shown" in _p3 and "clean.log" in _p3), (True, True, False, True))
+_p4 = rr.render(MANIFEST, dict(LOGS, **{"clean.log": None}), DOCS)
+check("an unreadable log is a caveat, not page content",
+      "could not be read" in _p4, True)
 # A step with hundreds of findings shows the worst ROWS_OPEN open and folds the
 # rest, so a long list never buries the next subject.
 _many = dict(DOCS["chapters"])
@@ -108,6 +145,15 @@ _many["findings"] = ([{"kind": "bad one", "subject": "row 1", "detail": "", "sev
                      + [{"kind": "tidy", "subject": "row %d" % i, "detail": "",
                          "severity": "info", "action": ""} for i in range(60)])
 _long = rr.render(MANIFEST, LOGS, dict(DOCS, chapters=_many))
+_exact = dict(DOCS["chapters"])
+_exact["findings"] = [{"kind": "tidy", "subject": "row %d" % i, "detail": "",
+                       "severity": "info", "action": ""} for i in range(rr.ROWS_OPEN)]
+check("exactly ROWS_OPEN rows do not fold",
+      "more, least severe last" in rr.render(MANIFEST, LOGS, dict(DOCS, chapters=_exact)), False)
+_exact["findings"].append({"kind": "tidy", "subject": "row x", "detail": "",
+                           "severity": "info", "action": ""})
+check("ROWS_OPEN + 1 rows fold exactly one",
+      "and 1 more, least severe last" in rr.render(MANIFEST, LOGS, dict(DOCS, chapters=_exact)), True)
 check("a long finding list folds past ROWS_OPEN",
       ("and %d more" % (61 - rr.ROWS_OPEN) in _long, _long.count("<td>tidy</td>")), (True, 60))
 check("...and the worst row stays open, above the fold",

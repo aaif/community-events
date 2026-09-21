@@ -15,7 +15,8 @@ subject, each running its steps gather -> plan -> execute. `PHASES` below
 carries the reason for every step and its place.
 
 Each step runs as a subprocess; its FULL report — which names real people and
-their email addresses — goes only to a log file under a gitignored directory.
+their email addresses — goes only to files under a gitignored run directory:
+its log, its findings file, and for the audits its own page.
 **This script's own stdout never contains a person**: on a public repo a CI job
 log is a publication, so the summary is step names, outcomes, durations and log
 paths, nothing else. Any print added here must be composed only of fixed
@@ -74,14 +75,22 @@ OPEN, REPORT_ONLY, APPROVAL, READ_ONLY, HUMAN = (
 #:   execute  apply them, subject to the step's gate.
 GATHER, PLAN, EXECUTE = "gather", "plan", "execute"
 STAGES = (GATHER, PLAN, EXECUTE)
+GATES = (OPEN, REPORT_ONLY, APPROVAL, READ_ONLY, HUMAN)
+
+#: Which gates make sense at which stage. A gather only measures, so it is
+#: READ_ONLY or HUMAN; a plan proposes, so it is OPEN or REPORT_ONLY; an
+#: execute applies, so it is OPEN or APPROVAL. Today's PHASES happen to obey
+#: this; `assert_gate_stage_coherent` makes it a rule rather than a fact.
+STAGE_GATES = {GATHER: (READ_ONLY, HUMAN), PLAN: (OPEN, REPORT_ONLY),
+               EXECUTE: (OPEN, APPROVAL)}
 
 #: This runner keeps NO state between runs. It writes logs and reads back only
 #: the one it just wrote; there is no checkpoint, no resume, no memo of a
 #: previous run. Every conclusion comes from data observed during the run that
 #: printed it.
 #:
-#: One thing does outlive a run, deliberately: `.slack-audit-cache/`. Six steps
-#: read it, and users.json alone takes ~20 minutes to page on a 30k-member
+#: One thing does outlive a run, deliberately: `.slack-audit-cache/`. Every
+#: `cached=True` step reads it, and users.json alone takes ~20 minutes to page on a 30k-member
 #: workspace, so caching it locally is the point. It is a memo of the WORKSPACE,
 #: not state of the pipeline.
 #:
@@ -103,6 +112,7 @@ STAGES = (GATHER, PLAN, EXECUTE)
 #: scripts' own source so the two cannot drift apart again.
 REDACTING = frozenset({
     "chapters", "resources", "about", "access", "crm", "invite", "luma",
+    "health", "identity",
 })
 
 #: Steps that render an HTML report and take `--out <basename>`. The runner
@@ -135,6 +145,12 @@ class Step:
 
     def __init__(self, name, skill, script, args=(), gate=OPEN, stage=PLAN, why="",
                  cached=False):
+        # Fail closed on a typo: `step_cmd` treats an unknown gate as an error
+        # rather than as OPEN, and this is the earlier, louder place to say so.
+        if gate not in GATES:
+            raise ValueError("step %r: gate must be one of %r, not %r" % (name, GATES, gate))
+        if stage not in STAGES:
+            raise ValueError("step %r: stage must be one of %r, not %r" % (name, STAGES, stage))
         self.name, self.skill, self.script = name, skill, script
         self.args, self.gate, self.stage, self.why = list(args), gate, stage, why
         #: Reads the shared `.slack-audit-cache` (see the cache note above).
@@ -255,9 +271,9 @@ PHASES = (
              "the activity cache the events phase filled",
              cached=True),
         # Last, because it composes: the Slack audit as one page, opening on
-        # where to focus, with the four audits above as its appendices. It
-        # re-renders from the caches those steps just filled, so it needs
-        # nothing but the order it sits in. The RUN's page (every step, every
+        # where to focus, with four sections (chapters, organizers, topics,
+        # members) drawn from the caches the gathers above just filled — not
+        # from their pages — so it needs nothing but the order it sits in. The RUN's page (every step, every
         # log) is report.html, drawn by the renderer after the pipeline ends.
         Step("audit", "aaif-audit-slack", "summarize_audits.py", [], READ_ONLY,
              GATHER, "the Slack audit as one page — the four audits as appendices",
@@ -273,8 +289,9 @@ PHASE_NAMES = [p for p, _ in PHASES]
 #: 2026-09-17), so unattended it would report PARTIAL every night, and a check
 #: that can never complete teaches operators to ignore the one signal it
 #: shares with real findings. `speakers` and `workspace` are absent because
-#: they only publish audits. `coverage` is the one Slack pull that does run
-#: unattended (see the cache note above for what that costs cold).
+#: they only publish audits. `coverage` and `identity` share the one directory
+#: pull that runs unattended (see the cache note above for what it costs cold);
+#: the other unattended Slack reads are per-channel or per-email and cheap.
 UNATTENDED_PHASES = ("preflight", "chapters", "organizers")
 
 IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED = (
@@ -285,13 +302,15 @@ NOT_RUN = "not run"
 
 
 def classify(code, wrote_marker, write_mode, partial_marker=False):
-    """Map a step's exit code (+ two log markers) onto an outcome.
+    """Map a step's exit code (+ the markers) onto an outcome.
 
-    'Verified:' only ever follows an applied write, so it separates "--write
-    had nothing to do" from "--write wrote". Exit 2 in write mode means work is
-    still pending (sync_chapters holds back a row with no live Luma page) and
-    classifies as DRIFT even when part of the run wrote — the drift is what
-    needs eyes, and the log's 'Verified:' line records the write. 'PARTIAL:'
+    `wrote_marker` is True when the engine said it applied a write: `written`
+    in its findings file (the one definition, read by `run_step`), or a
+    'Verified:' log line for a step that writes no findings file. It separates
+    "--write had nothing to do" from "--write wrote". Exit 2 in write mode
+    means work is still pending (sync_chapters holds back a row with no live
+    Luma page) and classifies as DRIFT even when part of the run wrote — the
+    drift is what needs eyes, and the log records the write. 'PARTIAL:'
     means the step involuntarily skipped part of its coverage; it beats
     in-sync/drift because a half-checked run must never read as a healthy one,
     but never FAILED, which is strictly worse news.
@@ -318,8 +337,12 @@ def step_cmd(step, write_mode, approved, unattended=False, out_dir=None):
     """
     if step.gate in (READ_ONLY, REPORT_ONLY, HUMAN):
         write_mode = False
-    elif step.gate == APPROVAL and (unattended or not approved):
-        write_mode = False
+    elif step.gate == APPROVAL:
+        if unattended or not approved:
+            write_mode = False
+    elif step.gate != OPEN:
+        # Fail closed: an unknown gate must never fall through to "--write".
+        raise ValueError("step %r has an unknown gate %r" % (step.name, step.gate))
     cmd = [sys.executable, step.path] + step.args
     if write_mode:
         cmd.append("--write")
@@ -334,9 +357,16 @@ def step_cmd(step, write_mode, approved, unattended=False, out_dir=None):
     return cmd, write_mode
 
 
+#: A step that has not returned in an hour is hung, not slow: the longest
+#: honest step (a cold 30k-member directory pull) takes ~20 minutes. Without a
+#: budget a Slack call that never returns hangs the nightly forever, and a
+#: missing run is harder to notice than a FAILED one.
+STEP_TIMEOUT_S = 3600
+
+
 def run_step(step, log_path, write_mode, approved, unattended=False):
-    cmd, write_mode = step_cmd(step, write_mode, approved, unattended,
-                               os.path.dirname(log_path))
+    run_dir = os.path.dirname(log_path)
+    cmd, write_mode = step_cmd(step, write_mode, approved, unattended, run_dir)
     t0 = time.monotonic()
     # 0o600: the log holds names and emails; no other local user gets to read
     # it just because the checkout happens to be world-readable.
@@ -346,7 +376,13 @@ def run_step(step, log_path, write_mode, approved, unattended=False):
         log.flush()
         # stderr merges in too: the engines print progress and gws retry notes
         # there, and a FAILED outcome is undiagnosable without it.
-        code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
+        try:
+            code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                  timeout=STEP_TIMEOUT_S).returncode
+        except subprocess.TimeoutExpired:
+            log.write("\nTIMEOUT: no exit after %d s — the runner killed it; "
+                      "any write it was mid-way through is unverified\n" % STEP_TIMEOUT_S)
+            code = 124
     # Explicit encoding: step output is full of accented city and channel names
     # (españa, Montréal), and a LANG=C container would otherwise open this as
     # ASCII and crash the runner AFTER a step already applied its writes.
@@ -357,8 +393,41 @@ def run_step(step, log_path, write_mode, approved, unattended=False):
     # and a column-zero match classified a rate-limited sweep as DRIFT
     # (verified live 2026-09-20) — the one outcome the marker exists to prevent.
     marked = lambda tag: any(l.lstrip().startswith(tag) for l in lines)  # noqa: E731
-    return (classify(code, marked("Verified:"), write_mode, marked("PARTIAL:")),
+    wrote = marked("Verified:")
+    if step.name in EMITS_FINDINGS:
+        # The findings file is the engine's own account of the run. Its absence
+        # after an exit 2 means the engine never got as far as a report — a
+        # usage error or a missing script also exit 2 — and that is a FAILED
+        # step, not drift a human should review. Its `written` is the one
+        # definition of "this step wrote" for every engine that emits one.
+        doc = read_findings(os.path.join(run_dir, step.name + ".json"))
+        if code == 2 and doc is None:
+            log_note(log_path, "FAILED: exit 2 with no findings file — a usage "
+                               "error or a missing script, not drift")
+            code = 1
+        elif doc is not None:
+            wrote = bool(doc.get("written"))
+    return (classify(code, wrote, write_mode, marked("PARTIAL:")),
             code, time.monotonic() - t0)
+
+
+def read_findings(path):
+    """The engine's findings dict, or None when the file is absent or unreadable.
+
+    stdlib only: this file imports nothing from `lib`. A present-but-bad file
+    reads as None here and is reported by the renderer, which does read `lib`.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def log_note(log_path, line):
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write("\n%s\n" % line)
 
 
 STEP_NAMES = [s.name for _, steps in PHASES for s in steps]
@@ -380,7 +449,28 @@ def assert_stage_order():
                 % (phase, ", ".join("%s:%s" % (x.name, x.stage) for x in steps)))
 
 
+def assert_gate_stage_coherent():
+    """A step's gate fits its stage (STAGE_GATES), and every name is unique.
+
+    Names key the logs, the findings files and every per-step set; two steps
+    sharing one would overwrite each other's log mid-run and collapse in
+    `by_name`. Both checks run at import so a wrong PHASES edit cannot ship.
+    """
+    for phase, steps in PHASES:
+        for s in steps:
+            if s.gate not in STAGE_GATES[s.stage]:
+                raise AssertionError(
+                    "step %r in phase %r is %s at stage %s; a %s step must be one of %s"
+                    % (s.name, phase, s.gate, s.stage, s.stage,
+                       "/".join(STAGE_GATES[s.stage])))
+    names = [s.name for _p, ss in PHASES for s in ss]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise AssertionError("duplicate step name(s) in PHASES: %s" % ", ".join(dupes))
+
+
 assert_stage_order()
+assert_gate_stage_coherent()
 
 
 def selected(names, unattended, stages=None):
@@ -537,12 +627,22 @@ def main(argv=None):
                  "Slack steps notify and add real people, and a scheduled job "
                  "is by definition nobody's approval.")
 
+    if a.unattended and a.phases:
+        # A scheduled job's scope is UNATTENDED_PHASES. Naming a phase outside
+        # it would run the rate-limited Luma sweep or the audits unattended —
+        # exactly what the set exists to keep out — so refuse rather than obey.
+        allowed = {p for p, _s in selected([], True)} | {s.name for _p, s in selected([], True)}
+        outside = [p for p in a.phases if p not in allowed]
+        if outside:
+            ap.error("%s is not in the unattended scope (%s); run it from a terminal"
+                     % (", ".join(map(repr, outside)), "/".join(UNATTENDED_PHASES)))
     steps = selected(a.phases, a.unattended, a.stages)
+    if not steps:
+        # "everything in sync" over zero steps is a lie a scheduler would believe.
+        ap.error("nothing to run: that selection matches no step")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-    run_dir = os.path.join(a.report_dir, stamp)
     guard_report_dir(a.report_dir)
-    os.makedirs(run_dir, mode=0o700, exist_ok=True)
-    os.chmod(run_dir, 0o700)   # makedirs' mode is umask-masked; be explicit
+    run_dir = fresh_run_dir(a.report_dir, stamp)
 
     print("aaif-sync — %s mode%s — %d step(s)"
           % ("write" if a.write else "report",
@@ -559,10 +659,7 @@ def main(argv=None):
         if step.stage != stage_shown:
             print("    · %s" % step.stage)
             stage_shown = step.stage
-        entry = {"phase": phase, "stage": step.stage, "step": step.name,
-                 "gate": step.gate, "why": step.why, "log": step.name + ".log",
-                 "html": (step.name + ".html") if step.name in RENDERS_HTML else None,
-                 "findings": (step.name + ".json") if step.name in EMITS_FINDINGS else None}
+        entry = manifest_entry(phase, step, ran=True)
         record.append(entry)
         if step.gate == APPROVAL and a.write and not a.approved and not a.unattended:
             by_name[step.name] = SKIPPED
@@ -570,13 +667,20 @@ def main(argv=None):
                          findings=None)
             print("      %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
             continue
+        _cmd, ran_write = step_cmd(step, a.write, a.approved, a.unattended)
         outcome, code, secs = run_step(
             step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved,
             a.unattended)
         by_name[step.name] = outcome
-        entry.update(outcome=outcome, exit=code, seconds=round(secs, 1))
-        if outcome == FAILED:
-            entry["html"] = entry["findings"] = None
+        entry.update(outcome=outcome, exit=code, seconds=round(secs, 1),
+                     ran_write=ran_write)
+        # A FAILED step keeps its findings file if it managed to write one —
+        # the engines land their "grant failed" / "invite failed" rows on
+        # purpose before exiting 1 — and loses the pointer only when the file
+        # is not there to read.
+        for key in ("html", "findings"):
+            if entry[key] and not os.path.exists(os.path.join(run_dir, entry[key])):
+                entry[key] = None
         note = ""
         if step.gate == REPORT_ONLY:
             note = "  (report mode — never written by this runner)"
@@ -596,11 +700,49 @@ def main(argv=None):
     notes = summary_notes(by_name, a.write)
     for line in notes:
         print(line)
-    write_manifest(run_dir, stamp, a, record, notes, exit_code(by_name))
-    html = render(run_dir)
+    doc = write_manifest(run_dir, stamp, a, record, notes, exit_code(by_name))
+    html, render_code = render(run_dir)
+    # The manifest is the durable record; a page that was never drawn must be
+    # visible there too, not only on a stdout line a scheduler discards.
+    doc["render"] = {"ok": render_code == 0, "exit": render_code, "log": "render.log"}
+    dump_manifest(run_dir, doc)
     if html:
         print("HTML report: %s" % html)
     return exit_code(by_name)
+
+
+def fresh_run_dir(report_dir, stamp):
+    """`<report_dir>/<stamp>`, 0700, never one that already exists.
+
+    Two runs in one second would otherwise share a directory and overwrite
+    each other's logs, findings and manifest; the second gets a `-2` suffix.
+    The parent is created 0700 as well: `makedirs(mode=...)` applies its mode
+    to the leaf only, and the parent's listing is the run stamps.
+    """
+    if not os.path.isdir(report_dir):
+        os.makedirs(report_dir, mode=0o700)
+        os.chmod(report_dir, 0o700)
+    for n in range(1, 100):
+        run_dir = os.path.join(report_dir, stamp if n == 1 else "%s-%d" % (stamp, n))
+        try:
+            os.mkdir(run_dir, 0o700)
+        except FileExistsError:
+            continue
+        os.chmod(run_dir, 0o700)   # mkdir's mode is umask-masked; be explicit
+        return run_dir
+    sys.exit("ABORT: could not create a fresh run directory under %s" % report_dir)
+
+
+def manifest_entry(phase, step, ran):
+    """One run.json entry, built the same way for a step that ran and one that
+    did not, so the two cannot drift apart a field at a time."""
+    return {"phase": phase, "stage": step.stage, "step": step.name,
+            "gate": step.gate, "why": step.why,
+            "log": (step.name + ".log") if ran else None,
+            "html": (step.name + ".html") if (ran and step.name in RENDERS_HTML) else None,
+            "findings": (step.name + ".json") if (ran and step.name in EMITS_FINDINGS) else None,
+            "outcome": None if ran else NOT_RUN, "exit": None, "seconds": None,
+            "ran_write": False}
 
 
 def write_manifest(run_dir, stamp, a, record, notes, code):
@@ -615,15 +757,17 @@ def write_manifest(run_dir, stamp, a, record, notes, code):
     # marked NOT_RUN rather than absent — a page with two rows on it reads as
     # a two-step estate.
     ran = {e["step"]: e for e in record}
-    steps = [ran.get(s.name) or {
-        "phase": phase, "stage": s.stage, "step": s.name, "gate": s.gate,
-        "why": s.why, "log": None, "html": None, "findings": None,
-        "outcome": NOT_RUN, "exit": None, "seconds": None}
-        for phase, ss in PHASES for s in ss]
+    steps = [ran.get(s.name) or manifest_entry(phase, s, ran=False)
+             for phase, ss in PHASES for s in ss]
     doc = {"stamp": stamp, "mode": "write" if a.write else "report",
            "unattended": bool(a.unattended), "approved": bool(a.approved),
            "phases": list(a.phases) or None, "stages": a.stages,
            "steps": steps, "notes": notes, "exit": code}
+    dump_manifest(run_dir, doc)
+    return doc
+
+
+def dump_manifest(run_dir, doc):
     fd = os.open(os.path.join(run_dir, MANIFEST),
                  os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -631,7 +775,7 @@ def write_manifest(run_dir, stamp, a, record, notes, code):
 
 
 def render(run_dir):
-    """Draw report.html from run.json and the logs; return its path, or None.
+    """Draw report.html from run.json and the logs; return (path or None, exit).
 
     A subprocess, like every engine: the renderer imports the design system
     and this file must not. Its own output goes to render.log — a failed
@@ -641,13 +785,18 @@ def render(run_dir):
     log = os.path.join(run_dir, "render.log")
     fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
-        code = subprocess.run([sys.executable, RENDERER, run_dir],
-                              stdout=fh, stderr=subprocess.STDOUT).returncode
+        try:
+            code = subprocess.run([sys.executable, RENDERER, run_dir],
+                                  stdout=fh, stderr=subprocess.STDOUT,
+                                  timeout=600).returncode
+        except subprocess.TimeoutExpired:
+            fh.write("TIMEOUT: the renderer did not finish in 600 s\n")
+            code = 124
     if code:
         print("HTML report: render FAILED (exit %d) — see %s; re-run "
               "render_report.py %s by hand" % (code, log, run_dir))
-        return None
-    return os.path.join(run_dir, "report.html")
+        return None, code
+    return os.path.join(run_dir, "report.html"), 0
 
 
 if __name__ == "__main__":

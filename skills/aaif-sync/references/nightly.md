@@ -49,10 +49,11 @@ and `sync_resources` degrades to folder-only with a **PARTIAL** outcome (see the
 Preflight list in `SKILL.md`). Either way the night reads red, or a token that
 dies in CI stays dead forever.
 
-**Cost.** `coverage` is the one Slack pull that runs unattended. Its first
-`users.json` pull takes ~20 minutes on a 30k-member workspace; after that the
-day-old `.slack-audit-cache/` covers it. A runner that wipes the cache between
-jobs pays the full pull every night.
+**Cost.** `coverage` and `identity` share the one directory pull that runs
+unattended; the other unattended Slack reads are per-channel or per-email and
+cheap. That first `users.json` pull takes ~20 minutes on a 30k-member
+workspace; after it the day-old `.slack-audit-cache/` covers both. A runner
+that wipes the cache between jobs pays the full pull every night.
 
 The engines take `--redact` (on by default when `CI` is set). The runner passes
 `--no-redact` on purpose: its logs are private files, never CI output, and the

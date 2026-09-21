@@ -43,14 +43,52 @@ def test_severity_and_tone_are_closed_sets():
         r.measure("l", 1, tone="info")
 
 
-def test_read_returns_none_for_absent_or_foreign_files(tmp_path):
+def test_read_is_none_only_for_an_absent_file(tmp_path):
     assert findings.read(str(tmp_path / "nope.json")) is None
-    other = tmp_path / "other.json"
-    other.write_text('{"format": 99}', encoding="utf-8")
-    assert findings.read(str(other)) is None
     good = tmp_path / "good.json"
     findings.Report("s").write(str(good))
     assert findings.read(str(good))["step"] == "s"
+
+
+def test_read_raises_for_a_present_but_unusable_file(tmp_path):
+    other = tmp_path / "other.json"
+    other.write_text('{"format": 99}', encoding="utf-8")
+    with pytest.raises(findings.FindingsError, match="format 99"):
+        findings.read(str(other))
+    broken = tmp_path / "broken.json"
+    broken.write_text('{"format": 1, "fin', encoding="utf-8")
+    with pytest.raises(findings.FindingsError, match="not valid JSON"):
+        findings.read(str(broken))
+    odd = tmp_path / "odd.json"
+    odd.write_text(json.dumps({"format": 1, "findings": [{"kind": "k", "severity": "ok"}]}),
+                   encoding="utf-8")
+    with pytest.raises(findings.FindingsError, match="severity"):
+        findings.read(str(odd))
+
+
+def test_mode_and_written_are_tied():
+    with pytest.raises(ValueError):
+        findings.Report("x", mode="wrote")
+    with pytest.raises(ValueError):
+        findings.Report("")
+    r = findings.Report("x")           # report mode
+    r.written = True
+    with pytest.raises(ValueError, match="written=True"):
+        r.to_dict()
+    w = findings.Report("x", mode="write")
+    w.written = True
+    assert w.to_dict()["written"] is True
+
+
+def test_tiles_are_scalars_and_findings_have_subjects():
+    r = findings.Report("x")
+    with pytest.raises(ValueError):
+        r.measure("l", [1, 2])
+    with pytest.raises(ValueError):
+        r.measure("l", True)
+    with pytest.raises(ValueError):
+        r.find("k", "  ")
+    r.measure("l", "75 / 96").find("k", "Boston")
 
 
 def test_named_shows_a_few_and_counts_the_rest():
@@ -60,6 +98,7 @@ def test_named_shows_a_few_and_counts_the_rest():
     assert findings.named(["Ada", "Bo", "Cy", "Di"]) == "Ada, Bo, Cy and 1 other"
     assert findings.named(["Ada", "Bo", "Cy", "Di", "Ed"]) == "Ada, Bo, Cy and 2 others"
     assert findings.named(["", "Ada", " "], show=1) == "Ada"
+    assert findings.named(iter(["Ada", "Bo", "Cy", "Di"])) == "Ada, Bo, Cy and 1 other"
 
 
 def test_add_flag_is_the_documented_flag():

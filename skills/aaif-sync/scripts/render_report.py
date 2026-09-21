@@ -35,12 +35,19 @@ from aaif_events import report_style as rs  # noqa: E402
 MANIFEST = "run.json"
 PAGE = "report.html"
 
-#: outcome -> pill tone. The strings are sync.py's; the two files agree by
-#: the test that renders a manifest sync.py wrote.
+#: outcome -> pill tone. The strings are sync.py's; test_render_report.py pins
+#: this table against sync's outcome constants, and test_sync.py renders a
+#: manifest sync.py actually wrote.
 TONE = {"in sync": "ok", "wrote+verified": "ok", "DRIFT": "warn",
         "PARTIAL": "warn", "skipped": "mute", "FAILED": "bad", "not run": "mute"}
 SEV_TONE = {"bad": "bad", "warn": "warn", "info": "mute"}
+#: An unknown severity sorts and counts as `bad`: a portable writer that
+#: misspells one must not produce a row the page neither ranks nor counts.
 SEV_ORDER = {"bad": 0, "warn": 1, "info": 2}
+#: Log lines kept in the appendix: the head and the tail. An audit over a
+#: 30k-member workspace prints megabytes; the page points at the file for
+#: the middle rather than carrying it.
+LOG_HEAD, LOG_TAIL = 300, 100
 #: Finding rows shown open per step; the rest sit behind a disclosure. The
 #: worst rows come first, so what is hidden is never what needs a person most.
 ROWS_OPEN = 40
@@ -126,17 +133,25 @@ def step_state(s, doc):
         return head + ('<p class="caveat">Did not run: it adds or notifies real '
                        'people and needs <code>--i-have-approval</code> from a '
                        'human at the terminal.</p>')
-    if outcome == "FAILED":
-        return head + ('<p class="caveat">Failed. The log in the appendix says why.</p>')
     parts = [head]
-    if doc:
+    if outcome == "FAILED":
+        # The engines land their "grant failed" / "invite failed" rows on
+        # purpose before exiting 1, so a failed step still shows what it found.
+        parts.append('<p class="caveat">Failed. The log in the appendix says why.</p>')
+    if isinstance(doc, dict) and "error" in doc:
+        parts.append('<p class="caveat">%s Findings file present but unreadable: %s. '
+                     'The log in the appendix is the report.</p>'
+                     % (pill("bad", "bad"), e(doc["error"])))
+    elif doc:
         if doc.get("summary"):
             parts.append("<p>%s%s</p>" % (e(doc["summary"]),
-                         " <b>Applied and verified.</b>" if doc.get("written") else ""))
+                         " <b>Applied.</b>" if doc.get("written") else ""))
         parts.append(tiles(doc.get("measured", [])))
         rows = doc.get("findings", [])
         parts.append(findings_table(rows) if rows else
                      '<p class="mute">Nothing to act on.</p>')
+    elif outcome == "FAILED":
+        pass
     elif s.get("html"):
         parts.append('<p>This step renders its own page: <a href="%s">%s</a>.</p>'
                      % (e(s["html"]), e(s["html"])))
@@ -177,7 +192,8 @@ def overview(steps, docs):
     sev = {"bad": 0, "warn": 0, "info": 0}
     for d in docs.values():
         for f in (d or {}).get("findings", []):
-            sev[f.get("severity", "info")] = sev.get(f.get("severity", "info"), 0) + 1
+            key = f.get("severity") if f.get("severity") in sev else "bad"
+            sev[key] += 1
     cells = [("steps ran", "%d / %d" % (len(ran), len(steps)), ""),
              ("in sync", sum(1 for s in ran if s.get("outcome") == "in sync"), " s-ok"),
              ("with drift", len(drift), " s-warn" if drift else ""),
@@ -216,13 +232,28 @@ def step_table(steps):
 # The appendix: every log, verbatim, collapsed
 # ---------------------------------------------------------------------------
 
+def clipped(text, name):
+    """The head and tail of a long log, with a pointer at the file for the rest."""
+    lines = text.splitlines(keepends=True)
+    if len(lines) <= LOG_HEAD + LOG_TAIL:
+        return text
+    gap = len(lines) - LOG_HEAD - LOG_TAIL
+    return ("".join(lines[:LOG_HEAD])
+            + "\n[… %d line(s) not shown — the full report is %s beside this page …]\n\n"
+            % (gap, name)
+            + "".join(lines[-LOG_TAIL:]))
+
+
 def log_section(s, log_text):
     head = '<h3 id="log-%s">%s <span class="mute">· %s / %s</span> %s</h3>' % (
         e(s["step"]), e(s["step"]), e(s["phase"]), e(s["stage"]),
         outcome_pill(s.get("outcome")))
-    if log_text.strip():
+    if log_text is None:
+        body = ('<p class="caveat">%s The log %s could not be read; see render.log.</p>'
+                % (pill("bad", "bad"), e(s.get("log"))))
+    elif log_text.strip():
         body = ('<details><summary>%s</summary><pre class="log">%s</pre></details>'
-                % (e("the engine's report, verbatim"), e(log_text)))
+                % (e("the engine's report, verbatim"), e(clipped(log_text, s.get("log")))))
     elif s.get("outcome") == "not run":
         body = '<p class="caveat">Not selected this run.</p>'
     else:
@@ -231,13 +262,29 @@ def log_section(s, log_text):
 
 
 def read_log(run_dir, name):
+    """The log's text; None when it cannot be read (said on stderr, not as content)."""
     if not name:
         return ""
     try:
         with open(os.path.join(run_dir, name), encoding="utf-8", errors="replace") as fh:
             return fh.read()
     except OSError as exc:
-        return "(log not readable: %s)" % exc
+        print("cannot read %s: %s" % (name, exc), file=sys.stderr)
+        return None
+
+
+def read_docs(run_dir, steps):
+    """{step: findings dict | {"error": why} | None} for every step with a file."""
+    docs = {}
+    for s in steps:
+        if not s.get("findings"):
+            continue
+        try:
+            docs[s["step"]] = findings.read(os.path.join(run_dir, s["findings"]))
+        except findings.FindingsError as exc:
+            print("%s: %s" % (s["step"], exc), file=sys.stderr)
+            docs[s["step"]] = {"error": str(exc)}
+    return docs
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +336,7 @@ def main(argv=None):
     rs.assert_git_ignored(out)
     steps = manifest["steps"]
     logs = {s["log"]: read_log(run_dir, s["log"]) for s in steps if s.get("log")}
-    docs = {s["step"]: findings.read(os.path.join(run_dir, s["findings"]))
-            for s in steps if s.get("findings")}
+    docs = read_docs(run_dir, steps)
     rs.write_private(out, render(manifest, logs, docs))
     print("wrote %s" % out)
     return 0

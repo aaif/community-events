@@ -155,31 +155,58 @@ check("...not even --i-have-approval reaches it",
       "--i-have-approval" in cmd, False)
 
 
-def _drive(argv, code=0, entry=None, log_text=""):
+def _fake_engine(seen, code, log_text="", findings=True, written=False, render_code=0,
+                 hang=False):
+    """A stand-in for every subprocess the runner launches.
+
+    Engines write `log_text` and, when asked for `--json-out` and `findings`
+    is on, a minimal format-1 findings file (the runner reads `written` from
+    it, and reads exit 2 with NO file as a usage error). The renderer argv
+    gets `render_code` so its failure path can be chosen deliberately.
+    """
+    def fake_run(cmd, stdout=None, stderr=None, **kw):
+        seen.append(cmd)
+        if cmd[1] == sync.RENDERER:
+            return type("R", (), {"returncode": render_code})()
+        if hang:
+            raise sync.subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+        if stdout is not None and log_text:
+            stdout.write(log_text)
+        if findings and "--json-out" in cmd:
+            with open(cmd[cmd.index("--json-out") + 1], "w", encoding="utf-8") as fh:
+                json.dump({"format": 1, "step": "x", "mode": "write" if written else "report",
+                           "summary": "", "measured": [], "findings": [],
+                           "written": written}, fh)
+        return type("R", (), {"returncode": code})()
+    return fake_run
+
+
+def _drive(argv, code=0, entry=None, log_text="", keep=None, **engine):
     """Run the runner end to end with every engine stubbed at one exit code.
 
     Returns (exit code, the argv of every subprocess it would have launched).
+    `keep`: a directory to run in that outlives the call (for the integration
+    test that renders the run afterwards); default is a temp dir.
     """
     seen = []
-
-    def fake_run(cmd, stdout=None, stderr=None, **kw):
-        seen.append(cmd)
-        if stdout is not None and log_text:
-            stdout.write(log_text)
-        return type("R", (), {"returncode": code})()
+    fake_run = _fake_engine(seen, code, log_text, **engine)
 
     global _LAST_MANIFEST
     with mock.patch.object(sync.subprocess, "run", fake_run), \
-         tempfile.TemporaryDirectory() as td, \
-         contextlib.redirect_stdout(io.StringIO()):
+         tempfile.TemporaryDirectory() as tmp, \
+         contextlib.redirect_stdout(io.StringIO()) as out:
+        td = keep or tmp
         rc = (entry or sync.main)(list(argv) + ["--report-dir", td])
         # The run directory dies with the `with`; keep what the runner recorded.
-        runs = [d for d in os.listdir(td)]
-        _LAST_MANIFEST = None
+        runs = sorted(os.listdir(td))
+        _LAST_MANIFEST, _LAST_STDOUT[:] = None, [out.getvalue()]
         if runs:
-            with open(os.path.join(td, runs[0], sync.MANIFEST), encoding="utf-8") as fh:
+            with open(os.path.join(td, runs[-1], sync.MANIFEST), encoding="utf-8") as fh:
                 _LAST_MANIFEST = json.load(fh)
     return rc, seen
+
+
+_LAST_STDOUT = [""]
 
 
 _LAST_MANIFEST = None
@@ -288,19 +315,26 @@ for _name, _step in _by.items():
     _cmd, _ = sync.step_cmd(_step, write_mode=False, approved=False)
     check("%s --no-redact matches the redacting set" % _name,
           "--no-redact" in _cmd, _name in sync.REDACTING)
-for _name in sync.REDACTING:
-    _src = open(_by[_name].path, encoding="utf-8").read()
+for _p, _s in sync.selected([], False):
+    _src = open(_s.path, encoding="utf-8").read()
     # `add_redact_flag(ap` — the call may carry a `masks=` argument naming what
-    # this engine prints, so the prefix is what is pinned.
-    check("%s actually accepts --no-redact" % _name, "add_redact_flag(ap" in _src, True)
+    # this engine prints, so the prefix is what is pinned. Both directions: a
+    # step that takes the flag and is not in the set comes out redacted under
+    # CI while every other log does not.
+    check("%s is in REDACTING iff its source takes --redact" % _s.name,
+          _s.name in sync.REDACTING, "add_redact_flag(ap" in _src)
 
 # --- run_step's marker detection ----------------------------------------------
-def drive(log_text, write_mode, code=0, step="chapters", approved=False):
+def drive(log_text, write_mode, code=0, step="chapters", approved=False, findings={}):
     class _Res:
         returncode = code
 
-    def fake_run(cmd, stdout, stderr):
+    def fake_run(cmd, stdout, stderr, **kw):
         stdout.write(log_text)
+        if "--json-out" in cmd and findings is not None:
+            with open(cmd[cmd.index("--json-out") + 1], "w", encoding="utf-8") as fh:
+                json.dump(dict({"format": 1, "step": step, "mode": "report", "summary": "",
+                                "measured": [], "findings": [], "written": False}, **findings), fh)
         return _Res()
 
     with tempfile.TemporaryDirectory() as td, \
@@ -310,16 +344,21 @@ def drive(log_text, write_mode, code=0, step="chapters", approved=False):
     return outcome, got_code
 
 
-check("a Verified: line at line start marks a write",
-      drive("stuff\nVerified: a fresh run proposes zero changes.\n", True),
+# The marker is the fallback for a step with no findings file; when the file
+# is there, its `written` is the one definition and a stray marker cannot
+# outrank it.
+check("a Verified: line at line start marks a write (no findings file)",
+      drive("stuff\nVerified: a fresh run proposes zero changes.\n", True, findings=None),
       (sync.WROTE, 0))
+check("...but the findings file's written=False outranks the marker",
+      drive("stuff\nVerified: ok\n", True), (sync.IN_SYNC, 0))
 check("Verified: mid-line does not count",
       drive("note: Verified: something\n", True), (sync.IN_SYNC, 0))
 check("a PARTIAL: line is seen even after a blank line",
       drive("report...\n\nPARTIAL: Slack unavailable\n", False, code=2),
       (sync.PARTIAL, 2))
 check("accented engine output does not crash the log re-read",
-      drive("españa Montréal Logroño\nVerified: ok\n", True), (sync.WROTE, 0))
+      drive("españa Montréal Logroño\nVerified: ok\n", True, findings=None), (sync.WROTE, 0))
 # sync_chapters indents its Luma-sweep marker two spaces. A column-zero match
 # read a rate-limited sweep as DRIFT (live, 2026-09-20): a half-checked run
 # passing as a finding is exactly what the marker exists to prevent.
@@ -335,9 +374,13 @@ def access_drive(log_text, code):
     class _Res:
         returncode = code
 
-    def fake_run(cmd, stdout, stderr):
+    def fake_run(cmd, stdout, stderr, **kw):
         seen["cmd"] = cmd
         stdout.write(log_text)
+        if "--json-out" in cmd:      # access emits findings; exit 2 without one is FAILED
+            with open(cmd[cmd.index("--json-out") + 1], "w", encoding="utf-8") as fh:
+                json.dump({"format": 1, "step": "access", "mode": "report", "summary": "",
+                           "measured": [], "findings": [], "written": False}, fh)
         return _Res()
 
     with tempfile.TemporaryDirectory() as td, \
@@ -389,22 +432,32 @@ for _s in _appr:
 # ...and the flag that would authorise one is refused outright in that mode,
 # which is what makes the above unreachable rather than merely unused.
 _refused = []
-try:
-    sync.main(["--unattended", "--i-have-approval"])
-except SystemExit as e:
-    _refused.append(e.code)
-check("--unattended still refuses --i-have-approval", _refused, [2])
+with contextlib.redirect_stderr(io.StringIO()):
+    try:
+        sync.main(["--unattended", "--i-have-approval"])
+    except SystemExit as e:
+        _refused.append(e.code)
+check("--unattended refuses --i-have-approval", _refused, [2])
 check("unattended runs only the unattended phases",
       sorted({p for p, _s in sync.selected([], True)}),
       sorted(sync.UNATTENDED_PHASES))
-# A scheduled job is by definition nobody's approval; the two flags together are
-# a contradiction, and argparse refuses rather than quietly preferring one.
-_parser_exit = []
-try:
-    sync.main(["--unattended", "--i-have-approval"])
-except SystemExit as e:
-    _parser_exit.append(e.code)
-check("--unattended refuses --i-have-approval", _parser_exit, [2])
+# Explicit names cannot widen the unattended scope: `nightly.py luma` would run
+# the rate-limited sweep the set exists to keep out of a scheduled job.
+_outside = []
+with contextlib.redirect_stderr(io.StringIO()):
+    try:
+        sync.main(["luma", "--unattended"])
+    except SystemExit as e:
+        _outside.append(e.code)
+check("--unattended refuses a phase or step outside its scope", _outside, [2])
+# A selection that matches nothing is an error, never "everything in sync".
+_empty = []
+with contextlib.redirect_stderr(io.StringIO()):
+    try:
+        sync.main(["hosts"])
+    except SystemExit as e:
+        _empty.append(e.code)
+check("a selection matching no step is refused", _empty, [2])
 
 # nightly is a wrapper, not a second definition: it must add --unattended and
 # own no pipeline of its own.
@@ -519,6 +572,136 @@ check("a report dir outside the repo is never second-guessed", _outside, [])
 # It had drifted before: three tests existed that the list did not mention,
 # including the one for provision_channels.py, the most dangerous script here.
 # A list that is almost complete is worse than none — it reads as "all of them".
+
+# --- a usage error is FAILED, not drift ---------------------------------------
+# argparse and "can't open file" both exit 2. An engine that never reached a
+# report must not read as "drift, re-run with --write"; the findings file is
+# the proof it reported, and its `written` is the one definition of "wrote".
+check("exit 2 with a findings file is DRIFT",
+      drive("report\n", False, code=2), (sync.DRIFT, 2))
+check("exit 2 with NO findings file is FAILED (usage error / missing script)",
+      drive("usage: x.py [-h]\n", False, code=2, findings=None), (sync.FAILED, 1))
+check("written=True in the findings file is WROTE, with no Verified: line",
+      drive("done\n", True, code=0, approved=True, findings={"written": True, "mode": "write"}),
+      (sync.WROTE, 0))
+check("a step that hangs past the budget is FAILED",
+      _drive(["clean"], hang=True)[0], 1)
+check("...and its outcome says so", _LAST_MANIFEST["steps"][0]["outcome"], sync.FAILED)
+
+# --- gates are a closed set, and fail closed ----------------------------------
+_bad = []
+try:
+    sync.Step("x", "aaif-sync", "sync.py", gate="report_only")
+except ValueError as e:
+    _bad.append("gate" in str(e))
+try:
+    sync.Step("x", "aaif-sync", "sync.py", stage="verify")
+except ValueError as e:
+    _bad.append("stage" in str(e))
+check("a misspelled gate or stage is refused at construction", _bad, [True, True])
+_typo = sync.Step("x", "aaif-sync", "sync.py")
+_typo.gate = "report_only"          # past the constructor, by force
+_fell = []
+try:
+    sync.step_cmd(_typo, True, True)
+except ValueError as e:
+    _fell.append("unknown gate" in str(e))
+check("step_cmd refuses an unknown gate rather than handing it --write", _fell, [True])
+_incoherent = [("p", [sync.Step("x", "aaif-sync", "sync.py", gate=sync.READ_ONLY,
+                                stage=sync.EXECUTE)])]
+_caught = []
+with mock.patch.object(sync, "PHASES", _incoherent):
+    try:
+        sync.assert_gate_stage_coherent()
+    except AssertionError as e:
+        _caught.append("read-only" in str(e) and "execute" in str(e))
+check("a read-only execute step is refused at import", _caught, [True])
+_dup = [("p", [sync.Step("x", "aaif-sync", "sync.py"), sync.Step("x", "aaif-sync", "sync.py")])]
+_caught = []
+with mock.patch.object(sync, "PHASES", _dup):
+    try:
+        sync.assert_gate_stage_coherent()
+    except AssertionError as e:
+        _caught.append("duplicate" in str(e))
+check("a duplicate step name is refused at import", _caught, [True])
+
+# --- the run directory is fresh, and the parent private ------------------------
+with tempfile.TemporaryDirectory() as _td:
+    _base = os.path.join(_td, "reports")
+    _a = sync.fresh_run_dir(_base, "STAMP")
+    _b = sync.fresh_run_dir(_base, "STAMP")
+    check("two runs in one second get two directories",
+          (os.path.basename(_a), os.path.basename(_b)), ("STAMP", "STAMP-2"))
+    check("...both 0700, and the parent too",
+          [oct(os.stat(p).st_mode & 0o777) for p in (_base, _a, _b)], ["0o700"] * 3)
+
+# --- a failed step, end to end ------------------------------------------------
+_rc, _seen = _drive(["clean"], code=1)
+_e = _LAST_MANIFEST["steps"][0]
+check("a failed step is FAILED with exit 1, its log kept, its findings kept if written",
+      (_rc, _e["outcome"], _e["exit"], _e["log"], _e["findings"]),
+      (1, sync.FAILED, 1, "clean.log", "clean.json"))
+check("...and RESULT says failure", _LAST_STDOUT[0].count("RESULT: failure"), 1)
+_rc, _seen = _drive(["clean"], code=1, findings=False)
+check("a failed step that wrote no findings file has no pointer to one",
+      _LAST_MANIFEST["steps"][0]["findings"], None)
+
+# --- a failed render never changes the exit code, and is recorded -------------
+_rc, _seen = _drive(["clean"], code=0, render_code=1)
+check("a failed render keeps the run's exit code", _rc, 0)
+check("...says so on stdout with the by-hand command",
+      ("render FAILED (exit 1)" in _LAST_STDOUT[0], "render_report.py" in _LAST_STDOUT[0]),
+      (True, True))
+check("...and is recorded in the manifest",
+      _LAST_MANIFEST["render"], {"ok": False, "exit": 1, "log": "render.log"})
+_rc, _seen = _drive(["clean"], code=0)
+check("a good render is recorded too, and named on stdout",
+      (_LAST_MANIFEST["render"]["ok"], "HTML report: " in _LAST_STDOUT[0]), (True, True))
+
+# --- the runner and the renderer agree: render a manifest sync.py wrote ------
+import render_report as rr  # noqa: E402  (the test may read lib; sync.py may not)
+check("every runner outcome has a pill tone in the renderer",
+      set(rr.TONE), {sync.IN_SYNC, sync.WROTE, sync.DRIFT, sync.PARTIAL, sync.SKIPPED,
+                     sync.FAILED, sync.NOT_RUN})
+with tempfile.TemporaryDirectory() as _td:
+    _rc, _seen = _drive(["preflight"], code=2, log_text="3 awaiting review\n", keep=_td)
+    _run = os.path.join(_td, sorted(os.listdir(_td))[-1])
+    with contextlib.redirect_stdout(io.StringIO()):
+        _rr = rr.main([_run])
+    _page = open(os.path.join(_run, rr.PAGE), encoding="utf-8").read()
+    check("render_report draws the manifest the runner wrote", _rr, 0)
+    check("...with every step on it, run or not",
+          all('id="%s"' % n in _page and 'id="log-%s"' % n in _page for n in sync.STEP_NAMES),
+          True)
+    check("...and the two that ran carry their logs",
+          _page.count("3 awaiting review"), 2)
+    check("...and the page is private", oct(os.stat(os.path.join(_run, rr.PAGE)).st_mode & 0o777),
+          "0o600")
+
+# --- the two portable findings writers emit the shape lib defines -------------
+import importlib.util as _ilu  # noqa: E402
+sys.path.insert(0, os.path.join(sync.REPO, "lib"))
+from aaif_events import findings as _fd  # noqa: E402
+
+
+def _load(path):
+    spec = _ilu.spec_from_file_location(os.path.basename(path)[:-3], path)
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_clean = _load(_by["clean"].path)
+_intake = _load(_by["triage"].path)
+_ref = set(_fd.Report("x").to_dict())
+_cdoc = _clean.build_findings([], [{"row": 4, "who": "Ada", "issue": "missing email"}])
+_idoc = _intake.build_findings({"Organizers": [{"row": 2, "status": "Prospect"}], "Hosts": [],
+                                "Speakers": []})
+check("clean.py's portable writer emits lib's shape", set(_cdoc) == _ref, True)
+check("intake.py's portable writer emits lib's shape", set(_idoc) == _ref, True)
+check("...with severities lib accepts",
+      all(f["severity"] in _fd.SEVERITIES for d in (_cdoc, _idoc) for f in d["findings"]), True)
+
 _SKILLS = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                        "..", ".."))
 for _skill in ("aaif-sync", "aaif-sync-chapters", "aaif-sync-organizers",

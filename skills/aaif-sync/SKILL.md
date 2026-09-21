@@ -122,7 +122,7 @@ accepted — needs your decision") and leave the row as it is.
       again later: `python3 ${CLAUDE_SKILL_DIR}/scripts/render_report.py sync-reports/<stamp>/`.
       The audit gathers also leave their own pages there (`coverage.html`,
       `activity.html`, `topics.html`, `members.html`) and the `audit` step
-      composes those four into `audit.html`, linked from the top of the run
+      draws `audit.html` from the same caches, linked from the top of the run
       page.
 - [ ] **2. Read the RESULT line**, then the log of anything that is not
       `in sync`. Outcomes: `in sync`, `DRIFT` (it proposes changes),
@@ -185,7 +185,7 @@ Two consecutive runs against an unchanged estate produce the same plan, and each
 engine verifies its own idempotence after a write ("a fresh run proposes zero
 changes").
 
-**Caching the workspace locally is deliberate.** Six gather steps read
+**Caching the workspace locally is deliberate.** Every `cached` gather step reads
 `.slack-audit-cache/`, and `users.json` alone pages for ~20 minutes on a
 30k-member workspace; paying that twice in a day would be the bug. It is a memo
 of the *workspace*, not state of the pipeline.
