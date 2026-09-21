@@ -353,6 +353,11 @@ import json as _json  # noqa: E402
 import tempfile as _tempfile  # noqa: E402
 from aaif_events import findings as _findings  # noqa: E402
 
+# The engines redact by default when CI is set; these checks assert the
+# unmasked shape, so pin redaction off here (the --redact block below pins
+# the masked shape on its own).
+_redact.REDACT = False
+
 _st = empty_state(
     entries=[{"row": 2, "name": "Ada", "city": "Boston", "status": "Accepted"},
              {"row": 3, "name": "Bob", "city": "Pune", "status": "Accepted"}],

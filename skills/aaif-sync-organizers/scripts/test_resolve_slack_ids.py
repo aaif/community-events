@@ -311,6 +311,10 @@ check("a bare run still reports without writing", _ran, True)
 
 
 # --- --json-out: the same report as data --------------------------------------
+# The engine redacts by default when CI is set; these checks assert the
+# unmasked names, so pin redaction off for them.
+from aaif_events import redact as _redact_mod  # noqa: E402
+_redact_mod.REDACT = False
 # One row per human call, the row as the subject, never an address. The
 # candidate name reaches `detail` only because the text report already prints
 # it (and masked the same way when --redact is on).
