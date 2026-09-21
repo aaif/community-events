@@ -639,13 +639,14 @@ _kinds = [(f["kind"], f["subject"], f["severity"]) for f in _doc["findings"]]
 check("json-out: one warn finding per new grant, subject = chapter",
       [k for k in _kinds if k[0] == "new grant"],
       [("new grant", "Boston", "warn"), ("new grant", "Pune", "warn")])
-check("json-out: the stale grant names the chapter and role, never the address",
-      [(f["subject"], f["detail"]) for f in _doc["findings"] if f["kind"] == "unknown direct grant"],
-      [("Berlin", "writer")])
+check("json-out: the stale grant names the chapter, and says who holds what",
+      [(f["subject"], "holds writer" in f["detail"], "@" in f["detail"])
+       for f in _doc["findings"] if f["kind"] == "unknown direct grant"],
+      [("Berlin", True, True)])
 check("json-out: the lock is a finding on the parent",
       ("public share", "Chapters/", "warn") in _kinds, True)
-check("json-out: no address anywhere in the file",
-      [f for f in _doc["findings"] if "@" in f["subject"] + f["detail"]], [])
+check("json-out: no address is ever a subject",
+      [f for f in _doc["findings"] if "@" in f["subject"]], [])
 check("json-out: report mode never claims a write", _doc["written"], False)
 # --write --phase grant reports on grant only; written only after verify agreed.
 _g = sync_access.build_findings(_jplan, "writer", "write", ("grant",),

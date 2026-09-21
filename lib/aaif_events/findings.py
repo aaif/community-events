@@ -29,11 +29,12 @@ Rules, because the page is read as the truth about the estate:
 
 * **Only what the engine measured.** A number here is one the text report also
   prints; nothing is estimated or derived for the page.
-* **A finding names a subject, never a person by email.** `subject` is the
-  chapter, channel, tab or row number; `detail` may carry a name where the
-  text report already does. The file lands in the private run directory, but
-  the discipline keeps the page readable at a glance and the renderer never
-  has to redact.
+* **A finding's subject is never a person.** `subject` is the chapter,
+  channel, tab or row number. `detail` may carry a name or an address where
+  the text report already prints one — through the same `--redact` — because
+  "audit this grant" is not actionable without knowing whose it is. The file
+  lands in the private run directory beside the logs; the discipline is about
+  what a page ranks by, not about hiding what the log already says.
 * **Severity is the engine's call**: `bad` (a failure or a broken row), `warn`
   (drift, a proposal, a gate needing a human), `info` (worth seeing, nothing to
   do). `ok` is for measured tiles only; a finding is never `ok`.

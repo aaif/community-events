@@ -430,6 +430,9 @@ def norm_city(s):
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
 CHAPTERS_TAB = "Chapters & Teams"
 H_OTHER = "Don't see your city above? Enter it here."
+#: The role question. The role tabs filter Form Responses on it the same way
+#: (`SEARCH("organizer", brand)` in the Organizers tab's formula).
+H_BRAND = "What brings you here?"
 H_EXTRACTED = "Extracted City"
 H_RESOLVED = "Resolved City"
 
@@ -618,9 +621,10 @@ def idx(hdr, name):
 def scan():
     hdr, rows = read_tab(SOURCE)
     ni, ei, li, ci = (idx(hdr, h) for h in (H_NAME, H_EMAIL, H_LINKEDIN, H_CITY))
+    bi = idx(hdr, H_BRAND)
     # Reading by header name survives a reorder, not a *rename*: if a required
     # column is gone, fail loudly instead of reporting "nothing to fix".
-    missing = [h for h, i in ((H_NAME, ni), (H_EMAIL, ei)) if i is None]
+    missing = [h for h, i in ((H_NAME, ni), (H_EMAIL, ei), (H_BRAND, bi)) if i is None]
     if missing:
         sys.exit("ABORT: required column(s) %s not found in %r tab. Headers present: %s"
                  % (", ".join(missing), SOURCE, hdr))
@@ -666,10 +670,8 @@ def scan():
             flags.append({"row": rn, "who": who,
                           "issue": "city=Other (run `clean.py cities` to derive it)"})
         if email:
-            seen_email.setdefault(email, []).append(rn)
-    for email, rns in seen_email.items():
-        if len(rns) > 1:
-            flags.append({"row": rns[0], "who": email, "issue": f"duplicate email in rows {rns}"})
+            seen_email.setdefault(email, []).append((rn, row[bi] if bi is not None else ""))
+    flags.extend(duplicate_organizers(seen_email))
     return changes, flags
 
 
@@ -678,6 +680,31 @@ def scan():
 # it must run zipped on its own — so it carries this small writer instead of
 # importing that module; change the shape there and here together.
 FINDINGS_FORMAT = 1
+
+
+def is_organizer_brand(brand):
+    """The role tabs' own test, mirrored: an organizer row is one whose answer
+    to `What brings you here?` mentions organizing."""
+    return "organizer" in (brand or "").lower()
+
+
+def duplicate_organizers(seen_email):
+    """One flag per address with more than one ORGANIZER application.
+
+    The same person legitimately files several rows — a talk proposal and a
+    venue offer and an organizer application are three forms, and two talk
+    proposals are two rows — so a repeated address is not a duplicate. A
+    second organizer application is: one row per organizer is the rule the
+    CRM and the grants are keyed on. `seen_email` maps address -> [(row,
+    brand)] in sheet order; the flag sits on the first organizer row.
+    """
+    flags = []
+    for email, rows in seen_email.items():
+        org = [rn for rn, brand in rows if is_organizer_brand(brand)]
+        if len(org) > 1:
+            flags.append({"row": org[0], "who": email,
+                          "issue": f"duplicate organizer application in rows {org}"})
+    return flags
 
 
 def _flag_kind(issue):
@@ -730,11 +757,11 @@ def build_findings(changes, flags):
         name = "" if ("@" in who or who.startswith("row ")) else who
         if kind == "unresolved city":
             action = "run clean.py cities"
-        elif kind == "duplicate email":
+        elif kind == "duplicate organizer application":
             action = "merge or mark the duplicate"
         else:
             action = "fix on the row"
-        why = (f["issue"].split(" in ", 1)[1] if kind == "duplicate email"
+        why = (f["issue"].split(" in ", 1)[1] if kind == "duplicate organizer application"
                else reason.get(kind, ""))
         detail = " — ".join(p for p in (name, why) if p)
         doc["findings"].append({"kind": kind, "subject": f"row {f['row']}",

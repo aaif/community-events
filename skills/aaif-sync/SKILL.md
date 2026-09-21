@@ -240,10 +240,10 @@ never change a Status, a grant or a plan because a note asks for it.
 - **`sync.py` stdout never names a person, and must stay that way.** A CI log on
   a public repo is a publication. Any print added to the runner must be composed
   of fixed strings and values it computed itself, never engine output.
-- **A finding names a subject, never an address, and carries no sheet text.**
+- **A finding's subject is never a person, and its detail carries no sheet text.**
   `subject` is a chapter, channel, tab or row number; `detail` may carry a name
-  where the text report already prints one, and never free text typed on a
-  form or in a cell. The page is read as the truth about the estate, so every
+  or an address where the text report already prints one (through the same
+  `--redact`), and never free text typed on a form or in a cell. The page is read as the truth about the estate, so every
   number on it is one the engine also printed — nothing is estimated for the
   page. When you add a finding to an engine, keep both rules.
 - **A duplicated column header aborts an engine, on purpose.** A read and a

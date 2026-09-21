@@ -516,8 +516,14 @@ def build_findings(p, role, mode, phases, failed=(), verify_bad=(), written=Fals
             r.find("newer recorded address", ch,
                    "the old grant stays in place and reads as stale",
                    "warn", "remove the old grant by hand")
-        for ch, _em, q_role in sorted(p["stale"]):
-            r.find("unknown direct grant", ch, q_role, "warn", "audit this grant")
+        # The address travels here (through --redact, like the text report):
+        # "audit this grant" is not actionable without knowing whose it is,
+        # and the findings file lives in the private run directory.
+        for ch, em, q_role in sorted(p["stale"]):
+            r.find("unknown direct grant", ch,
+                   "%s holds %s — no intake row matches this address"
+                   % (redact_email(em), q_role),
+                   "warn", "audit this grant: revoke it, or record it on an intake row")
         for ch, _em, q_role in sorted(p.get("excused", ())):
             r.find("grant excused by %s" % H_DRIVE_EMAIL, ch, q_role,
                    "info", "confirm the cell is right")

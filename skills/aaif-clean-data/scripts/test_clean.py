@@ -814,7 +814,7 @@ class TestScanFindings(unittest.TestCase):
     FLAGS = [{"row": 4, "who": "Ada", "issue": "missing email"},
              {"row": 5, "who": "b@x.com", "issue": "invalid email: b@x.com"},
              {"row": 6, "who": "Grace", "issue": "city=Other (run `clean.py cities` to derive it)"},
-             {"row": 7, "who": "c@x.com", "issue": "duplicate email in rows [7, 9]"}]
+             {"row": 7, "who": "c@x.com", "issue": "duplicate organizer application in rows [7, 9]"}]
 
     def test_shape_step_summary_and_tiles(self):
         doc = clean.build_findings(self.CHANGES, self.FLAGS)
@@ -832,7 +832,7 @@ class TestScanFindings(unittest.TestCase):
         self.assertEqual(by_subject["row 6"]["kind"], "unresolved city")
         self.assertEqual(by_subject["row 6"]["severity"], "warn")
         self.assertEqual(by_subject["row 5"]["kind"], "invalid email")
-        self.assertEqual(by_subject["row 7"]["kind"], "duplicate email")
+        self.assertEqual(by_subject["row 7"]["kind"], "duplicate organizer application")
         self.assertNotIn("row 3", by_subject)   # a mechanical fix is not a per-row finding
         fixes = [f for f in doc["findings"] if f["kind"] == "proposed fixes"]
         self.assertEqual([(f["subject"], f["detail"], f["severity"]) for f in fixes],
@@ -859,6 +859,34 @@ class TestScanFindings(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["step"], "clean")
             self.assertEqual(os.listdir(d), ["findings.json"])   # no temp file left
+
+
+class TestDuplicateOrganizers(unittest.TestCase):
+    """A repeated address is a duplicate only when it is a second ORGANIZER
+    application; speakers and hosts may file as many rows as they like."""
+
+    ORG = "I want to be an organizer/volunteer for my city"
+    SPK = "I want to be a speaker"
+    HOST = "I want to host/provide a venue"
+
+    def test_speaker_plus_host_plus_organizer_is_one_person_three_forms(self):
+        seen = {"a@x.com": [(3, self.SPK), (4, self.HOST), (5, self.ORG)]}
+        self.assertEqual(clean.duplicate_organizers(seen), [])
+
+    def test_two_talk_proposals_are_two_rows_not_a_duplicate(self):
+        seen = {"a@x.com": [(3, self.SPK), (9, self.SPK)]}
+        self.assertEqual(clean.duplicate_organizers(seen), [])
+
+    def test_two_organizer_applications_are_flagged_on_the_first(self):
+        seen = {"a@x.com": [(3, self.SPK), (5, self.ORG), (12, self.ORG)]}
+        self.assertEqual(clean.duplicate_organizers(seen),
+                         [{"row": 5, "who": "a@x.com",
+                           "issue": "duplicate organizer application in rows [5, 12]"}])
+
+    def test_the_role_test_matches_the_tab_formula(self):
+        self.assertTrue(clean.is_organizer_brand("I want to be an Organizer"))
+        self.assertFalse(clean.is_organizer_brand(self.SPK))
+        self.assertFalse(clean.is_organizer_brand(""))
 
 
 class TestPrintScanCollapses(unittest.TestCase):
