@@ -135,17 +135,27 @@ item) is reported and never touched.
 
 ## Procedure
 
-1. **Plan first** (the default) to see what's missing:
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py
-   ```
-   Review the `+ create folder` / `upload` / `overwrite` lines before writing
-   anything.
-2. **Apply** with `--write` once the plan looks right.
-3. New badges land as `image/svg+xml` and `image/png` files inside the
-   chapter's own `Badges/` subfolder; re-running afterward reports "Up to date".
+Plan, approve, write, verify. Nothing is created without `--write`.
 
-## Notes
+- [ ] **1. Plan** (the default) to see what is missing:
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py
+      ```
+      Read every `+ create folder` / `upload` / `overwrite` line before writing.
+- [ ] **2. Show the user the plan and get approval.**
+- [ ] **3. Apply** with `--write`.
+- [ ] **4. Verify** by re-running the plan: a correct run now reports
+      **"Up to date"**. New badges land as `image/svg+xml` and `image/png`
+      inside the chapter's own `Badges/` subfolder.
+- [ ] **5. Unit tests**, after any edit to a generator:
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_badges.py
+      python3 ${CLAUDE_SKILL_DIR}/scripts/test_make_badges.py
+      python3 ${CLAUDE_SKILL_DIR}/scripts/test_make_agent_badge.py
+      python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_legacy_badges.py
+      ```
+
+## Gotchas
 
 - Badges are built into a private `tempfile.mkdtemp()` directory that is
   deleted at the end of the run — nothing lands in the repo working tree, so

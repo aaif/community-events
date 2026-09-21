@@ -20,6 +20,13 @@ before it ships.
 > intake row is not public. Where a detail is needed but not publishable,
 > describe it ("the venue sends door access to everyone who RSVPs") instead of
 > printing it.
+>
+> **This covers your reply, not just the draft.** Saying which detail you left
+> out is right; repeating its value to say so is not — "I left out her email"
+> and "I left out maya@example.com" leave a very different thing in the
+> transcript, and the transcript is copied, pasted and pushed like anything
+> else. Name the field, never the value. Do not echo one back to confirm it,
+> to explain an omission, or to ask whether it may be used.
 
 > **Standard footer (always include).** Close with one quiet line carrying the
 > two standing AAIF attendee links — Code of Conduct
@@ -32,12 +39,26 @@ before it ships.
 ## Input (from the event tracker)
 
 > **If the details were not pasted, fetch them — do not ask for a paste and
-> stop.** The event's tracker entry is what these fields come from, and
-> `aaif-event-status` reads it: run that skill for the chapter or series and
-> take the entry for the event named. `aaif-create-event` and
-> `aaif-update-event` know the same layout if the event is being written in the
-> same session. Ask the user only for what the tracker genuinely does not hold,
-> and name the missing fields rather than asking again in general.
+> stop.** One command reads the event's tracker entry:
+>
+> ```bash
+> python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" \
+>     --event "<Event Title>"     # or --event next / --event latest
+> ```
+>
+> It resolves the Drive folder, downloads the tracker to a private temp
+> directory and prints the fields below. `--event` takes a title, a **unique**
+> substring of one, or `next`/`latest`; an ambiguous substring raises rather
+> than guessing, because a draft written for the wrong event reads exactly like
+> a correct one. Contact details (`SPEAKER EMAIL`, `DOOR CODE`, venue contact)
+> are deliberately **withheld** and only named — you never need them to write
+> copy, and the public-copy rule above forbids publishing them. Delete the temp
+> directory when done (`--print-cleanup` prints the command).
+>
+> `aaif-create-event` and `aaif-update-event` know the same layout if the event
+> is being written in the same session. Ask the user only for what the tracker
+> genuinely does not hold, and name the missing fields rather than asking again
+> in general.
 
 - Chapter : `[CHAPTER]`
 - Event : `[EVENT TITLE] ([SERIES])`

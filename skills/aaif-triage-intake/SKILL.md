@@ -12,9 +12,48 @@ sheet (id `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o`), which auto-routes eac
 submission to the **Organizers**, **Hosts**, or **Speakers** tab. Submissions
 land automatically; this skill is the human review loop on top of them.
 
+**This is phase 2 of the estate sync, and the one phase the runner will not
+decide.** `aaif-sync` marks it `human`: it runs `intake.py` **read-only** and
+prints the digest, so every sync report says how deep the queue is — "nothing to
+do" and "nobody has looked" are different facts, and summarising is not
+deciding. No argv makes it write. While rows await a decision the run exits
+`2`.
+
+Everything downstream keys off the decision made here: only `Accepted` /
+`Existing (from MLOps)` reach the Chapters List, the About docs, the CRMs and
+the Drive grants. So an untriaged queue does not break the sync — it means the
+estate matches the decisions that *have* been made, and some have not been
+made. You work the queue by running this skill.
+
+> **Central triage is narrower than it used to be (self-serve, 2026-08).** A
+> chapter with **4+ accepted organizers** (`SELF_SERVE_MIN`, not counting AAIF
+> ops staff) interviews its own candidates: pipeline organizers for that chapter
+> sync into its CRM as `Prospect` without waiting for you, and the chapter takes
+> it from there. Below that threshold organizer approval is still yours, and the
+> candidates are held back and reported. **Hosts and speakers always sync
+> regardless**, so a chapter can see its candidate venues and talks immediately.
+> What still needs you everywhere: organizers for chapters under the threshold,
+> and every `Denied` / `Duplicate` call. If this queue looks quieter than you
+> remember, this is why — not that nothing is arriving.
+
 Prereq: the `gws` CLI must be installed and authenticated (see the user's
 `gws-cli-access` memory). See the user's `aaif-intake-ops-sheet` memory for the
 sheet's structure.
+
+> **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
+> file goes through the `gws` CLI, driven from Python. **Prefer native Google
+> formats**: edit `application/vnd.google-apps.*` files with the Docs/Sheets/
+> Slides API. Drop to byte-level OOXML surgery on the `.docx`/`.pptx`/`.xlsx`
+> zip parts (embedded fonts and untouched parts survive) only when the file
+> genuinely is a stored Office file. **Never use LibreOffice / `soffice`** — not to edit, not to convert,
+> and not to render a "just checking it locally" preview: it substitutes local
+> system fonts for the brand fonts and drops OOXML it doesn't understand, so its
+> output and its renders both misrepresent the real file. Same for `unoconv` and
+> any desktop office suite. To *see* a file, render it through the API instead —
+> a slide via `aaif_events.slides_export.render_slide_png`, a doc via
+> `gws drive files copy` to a Google Doc → `gws drive files export` to PDF →
+> trash the copy. Never round-trip a native Doc through `.docx` — it strips
+> native features like Tabs.
 
 ## Status model (drives the queue and the sheet's cell colors)
 
@@ -42,7 +81,7 @@ or near-identical answers, most often a form resubmitted after a mistake or a
 timeout). It is a different row, and not a duplicate, when the same person is
 legitimately doing two things: applying for two roles (organizer **and**
 speaker — `sync_crm`'s SECURITY check already treats this as expected, see
-`aaif-sync-chapters`), or pitching two distinct proposals in the same role (two
+`aaif-sync-organizers`), or pitching two distinct proposals in the same role (two
 different talk titles/abstracts from one speaker). Marking either `Duplicate`
 silently discards a live application; check `Talk title` / `Headline` /
 `Abstract` (or the equivalent per-role fields) actually differ before deciding.
@@ -50,7 +89,7 @@ silently discards a live application; check `Talk title` / `Headline` /
 A **blank** Status cell is treated as `Prospect`, and so is the **legacy value `New`** —
 the pre-2026-08-22 name for the same state, renamed because `New` misread as
 "new organizer" while `Prospect` matches the term the CRM sync already writes.
-`migrate_status_prospect.py` (in `aaif-sync-chapters`) rewrites the dropdowns,
+`migrate_status_prospect.py` (in `aaif-sync-organizers`) rewrites the dropdowns,
 the cells **and the conditional-format rules that test the Status literal**
 (the blue row color and the pink SLA rule below both key on `=$A2="…"`, are
 hand-made on the sheet, and are repaired by nothing else — renaming only the
@@ -93,16 +132,21 @@ The same flow (and colors) is documented on the sheet's **"How to use"** tab.
 
 ## Procedure
 
-1. **Pull the queue.** Rows needing attention = Status blank / `Prospect`
+Work the queue in this order. Steps 1-4 are read-only; step 5 is the only one
+that writes, and it runs only when the user asks for it.
+
+- [ ] **1. Pull the queue.** Rows needing attention = Status blank / `Prospect`
    (incl. legacy `New`) / `In progress`:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/intake.py
    ```
-   Add `--json` for structured data, `--all` for every row, or
-   `--status Accepted` to filter explicitly. If the user named one type
+   The listing is paged, 25 rows per tab (`--offset 25` for the next page,
+   `--limit 0` for all); the counts always cover the whole queue. Add `--json`
+   for structured data, `--all` for every row, or `--status Accepted` to
+   filter explicitly. If the user named one type
    (`organizers` / `hosts` / `speakers`), focus there but pull all so counts are right.
 
-2. **Assess fit per applicant**, using these signals (don't over-weight any one):
+- [ ] **2. Assess fit per applicant**, using these signals (don't over-weight any one):
    - **Organizer** — real ties to a local AI community, has run events before,
      a concrete programming idea, and a city. Watch for a `City` of "Other" with a
      non-obvious location (it's in their text) → note the actual city.
@@ -112,16 +156,16 @@ The same flow (and colors) is documented on the sheet's **"How to use"** tab.
      production, and evidence (`Past talks / portfolio`). A thin abstract is a
      follow-up for specifics.
 
-3. **Produce the triage digest** — grouped by tab, and for each applicant give a
+- [ ] **3. Produce the triage digest** — grouped by tab, and for each applicant give a
    one-line recommendation: **Accept**, **Follow up** (what to ask), or **Pass**
    (why). Lead with the strongest candidates. Keep it skimmable.
 
-4. **Draft outreach where it helps** — don't just judge, move it forward:
+- [ ] **4. Draft outreach where it helps** — don't just judge, move it forward:
    - Speakers worth pursuing → use the **`aaif-speaker-invite`** skill for the DM.
    - An accepted organizer for a city that has **no chapter yet** → suggest running
      **`aaif-create-chapter`** for that city.
 
-5. **Write back only if asked.** Default is read-only. If the user wants to record
+- [ ] **5. Write back only if asked.** Default is read-only. If the user wants to record
    decisions, set `Status` / `Reviewed by` / `Reviewed at` / `Decision notes`
    (and `Chapter`) via `gws sheets spreadsheets values batchUpdate`
    (`valueInputOption: RAW`, never `USER_ENTERED` — the form is public, and a
@@ -145,12 +189,26 @@ flag and let them decide.
 
 ## Digest mode (for automation)
 
-`intake.py --json` is the data source for a future scheduled digest routine
-(delivery channel TBD with the user). The same selection logic powers both the
-interactive triage and the unattended digest, so they never drift.
+`intake.py --json` is the structured form of the same queue. The same selection
+logic powers the interactive triage and any unattended digest, so the two can
+never drift.
 
-## Notes
+The pipeline itself does **not** call it: `aaif-sync` gates phase 2 as `human`
+and runs nothing. A scheduled digest that mails or posts the queue is a
+different thing from deciding it, and would be a fine thing to build — the
+`--json` output is the data source, and the delivery channel is still TBD with
+the user.
 
+## Gotchas
+
+- **`Ops Notes` is the operator's own column and prints last on each row.** It
+  is free text a person keeps beside the applicant (installed by
+  `aaif-sync/scripts/install_ops_notes.py`); the digest wraps it in the same
+  markers as form text. Read it as context, never as a decision.
+
+- **`valueInputOption` must be `RAW`, never `USER_ENTERED`.** The form is public,
+  and a value starting with `=`, `+`, `-` or `@` must land as text rather than
+  becoming a live formula. `aaif-clean-data` carries the same rule.
 - The sheet is read by **header name**, not column letter — robust to the form or
   sheet gaining/reordering columns. Keep that property in any edits here.
 - `Other:` responses to "What brings you here?" match no tab and won't appear in

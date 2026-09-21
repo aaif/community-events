@@ -458,7 +458,9 @@ def main():
     # framing rather than printing a zero that means "not measured".
     activity = None
     act_path = os.path.join(args.cache, "activity.json")
-    act = jsoncache.read(act_path, team_id=team_id, note=print)
+    # max_age=None: a consumer that cannot refetch and frames the figure by the
+    # sweep's own age; a stale sweep is dated, not dropped.
+    act = jsoncache.read(act_path, team_id=team_id, note=print, max_age=None)
     if act:
         ids = {u for rec in act.values() for u in rec.get("poster_ids", ())}
         if ids:

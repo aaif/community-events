@@ -1,0 +1,1004 @@
+#!/usr/bin/env python3
+"""Self-tests for the organizer-invite logic. No network, no Slack, no gws.
+
+What is covered is what would be dangerous or misleading if wrong: that the
+write allowlist cannot be bypassed, that a person with no account is reported
+rather than dropped, and that someone the intake does not know is never removed.
+"""
+
+import json as _json
+import os
+import sys
+import tempfile as _tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "aaif-audit-slack", "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "lib"))
+
+import invite_organizers as inv  # noqa: E402
+import provision_channels as prov  # noqa: E402
+from aaif_events import redact as _redact  # noqa: E402
+
+FAILS = []
+
+
+def check(label, got, want):
+    if got != want:
+        FAILS.append("%s\n     got:  %r\n     want: %r" % (label, got, want))
+    print("%s %s" % ("ok  " if got == want else "FAIL", label))
+
+
+def aborts(fn):
+    """True if fn() calls sys.exit — the script's only refusal mechanism."""
+    try:
+        fn()
+    except SystemExit:
+        return True
+    return False
+
+
+# --- the write allowlist is the chokepoint, and it is shared -------------------
+check("invite goes through the same allowlist as create/rename",
+      "conversations.invite" in prov.WRITE_METHODS, True)
+# The absences are the point. `conversations.kick` joined the allowlist on
+# 2026-08-10 when pruning was authorised; archive, join and postMessage joined
+# on 2026-08-17 for the deprecated-room sweep (archive refuses non-`-deprecated`
+# names; postMessage exists only for the farewell pointer). Deleting a room —
+# the one truly unrecoverable act — stays out, as does leave.
+for forbidden in ("conversations.leave", "conversations.delete"):
+    check("%s stays out of the allowlist" % forbidden,
+          forbidden in prov.WRITE_METHODS, False)
+for sanctioned in ("conversations.archive", "chat.postMessage",
+                   "conversations.join"):
+    check("%s is reachable for the deprecated sweep" % sanctioned,
+          sanctioned in prov.WRITE_METHODS, True)
+
+
+def refuses(method):
+    try:
+        prov.call_write("token", method, channel="C1")
+    except ValueError:
+        return True
+    return False
+
+
+check("call_write refuses a method outside the allowlist",
+      refuses("conversations.delete"), True)
+check("kick is reachable, but only through the one chokepoint",
+      "conversations.kick" in prov.WRITE_METHODS, True)
+
+# --- batching -----------------------------------------------------------------
+# One call per channel, not one per person: Slack renders a batched invite as a
+# single event rather than N join lines, and it stays inside the rate limit.
+check("a channel's invites are batched into one call", inv.MAX_PER_CALL, 1000)
+
+
+# --- apply(): what reaches Slack ----------------------------------------------
+class _Recorder:
+    def __init__(self, result=None):
+        self.calls = []
+        self.result = result or {"ok": True}
+
+    def __call__(self, token, method, **params):
+        self.calls.append((method, params))
+        return self.result
+
+
+ROWS = [
+    {"city": "Berlin", "channel": "berlin-organizers", "channel_id": "C1",
+     "is_private": True, "missing": [("A", "U1"), ("B", "U2")],
+     "present": [("C", "U3")], "strangers": [("Zed", "U9")],
+     "staff_in_room": 0, "undescribed": 0},
+    {"city": "Pune", "channel": "pune-organizers", "channel_id": "C2",
+     "is_private": True, "missing": [], "present": [("D", "U4")],
+     "strangers": [], "staff_in_room": 0, "undescribed": 0},
+]
+
+_rec = _Recorder()
+_orig, prov_call = inv.call_write, None
+inv.call_write = _rec
+try:
+    done, failed = inv.apply(ROWS, "token")
+finally:
+    inv.call_write = _orig
+
+check("only channels with someone missing are called",
+      [c[1]["channel"] for c in _rec.calls], ["C1"])
+check("the missing ids go in one batched users param",
+      _rec.calls[0][1]["users"], "U1,U2")
+check("and only conversations.invite is used", _rec.calls[0][0],
+      "conversations.invite")
+check("the count is people, not calls", (done, failed), (2, []))
+
+# Someone already in the channel is never re-sent, and someone the intake does
+# not list is never touched — no id from `strangers` reaches any request.
+check("an already-present member is not re-invited",
+      "U3" in _rec.calls[0][1]["users"], False)
+_stranger_uids = [uid for _n, uid in ROWS[0]["strangers"]]
+check("a stranger's id is never in a request",
+      (_stranger_uids, any(uid in _rec.calls[0][1]["users"] for uid in _stranger_uids)),
+      (["U9"], False))
+
+# --- a failed batch retries singly: Slack fails the WHOLE batch on one bad ----
+# invitee, so top-level already_in_channel means "at least one raced in", not
+# "everyone did" — the other N-1 must each get their own call.
+class _BatchThenSingle:
+    """Fail any multi-user call; answer single-user calls from a script."""
+
+    def __init__(self, singles):
+        self.calls, self.singles = [], singles
+
+    def __call__(self, token, method, **params):
+        self.calls.append((method, params))
+        users = params["users"]
+        if "," in users:
+            return {"ok": False, "error": "already_in_channel"}
+        return self.singles.get(users, {"ok": True})
+
+
+_rec = _BatchThenSingle({"U1": {"ok": False, "error": "already_in_channel"}})
+inv.call_write = _rec
+try:
+    done, failed = inv.apply(ROWS, "token")
+finally:
+    inv.call_write = _orig
+check("a raced batch falls back to one call per person",
+      [c[1]["users"] for c in _rec.calls], ["U1,U2", "U1", "U2"])
+check("the raced member and the real invite both count as done, no failures",
+      (done, failed), (2, []))
+
+# --- a real per-person error is collected, and does not abandon the rest ------
+ROWS2 = ROWS + [{"city": "X", "channel": "x-organizers", "channel_id": "C3",
+                 "is_private": True, "missing": [("E", "U5")], "present": [],
+                 "strangers": [], "staff_in_room": 0, "undescribed": 0}]
+_rec = _BatchThenSingle({"U1": {"ok": False, "error": "user_is_restricted"},
+                         "U5": {"ok": True}})
+inv.call_write = _rec
+try:
+    done, failed = inv.apply(ROWS2, "token")
+finally:
+    inv.call_write = _orig
+check("a failing person is reported, and everyone else still lands",
+      (done, len(failed)), (2, 1))
+check("the failure names the person's id, not the whole channel",
+      "U1" in failed[0], True)
+
+# --- rename ordering: the London chain is the case that breaks naive order ----
+# Alphabetically london-meetup-organizers sorts BEFORE london-organizers, so an
+# unordered pass tries to take a name that is still occupied -> name_taken.
+# A FIXED map (the London chain plus one free rename), not the production
+# CHANNEL_RENAMES: that map changes several times a day, and the property
+# under test — chain ordering — must not silently change with the data.
+_chain = {"bangalore": "bengaluru",
+          "london-organizers": "london-organizers-deprecated",
+          "london-meetup-organizers": "london-organizers"}
+_live = {"bangalore", "london-organizers", "london-meetup-organizers"}
+_ordered, _blocked = prov.order_renames(_chain, _live)
+check("nothing is blocked", _blocked, [])
+check("every rename is scheduled exactly once", len(_ordered), len(_chain))
+_pos = {old: i for i, (old, _) in enumerate(_ordered)}
+check("the occupant moves out before the new name is taken",
+      _pos["london-organizers"] < _pos["london-meetup-organizers"], True)
+
+# A target nothing frees is reported, never attempted.
+check("an unfreeable target is blocked, not attempted",
+      prov.order_renames({"a": "occupied"}, {"a", "occupied"}),
+      ([], [("a", "occupied")]))
+
+# A cycle needs a temporary name; it must not half-apply.
+_o3, _b3 = prov.order_renames({"x": "y", "y": "x"}, {"x", "y"})
+check("a rename cycle is blocked rather than half-applied",
+      (_o3, sorted(_b3)), ([], [("x", "y"), ("y", "x")]))
+
+# --- a merge is not a rename --------------------------------------------------
+# A renamed room keeps its members; a merged room's members must be invited
+# across. Modelling the merge as a rename would retire the room and lose its 21.
+check("the merged room is not also in the rename map",
+      set(prov.CHANNEL_MERGES) & set(prov.CHANNEL_RENAMES), set())
+check("the merge target is produced by a rename, so it exists when needed",
+      prov.CHANNEL_MERGES["southbay-chapter-leads"]["into"]
+      in prov.CHANNEL_RENAMES.values(), True)
+check("deprecated rooms are marked 'deprecated'",
+      all(v.endswith("-deprecated") for v in
+          [prov.CHANNEL_RENAMES["london-organizers"],
+           prov.CHANNEL_MERGES["southbay-chapter-leads"]["retire_as"]]), True)
+
+
+# --- plan(): applied-rename detection and create suppression -------------------
+# Synthetic maps throughout: the production CHANNEL_RENAMES changes daily and
+# these properties must not drift with it. Patch, test, restore.
+def _with_maps(renames, merges, fn):
+    saved = prov.CHANNEL_RENAMES, prov.CHANNEL_MERGES
+    prov.CHANNEL_RENAMES, prov.CHANNEL_MERGES = renames, merges
+    try:
+        return fn()
+    finally:
+        prov.CHANNEL_RENAMES, prov.CHANNEL_MERGES = saved
+
+
+_TABLES = {"public": {}, "organizers": {}, "regional": {}}
+
+# The London shape after the chain applied AND the sweep archived the parked
+# room: old name live again (held by the promoted room), target name exists
+# only among ARCHIVED names. Re-planning it would rename the real room away.
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
+    {"old-organizers": "old-organizers-deprecated",
+     "meetup-organizers": "old-organizers"}, {},
+    lambda: prov.plan(_TABLES, live={"old-organizers"},
+                      all_names={"old-organizers", "old-organizers-deprecated"}))
+check("an applied chain is not re-planned against the real room", _r, [])
+check("and nothing is blocked by it", _b, [])
+check("the applied classification is reported, not swallowed",
+      _applied, [("old-organizers", "old-organizers-deprecated")])
+
+# A genuine squatter: the old name is nobody's rename target, so target-exists
+# means blocked — never silently treated as applied.
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
+    {"utah": "salt-lake-city"}, {},
+    lambda: prov.plan(_TABLES, live={"utah", "salt-lake-city"},
+                      all_names={"utah", "salt-lake-city"}))
+check("a squatted target still blocks", _b, [("utah", "salt-lake-city")])
+check("a blocked rename is not reported as applied", _applied, [])
+
+# A name a pending rename frees INTO is satisfied by the rename, not created.
+_tables2 = {"public": {"Bern": "bern"}, "organizers": {}, "regional": {}}
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
+    {"old-bern": "bern"}, {},
+    lambda: prov.plan(_tables2, live={"old-bern"}, all_names={"old-bern"}))
+check("a rename-freed name is not also created", _c, [])
+check("it counts as already satisfied", [n for n, _p, _w in _a], ["bern"])
+check("and the rename itself is planned", _r, [("old-bern", "bern")])
+
+# all_names defaults to live — pre-existing behavior unchanged.
+_c, _r, _b, _m, _a, _applied, _ref0 = _with_maps(
+    {"a": "b"}, {}, lambda: prov.plan(_TABLES, live={"a"}))
+check("all_names defaults to live", _r, [("a", "b")])
+
+
+# --- forbid_erstwhile(): recorded-history names are never planned again --------
+_creates = [("boston-organizers", True, "organizer channel for Boston"),
+            ("austin", False, "chapter channel for Austin")]
+_renames = [("x-organizers", "y-organizers"), ("old", "munich")]
+_fc, _fr, _ref = prov.forbid_erstwhile(_creates, _renames,
+                                       {"austin", "munich", "germany"})
+check("an erstwhile create is refused", _fc, [_creates[0]])
+check("an erstwhile rename TARGET is refused", _fr, [("x-organizers", "y-organizers")])
+check("refusals are reported, not dropped",
+      sorted((k, n) for k, n, _d in _ref),
+      [("create", "austin"), ("rename", "munich")])
+check("an empty forbidden set changes nothing",
+      prov.forbid_erstwhile(_creates, _renames, frozenset()),
+      (_creates, _renames, []))
+
+# The guard lives INSIDE plan(): no caller can obtain an unfiltered plan.
+_c, _r, _b, _m, _a, _applied, _ref = _with_maps(
+    {"old-x": "munich"}, {},
+    lambda: prov.plan({"public": {"Austin": "austin"}, "organizers": {},
+                       "regional": {}},
+                      live={"old-x"}, forbidden={"austin", "munich"}))
+check("plan() itself refuses erstwhile creates and rename targets",
+      (_c, _r, sorted(k for k, _n, _d in _ref)), ([], [], ["create", "rename"]))
+check("plan() without forbidden refuses nothing", _ref0, [])
+
+
+# --- plan_archives(): the only gate before a room is closed --------------------
+def _chan(name, private=False, archived=False, members=()):
+    return {"name": name, "id": "C-" + name, "is_private": private,
+            "is_archived": archived, "_members": list(members)}
+
+
+def _plan_archives(chans, pointers, renames=None):
+    by_name = {c["name"]: c for c in chans}
+    live = {c["name"] for c in chans if not c["is_archived"]}
+    saved = (prov.DEPRECATED_POINTERS, prov.CHANNEL_RENAMES,
+             prov.slackmod.members)
+    prov.DEPRECATED_POINTERS = pointers
+    prov.CHANNEL_RENAMES = renames or {}
+    prov.slackmod.members = lambda api, cid: next(
+        c["_members"] for c in chans if c["id"] == cid)
+    try:
+        return prov.plan_archives(None, by_name, live, "U-ME")
+    finally:
+        (prov.DEPRECATED_POINTERS, prov.CHANNEL_RENAMES,
+         prov.slackmod.members) = saved
+
+
+check("a room not named -deprecated is never planned",
+      _plan_archives([_chan("x-old"), _chan("x")], {"x-old": "x"}), [])
+check("a -deprecated room queued for a rename is skipped, not archived",
+      _plan_archives([_chan("y-deprecated"), _chan("y")],
+                     {"y-deprecated": "y"}, renames={"y-deprecated": "y2"}),
+      [("y-deprecated", "skip", "pending rename to #y2 — not retired")])
+check("no recorded successor blocks",
+      [p[:2] for p in _plan_archives([_chan("z-deprecated")], {})],
+      [("z-deprecated", "blocked")])
+check("an archived successor blocks",
+      [p[:2] for p in _plan_archives(
+          [_chan("w-deprecated"), _chan("w", archived=True)],
+          {"w-deprecated": "w"})],
+      [("w-deprecated", "blocked")])
+check("a public room archives with a pointer",
+      [p[:2] for p in _plan_archives(
+          [_chan("p-deprecated", members=["U1"]), _chan("p")],
+          {"p-deprecated": "p"})],
+      [("p-deprecated", "archive")])
+check("a private room with a straggler blocks",
+      [p[:2] for p in _plan_archives(
+          [_chan("q-deprecated", private=True, members=["U1", "U2"]),
+           _chan("q", private=True, members=["U1"])],
+          {"q-deprecated": "q"})],
+      [("q-deprecated", "blocked")])
+check("a covered private room archives, with the token's own seat excused",
+      [p[:2] for p in _plan_archives(
+          [_chan("s-deprecated", private=True, members=["U1", "U-ME"]),
+           _chan("s", private=True, members=["U1"])],
+          {"s-deprecated": "s"})],
+      [("s-deprecated", "archive")])
+
+
+# --- call_write: retry only what fixes itself ----------------------------------
+check("a malformed Retry-After falls back instead of crashing",
+      [prov._retry_secs(v) for v in
+       ("Fri, 21 Aug 2026 07:28:00 GMT", None, "", "1.5", "30", -3)],
+      [10, 10, 10, 1, 30, 1])
+
+
+def _fake_urlopen_seq(responses):
+    """Each call pops the next payload; records how many calls were made."""
+    import io, json as _json  # noqa: E401
+
+    calls = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def opener(req, timeout=None):
+        calls.append(req)
+        return _Resp(_json.dumps(responses[min(len(calls) - 1,
+                                               len(responses) - 1)]).encode())
+    return opener, calls
+
+
+_saved_urlopen, _saved_sleep = prov.slackmod._urlopen, prov.time.sleep
+try:
+    _sleeps = []
+    prov.time.sleep = _sleeps.append
+    _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "ratelimited",
+                                        "retry_after": 2},
+                                       {"ok": True}])
+    prov.slackmod._urlopen = _open
+    check("ratelimited retries and honours retry_after",
+          (prov.call_write("t", "conversations.rename", channel="C1",
+                           name="n"), len(_calls), _sleeps),
+          ({"ok": True}, 2, [2]))
+
+    _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "name_taken"}])
+    prov.slackmod._urlopen = _open
+    check("any other error returns to the caller without a retry",
+          (prov.call_write("t", "conversations.rename", channel="C1",
+                           name="n"), len(_calls)),
+          ({"ok": False, "error": "name_taken"}, 1))
+
+    _open, _calls = _fake_urlopen_seq([{"ok": False, "error": "ratelimited",
+                                        "retry_after": 1}])
+    prov.slackmod._urlopen = _open
+    check("a permanent rate limit gives up after five attempts",
+          (prov.call_write("t", "conversations.rename", channel="C1",
+                           name="n").get("error"), len(_calls)),
+          ("ratelimited", 5))
+
+    # The WRITE token rides in the Authorization header; a redirect must
+    # surface as an error and never be followed to whatever host it names.
+    _seen = []
+    def _redirecting(req, timeout=None):
+        _seen.append(req)
+        raise prov.urllib.error.HTTPError(req.full_url, 302, "Found",
+                                          {"Location": "https://evil.example/"}, None)
+    prov.slackmod._urlopen = _redirecting
+    check("a 302 is an error, not a retry, and no second request is made",
+          (prov.call_write("t", "conversations.rename", channel="C1", name="n"),
+           len(_seen)),
+          ({"ok": False, "error": "http_302"}, 1))
+    # ...and the real opener is the lib's no-redirect one, not urllib's default.
+    _src = open(prov.__file__, encoding="utf-8").read()
+    check("call_write goes through slackmod._urlopen",
+          ("slackmod._urlopen(" in _src, "urllib.request.urlopen(" in _src), (True, False))
+    check("the lib opener refuses redirects",
+          prov.slackmod._NoRedirect().redirect_request(None, None, 302, "", {}, "u"), None)
+finally:
+    prov.slackmod._urlopen = _saved_urlopen
+    prov.time.sleep = _saved_sleep
+
+
+# --- --redact: stdout masking (default on under CI) ----------------------------
+_redact.REDACT = False
+check("redaction off: name passes through", inv.redact_name("Ada Lovelace"), "Ada Lovelace")
+_redact.REDACT = True
+try:
+    check("redacted name is a first initial", inv.redact_name("ada lovelace"), "A.")
+    check("empty values survive", inv.redact_name(""), "")
+    # This report DOES print one address now — the Slack ID column conflict
+    # warning names the person whose column disagrees with the live lookup —
+    # so the assertion is that it goes through the masker, not that no masker
+    # exists. (It was "nothing here prints an address" until the Slack ID
+    # column landed and gave the report a reason to.)
+    check("the conflict warning's address is masked under --redact",
+          inv.redact_email("ada@example.com"), "a***@***.com")
+    # The bug this guards: redact_email was imported from sync_resources, whose
+    # own REDACT flag this module's --redact never sets, so the address printed
+    # raw. Assert it follows THIS module's flag.
+    _redact.REDACT = False
+    check("with redaction off the address is untouched",
+          inv.redact_email("ada@example.com"), "ada@example.com")
+    _redact.REDACT = True
+finally:
+    _redact.REDACT = False
+
+
+# --- the CI default is a real boolean, and masking announces itself ------------
+import io as _io  # noqa: E402
+import contextlib as _ctx  # noqa: E402
+check("the CI default is the strict 1/true/yes parse of $CI", _redact.CI_REDACT_DEFAULT,
+      os.environ.get("CI", "").strip().lower() in ("1", "true", "yes"))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    inv.set_redaction(True)
+check("turning redaction on prints exactly one stderr line",
+      (_err.getvalue().count("\n"), "redaction ON" in _err.getvalue()), (1, True))
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    inv.set_redaction(False)
+check("turning redaction off is silent", _err.getvalue(), "")
+check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
+
+
+# --- collect() actually calls ao.read_intake() — the 3-value unpacking at
+# invite_organizers.py's collect() is the same fix class as prune_organizers.py's
+# (both once unpacked a stale 2-tuple), but only prune_organizers.py's copy had
+# a test exercising it. A regression here would raise ValueError with nothing
+# local or in CI to catch it. ---------------------------------------------------
+from unittest import mock as _mock  # noqa: E402
+
+_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Boston"}]
+
+
+class _FakeInviteApi:
+    """The read client collect() sees. `users` scripts `users.info` by id; an
+    id not in it answers as Slack does for a deleted account."""
+
+    users = {}
+
+    def __init__(self, *a, **kw):
+        self.calls = []
+
+    def require_scopes(self, *a):
+        pass
+
+    def call(self, method, **params):
+        self.calls.append((method, params))
+        if method != "users.info":
+            raise AssertionError("collect() called %s" % method)
+        return self.users.get(params["user"], {"ok": False, "error": "user_not_found"})
+
+
+def _run_collect():
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1"]), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.collect()
+
+
+_rows, _unresolved, _no_channel = _run_collect()
+check("collect() runs to completion against a 3-tuple read_intake()",
+      len(_rows), 1)
+check("the one roster member already present is not double-counted as missing",
+      (_rows[0]["missing"], [n for n, _ in _rows[0]["present"]]), ([], ["Ada"]))
+
+
+# --- fetch()/collect(fetched=...): a second column reuses the first fetch,
+# it does not hit the sheet or Slack's channel list a second time. This is
+# what makes `--scope both` one round trip, not two.
+_FETCH_CALLS = []
+chapters = [{"city": "Boston",
+            "current": {"Organizer Channel": "boston-organizers",
+                       "Country Channel": "united-states"}}]
+chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+         "is_archived": False},
+        {"name": "united-states", "id": "C2", "is_private": False,
+         "is_archived": False}]
+
+
+def _counting_read_grid(c):
+    _FETCH_CALLS.append("read_grid")
+    return None, None, chapters
+
+
+def _counting_channels(api):
+    _FETCH_CALLS.append("channels")
+    return chans
+
+
+with _mock.patch.object(inv, "read_grid", _counting_read_grid), \
+     _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+     _mock.patch.object(inv.slackmod, "channels", _counting_channels), \
+     _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1"]), \
+     _mock.patch.object(inv.slackmod, "lookup_emails",
+                        lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+     _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+     _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+    _fetched = inv.fetch()
+    inv.collect(column="Organizer Channel", fetched=_fetched)
+    inv.collect(column="Country Channel", fetched=_fetched)
+
+check("fetch() hits the sheet and Slack exactly once for two collect() calls",
+      _FETCH_CALLS, ["read_grid", "channels"])
+
+
+# --- collect(column=...): a shared Country Channel merges chapters into ONE row
+_COUNTRY_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Madrid"},
+                   {"email": "b@x.com", "name": "Bao", "city": "Barcelona"}]
+
+
+def _run_collect_country():
+    chapters = [
+        {"city": "Madrid", "current": {"Country Channel": "espana"}},
+        {"city": "Barcelona", "current": {"Country Channel": "espana"}},
+    ]
+    chans = [{"name": "espana", "id": "C1", "is_private": False,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"},
+                                                 "b@x.com": {"id": "U2"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_COUNTRY_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.collect(column="Country Channel")
+
+
+_crows, _cunresolved, _cno_channel = _run_collect_country()
+check("two chapters sharing one Country Channel produce ONE row, not two",
+      len(_crows), 1)
+check("the row's city label lists both contributing chapters",
+      _crows[0]["city"], "Barcelona, Madrid")
+check("the roster is the union across both chapters, both missing",
+      sorted(n for n, _ in _crows[0]["missing"]), ["Ada", "Bao"])
+
+
+# --- the same person under TWO different emails (one per contributing
+# chapter) resolves to one account and must not be double-counted -------------
+_SAME_PERSON_INTAKE = [
+    {"email": "ada@old.example", "name": "Ada", "city": "Madrid"},
+    {"email": "ada@new.example", "name": "Ada", "city": "Barcelona"},
+]
+
+
+def _run_collect_same_person():
+    chapters = [
+        {"city": "Madrid", "current": {"Country Channel": "espana"}},
+        {"city": "Barcelona", "current": {"Country Channel": "espana"}},
+    ]
+    chans = [{"name": "espana", "id": "C1", "is_private": False,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"ada@old.example": {"id": "U1"},
+                                                 "ada@new.example": {"id": "U1"}}), \
+         _mock.patch.object(inv.ao, "read_intake",
+                            lambda: (_SAME_PERSON_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.collect(column="Country Channel")
+
+
+_srows, _, _ = _run_collect_same_person()
+check("one account under two emails is counted once, not twice",
+      _srows[0]["missing"], [("Ada", "U1")])
+
+
+# --- run_scope("both", ...): totals and rows accumulate across BOTH columns,
+# not just the last one — the exact copy-paste class this factoring guards
+# against (`total =` silently replacing `total +=`) -----------------------------
+_BOTH_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Boston"},
+               {"email": "b@x.com", "name": "Bo", "city": "Boston"}]
+
+
+def _run_run_scope_both():
+    chapters = [{"city": "Boston",
+                "current": {"Organizer Channel": "boston-organizers",
+                           "Country Channel": "united-states"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+             "is_archived": False},
+            {"name": "united-states", "id": "C2", "is_private": False,
+             "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"},
+                                                 "b@x.com": {"id": "U2"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_BOTH_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.run_scope("both")
+
+
+_both_rows, _both_total, _both_rep = _run_run_scope_both()
+check("both columns' rows are concatenated, not overwritten",
+      len(_both_rows), 2)
+check("both columns' missing counts are summed, not overwritten",
+      _both_total, 4)
+check("run_scope() hands back the same report as data",
+      (_both_rep.step, _both_rep.mode), ("invite", "report"))
+
+# --- --json-out: the text report as data, same numbers, no addresses ---------
+# build_findings() is pure over what collect()/report() already produced, so
+# the page can never show a count the log did not print.
+_passes = [("Organizer channel",
+            [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
+              "is_private": True, "missing": [("Ada", "U1")],
+              "present": [("Bo", "U2")],
+              "strangers": [("Zed", "USTRANGER"), ("Yan", "U5"), ("Xia", "U6"), ("Wen", "U7")],
+              "staff_in_room": 1, "undescribed": 0}],
+            [("Boston", "Cy")],
+            [("Madrid", "no Organizer Channel on the sheet")])]
+_rep = inv.build_findings(_passes, conflicts=1, mode="report")
+with _tempfile.TemporaryDirectory() as _d:
+    _out = os.path.join(_d, "invite.json")
+    inv.findings.Report.write(_rep, _out)
+    with open(_out, encoding="utf-8") as _fh:
+        _doc = _json.load(_fh)
+    check("the JSON is landed 0600", os.stat(_out).st_mode & 0o777, 0o600)
+check("the JSON carries the contract's format and this step's name",
+      (_doc["format"], _doc["step"], _doc["mode"]), (1, "invite", "report"))
+check("the summary is the one-line headline, counts only",
+      _doc["summary"],
+      "1 to invite across 1 live channel(s); 1 already in; "
+      "1 accepted organizer(s) with no Slack account")
+check("the tiles are the counts the text report prints, in reading order",
+      [(m["label"], m["value"]) for m in _doc["measured"]],
+      [("to invite", 1), ("already in", 1), ("no Slack account", 1),
+       ("Slack ID column conflicts", 1)])
+check("a pending invite is a warn finding on the CHANNEL, naming the person",
+      [(f["kind"], f["subject"], f["detail"], f["severity"])
+       for f in _doc["findings"] if f["kind"] == "invite"],
+      [("invite", "#boston-organizers", "Ada", "warn")])
+check("no-account is ONE row per pass, with the count AND who",
+      [(f["subject"], f["detail"]) for f in _doc["findings"]
+       if f["kind"] == "no Slack account"],
+      [("Organizer channel", "1 accepted organizer(s) cannot be invited: Cy")])
+check("no undescribed member, no tile for it",
+      [m["label"] for m in _doc["measured"] if "describe" in m["label"]], [])
+check("a skipped chapter, a stranger in the room and a column conflict each land",
+      sorted(f["kind"] for f in _doc["findings"]),
+      ["Slack ID conflict", "channel skipped", "invite", "no Slack account",
+       "not on the intake"])
+check("a stranger in the room is info: an audit finding, not a task here",
+      [f["severity"] for f in _doc["findings"] if f["kind"] == "not on the intake"],
+      ["info"])
+check("no address reaches the JSON", "@" in _json.dumps(_doc), False)
+check("nothing was written, so the report says so", _doc["written"], False)
+check("Report.write() is a no-op without --json-out", _rep.write(None), None)
+
+# Under --redact the name in `detail` is masked exactly as the printed line is:
+# one flag governs both surfaces.
+_redact.set_redaction(True)
+try:
+    _masked = inv.build_findings(_passes, 0).findings[0]["detail"]
+finally:
+    _redact.set_redaction(False)
+check("--redact masks the name in the JSON too", _masked == "Ada", False)
+
+# --- the champs pseudo-column: ONE workspace-wide room, no sheet cell ---------
+# Every chapter points at it, so the row must be a single merged one whose
+# roster is the union across chapters — the same shape as a shared Country
+# Channel, but reached without any Chapters List column existing.
+_CHAMPS_INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Boston"},
+                  {"email": "b@x.com", "name": "Bo", "city": "Madrid"}]
+
+
+def _run_collect_champs(members_in_room=()):
+    # NOTE the chapters carry NO champs key at all: resolving the room from a
+    # cell would raise KeyError here, which is the regression this guards.
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}},
+                {"city": "Madrid", "current": {"Organizer Channel": "madrid-organizers"}}]
+    chans = [{"name": "local-champs", "id": "C9", "is_private": True,
+              "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members",
+                            lambda api, cid: list(members_in_room)), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"},
+                                                 "b@x.com": {"id": "U2"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_CHAMPS_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.collect(column=inv.CHAMPS_COLUMN)
+
+
+_chrows, _, _ = _run_collect_champs()
+check("the champs column needs no sheet cell and yields ONE room",
+      len(_chrows), 1)
+# Patched to a synthetic name below: comparing the output against the same
+# constant it came from passed identically for a hardcoded "local-champs" in
+# invite_organizers, so it never tested what its label claimed.
+check("the champs room is the one audit_organizers names",
+      _chrows[0]["channel"], inv.ao.LOCAL_CHAMPS_CHANNEL)
+
+
+def _run_collect_champs_renamed():
+    with _mock.patch.object(inv.ao, "LOCAL_CHAMPS_CHANNEL", "leads-xyz"):
+        chapters = [{"city": "Boston",
+                     "current": {"Organizer Channel": "boston-organizers"}}]
+        chans = [{"name": "leads-xyz", "id": "C9", "is_private": True,
+                  "is_archived": False}]
+        with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+             _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+             _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+             _mock.patch.object(inv.slackmod, "members", lambda api, cid: []), \
+             _mock.patch.object(inv.slackmod, "lookup_emails",
+                                lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+             _mock.patch.object(inv.ao, "read_intake",
+                                lambda: ([{"email": "a@x.com", "name": "Ada",
+                                           "city": "Boston"}], 0, {})), \
+             _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+            return inv.collect(column=inv.CHAMPS_COLUMN)
+
+
+_renamed, _, _ = _run_collect_champs_renamed()
+check("...and FOLLOWS that constant rather than a local copy of the name",
+      _renamed[0]["channel"], "leads-xyz")
+check("the champs row is labelled for the workspace, not all ~90 cities",
+      _chrows[0]["city"], "all chapters")
+check("the champs roster is the union of every chapter's accepted organizers",
+      sorted(n for n, _ in _chrows[0]["missing"]), ["Ada", "Bo"])
+
+# A leadership room legitimately holds people who are not accepted organizers.
+# Counting them as "in a channel the intake does not list them for" would put
+# ~135 false entries into that tally on the real workspace.
+_chrows2, _, _ = _run_collect_champs(members_in_room=["U1", "U2", "USTRANGER"])
+check("a non-organizer in the champs room is NOT reported as a stranger",
+      _chrows2[0]["strangers"], [])
+check("but the same person IS still seen as present, not missing",
+      sorted(n for n, _ in _chrows2[0]["present"]), ["Ada", "Bo"])
+
+# --- the champs room rides along with the DEFAULT scope ----------------------
+check("the default scope includes the champs room",
+      inv.CHAMPS_COLUMN in [c for c, _ in inv.SCOPE_COLUMNS["organizer"]], True)
+check("the default scope still targets the organizer channel too",
+      "Organizer Channel" in [c for c, _ in inv.SCOPE_COLUMNS["organizer"]], True)
+check("--scope champs targets the room and nothing else",
+      [c for c, _ in inv.SCOPE_COLUMNS["champs"]], [inv.CHAMPS_COLUMN])
+check("--scope both still covers organizer, country and champs",
+      sorted(c for c, _ in inv.SCOPE_COLUMNS["both"]),
+      sorted([inv.CHAMPS_COLUMN, "Country Channel", "Organizer Channel"]))
+# The sentinel must never be mistakable for a real Chapters List column.
+check("the champs sentinel is not a legal column name",
+      inv.CHAMPS_COLUMN.startswith("*"), True)
+
+
+
+# --- strangers are named, and ops staff are never strangers --------------------
+# The finding has to say who; a table cell cannot hold 22 names, so a few are
+# named and the rest counted. Staff is decided the way the audit decides it.
+_stranger_rows = [f for f in _rep.to_dict()["findings"] if f["kind"] == "not on the intake"]
+check("the stranger finding names a few and counts the rest",
+      _stranger_rows[0]["detail"],
+      "4 member(s) the intake does not list for this room: Zed, Yan, Xia and 1 other")
+
+
+class _UsersApi:
+    """users.info for a synthetic directory; an unknown id answers as Slack
+    does for a deleted account, and `errors` scripts an ok:false per id."""
+    DIR = {"U5": {"id": "U5", "name": "yan", "real_name": "Yan",
+                  "profile": {"email": "yan@x.com"}},
+           "U8": {"id": "U8", "name": "ops", "real_name": "Ops Person",
+                  "profile": {"email": "ops@aaif.test"}},
+           "U9": {"id": "U9", "name": "seed", "real_name": "Seeded Ops",
+                  "profile": {"email": "seed@x.com"}}}
+
+    def __init__(self, errors=None):
+        self.errors = errors or {}
+
+    def call(self, method, **params):
+        assert method == "users.info"
+        uid = params["user"]
+        if uid in self.errors:
+            return {"ok": False, "error": self.errors[uid]}
+        if uid not in self.DIR:
+            return {"ok": False, "error": "user_not_found"}
+        return {"ok": True, "user": self.DIR[uid]}
+
+
+_cfg = {"staff_email_domain": "aaif.test", "ops_staff_domains": [],
+        "ops_staff_emails": ["seed@x.com"]}
+_str, _staff, _undescribed = inv.describe_strangers(
+    _UsersApi(), ["U5", "U8", "U9", "UGONE"], _cfg)
+check("a real stranger is named, in the (name, uid) shape missing/present use",
+      _str[0], ("Yan", "U5"))
+check("ops by domain and ops by roster are set aside, not reported",
+      (_staff, [u for _n, u in _str]), (2, ["U5", "UGONE"]))
+check("user_not_found keeps the id as the name rather than vanishing, and is counted",
+      (_str[1], _undescribed), (("UGONE", "UGONE"), 1))
+
+# `api.call` hands back ok:false instead of raising, so a dead token used to
+# read as "every stranger is a deleted account" and the run went on as if it
+# had looked. Only a missing user is a fact about the member; the rest abort.
+for _err in ("invalid_auth", "token_revoked", "missing_scope",
+             "account_inactive", "ratelimited"):
+    def _describe(err=_err):
+        inv.describe_strangers(_UsersApi(errors={"U5": err}), ["U5"], _cfg)
+    check("users.info %s aborts the run rather than reading as a stranger" % _err,
+          aborts(_describe), True)
+_err_out = _io.StringIO()
+try:
+    with _ctx.redirect_stderr(_err_out):
+        inv.describe_strangers(_UsersApi(errors={"U5": "invalid_auth"}), ["U5"], _cfg)
+except SystemExit as _exc:
+    _msg = str(_exc)
+check("the abort names the method, the id and the error",
+      all(t in _msg for t in ("ABORT", "users.info U5", "invalid_auth")), True)
+
+
+def _raises(*a, **kw):
+    raise inv.slackmod.SlackError("users.info", "transport_failed", "synthetic")
+
+
+class _DownApi:
+    call = staticmethod(_raises)
+
+
+try:
+    inv.describe_strangers(_DownApi(), ["U5"], _cfg)
+    _propagated = None
+except inv.slackmod.SlackError as _exc:
+    _propagated = _exc.args
+check("a transport failure propagates as SlackError, never as a stranger",
+      _propagated is not None, True)
+
+# --- collect() itself: a stranger in an organizer room is named, ops set aside,
+# and the config passed in is used rather than read off the sheet ---------------
+_FakeInviteApi.users = {
+    "U9": {"ok": True, "user": {"id": "U9", "name": "yan", "real_name": "Yan",
+                                "profile": {"email": "yan@x.com"}}},
+    "U8": {"ok": True, "user": {"id": "U8", "name": "ops", "real_name": "Ops Person",
+                                "profile": {"email": "ops@aaif.test"}}},
+}
+
+
+def _no_config():
+    raise AssertionError("collect() read the Slack Config tab although cfg= was given")
+
+
+def _run_collect_strangers():
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+              "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1", "U9", "U8"]), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+         _mock.patch.object(inv.ao, "load_config", _no_config), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.collect(cfg=_cfg)
+
+
+try:
+    _st_rows, _, _ = _run_collect_strangers()
+finally:
+    _FakeInviteApi.users = {}
+check("collect() names the stranger and sets the ops seat aside",
+      (_st_rows[0]["strangers"], _st_rows[0]["staff_in_room"], _st_rows[0]["undescribed"]),
+      ([("Yan", "U9")], 1, 0))
+check("the roster member is present, not a stranger",
+      [n for n, _ in _st_rows[0]["present"]], ["Ada"])
+
+# build_findings() surfaces the undescribed count as a tile only when non-zero.
+_und_passes = [("Organizer channel",
+                [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
+                  "is_private": True, "missing": [], "present": [],
+                  "strangers": [("UGONE", "UGONE")], "staff_in_room": 0,
+                  "undescribed": 1}], [], [])]
+check("a member Slack could not describe is a warn tile",
+      [(m["label"], m["value"], m.get("tone")) for m in
+       inv.build_findings(_und_passes, 0).to_dict()["measured"]
+       if "describe" in m["label"]],
+      [("members Slack could not describe", 1, "warn")])
+
+
+# --- main() lands the findings file on exit 0 and on a failed invite, in
+# report and write mode, and never on an ABORT --------------------------------
+def _scoped(missing):
+    rows = [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
+             "is_private": True, "missing": missing, "present": [],
+             "strangers": [], "staff_in_room": 0, "undescribed": 0}]
+    passes = [("Organizer channel", rows, [], [])]
+
+    def run_scope(scope, city_filter=None, mode="report"):
+        return rows, len(missing), inv.build_findings(passes, 0, mode)
+    return run_scope
+
+
+class _ScopedApi:
+    def __init__(self, *a, **kw):
+        pass
+
+    def scopes(self):
+        return set(inv.NEEDED_SCOPES)
+
+
+def json_out_after(argv, missing=(), apply_result=(1, [])):
+    """Run main() with run_scope/apply mocked; (exit code or 'abort', JSON)."""
+    with _tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "invite.json")
+        with _mock.patch.object(inv, "run_scope", _scoped(list(missing))), \
+             _mock.patch.object(inv, "write_token", lambda: "t"), \
+             _mock.patch.object(inv.slackmod, "Slack", _ScopedApi), \
+             _mock.patch.object(inv, "apply", lambda rows, token: apply_result), \
+             _mock.patch.object(sys, "argv", ["invite_organizers.py", "--json-out", path] + argv), \
+             _ctx.redirect_stdout(_io.StringIO()):
+            try:
+                code = inv.main()
+            except SystemExit:
+                code = "abort"
+        return code, inv.findings.read(path)
+
+
+_code, _out = json_out_after([])
+check("report mode writes the JSON on exit 0",
+      (_code, _out["step"], _out["mode"], _out["written"]), (0, "invite", "report", False))
+_code, _out = json_out_after(["--write", "--i-have-approval"])
+check("write mode with nothing to do still lands the JSON, written=False",
+      (_code, _out["mode"], _out["written"]), (0, "write", False))
+_code, _out = json_out_after(["--write", "--i-have-approval"], missing=[("Ada", "U1")])
+check("an applied invite lands written=True on exit 0",
+      (_code, _out["written"], [(m["label"], m["value"]) for m in _out["measured"]][-2:]),
+      (0, True, [("invited", 1), ("invites failed", 0)]))
+_code, _out = json_out_after(["--write", "--i-have-approval"], missing=[("Ada", "U1")],
+                             apply_result=(0, ["boston-organizers: user_is_restricted (U1)"]))
+check("a failed invite exits 1 and still lands the JSON, written=False, with the failure as a row",
+      (_code, _out["written"], [f["kind"] for f in _out["findings"] if f["severity"] == "bad"]),
+      (1, False, ["invite failed"]))
+# --write without --i-have-approval is the ABORT: the log says why, no file.
+_code, _out = json_out_after(["--write"], missing=[("Ada", "U1")])
+check("a refused write aborts and writes no JSON", (_code, _out), ("abort", None))
+
+# The findings file names people: a --json-out git would commit is refused
+# before any work — run_scope must never be reached.
+_repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_committable = os.path.join(_repo, "zz-invite-findings-probe.json")
+with _mock.patch.object(inv, "run_scope",
+                        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("ran"))), \
+     _mock.patch.object(sys, "argv", ["invite_organizers.py", "--json-out", _committable]), \
+     _ctx.redirect_stdout(_io.StringIO()):
+    check("a committable --json-out is refused before any work",
+          (aborts(inv.main), os.path.exists(_committable)), (True, False))
+
+if FAILS:
+    print("\nFAIL (%d)" % len(FAILS))
+    for f in FAILS:
+        print("  - %s" % f)
+    sys.exit(1)
+print("\ninvite_organizers: all checks passed")

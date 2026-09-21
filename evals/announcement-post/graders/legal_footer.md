@@ -1,6 +1,6 @@
 ---
 type: regex
-pattern: "(?s)code-of-conduct.*privacy-policy|(?s)privacy-policy.*code-of-conduct"
+pattern: "code-of-conduct[\\s\\S]*privacy-policy|privacy-policy[\\s\\S]*code-of-conduct"
 match: contains
 target: last_message
 arm: with-only

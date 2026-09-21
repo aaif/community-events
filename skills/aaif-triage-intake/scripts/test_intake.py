@@ -1,7 +1,11 @@
 import io
+import json
 import os
 import sys
+import tempfile
 import unittest
+import contextlib
+from unittest import mock
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -204,6 +208,169 @@ class TestCollectAborts(CollectBase):
 
     def test_an_empty_tab_is_an_empty_queue_not_an_abort(self):
         self.assertEqual(self._collect({})["Organizers"], [])
+
+
+class TestFindings(unittest.TestCase):
+    """--json-out: the digest headline as data (format 1, step `triage`) — one
+    tile and one finding per tab carrying a COUNT, never an applicant row."""
+
+    DATA = {"Organizers": [dict(BASE), {**BASE, "row": 3, "Full name": "Grace"}],
+            "Hosts": [], "Speakers": [{**BASE, "row": 9, "Name": "Joan"}]}
+
+    def test_shape_step_summary_and_tiles(self):
+        doc = intake.build_findings(self.DATA)
+        self.assertEqual(doc["format"], 1)
+        self.assertEqual(doc["step"], "triage")
+        self.assertEqual(doc["summary"],
+                         "3 awaiting review (2 organizers · 0 hosts · 1 speakers)")
+        self.assertEqual([(m["label"], m["value"], m["tone"]) for m in doc["measured"]],
+                         [("organizers awaiting review", 2, "warn"),
+                          ("hosts awaiting review", 0, "ok"),
+                          ("speakers awaiting review", 1, "warn")])
+        self.assertFalse(doc["written"])
+
+    def test_one_finding_per_non_empty_tab_and_no_person_rows(self):
+        doc = intake.build_findings(self.DATA)
+        self.assertEqual([(f["subject"], f["severity"]) for f in doc["findings"]],
+                         [("Organizers", "warn"), ("Speakers", "warn")])
+        blob = json.dumps(doc)
+        for value in ("Ada", "Grace", "Joan", "ada@x.com", "row"):
+            self.assertNotIn(value, blob.replace("row(s)", ""))
+
+    def test_label_follows_the_selection(self):
+        doc = intake.build_findings(self.DATA, "with status Accepted")
+        self.assertIn("3 with status Accepted", doc["summary"])
+        self.assertNotIn("awaiting review", json.dumps(doc))
+
+    def test_write_lands_private(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "findings.json")
+            intake.write_findings(path, intake.build_findings(self.DATA))
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["step"], "triage")
+            self.assertEqual(os.listdir(d), ["findings.json"])
+
+
+class TestDigestPaging(unittest.TestCase):
+    """The listing is paged; the counts never are. Synthetic rows only."""
+
+    def _rows(self, n):
+        return [{"row": i + 2, "status": "Prospect", "Full name": "Ada %d" % i,
+                 "Email": "a%d@x.com" % i, "City (New)": "Boston"} for i in range(n)]
+
+    def _digest(self, data, **kw):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            intake.text_digest(data, **kw)
+        return buf.getvalue()
+
+    def test_default_limit_pages_and_says_how_many_more(self):
+        out = self._digest({"Organizers": self._rows(30), "Hosts": [], "Speakers": []})
+        self.assertIn("AAIF intake — 30 awaiting review", out)   # the count is whole
+        self.assertIn("== Organizers (30) ==  rows 1-25 of 30", out)
+        self.assertEqual(out.count("• [Prospect]"), 25)
+        self.assertIn("… and 5 more on this tab — --offset 25", out)
+
+    def test_offset_takes_the_next_page(self):
+        out = self._digest({"Organizers": self._rows(30), "Hosts": [], "Speakers": []},
+                           offset=25)
+        self.assertIn("rows 26-30 of 30", out)
+        self.assertEqual(out.count("• [Prospect]"), 5)
+        self.assertNotIn("more on this tab", out)
+
+    def test_limit_zero_lists_everything(self):
+        out = self._digest({"Organizers": self._rows(30), "Hosts": [], "Speakers": []},
+                           limit=0)
+        self.assertEqual(out.count("• [Prospect]"), 30)
+        self.assertNotIn("rows 1-", out)
+
+    def test_a_short_tab_is_not_paged(self):
+        out = self._digest({"Organizers": self._rows(3), "Hosts": [], "Speakers": []})
+        self.assertIn("== Organizers (3) ==\n", out)
+        self.assertNotIn("more on this tab", out)
+
+
+class _Proc:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+class TestJsonOutGuard(unittest.TestCase):
+    """`--json-out` refuses a path git would commit. Outside any repository is
+    fine; inside, the path must be ignored and not already tracked."""
+
+    def test_a_path_outside_any_repo_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            intake.assert_git_ignored(os.path.join(d, "findings.json"))   # no exit
+
+    def _fake_run(self, ignored, tracked):
+        def run(argv, **kw):
+            if "rev-parse" in argv:
+                return _Proc(0, stdout="/repo\n")
+            if "check-ignore" in argv:
+                return _Proc(0 if ignored else 1)
+            if "ls-files" in argv:
+                return _Proc(0 if tracked else 1)
+            raise AssertionError(argv)
+        return run
+
+    def test_an_unignored_path_inside_a_repo_aborts(self):
+        with mock.patch.object(intake.subprocess, "run", self._fake_run(False, False)):
+            with self.assertRaises(SystemExit) as e:
+                intake.assert_git_ignored("/repo/findings.json")
+        self.assertIn("not gitignored", str(e.exception))
+
+    def test_a_tracked_path_aborts_even_when_ignored(self):
+        with mock.patch.object(intake.subprocess, "run", self._fake_run(True, True)):
+            with self.assertRaises(SystemExit):
+                intake.assert_git_ignored("/repo/findings.json")
+
+    def test_an_ignored_untracked_path_passes(self):
+        with mock.patch.object(intake.subprocess, "run", self._fake_run(True, False)):
+            intake.assert_git_ignored("/repo/findings.json")
+
+
+class TestMainJsonOut(unittest.TestCase):
+    """main() lands the findings file on exit 0 and exit 2, and never on an
+    ABORT (the guard runs before the sheet is read)."""
+
+    HDR = ["Timestamp", "Status", "Full name", "Email"]
+
+    def _main(self, rows, path, argv=()):
+        sheets = {"Organizers": (self.HDR, rows)}
+        with mock.patch.object(intake, "fetch", lambda tab: sheets.get(tab, ([], []))), \
+             mock.patch.object(intake, "assert_git_ignored", lambda p: None), \
+             mock.patch.object(sys, "argv", ["intake.py", "--json-out", path, *argv]), \
+             redirect_stdout(io.StringIO()):
+            return intake.main()
+
+    def _doc(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_an_empty_queue_exits_0_and_lands_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "triage.json")
+            self.assertEqual(self._main([], path), 0)
+            doc = self._doc(path)
+            self.assertEqual((doc["step"], doc["mode"], doc["written"]), ("triage", "report", False))
+
+    def test_a_queue_exits_2_and_lands_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "triage.json")
+            self.assertEqual(self._main([["t", "", "Ada", "a@x.com"]], path), 2)
+            self.assertEqual(self._doc(path)["measured"][0]["value"], 1)
+
+    def test_the_guard_runs_before_the_sheet_is_read(self):
+        calls = []
+        with mock.patch.object(intake, "fetch", lambda tab: calls.append("fetch") or ([], [])), \
+             mock.patch.object(intake, "assert_git_ignored",
+                               lambda p: calls.append("guard") or sys.exit("ABORT: x")), \
+             mock.patch.object(sys, "argv", ["intake.py", "--json-out", "x.json"]):
+            with self.assertRaises(SystemExit):
+                intake.main()
+        self.assertEqual(calls, ["guard"])
 
 
 if __name__ == "__main__":

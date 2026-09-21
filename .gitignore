@@ -28,9 +28,11 @@ slack-*-audit.*
 .playwright-mcp/
 .test-output/
 
-# Nightly sync runner output (aaif-sync-chapters nightly.py). Same rule as above:
-# the per-engine logs hold the full reports — names, emails, per-person diffs —
-# and must never be committed. Only the runner's stdout summary is PII-free.
+# Sync runner output — aaif-sync's sync.py, and nightly.py wrapping it. Same
+# rule as above: the per-step logs hold the full reports — names, emails,
+# per-person diffs — and must never be committed. Only the runner's stdout
+# summary is PII-free, and the runner refuses to start if these are not ignored.
+sync-reports/
 nightly-reports/
 
 # aaif-community-pulse working directory — the #local-champs pull (real message

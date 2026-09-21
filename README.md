@@ -52,11 +52,38 @@ Prefer the guided UI flow? Run these inside Claude Code:
 
 ## What's inside
 
+The toolkit is **two separate halves**, and they are used at different times by
+different people:
+
+|  | ✍️ **Content skills** | 🛠️ **Ops skills** |
+|---|---|---|
+| Answer the question | "what do we *say* about this event?" | "is the estate actually in the state we think it is?" |
+| Scope | **one event** | **the whole estate** — ~100 chapters |
+| Run by | an organizer, per event | AAIF ops, on a cadence |
+| Setup | **none** — paste the details, get copy | `gws` auth, and a Slack or Luma token for some |
+| Writes to | nothing; they hand you text to edit and post | the Chapters List, chapter folders, CRMs, Drive ACLs, Slack |
+| Safety model | the public-copy rule — never publish a detail that is not already public | report → approve → write, plus a gate on anything that touches a real person |
+| Entry point | the individual skill | **`aaif-sync`**, the front door |
+
+They meet in exactly one place: the per-chapter **`Event Tracker.docx`**, which
+the ops side creates and the content side reads.
+
 ### ✍️ Content skills — no setup required
 Pure writing skills. They take the event details you give them and produce copy.
 Two of them (`aaif-carousel-copy`, `aaif-dayof-slides`) additionally *place* that
 copy into a Drive template, and that step needs `gws` like any ops skill; the
 writing itself does not.
+
+They read the event's details from its tracker entry with one command, so nobody
+has to paste them by hand:
+
+```bash
+python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter>" --event "<Event Title>"
+```
+
+Contact details (`SPEAKER EMAIL`, `DOOR CODE`, venue contact) are read but
+deliberately **withheld** and only named — the surest way to keep an address out
+of a published post is to keep it out of the agent's context in the first place.
 
 | Skill | What it writes |
 |---|---|
@@ -81,6 +108,231 @@ writing itself does not.
 These drive Google Drive / Sheets through the `gws` CLI (see below); a few also
 talk to Slack or Luma.
 
+#### The ops workflow
+
+`aaif-sync` is the front door. One command runs the whole thing in dependency
+order; `scripts/sync.py` is the single definition of that order, and
+`nightly.py` wraps the same script for a scheduled run rather than keeping a
+second copy of it.
+
+```bash
+python3 skills/aaif-sync/scripts/sync.py            # report everything, write nothing
+python3 skills/aaif-sync/scripts/sync.py chapters   # one phase, or one step
+python3 skills/aaif-sync/scripts/sync.py --write    # apply, after approval
+```
+
+```mermaid
+flowchart TD
+    START(["<b>aaif-sync</b><br/>report-only unless --write"]) --> P1
+
+    subgraph P1["1 · preflight — is the source sound?"]
+        direction LR
+        p1a["<b>gather</b><br/>clean.py scan<br/><i>unresolved cities, malformed rows</i>"]
+        p1b["<b>gather</b><br/>intake.py<br/><i>how deep the queue is</i>"]
+        p1a --- p1b
+    end
+
+    q1{"city resolved?"}
+    fix["write <b>Extracted City</b><br/><i>then re-measure</i>"]
+    P1 --> q1
+    q1 -->|"no"| fix --> P1
+
+    subgraph P2["2 · chapters — does it exist, on the sheet, in Drive, in Slack?"]
+        direction LR
+        p2a["<b>gather</b><br/>audit_organizers --planned-ok<br/><i>which chapters have a room</i>"]
+        p2b["<b>plan</b><br/>sync_chapters · sync_resources<br/><i>rows, folder + channel map</i>"]
+        p2c["<b>execute</b><br/>provision_channels<br/><i>renames before creates</i>"]
+        p2a --> p2b --> p2c
+    end
+    q1 -->|"yes"| P2
+
+    q2{"chapter has a<br/><b>Drive folder</b>?"}
+    NEW["<b>aaif-create-chapter</b><br/><i>clone TemplateCity, rebrand</i>"]
+    P2 --> q2
+    q2 -->|"no — an orphan"| NEW --> P3
+    q2 -->|"yes"| P3
+
+    subgraph P3["3 · organizers — who runs it, and can they reach their things?"]
+        direction LR
+        p3a["<b>gather</b><br/>resolve_slack_ids<br/><i>which Slack account is this</i>"]
+        p3b["<b>plan</b><br/>sync_about · sync_access<br/><i>names, grants</i>"]
+        p3c["<b>execute</b><br/>sync_crm · invite · directory"]
+        p3a --> p3b --> p3c
+    end
+
+    subgraph P4["4 · events — is the page live, is it still running events?"]
+        direction LR
+        p4a["<b>gather</b><br/>audit_activity<br/><i>the measurement layer</i>"]
+        p4b["<b>gather</b><br/>chapter_health<br/><i>events + last message</i>"]
+        p4c["<b>gather</b><br/>--audit-luma<br/><i>a dead CTA is invisible otherwise</i>"]
+        p4a --> p4b --- p4c
+    end
+    P3 --> P4
+
+    subgraph P5["5 · speakers &amp; topics — what does it talk about?"]
+        direction LR
+        p5a["<b>gather</b><br/>audit_topics<br/><i>are the subject rooms alive</i>"]
+    end
+    P4 --> P5
+
+    P6["6 · hosts — where does it meet?<br/><i>no estate-wide engine yet</i>"]
+    P5 --> P6
+
+    subgraph P7["7 · workspace — what does an ordinary member see?"]
+        direction LR
+        p7a["<b>gather</b><br/>audit_members"]
+        p7b["<b>gather</b><br/>summarize_audits<br/><i>the Slack audit as one page</i>"]
+        p7a --> p7b
+    end
+    P6 --> P7
+
+    P7 --> REPORT["<b>render_report</b><br/>run.json + each step's findings → report.html<br/><i>the state per subject; logs in the appendix</i>"]
+    REPORT --> OUT{"findings?"}
+    OUT -->|"yes — fix at the source"| P1
+    OUT -->|"no"| DONE(["estate in step"])
+
+    classDef phase fill:#faf9f6,stroke:#57534e,color:#000
+    classDef gather fill:#e0e7ff,stroke:#4338ca,color:#000
+    classDef plan fill:#fff,stroke:#57534e,color:#000
+    classDef exec fill:#fecaca,stroke:#b91c1c,color:#000
+    classDef decide fill:#fff,stroke:#0369a1,color:#000
+    classDef side fill:#fff,stroke:#a8a29e,color:#000,stroke-dasharray:4 3
+    class P1,P2,P3,P4,P5,P7 phase
+    class p1a,p1b,p2a,p3a,p4a,p4b,p4c,p5a,p7a,p7b gather
+    class p2b,p3b plan
+    class p2c,p3c exec
+    class q1,q2,OUT decide
+    class NEW,P6 side
+```
+
+Two branches are worth calling out, because they are where a run stops being a
+straight line:
+
+- **A chapter with no Drive folder is an orphan.** Its About doc and its CRM
+  live *inside* that folder, so phase 4 has nowhere to write. The run reports
+  it and **`aaif-create-chapter` has to go first** — clone TemplateCity,
+  rebrand every asset, move the slide-5 map dot — and only then do organizers
+  sync.
+- **A near-miss city is never matched.** `Delhi` against an existing
+  `Delhi NCR` row is reported for a human to confirm, never written: a
+  near-miss has no override flag, so a wrong guess does not cost one
+  confirmation, it blocks that city permanently.
+- **Organizers are done before anyone else.** They are the only people who get a
+  name in an About doc and a grant on a chapter folder — `sync_access` reads its
+  list from the *intake*, never the CRM. Speakers and hosts reach exactly one
+  surface, the chapter CRM, and follow in phase 5. That phase is **one pass and
+  is not split by role**: `merge_people` combines a person's rows across role
+  tabs into a single row reading `Organizer/Speaker`, and a role-scoped pass
+  could only ever write the narrower half.
+
+#### Inside phase 4 — what happens to one person
+
+This is where most of the branching lives, and where the identity questions get
+answered: *which Slack account is this*, and *which Google address can actually
+be granted*.
+
+```mermaid
+flowchart TD
+    P(["one accepted person,<br/>one chapter"]) --> A1
+
+    A1["<b>sync_about.py</b> — rewrite the<br/>Organizers list in About.docx"]
+    A2{"doc has an<br/>Organizers heading?"}
+    A3["skip, with a reason<br/><i>matched on text, not style — never guessed at</i>"]
+    A1 --> A2
+    A2 -->|"no"| A3
+    A2 -->|"yes"| M1
+
+    M1["<b>sync_crm.py</b> — match to the chapter CRM<br/><b>by email</b>, the dedupe key"]
+    M2{"workbook has the<br/><b>Interested in</b> column?"}
+    M3["refuse — run migrations/<br/>migrate_interested_in.py first<br/><i>never write by column letter</i>"]
+    M4{"already in this CRM?"}
+    M5["fill <b>blank cells only</b><br/><i>Signal is never written</i>"]
+    M6["add a row:<br/>Status · Interested in · Notes"]
+    M1 --> M2
+    M2 -->|"no"| M3
+    M2 -->|"yes"| M4
+    M4 -->|"yes"| M5
+    M4 -->|"no"| M6
+
+    S1["<b>resolve_slack_ids.py</b><br/>find their <b>Slack ID</b>"]
+    S2{"users.lookupByEmail hit?<br/><i>exact — a Gmail dot misses</i>"}
+    S3["write <b>Slack ID</b> + <b>Slack Email</b><br/><i>the id, never the @handle</i>"]
+    S4["a name match is only a <b>suggestion</b><br/>--suggest, then --apply --write<br/><i>two people really do share a name</i>"]
+    M5 --> S1
+    M6 --> S1
+    S1 --> S2
+    S2 -->|"yes"| S3
+    S2 -->|"no"| S4
+
+    G1["<b>sync_access.py</b><br/>find the address to grant"]
+    G2{"a human recorded a<br/><b>Drive Email</b>?"}
+    G3["grant that one<br/><i>the intake Email is never rewritten</i>"]
+    G4["grant the intake <b>Email</b>"]
+    G5{"does it have a<br/><b>Google account</b>?"}
+    G6["skip + report<br/><i>Drive would have to email them<br/>— never a side effect of a sync</i>"]
+    G7["PHASE 1 — grant <i>writer</i><br/>on their own chapter folder"]
+    S3 --> G1
+    S4 --> G1
+    G1 --> G2
+    G2 -->|"yes"| G3
+    G2 -->|"no"| G4
+    G3 --> G5
+    G4 --> G5
+    G5 -->|"no"| G6
+    G5 -->|"yes"| G7
+
+    L1{"every grant<br/>succeeded?"}
+    L2["refuse to lock<br/><i>locking now leaves them no access at all</i>"]
+    L3["PHASE 2 — remove anyone:reader<br/>from the Chapters folder"]
+    G7 --> L1
+    L1 -->|"no"| L2
+    L1 -->|"yes"| L3
+
+    D1["<b>track_drive_email.py</b><br/>read each folder's ACL back"]
+    D2{"an ACL entry matches<br/>some spelling of them?"}
+    D3["record it in <b>Drive Email</b>"]
+    D4["write <b>(no grant)</b><br/><i>they cannot open it —<br/>an access request is coming</i>"]
+    L3 --> D1 --> D2
+    D2 -->|"yes"| D3
+    D2 -->|"no"| D4
+
+    classDef stop fill:#e5e5e5,stroke:#737373,color:#000
+    classDef flag fill:#fecaca,stroke:#b91c1c,color:#000
+    class A3,M3,G6,L2,S4 stop
+    class D4 flag
+```
+
+The three findings this produces are the ones an operator acts on:
+**`(no grant)`** in `Drive Email` means no permission on their chapter folder
+matches any spelling of their address — they cannot open it, and an access
+request is coming. A **name-match suggestion** means an email lookup missed and
+a human has to confirm the account before it is written, because two people
+genuinely do share a name. And a **skipped grant** means the address has no
+Google account behind it; the fix that emails nobody is to record a
+Google-backed address in `Drive Email` and re-run.
+
+Reading the colours — they are the **gates**, and they are why this is not a
+batch job:
+
+| | Phase | Gate | Why |
+|---|---|---|---|
+| 🟦 | every `gather` step | **read-only** | no write mode exists at all; a finding is fixed at its source |
+| 🟨 | `triage` | **human** | the runner **summarises, and never decides**. It reports how deep the queue is — "nothing to do" and "nobody has looked" are different facts — and exits `2` while rows wait. Accepting an applicant is a judgement about a person; you make it with `aaif-triage-intake`. |
+| ⬜ | `chapters`, `resources`, `about`, `crm` | **open** | `--write` passes through after you approve the report |
+| 🟧 | `access` | **report-only** | never receives `--write` from the runner — see † |
+| 🟥 | `provision`, `invite`, `directory` | **approval** | creates rooms, adds and notifies real people — needs `--i-have-approval`; an unattended run only reports them |
+
+† `access` is **report-only**: its grants hand standing
+Drive access to addresses typed into a public form, and Drive may email the
+person as a side effect, so the runner never passes it `--write` at all. It
+reports, and a human runs the grant by hand.
+
+**The order is not negotiable.** An unresolved city is invisible to every step
+below it. A net-new city needs its feed row before anything can hang off it. The
+CRM decides who gets Drive access, so it lands before access does. And the
+resource map records what exists only once it exists. Selecting a subset cannot
+reorder it — `sync.py access crm` still runs `crm` first, and a test pins that.
+
 | Skill | What it does | Touches |
 |---|---|---|
 | `aaif-create-chapter` | Clone the **TemplateCity** folder and rebrand every asset for a new city | Google Drive |
@@ -91,7 +343,10 @@ talk to Slack or Luma.
 | `aaif-create-event` | Add an event to a chapter/series Event Tracker (due-dates stamped from the event date), optionally creating the live Luma page on approval | Google Drive, Luma |
 | `aaif-update-event` | Edit an event's details or move its date (recomputing all task due-dates), flag stale assets, optionally sync the change to Luma | Google Drive, Luma |
 | `aaif-event-status` | Report overdue / due-soon event tasks by owner, plus read-only Luma registration stats | Google Drive, Luma |
-| `aaif-sync-chapters` | Push intake decisions to the Chapters List, About docs, chapter CRMs, per-chapter Drive access and the resource map (report/propose by default) | Google Sheets/Drive/Docs, Slack |
+| **`aaif-sync`** | **The ops front door.** Runs the whole estate sync in dependency order — preflight → chapters → organizers → events → speakers → hosts → workspace, each phase gather → plan → execute — report-first, with a gate on anything that touches a real person | everything below |
+| `aaif-sync-chapters` | Phases `chapters` + `events`: intake cities and organizer names → rows on the public Chapters List; audits every row's Luma page | Google Sheets |
+| `aaif-sync-organizers` | Phase `organizers`: accepted and pipeline people → each chapter's About doc, its private CRM, and its per-chapter Drive grants | Google Sheets/Drive/Docs |
+| `aaif-sync-slack` | Phases `chapters` + `organizers`: the chapter → Drive-folder/Slack-channel resource map, then creating those rooms and inviting organizers into them | Slack, Google Sheets |
 | `aaif-audit-slack` | Audit the community Slack workspace — chapter/organizer channel coverage and member/channel health — as a self-contained HTML report | Slack, Google Sheets |
 | `aaif-community-pulse` | Draft the periodic "AAIF Community Organizer Update" Slack post from recent chapter events, community news, and the Luma calendar | Slack, Google Drive, Luma |
 | `aaif-sync-badges` | Generate and sync chapter organizer badges (SVG + PNG) into the chapter-badges Drive folder | Google Drive |
@@ -178,18 +433,35 @@ Code *plugin*:
   need the full checkout (or plugin install), since the zip won't contain
   `lib/`. Those are `aaif-audit-slack`, `aaif-community-pulse`,
   `aaif-create-chapter`, `aaif-create-event`, `aaif-event-status`,
-  `aaif-sync-badges`, `aaif-sync-chapters` and `aaif-update-event`.
+  `aaif-sync` (its report renderer), `aaif-sync-badges`, `aaif-sync-chapters`,
+  `aaif-sync-organizers`, `aaif-sync-slack` and `aaif-update-event`.
   `scripts/check_portable_skills.py` keeps this list honest — adding a
   `lib/aaif_events` import to a skill that is not listed here fails the build,
   so giving up a skill's portability stays a decision someone makes on purpose.
   **A second, narrower coupling the guard does not model:** a few scripts
   import a *sibling skill's* module rather than `lib` —
-  `aaif-sync-chapters/scripts/invite_organizers.py` imports `audit_organizers`
+  the four sync skills read each other's engines — `aaif-sync-slack`'s scripts
+  import `sync_chapters` (chapters) and `sync_crm` (organizers),
+  `aaif-audit-slack` imports `resolve_slack_ids` (organizers),
+  `aaif-sync-slack/scripts/invite_organizers.py` imports `audit_organizers`
   from `aaif-audit-slack`, and `aaif-create-chapter/scripts/create_chapter.py`
-  imports `sync_chapters` from `aaif-sync-chapters` for the one definition of
-  `CHAPTER_CAP`. Both skills are already on the list above, so CI stays green —
-  but for the `lib` reason, not this one. Those skills additionally need the
-  sibling skill's folder present, not just `lib/`.
+  imports `sync_chapters` for the one definition of `CHAPTER_CAP`. All are
+  already on the list above, so CI stays green — but for the `lib` reason, not
+  this one. Those skills additionally need the sibling skill's folder present,
+  not just `lib/`.
+
+  The front-door skill is deliberately absent from that list: it runs every
+  engine as a **subprocess**, importing none of them, which is what lets one
+  runner drive four skills without taking on any of their coupling.
+
+  **A third, softer one:** the eight content skills (`aaif-announcement-post`,
+  `aaif-attendee-reminder`, `aaif-carousel-copy`, `aaif-dayof-slides`,
+  `aaif-luma-description`, `aaif-recap-post`, `aaif-speaker-bio`,
+  `aaif-speaker-invite`) *name* `aaif-event-status`' `fetch_tracker.py` as the
+  way to read an event's tracker entry. They import nothing, so they still zip
+  and still work — the agent falls back to asking the user for the details,
+  which is what it did before the script existed. The command is a shortcut a
+  full checkout has and a zip does not, not a dependency.
 - **Cursor** — Cursor uses its own `.cursor/rules/*.mdc` format and does **not**
   consume Claude Code plugins. You can copy a `SKILL.md`'s instructions into a
   Cursor rule, but it won't run the bundled scripts the same way.
@@ -215,8 +487,11 @@ meetups/
 ├── skills/
 │   ├── aaif-announcement-post/SKILL.md
 │   ├── aaif-create-chapter/{SKILL.md, scripts/}
-│   ├── aaif-sync-chapters/{SKILL.md, scripts/, migrations/, references/}
-│   └── …  (20 skills total)
+│   ├── aaif-sync/{SKILL.md, scripts/}          # the ops front door
+│   ├── aaif-sync-chapters/{SKILL.md, scripts/, references/}
+│   ├── aaif-sync-organizers/{SKILL.md, scripts/, migrations/, references/}
+│   ├── aaif-sync-slack/{SKILL.md, scripts/, references/}
+│   └── …  (23 skills total)
 └── README.md
 ```
 

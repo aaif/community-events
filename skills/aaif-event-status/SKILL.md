@@ -22,60 +22,89 @@ argument-hint: '<chapter|series> [event]'
 > native features like Tabs.
 
 Read-only digest of a chapter or online series' `Event Tracker.docx`: for each event,
-the **overdue** and **due-soon** (within 7 days) tasks, grouped by owner.
 
-**You (the agent) drive Google Drive via the `gws` CLI; the Python script only does the
-deterministic parsing of a local file.** Prereq: `gws` installed and authenticated
-(`gws-cli-access`).
+Read-only digest of a chapter or online series' `Event Tracker.docx`: for each event,
+the **overdue** and **due-soon** (within 7 days) tasks, grouped by owner. Nothing is
+ever written back — not to Drive, not to the tracker, not to any sheet.
+
+## Preflight
+
+- [ ] `gws` installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] The chapter or series name **exactly as the Drive folder spells it** —
+      `New York City`, not `NYC`. `aaif-sync-slack`' resource map holds the
+      folder URL for every chapter on the Chapters List.
+- [ ] Working from a full checkout (these scripts import `lib/aaif_events`).
 
 ## Steps
 
-1. **Locate the tracker.** A chapter lives under the **Chapters** folder
-   (`1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx`); an online series under **Online**
-   (`1g2vHrqDHfh9wBkDJryJIl8wqXA4J-d4i`). Find the folder, then its `Event Tracker.docx`:
+- [ ] **1. Fetch the tracker.** One command resolves the folder (Chapters, then
+      Online — the mode is implicit in which parent holds the name), finds
+      `Event Tracker.docx`, and downloads it to a fresh `0700` temp directory:
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_tracker.py "New York City"
+      ```
+      It prints `tracker: <path>`. **Do not hand-compose `gws drive files list`
+      queries for this** — the nested quoting is where it goes wrong, and the
+      script already handles a name with an apostrophe.
+- [ ] **2. Run the digest** (local, deterministic, no network):
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/event_status.py <path> ["event"]
+      ```
+      Status is computed against today from each task's DUE cell; clock-time
+      day-of tasks and `Done` tasks are excluded.
+- [ ] **3. Registration stats**, for events whose tracker `LUMA URL` holds their
+      event page (written by `aaif-create-event`'s Luma push):
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py <path> ["event"]
+      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py --url https://luma.com/EVENT_SLUG
+      ```
+      Going, pending, waitlist, invited, declined, checked-in, plus registration
+      state. The script detects whether Luma is connected (that calendar's API
+      key in `LUMA_API_KEY` or keychain item `luma-api-key`; see
+      `aaif-create-event` for setup) and skips the stats with a note when it is
+      not — the task digest still works and the user can read the numbers off the
+      event page by hand.
+- [ ] **4. Delete the temp directory.** It holds organizer, speaker and venue
+      details. `fetch_tracker.py --print-cleanup` prints the `rm -rf` command.
 
-   ```
-   gws drive files list --params '{"q":"name = '\''<NAME>'\'' and '\''1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx'\'' in parents and trashed=false","fields":"files(id,name)"}'
-   # then, with the folder id:
-   gws drive files list --params '{"q":"'\''<FOLDER_ID>'\'' in parents and name = '\''Event Tracker.docx'\'' and trashed=false","fields":"files(id)"}'
-   ```
-   If not found under Chapters, try the Online parent. (Mode is implicit: whichever
-   folder it lived in.)
+## Feeding a content skill
 
-2. **Download it** into a temp dir:
+The eight content skills (`aaif-announcement-post`, `aaif-recap-post`,
+`aaif-luma-description`, `aaif-carousel-copy`, `aaif-speaker-bio`,
+`aaif-speaker-invite`, `aaif-attendee-reminder`, `aaif-dayof-slides`) all open on
+the same question, and this is the answer to it:
 
-   ```
-   WORK=$(mktemp -d)
-   gws drive files get --params '{"fileId":"<DOC_ID>","alt":"media"}' --output $WORK/tracker.docx
-   ```
-   The tracker holds organizer, speaker, and venue details — keep it in the temp
-   dir and **never commit it** to the repo.
-
-3. **Run the digest** (read-only, local):
-
-   ```
-   python3 ${CLAUDE_SKILL_DIR}/scripts/event_status.py $WORK/tracker.docx ["event"]
-   ```
-
-Status is computed against today from each task's DUE cell; clock-time day-of tasks and
-`Done` tasks are excluded. Nothing is written back — this skill only reads.
-
-## Luma registration stats (read-only)
-
-For events whose tracker LUMA URL holds their event page (written by
-`aaif-create-event`'s Luma push), pull the live guest counts — going, pending,
-waitlist, invited, declined, checked-in — plus registration state:
-
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_tracker.py "New York City" \
+    --event "Agentic AI Night"          # or --event next / --event latest
 ```
-python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py $WORK/tracker.docx ["event"]
-python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py --url https://luma.com/EVENT_SLUG
-```
 
-The script detects whether Luma is connected (that calendar's API key in
-`LUMA_API_KEY` or keychain item `luma-api-key`; see `aaif-create-event` for
-setup); when it isn't, it skips the stats with a note — the task digest above
-still works, and the user can read the numbers off the event page manually.
-This is strictly read-only —
-it never writes to Luma, the tracker, or any sheet, and Luma data is never fed
-back into the Intake Ops sheet. Use the numbers for the day-of slides
-(`aaif-dayof-slides`) and the recap post (`aaif-recap-post`).
+`--event` takes a title, a **unique** substring of one, or `next` / `latest`. An
+ambiguous substring **raises rather than resolving** — a draft written for the
+wrong event reads exactly like a correct one. Add `--json` for machine-readable
+fields.
+
+## Gotchas
+
+- **Contact details are withheld from the field digest on purpose.** `SPEAKER
+  EMAIL`, `DOOR CODE`, `VENUE CONTACT` and their siblings are read but not
+  printed: the surest way to keep an address out of a published post is to keep
+  it out of the agent's context. The run *names* which fields it withheld, so a
+  blank is never mistaken for an empty tracker. `--all-fields` overrides, for a
+  human debugging a tracker — never for drafting copy.
+- **The tracker is downloaded outside the repo**, into a system temp dir, not
+  into the working directory. `.gitignore` is a weaker guarantee than a path
+  with nothing to commit it to. **Never commit a tracker.**
+- **Luma numbers never flow back.** This skill is strictly read-only; Luma data
+  is never fed into the Intake Ops sheet. Use the counts for the day-of slides
+  (`aaif-dayof-slides`) and the recap post (`aaif-recap-post`).
+- **A folder name that matches two folders aborts.** Rename one rather than
+  letting the script pick.
+
+## Verify
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_fetch_tracker.py
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_event_status.py
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_luma_stats.py
+```

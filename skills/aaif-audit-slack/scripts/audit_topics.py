@@ -759,7 +759,9 @@ def main():
 
     today = dt.datetime.now(dt.timezone.utc)
     act_path = os.path.join(args.cache, "activity.json")
-    act = jsoncache.read(act_path, team_id=team_id, note=print)
+    # max_age=None: a consumer that cannot refetch; the report dates the sweep
+    # (`age` below) so a stale one is shown as stale, not dropped.
+    act = jsoncache.read(act_path, team_id=team_id, note=print, max_age=None)
     act_meta = None
     if act:
         act_meta = {"age": jsoncache.age(act_path),

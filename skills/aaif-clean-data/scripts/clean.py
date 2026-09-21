@@ -17,7 +17,7 @@ Subcommands:
 Nothing is written unless you run `apply`, `install-flags`, or `install-colors`.
 `scan` only reports.
 """
-import argparse, json, os, re, subprocess, sys, unicodedata
+import argparse, json, os, re, subprocess, sys, tempfile, unicodedata
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 SOURCE = "Form Responses"
@@ -72,6 +72,63 @@ def gws(args):
     txt = out.stdout
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
     return json.loads(txt[i:]) if i >= 0 else {}
+
+
+def _repo_root(path):
+    """Git repo root containing `path`, or None when it lives outside any repo.
+    Walks up to the nearest existing dir first: the file may not exist yet."""
+    probe_dir = os.path.dirname(os.path.abspath(path)) or os.sep
+    while not os.path.isdir(probe_dir) and probe_dir != os.sep:
+        probe_dir = os.path.dirname(probe_dir) or os.sep
+    try:
+        # LC_ALL=C: the "not a git repository" match reads git's stderr, and a
+        # localized git would abort a legitimate outside-repo run instead.
+        proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True,
+                              env={**_scrubbed_env(), "LC_ALL": "C", "LANG": "C"})
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that "
+                 f"{path} is ignored; install git or pass --json-out outside any repository.")
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    stderr = (proc.stderr or "").strip()
+    if "not a git repository" in stderr.lower():
+        return None
+    # Any other failure (dubious ownership, corrupt .git, ...) aborts: mapping it
+    # to None would silently disengage the guard.
+    sys.exit(f"ABORT: `git rev-parse` failed in {probe_dir} (exit {proc.returncode}: "
+             f"{stderr[:200]}), so this cannot verify that {path} is ignored.")
+
+
+def assert_git_ignored(path):
+    """Refuse to write the findings file where git would happily commit it.
+
+    `--json-out` names rows and the people on them, and the repo this runs in
+    is PUBLIC, so `.gitignore` coverage is a safety control, not tidiness —
+    verified at run time rather than trusted to a rule a rename can silently
+    stop matching. Mirrors the audit skills' guard; inlined because this script
+    is deliberately self-contained (see AGENTS.md on the lib coupling).
+
+    A path outside every repository is fine — there is nothing to commit it
+    to. `check-ignore` exits 128 (not 1) there, which is why the repo root is
+    resolved first instead of treating that exit as "unignored"."""
+    root = _repo_root(path)
+    if root is None:
+        return                       # outside any repo — nothing to leak into
+    abs_path = os.path.abspath(path)
+    env = _scrubbed_env()
+    ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", abs_path],
+                             capture_output=True, env=env).returncode == 0
+    # .gitignore has no effect on an already-tracked file.
+    tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", abs_path],
+                             capture_output=True, env=env).returncode == 0
+    if tracked:
+        sys.exit(f"ABORT: {path} is already TRACKED by the repo at {root} — "
+                 "git rm --cached it first. The findings file names people.")
+    if not ignored:
+        sys.exit(f"ABORT: {path} is not gitignored in {root}. The findings file "
+                 "names people; write it under a gitignored path (e.g. "
+                 "sync-reports/<stamp>/clean.json) or outside the repository.")
 
 
 def read_tab(tab):
@@ -430,6 +487,9 @@ def norm_city(s):
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
 CHAPTERS_TAB = "Chapters & Teams"
 H_OTHER = "Don't see your city above? Enter it here."
+#: The role question. The role tabs filter Form Responses on it the same way
+#: (`SEARCH("organizer", brand)` in the Organizers tab's formula).
+H_BRAND = "What brings you here?"
 H_EXTRACTED = "Extracted City"
 H_RESOLVED = "Resolved City"
 
@@ -618,9 +678,10 @@ def idx(hdr, name):
 def scan():
     hdr, rows = read_tab(SOURCE)
     ni, ei, li, ci = (idx(hdr, h) for h in (H_NAME, H_EMAIL, H_LINKEDIN, H_CITY))
+    bi = idx(hdr, H_BRAND)
     # Reading by header name survives a reorder, not a *rename*: if a required
     # column is gone, fail loudly instead of reporting "nothing to fix".
-    missing = [h for h, i in ((H_NAME, ni), (H_EMAIL, ei)) if i is None]
+    missing = [h for h, i in ((H_NAME, ni), (H_EMAIL, ei), (H_BRAND, bi)) if i is None]
     if missing:
         sys.exit("ABORT: required column(s) %s not found in %r tab. Headers present: %s"
                  % (", ".join(missing), SOURCE, hdr))
@@ -666,19 +727,154 @@ def scan():
             flags.append({"row": rn, "who": who,
                           "issue": "city=Other (run `clean.py cities` to derive it)"})
         if email:
-            seen_email.setdefault(email, []).append(rn)
-    for email, rns in seen_email.items():
-        if len(rns) > 1:
-            flags.append({"row": rns[0], "who": email, "issue": f"duplicate email in rows {rns}"})
+            seen_email.setdefault(email, []).append(
+                (rn, row[bi] if bi is not None else "", name))
+    flags.extend(duplicate_organizers(seen_email))
     return changes, flags
 
 
-def print_scan(changes, flags):
+# The dict shape `build_findings` emits is the contract with the sync runner's
+# findings module (`lib/…/findings.py`, format 1). This script stays portable —
+# it must run zipped on its own — so it carries this small writer instead of
+# importing that module; change the shape there and here together.
+FINDINGS_FORMAT = 1
+
+
+def is_organizer_brand(brand):
+    """The role tabs' own test, mirrored: an organizer row is one whose answer
+    to `What brings you here?` mentions organizing."""
+    return "organizer" in (brand or "").lower()
+
+
+def duplicate_organizers(seen_email):
+    """One flag per address with more than one ORGANIZER application.
+
+    The same person legitimately files several rows — a talk proposal and a
+    venue offer and an organizer application are three forms, and two talk
+    proposals are two rows — so a repeated address is not a duplicate. A
+    second organizer application is: one row per organizer is the rule the
+    CRM and the grants are keyed on. `seen_email` maps address -> [(row,
+    brand)] in sheet order; the flag sits on the first organizer row.
+    """
+    flags = []
+    for email, rows in seen_email.items():
+        org = [(rn, name) for rn, brand, name in rows if is_organizer_brand(brand)]
+        if len(org) > 1:
+            who = next((n for _rn, n in org if n), email)
+            flags.append({"row": org[0][0], "who": who,
+                          "issue": f"duplicate organizer application in rows {[rn for rn, _n in org]}"})
+    return flags
+
+
+def _flag_kind(issue):
+    """The flag's category with the offending cell value cut off: the text
+    report prints `invalid email: <address>`; the JSON carries only the kind.
+    The row's name (or, on a nameless row, its address) travels in `detail`
+    instead — see `build_findings`; the offending VALUE never does."""
+    if issue.startswith("city=Other"):
+        return "unresolved city"
+    return issue.split(":", 1)[0].split(" in rows", 1)[0].strip()
+
+
+def build_findings(changes, flags):
+    """The `scan` report as data (see `write_findings`), from the same two lists
+    `print_scan` prints. Row numbers are the subjects — a subject is never a
+    person. `detail` carries what the text report already prints beside the
+    row: the row's name, or its address only when the row has no name. The
+    offending cell values — the old/new pair of a fix, a malformed address,
+    a bad link — never leave the sheet through this path."""
+    unresolved = [f for f in flags if _flag_kind(f["issue"]) == "unresolved city"]
+    doc = {"format": FINDINGS_FORMAT, "step": "clean", "mode": "report",
+           "summary": f"{len(changes)} proposed fixes, {len(flags)} flags",
+           "measured": [
+               {"label": "proposed fixes", "value": len(changes),
+                **({"tone": "warn"} if changes else {"tone": "ok"})},
+               {"label": "flags", "value": len(flags),
+                **({"tone": "warn"} if flags else {"tone": "ok"})},
+               {"label": "unresolved cities", "value": len(unresolved),
+                **({"tone": "warn"} if unresolved else {})},
+           ],
+           "findings": [], "written": False}
+    # Mechanical fixes are one finding per COLUMN with the count, not one per
+    # row: they are whitespace, case and a trailing slash, `apply` takes them
+    # from `scan --json` as a batch, and 347 rows of "LinkedIn URL normalized"
+    # on the page buried the 51 flags that actually need a person.
+    by_col = {}
+    for c in changes:
+        by_col[c["header"]] = by_col.get(c["header"], 0) + 1
+    for header, n in sorted(by_col.items(), key=lambda kv: -kv[1]):
+        doc["findings"].append({"kind": "proposed fixes", "subject": header,
+                                "detail": f"{n} row(s) to normalize",
+                                "severity": "info", "action": "apply with clean.py apply"})
+    # Detail = the person's name (the text report prints it beside the row)
+    # and a fixed reason. `who` falls back to the address when the name is
+    # blank, so a nameless row is identified by its address — and by nothing
+    # else: the offending cell value itself (the malformed address, the bad
+    # link) is cut off by `_flag_kind` and never lands here.
+    reason = {"unresolved city": "the dropdown said Other and the free text did not resolve",
+              "LinkedIn not a profile URL": "not a linkedin.com/in/ profile link",
+              "missing email": "no address on the row",
+              "invalid email": "the address is not well-formed",
+              "missing name": "no name on the row"}
+    for f in flags:
+        kind = _flag_kind(f["issue"])
+        # The name where the row has one, the address where it does not: a
+        # row with neither is the "missing name" flag itself.
+        who = f.get("who", "")
+        name = "" if who.startswith("row ") else who
+        if kind == "unresolved city":
+            action = "run clean.py cities"
+        elif kind == "duplicate organizer application":
+            action = "merge or mark the duplicate"
+        else:
+            action = "fix on the row"
+        why = (f["issue"].split(" in ", 1)[1] if kind == "duplicate organizer application"
+               else reason.get(kind, ""))
+        detail = " — ".join(p for p in (name, why) if p)
+        doc["findings"].append({"kind": kind, "subject": f"row {f['row']}",
+                                "detail": detail, "severity": "warn", "action": action})
+    return doc
+
+
+def write_findings(path, doc):
+    """Land the report 0600 and atomically: the file is complete or absent."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".findings-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=1, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+#: Proposed normalizations shown per column before the scan says "and N more".
+#: They are mechanical (whitespace, case, a trailing slash on a URL) and `apply`
+#: takes them from `scan --json`, not from this listing, so the listing exists
+#: to be spot-checked — 347 of them were 300 lines, ~10k tokens, in an agent's
+#: context for a run whose point was the 51 flags below them.
+SAMPLE_PER_COLUMN = 3
+
+
+def print_scan(changes, flags, verbose=False):
     print(f"Cleanup scan of '{SOURCE}' — {len(changes)} proposed fixes, {len(flags)} flags\n")
     if changes:
         print("PROPOSED NORMALIZATIONS (apply to clean):")
+        by_col = {}
         for c in changes:
-            print(f"  row {c['row']:>3}  {c['header']:<13}  {c['old']!r}  ->  {c['new']!r}")
+            by_col.setdefault(c["header"], []).append(c)
+        for header, cs in sorted(by_col.items(), key=lambda kv: -len(kv[1])):
+            shown = cs if verbose else cs[:SAMPLE_PER_COLUMN]
+            print(f"  {header}: {len(cs)}")
+            for c in shown:
+                print(f"    row {c['row']:>3}  {c['old']!r}  ->  {c['new']!r}")
+            if len(cs) > len(shown):
+                print(f"    … and {len(cs) - len(shown)} more — --verbose lists them; "
+                      f"`scan --json` is what apply reads")
         print()
     if flags:
         print("FLAGS (need a human / judgment call):")
@@ -1080,6 +1276,13 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("scan"); sp.add_argument("--json", action="store_true")
+    sp.add_argument("--verbose", action="store_true",
+                    help="list every proposed normalization, not %d per column"
+                         % SAMPLE_PER_COLUMN)
+    sp.add_argument("--json-out", metavar="PATH", default=None,
+                    help="also write the scan's counts and per-row findings as JSON "
+                         "to PATH (the sync runner passes this; it names rows, so "
+                         "keep it private)")
     ap_apply = sub.add_parser("apply"); ap_apply.add_argument("file")
     ap_cities = sub.add_parser("cities")
     ap_cities.add_argument("--write", action="store_true")
@@ -1087,11 +1290,15 @@ def main():
     sub.add_parser("install-colors")
     a = ap.parse_args()
     if a.cmd == "scan":
+        if a.json_out:
+            assert_git_ignored(a.json_out)   # before any work: the file names people
         changes, flags = scan()
         if a.json:
             print(json.dumps({"changes": changes, "flags": flags}, indent=1))
         else:
-            print_scan(changes, flags)
+            print_scan(changes, flags, a.verbose)
+        if a.json_out:
+            write_findings(a.json_out, build_findings(changes, flags))
     elif a.cmd == "apply":
         apply(a.file)
     elif a.cmd == "cities":

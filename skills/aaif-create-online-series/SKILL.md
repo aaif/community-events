@@ -78,11 +78,13 @@ rules it applies.
 
 ## Procedure
 
-1. **Confirm the series display name and slug with the user.** Ask for the exact
+Same shape as `aaif-create-chapter`: plan, approve, write, verify.
+
+- [ ] **1. Confirm the series display name and slug with the user.** Ask for the exact
    name (e.g. "Reading Group", or "Online Reading Group" if they want the word
    Online in the title) and the Luma slug if one exists.
 
-2. **Plan first** (the default — nothing is created without `--write`) to surface
+- [ ] **2. Plan** (the default — nothing is created without `--write`) to surface
    the slug, Luma status, and any name collision:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
@@ -94,7 +96,7 @@ rules it applies.
    - If Luma shows NOT LIVE, tell the user the page needs creating at
      `luma.com/aaif-<slug>` (or that the slug differs — re-run with `--slug`).
 
-3. **Create the series** — only after the user confirms the plan:
+- [ ] **3. Create the series** — only after the user confirms the plan:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
        --series "Reading Group" --write   # add --slug <x> if overriding
@@ -140,7 +142,7 @@ rules it applies.
    Drive. A residual in a *freshly cloned* file is a different failure (exit 1):
    the template or the rebrand engine is broken — fix that, don't resume.
 
-4. **Verify & hand off.** Confirm the run printed no `!! residual` flags and report
+- [ ] **4. Verify & hand off.** Confirm the run printed no `!! residual` flags and report
    the new folder URL. Remind the user to (a) fill the `[bracketed]` About-the-
    series blurb in `Event Tracker.docx`, and (b) create the Luma page if it wasn't
    live.

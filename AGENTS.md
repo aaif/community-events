@@ -81,12 +81,25 @@ The repo root is simultaneously the marketplace and the single plugin
 (`marketplace.json` has `source: "./"`), so the *whole checkout* is what gets
 installed — which is why skill scripts can reach outside their own folder.
 
+The ops skills have **one front door**, `aaif-sync`, and its `scripts/sync.py`
+is the single definition of the pipeline: which engines run, in what order, and
+behind which of the five gates (`open` / `report-only` / `approval` /
+`read-only` / `human` — the last one summarises but never decides). `nightly.py` wraps that same script for CI rather than carrying
+its own copy, and the four phase skills — `aaif-sync-chapters`,
+`aaif-sync-organizers`, `aaif-sync-slack`, plus `aaif-audit-slack` for the
+gather steps — each document one engine and never restate the order. The runner reaches them
+by **subprocess**, not import, which is why one skill can drive four without
+inheriting their coupling. An order this load-bearing (the CRM must hold the
+right people before Drive access is granted) must have exactly one definition.
+
 Python lives in two tiers, and picking the right one is the main design decision
 in this repo:
 
 - **`lib/aaif_events/`** — shared, stdlib-only modules (`slack`, `luma`, `gws`,
   `sheets`, `redact`, `tracker`, `office`, `report_style`, `jsoncache`,
-  `slides_export`). Skill scripts import these through a
+  `slides_export`, `findings` — the one shape every ops engine writes its
+  measured counts and findings in, so the sync run's page needs no per-engine
+  knowledge). Skill scripts import these through a
   `sys.path.insert(...parents[3] / "lib")` shim at the top of the file.
   **Cost:** a skill that imports `aaif_events` no longer works when zipped
   standalone for claude.ai — it only runs from a full checkout or plugin
@@ -115,6 +128,15 @@ without this file, so the rule has to travel inside each `SKILL.md`. The
 tooling-rule banner, the public-copy rule and the attendee legal footer are each
 byte-identical everywhere they appear, and `scripts/check_tooling_banner.py`
 fails the build if any copy drifts. Edit all of them together.
+
+**Agreeing is not the same as being present.** That check deliberately does not
+police *which* skills carry a banner — an editorial call — which left a hole:
+splitting one sync skill into four dropped the tooling rule from all four and
+every check stayed green, banner count 12 → 11.
+`scripts/check_tooling_banner_coverage.py` closes exactly that and nothing
+wider: a skill whose own scripts drive `gws` must carry the tooling rule,
+because those skills write real Drive files and ship without this file. Extra
+carriers are never objected to.
 
 Anything a human looks at — every HTML report and the PDFs rendered from them —
 is drawn with the AAIF design system in `design/`, through
@@ -150,13 +172,16 @@ Two test styles, because `lib` is a package and skill scripts are not:
 ```bash
 PYTHONPATH=lib python -m pytest lib/aaif_events/tests -q        # library
 PYTHONPATH=lib python -m pytest lib/aaif_events/tests/test_luma.py -q   # one file
-python skills/aaif-sync-chapters/scripts/test_sync_crm.py      # one skill test: plain script, exit 1 on failure
+python skills/aaif-sync-organizers/scripts/test_sync_crm.py    # one skill test: plain script, exit 1 on failure
 pre-commit run --all-files                                     # ruff, codespell, gitleaks, frontmatter, banner
 python scripts/check_no_secret_args.py  # no --token/--key style CLI flags
 python scripts/check_no_real_pii.py     # no real address/Slack id in tracked files
 python scripts/test_check_no_real_pii.py # that guard's own tests
 python scripts/check_workflows.py       # workflows can't leak secrets/PII (needs pyyaml)
 python scripts/test_check_workflows.py  # the linter's own tests
+python scripts/check_state_never_committed.py  # caches/reports stay uncommittable
+python scripts/check_tooling_banner_coverage.py   # a gws skill with no tooling rule
+python scripts/test_check_tooling_banner_coverage.py  # that guard's own tests
 python scripts/check_no_local_redaction.py   # --redact comes from lib, never a local copy
 python scripts/check_portable_skills.py      # lib coupling matches the README's caveat
 python scripts/extract_design_tokens.py --check  # design tokens aren't stale

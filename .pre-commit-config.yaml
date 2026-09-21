@@ -81,6 +81,30 @@ repos:
         pass_filenames: false
         files: 'SKILL\.md$'
 
+  # Its sibling: the copies agreeing is worth nothing if a skill that drives
+  # gws carries no copy at all. Splitting one sync skill into four dropped the
+  # banner from all four and every check stayed green.
+  - repo: local
+    hooks:
+      - id: check-tooling-banner-coverage
+        name: every gws-driving skill carries the tooling rule
+        entry: python3 scripts/check_tooling_banner_coverage.py
+        language: python
+        pass_filenames: false
+        files: '^skills/.*\.(py|md)$'
+
+  # Caching locally is deliberate; the cache reaching git is not. The runtime
+  # guards all read .gitignore, so one tidy-up of that file disarms every one of
+  # them at once — this asserts the file itself.
+  - repo: local
+    hooks:
+      - id: check-state-never-committed
+        name: caches and reports can never be committed
+        entry: python3 scripts/check_state_never_committed.py
+        language: python
+        pass_filenames: false
+        files: '^\.gitignore$'
+
   # --- Secrets never travel on argv (env vars only; see AGENTS.md) ----------
   - repo: local
     hooks:

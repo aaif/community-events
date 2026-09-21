@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 # for READING only — this module never writes to the sheet, and resolve_slack_ids itself
 # pulls in only `lib`, so there is no import cycle back into this skill.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                                "..", "..", "aaif-sync-chapters", "scripts"))
+                                "..", "..", "aaif-sync-organizers", "scripts"))
 
 from aaif_events import gws as gwsmod  # noqa: E402
 from aaif_events import sheets as _sheets  # noqa: E402
@@ -147,7 +147,7 @@ def load_config(sheet_id=None):
         raise SystemExit(
             "ABORT: no %r tab on the Chapters List (or it is empty). The channel "
             "matching config lives there now; run\n"
-            "  python3 skills/aaif-sync-chapters/migrations/migrate_resource_columns.py "
+            "  python3 skills/aaif-sync-organizers/migrations/migrate_resource_columns.py "
             "--write\nto create it." % SLACK_CONFIG_TAB)
 
     headers = [h.strip() for h in rows[0]]

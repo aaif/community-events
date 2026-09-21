@@ -77,8 +77,9 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 from sync_chapters import (CHAPTER_CAP, CHAPTERS_ID, H_MERGED_INTO,  # noqa: E402
                            NO_RESOURCE, cell, census_of, fold_city, get_values,
                            header_index, read_chapters, unknown_statuses)
-from aaif_events import jsoncache  # noqa: E402
-from aaif_events.redact import (add_redact_flag, redact_name,  # noqa: E402
+from aaif_events import findings, jsoncache  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
+from aaif_events.redact import (add_redact_flag, redact_name, redact_text,  # noqa: E402
                                 set_redaction)
 
 #: One verdict per chapter, so "a row is in exactly one bucket" is a property of
@@ -188,8 +189,14 @@ def slack_activity(cache_dir, today, window):
     question wider than it looked, so the caller clamps to it rather than
     reporting an unanswerable window as silence.
     """
-    act = jsoncache.read(os.path.join(cache_dir, "activity.json"), note=print)
-    chans = jsoncache.read(os.path.join(cache_dir, "channels.json"), note=print)
+    # max_age=None: this script only CONSUMES the cache and cannot refetch, and
+    # it dates the sweep itself from the per-record `day` stamps below — an
+    # old sweep is clamped and announced, never mistaken for a fresh one. The
+    # shared one-day expiry is for producers, which discard and re-pull.
+    act = jsoncache.read(os.path.join(cache_dir, "activity.json"), note=print,
+                         max_age=None)
+    chans = jsoncache.read(os.path.join(cache_dir, "channels.json"), note=print,
+                           max_age=None)
     if act is None or chans is None:
         return None, {}
     swept = [r for r in act.values() if isinstance(r, dict) and r.get("day")]
@@ -299,10 +306,54 @@ def build(window, cache_dir):
             verdict = QUIET
         rows.append({"city": ch["city"], "status": ch.get("status", ""),
                      "merged_into": ch.get("merged_into", ""),
+                     "ops_notes": ch.get("ops_notes", ""),
                      "events": n, "event_days": e_days, "slack_days": s_days,
                      "members": members, "verdict": verdict,
                      "why": unknown_why, "undated": key in undated})
     return rows, chapters, slack is not None, unparsed, meta
+
+
+def _days(d):
+    """The table's cell for an age in days, or `never`."""
+    return ("%dd" % d) if d is not None else "never"
+
+
+def build_findings(report, quiet, awake, cannot_say, untriaged):
+    """Record the ranked verdicts on a findings.Report (step `health`). Pure.
+
+    Takes the three buckets main() already split (after --untriaged filtering,
+    so the JSON shows what the text showed) and the blank-Status count from the
+    census. A QUIET chapter is `warn` with the table's four cells as detail —
+    the review queue, not a decision, exactly as the text says. CANNOT SAY is
+    `info` with its why: nothing to do but know that the evidence is missing.
+    Status, Merged Into and Ops Notes are hand-typed cells and stay out.
+    """
+    report.summary = ("%d quiet, %d cannot say, %d active; %d untriaged"
+                      % (len(quiet), len(cannot_say), len(awake), untriaged))
+    report.measure("quiet", len(quiet), "warn" if quiet else "ok")
+    report.measure("active", len(awake), "ok")
+    report.measure("cannot say", len(cannot_say), "warn" if cannot_say else None)
+    report.measure("untriaged", untriaged, "warn" if untriaged else None)
+    for r in quiet:
+        report.find("quiet", r["city"],
+                    "events %d / last event %s / last slack %s / members %s"
+                    % (r["events"], _days(r["event_days"]), _days(r["slack_days"]),
+                       r["members"] if r["members"] is not None else "-"),
+                    severity="warn", action="review; set Status by hand if retiring")
+    for r in sorted(cannot_say, key=lambda x: x["city"]):
+        report.find("cannot say", r["city"], r["why"] or "", severity="info",
+                    action="fix the evidence source, then re-run")
+    return report
+
+
+CELL_TEXT_OPEN, CELL_TEXT_CLOSE = "<<form-text>>", "<</form-text>>"
+
+
+def wrap_cell_text(value):
+    """A hand-typed cell between the markers intake.py uses, with any `<<` inside
+    it neutralised to `< <` first — so a value holding the literal close marker
+    cannot end the wrapper early and pass the rest off as the engine's own."""
+    return "%s %s %s" % (CELL_TEXT_OPEN, value.replace("<<", "< <"), CELL_TEXT_CLOSE)
 
 
 def main():
@@ -317,8 +368,11 @@ def main():
     ap.add_argument("--cache", default=DEFAULT_CACHE,
                     help="aaif-audit-slack cache dir (default %s)" % DEFAULT_CACHE)
     add_redact_flag(ap)
+    findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)   # the findings file carries names
 
     rows, chapters, have_slack, unparsed, meta = build(a.window, a.cache)
     if have_slack:
@@ -381,6 +435,12 @@ def main():
                  ("%dd" % r["slack_days"]) if r["slack_days"] is not None else "never",
                  r["members"] if r["members"] is not None else "-",
                  r["status"] or "(untriaged)", redact_name(r["merged_into"]) if r["merged_into"] else ""))
+        # The operator's own note on the row, quoted so it travels with the
+        # verdict. Free text: it is shown, never acted on — and wrapped in the
+        # same markers intake.py uses, so the data/instruction boundary is
+        # visible to whoever (or whatever) reads the log.
+        if r["ops_notes"]:
+            print("  %-22s   ops notes: %s" % ("", wrap_cell_text(redact_text(r["ops_notes"]))))
 
     if cannot_say:
         print("\nCANNOT SAY (%d) — no activity found, but the evidence is "
@@ -392,6 +452,10 @@ def main():
     print("\nACTIVE on at least one signal (%d): %s"
           % (len(awake), ", ".join(sorted(r["city"] for r in awake))))
     print("\nReport only — no Status cell was written.")
+    # The same report as data, for the sync runner's page. Always `report`
+    # mode and never `written`: this engine has no write path.
+    build_findings(findings.Report("health"), quiet, awake, cannot_say,
+                   by_status.get("", 0)).write(a.json_out)
     return 0
 
 

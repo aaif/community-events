@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # The flag and the helpers it governs come from ONE module on purpose: a helper
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
+from aaif_events import findings  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 from aaif_events import gws as _gws_mod  # noqa: E402
 # cell/header_index/col_letter are re-exported: five sibling scripts import
 # them from here. `header_index` now aborts on a DUPLICATED header, which this
@@ -71,6 +73,8 @@ H_STATUS = "Status"
 #: satellite into its metro (Noida -> Delhi NCR) is otherwise unrecorded, and
 #: "where did this chapter go" is the question a retired row has to answer.
 H_MERGED_INTO = "Merged Into"
+#: Human-owned free text beside a chapter row. Read and quoted, never written.
+H_OPS_NOTES = "Ops Notes"
 
 CHAPTER_STATUSES = ("Active", "Provisioned", "Dormant", "Merged", "Deprecated")
 
@@ -289,7 +293,24 @@ def luma_status(slug):
     """'live' / 'absent' / 'unknown' for the Luma page a new row would point at."""
     return url_status("https://luma.com/aaif-" + slug)
 
-def audit_luma():
+class LumaAudit(namedtuple("LumaAudit", "checked dead unknown blank throttled_at")):
+    """What one `--audit-luma` sweep measured.
+
+    `dead`, `unknown` and `blank` all hold (row, city, link) — a blank row's
+    link is "" — so every consumer walks one shape. `throttled_at` is the row
+    the sweep stopped on, or None; `partial` is that as a question. Kept as
+    data so the printed report and the JSON findings are two readers of one
+    sweep, never two sweeps.
+    """
+    __slots__ = ()
+
+    @property
+    def partial(self):
+        """True when luma.com rate-limited the sweep before it finished."""
+        return self.throttled_at is not None
+
+
+def audit_luma(report=None):
     """Report every EXISTING feed row whose `Chapter Luma Link` is not live.
 
     The standing replacement for the old write-time gate. Holding a new row back
@@ -301,7 +322,18 @@ def audit_luma():
     the cities being added today, never at the 90 already on the sheet.
 
     Opt-in (`--audit-luma`) because it is one HTTP request per row.
+
+    Returns the pending-work count. When `report` (a findings.Report) is given,
+    the same sweep is also recorded on it via luma_findings().
     """
+    sweep = sweep_luma()
+    if report is not None:
+        luma_findings(report, sweep)
+    return print_luma_audit(sweep)
+
+
+def sweep_luma():
+    """One paced GET per feed row with a link; the LumaAudit of what came back."""
     rows = get_values(CHAPTERS_ID, "'%s'!A:AZ" % CHAPTERS_TAB)
     if not rows:
         sys.exit("ABORT: chapters tab %r came back empty." % CHAPTERS_TAB)
@@ -316,7 +348,7 @@ def audit_luma():
         if not city:
             continue
         if not link:
-            blank.append((rownum, city))
+            blank.append((rownum, city, ""))
             continue
         # Paced, because an unthrottled sweep trips the limiter partway through
         # and everything after it is unverified.
@@ -334,35 +366,79 @@ def audit_luma():
             dead.append((rownum, city, link))
         elif st == "unknown":
             unknown.append((rownum, city, link))
-    print("\nLuma audit: %d row(s) with a link checked; %d dead, %d unverifiable, "
-          "%d row(s) with no link.%s"
-          % (checked, len(dead), len(unknown), len(blank),
-             "  (stopped early — rate-limited)" if throttled_at else ""))
-    for label, items in (("DEAD (404 — the CTA button goes nowhere)", dead),
-                         ("could not verify — check by hand", unknown)):
+    # Every dead or unverifiable row was one the sweep checked.
+    assert len(dead) + len(unknown) <= checked
+    return LumaAudit(checked, dead, unknown, blank, throttled_at)
+
+
+def luma_headline(sweep):
+    """The one-line count summary — the text report's first line and the JSON summary."""
+    return ("Luma audit: %d row(s) with a link checked; %d dead, %d unverifiable, "
+            "%d row(s) with no link.%s"
+            % (sweep.checked, len(sweep.dead), len(sweep.unknown), len(sweep.blank),
+               "  (stopped early — rate-limited)" if sweep.partial else ""))
+
+
+def luma_findings(report, sweep):
+    """Record a LumaAudit on a findings.Report (step `luma`). Pure; no I/O.
+
+    Subjects are cities, as the text report prints them. A dead link is `bad`
+    (the CTA on the site 404s); unverifiable and no-link rows are `warn`
+    (pending work, not proven broken); the rate-limit stop is one `warn` row so
+    the page shows that the sweep did not finish rather than a short, clean list.
+    """
+    report.summary = luma_headline(sweep)
+    report.measure("rows checked", sweep.checked)
+    report.measure("dead", len(sweep.dead), "bad" if sweep.dead else "ok")
+    report.measure("unverifiable", len(sweep.unknown), "warn" if sweep.unknown else None)
+    report.measure("no link", len(sweep.blank), "warn" if sweep.blank else None)
+    report.measure("rate-limited at", "row %d" % sweep.throttled_at if sweep.partial else "no",
+                   "warn" if sweep.partial else "ok")
+    for rownum, city, link in sweep.dead:
+        report.find("dead link", city, "row %d: %s (404)" % (rownum, link),
+                    severity="bad", action="create the Luma page or fix the link")
+    for rownum, city, link in sweep.unknown:
+        report.find("unverifiable link", city, "row %d: %s" % (rownum, link),
+                    severity="warn", action="check by hand")
+    for rownum, city, _link in sweep.blank:
+        report.find("no link", city, "row %d" % rownum,
+                    severity="warn", action="create the Luma page and fill the cell")
+    if sweep.partial:
+        report.find("sweep rate-limited", "row %d" % sweep.throttled_at,
+                    "rows after it were not checked", severity="warn",
+                    action="re-run later")
+    return report
+
+
+def print_luma_audit(sweep):
+    """Print the sweep; return the pending-work count the exit code hangs on."""
+    print("\n" + luma_headline(sweep))
+    for label, items in (("DEAD (404 — the CTA button goes nowhere)", sweep.dead),
+                         ("could not verify — check by hand", sweep.unknown)):
         if items:
             print("  %s:" % label)
             for rownum, city, link in items:
                 print("     row %-4d %-22s %s" % (rownum, city, link))
-    if blank:
+    if sweep.blank:
         print("  no Chapter Luma Link at all: %s"
-              % ", ".join("%s (row %d)" % (c, r) for r, c in blank))
+              % ", ".join("%s (row %d)" % (c, r) for r, c, _link in sweep.blank))
     # ALL THREE are pending work, and the caller turns this into the exit code.
     # Returning only len(dead) meant a sweep that luma.com rate-limited into 90
     # "unknown"s exited 0 — a night that verified nothing reading as a clean
     # one. `blank` counts too: a row with no link at all is the state this
     # engine now CREATES by default, so the audit that replaced the write-time
     # gate has to be the thing that reports it.
-    if throttled_at:
+    if sweep.partial:
         # The shared PARTIAL marker (see nightly.py): an involuntary skip must
         # never read as a clean result.
         print("  PARTIAL: luma.com rate-limited this sweep at row %d — the rows "
               "after it were NOT checked. Re-run later to finish."
-              % throttled_at)
-    if unknown:
+              % sweep.throttled_at)
+    if sweep.unknown:
         print("  PARTIAL: %d row(s) could not be verified — this run did NOT "
-              "prove those links are live." % len(unknown))
-    return len(dead) + len(unknown) + len(blank) + (1 if throttled_at else 0)
+              "prove those links are live." % len(sweep.unknown))
+    return (len(sweep.dead) + len(sweep.unknown) + len(sweep.blank)
+            + (1 if sweep.partial else 0))
 
 # ----------------------------------------------------------------------------
 # Read the two sheets
@@ -530,8 +606,8 @@ def assert_under_cap(what="create a new chapter", incoming=1):
 
 def read_chapters():
     """Return (chapters, last_row, layout). chapters = [{row, city, organizers_raw,
-    status, merged_into, public}]. All keys are always present ("" when the
-    column is absent), so consumers subscript rather than .get().
+    status, merged_into, public, ops_notes}]. All keys are always present (""
+    when the column is absent), so consumers subscript rather than .get().
 
     layout = {headers, index: {name -> 0-based col}} — the tab is a website feed
     whose columns have moved before, so read well past the current width and
@@ -565,6 +641,7 @@ def read_chapters():
     i_status = layout["index"].get(H_STATUS)
     i_merged = layout["index"].get(H_MERGED_INTO)
     i_pub = layout["index"].get("Slack Channel")
+    i_notes = layout["index"].get(H_OPS_NOTES)
 
     chapters, last_row = [], 1
     for rownum, row in enumerate(rows[1:], start=2):
@@ -574,7 +651,8 @@ def read_chapters():
         chapters.append({"row": rownum, "city": city, "organizers_raw": cell(row, i_org),
                          "status": cell(row, i_status) if i_status is not None else "",
                          "merged_into": cell(row, i_merged) if i_merged is not None else "",
-                         "public": cell(row, i_pub) if i_pub is not None else ""})
+                         "public": cell(row, i_pub) if i_pub is not None else "",
+                         "ops_notes": cell(row, i_notes) if i_notes is not None else ""})
         last_row = rownum
 
     # New rows are appended at last_row+1 and written FULL WIDTH, which clears
@@ -758,6 +836,59 @@ def print_report(st):
     if not adds and not new_rows:
         print("\nNo changes needed — the chapters list is in sync with the intake.")
 
+
+def build_findings(report, st, held=()):
+    """Record the proposal on a findings.Report (step `chapters`). Pure; no I/O.
+
+    The same numbers print_report prints, as data for the run page. `held` is
+    the rows partition_new_rows kept back under `--require-luma` (empty in
+    report mode and by default). Subjects are cities or intake row numbers,
+    never addresses; names go through the same redaction as stdout, so
+    `--redact` governs this file too. Free text from the form never lands here:
+    a malformed row is reported by row number and the reason's KIND, not the
+    offending value (bad_public_text's message repr's it).
+    """
+    adds, new_rows, near_misses = st.adds, st.new_rows, st.near_misses
+    cities = len({fold_city(e["city"]) for e in st.entries})
+    report.summary = ("%d qualifying organizers across %d cities; %d add(s), %d new "
+                      "row(s), %d near-miss(es); %d unresolved"
+                      % (len(st.entries), cities, len(adds), len(new_rows),
+                         len(near_misses), len(st.unresolved)))
+    report.measure("qualifying organizers", len(st.entries))
+    report.measure("cities", cities)
+    report.measure("chapter rows", len(st.chapters))
+    report.measure("adds", len(adds), "warn" if adds else "ok")
+    report.measure("new rows", len(new_rows), "warn" if new_rows else "ok")
+    report.measure("near-misses", len(near_misses), "warn" if near_misses else None)
+    report.measure("unresolved", len(st.unresolved), "warn" if st.unresolved else None)
+    held_cities = {fold_city(h["city"]) for h in held}
+    for a in adds:
+        report.find("add", a["city"], "row %d: + %s" % (a["row"], "; ".join(map(redact_name, a["names"]))),
+                    severity="warn", action="apply with --write")
+    for n in new_rows:
+        is_held = fold_city(n["city"]) in held_cities
+        luma = n.get("luma")
+        detail = "row %d: %s — https://luma.com/aaif-%s%s" % (
+            n["row"], "; ".join(map(redact_name, n["names"])), n["slug"],
+            " (Luma page %s)" % luma if luma else "")
+        if is_held:
+            report.find("held row", n["city"], detail, severity="warn",
+                        action="create the Luma page and re-run")
+        else:
+            report.find("new row", n["city"], detail, severity="warn",
+                        action="apply with --write, then fill the editorial columns")
+    for m in near_misses:
+        report.find("near-miss", m["city"],
+                    "%s ~ %s" % ("; ".join(map(redact_name, m["names"])),
+                                 ", ".join("%s (row %d)" % c for c in m["candidates"])),
+                    severity="warn", action="confirm the row or fix the intake city")
+    for m in st.malformed:
+        kind = "too long" if "characters (max" in m["why"] else "control characters or markup"
+        report.find("malformed text", "intake row %d" % m["row"],
+                    "excluded from every write: %s" % kind,
+                    severity="bad", action="fix the intake row")
+    return report
+
 # ----------------------------------------------------------------------------
 # Named, not a bare tuple: every consumer reads fields by attribute (print_report
 # takes the State itself, not *state), so adding a field can't silently rebind a
@@ -890,8 +1021,29 @@ def main():
                     help="also check EVERY existing feed row's Chapter Luma Link "
                          "and report the dead ones (one request per row; slow)")
     add_redact_flag(ap, masks="names (first initial) and free-text answers")
+    findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    if a.json_out:
+        # Both steps (`chapters` and `luma`) land through the same flag, and the
+        # `chapters` file carries names: guarded before any work.
+        rs.assert_git_ignored(a.json_out)
+
+    # One flag, two steps: the runner calls this script once for the sync
+    # (`chapters`) and once more with --audit-luma (`luma`), and each call's
+    # JSON is that step's report, not both.
+    step = "luma" if a.audit_luma else "chapters"
+    report = findings.Report(step, "write" if a.write else "report")
+    held = []
+
+    def done(code):
+        """Every NORMAL exit (0 or 2) lands the JSON beside the log first. Abort
+        paths sys.exit around this on purpose: a run that failed has no
+        state-of-the-estate to report, and the log says why."""
+        if step == "chapters":
+            build_findings(report, state, held)
+        report.write(a.json_out)
+        return code
 
     # --write recomputes from a fresh read here — a stale proposal is never applied.
     state = compute()
@@ -899,16 +1051,16 @@ def main():
     if a.allow_missing_luma:
         print("NOTE: --allow-missing-luma is inert — writing without a live Luma "
               "page is the default now; see --require-luma.", file=sys.stderr)
-    dead_luma = audit_luma() if a.audit_luma else 0
+    dead_luma = audit_luma(report) if a.audit_luma else 0
     drift = bool(state.adds or state.new_rows)
     if not a.write:
         # Exit convention (shared by all five engines, consumed by nightly.py):
         # report mode exits 0 when in sync, 2 when it proposes changes. A dead
         # Luma link is drift too when it was asked about: the row is on the site
         # with a button that 404s, which is pending work whoever writes it.
-        return 2 if (drift or dead_luma) else 0
+        return done(2 if (drift or dead_luma) else 0)
     if not drift:
-        return 0
+        return done(0)
 
     # The cap's second enforcement point. create_chapter.py guards the Drive
     # folder; this guards the feed row. Checked here rather than in report mode
@@ -946,7 +1098,7 @@ def main():
               % (len(held), ", ".join(n["city"] for n in held)))
     if not state.adds and not to_write:
         print("Nothing else to write — every proposed change is held back.")
-        return 2
+        return done(2)
 
     print("\nApplying %d cell update(s) + %d new row(s) in one batchUpdate..."
           % (len(state.adds), len(to_write)))
@@ -1001,13 +1153,15 @@ def main():
         # deleted from the intake during the run would overstate pending work.
         print("Verified: a fresh run proposes only held-back row(s) "
               "(%d still pending)." % len(still_held))
-        return 2
+        report.written = True
+        return done(2)
     print("Verified: a fresh run proposes zero changes.")
+    report.written = True
     # A --write run that was ALSO asked to audit must report what the audit
     # found. dead_luma used to be computed here and consumed only on the
     # report-mode branch, so `--write --audit-luma` printed dead links and then
     # exited 0.
-    return 2 if dead_luma else 0
+    return done(2 if dead_luma else 0)
 
 if __name__ == "__main__":
     sys.exit(main())

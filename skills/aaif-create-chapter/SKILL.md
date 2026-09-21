@@ -43,7 +43,7 @@ not touch it.
 |---|---|---|
 | `San Francisco` / `SAN FRANCISCO` | new city, case-matched | contiguous in the clean template |
 | `SF` abbreviation (`AAIF · SF`, `SF CHAPTER`, `About the AAIF SF Chapter`, `AAIF SF — Attendee CRM`, doc metadata) | full city name | **UPPER** in all-caps contexts, **Title case** in prose |
-| `aaif-sanfrancisco` / `AAIF-SANFRANCISCO` (Luma slug, incl. hyperlink targets) | `aaif-<slug>` / `AAIF-<SLUG>` | see slug rules below |
+| `aaif-sanfrancisco` / `AAIF-SANFRANCISCO` (Luma slug, incl. hyperlink targets) | `aaif-<slug>` / `AAIF-<SLUG>` | see **Luma slug rules** below |
 | File/folder **names** carrying any of the above (e.g. `San Francisco CRM.xlsx`) | renamed with the same transform | not just file contents; unit-tested |
 
 Beyond text, the script also **repositions the green "you-are-here" dot and its
@@ -82,492 +82,128 @@ The slide-5 network-map dot is placed from the city's latitude/longitude:
 
 The projection is calibrated to the **current** `image18.png` world map: it is a
 **Gall Stereographic** projection, fitted against Natural Earth coastlines to
-sub-pixel accuracy (mean residual 0.64 px), so no per-city overrides are needed
-anywhere. If the template's map image ever changes, refit (see below).
+sub-pixel accuracy (mean residual 0.64 px), so **no per-city overrides exist any
+more** — every city is geocoded or given `--lat`/`--lon`. If the template's map
+image ever changes it must be refitted: `references/engine-internals.md`. To
+repair dots on decks that already exist, `references/deck-backfills.md`.
 
-Two consequences of dropping the override table:
+## Preflight
 
-- **Every city now needs coordinates** — geocoding, or `--lat`/`--lon`. The
-  former override cities (Seoul, Sydney, Melbourne, Shanghai) used to be
-  placeable with no network at all; now they hit the geocoder like everyone
-  else, and if it is down the fallback above applies to them too.
-- **Decks placed under the old projection sit a few px off the fitted position**
-  (the template's own hand-placed SF dot, ~9 px). A small dot delta against an old
-  deck is the fit being *right*, not a regression — see the validate note below.
-  For chapter decks, `backfill_map_dots.py` below reports and repairs this.
+- [ ] `gws` CLI installed and authenticated (see the user's `gws-cli-access` memory).
+      All Drive calls go through it.
+- [ ] The exact display name confirmed with the user, spaces and all ("New York",
+      not "NYC").
+- [ ] The Luma slug confirmed. If they don't know, the default is fine — step 1
+      reports whether the page is live.
+- [ ] Working from a full checkout (`create_chapter.py` imports `lib/aaif_events`).
 
-## Renaming an existing chapter (`rename_chapter.py`)
+## Create a chapter
 
-Creating a chapter rebrands San Francisco -> `<City>` while cloning. Renaming one
-that already exists is the same transform between two arbitrary cities, applied
-in place — and it is a **four-surface** job, which is what the capital-city
-migration (2026-08) missed:
+Run these in order. Nothing is created without `--write`.
 
-| Surface | Example |
+- [ ] **1. Plan** — surfaces the slug, the Luma status, the resolved coordinates
+      and any name collision. Writes nothing.
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York"
+      ```
+      The slug must match `^[a-z0-9-]+$`; anything else aborts before the
+      luma.com URL is built. (`--dry-run` is accepted as a no-op alias.)
+      - Aborts with **"already exists"** → stop. The chapter is already there.
+        (To fill in a partially-built one, go to step 4.)
+      - Luma **NOT LIVE** → tell the user the page needs creating at
+        `luma.com/aaif-<slug>`, or that the slug differs — re-run with `--slug`.
+      - Check the printed `Coords:` line. Wrong city? Re-run with `--lat`/`--lon`.
+- [ ] **2. Show the user the plan and get explicit approval.** The slug and the
+      coordinates are the two things only a human can confirm.
+- [ ] **3. Write** — clones TemplateCity → a new `<City>` folder under Chapters,
+      then downloads, rebrands and re-uploads each `.pptx`/`.docx`/`.xlsx` in
+      place, and moves the slide-5 map dot.
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York" --write
+      ```
+- [ ] **4. Verify** (below). A run is not finished until this passes.
+- [ ] **5. Hand off.** Report the new folder URL. A new chapter is not on the
+      website until **`aaif-sync-chapters`** writes its feed row — that engine
+      also enforces the 100-chapter cap, which `create_chapter` only warns about.
+
+### Recovering a failed or partial run — `--resume`
+
+A run that dies midway (a `gws` 403, template drift, network loss) leaves a
+half-created folder, and a plain re-run aborts on the name collision. **Don't
+trash the folder.**
+
+- [ ] **a.** `create_chapter.py --city "New York" --write --resume` — enters the
+      existing folder and clones/rebrands only what is missing. Resuming a
+      fully-cloned chapter is a no-op. This is also the backfill path for a
+      chapter missing part of the template (Luxembourg's 6 design assets were
+      never cloned). Existing children are matched by their **rebranded or
+      original** template name, so a survivor still under its original name is
+      renamed in place (logged `~ old -> new`) and treated as present, never
+      re-cloned as a duplicate.
+- [ ] **b.** Read the `!! residual in existing file` lines. The run exits `2`
+      with "N existing file(s) still carry source tokens". Files already in Drive
+      are **never modified on faith**.
+- [ ] **c.** Only if every flagged file is a **design asset**, re-run with
+      `--write --resume --repair-existing`.
+- [ ] **d.** Anything flagged under `*CRM.xlsx` or `*Tracker.docx` is fixed
+      **by hand in Drive**. Those hold member data and are never rewritten, even
+      under `--repair-existing`.
+
+A present file whose *content* is corrupt but token-clean is still skipped, not
+repaired — the residual check reads tokens, not validity.
+
+A residual in a *freshly cloned* file is a different failure (exit `1`): the
+template or the rebrand engine is broken. Fix that — don't resume.
+
+## Verify
+
+- [ ] The run printed **no `!! residual`** flags.
+- [ ] Slide 5 ("THE NETWORK") of `Event Template/Slides.pptx` has the green dot
+      on the right city. The `Slides.pptx` line shows `+map dot` when it moved.
+      To check against a render:
+      ```bash
+      PYTHONPATH=lib python3 -c "
+      from aaif_events.slides_export import render_slide_png
+      render_slide_png('<Slides.pptx file id>', 'slide5.png', slide_index=4)
+      "
+      ```
+- [ ] If the Luma page wasn't live, the user has been reminded to create it.
+- [ ] Unit tests still pass after any engine edit:
+      ```bash
+      python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_chapter.py
+      ```
+
+## Gotchas
+
+- **Judge a map dot against the COASTLINE, not against an existing deck.** Decks
+  placed before the Gall Stereographic fit sit ~8–15 px off the fitted position.
+  A small delta against an old deck is the fit being *right*, not a regression.
+  **Never "fix" the projection back toward a hand-placed dot.**
+- **Every city now needs coordinates** — geocoded, or `--lat`/`--lon`. There is
+  no per-city override table any more, so the four former override cities
+  (Seoul, Sydney, Melbourne, Shanghai) hit the geocoder like everyone else.
+- **Geocoding failure never fails the run.** The dot is left at San Francisco
+  with a warning; fix slide 5 by hand or re-run with `--lat`/`--lon`.
+- **A chapter is not born with its own agent art.** Cloning TemplateCity would
+  hand it TemplateCity's agent. That is `upload_agents.py`'s job — see
+  `references/design-system-sweep.md`.
+- **`create_chapter` writes no Chapters List row**, so its 100-chapter cap check
+  is an early warning, not a guarantee: three runs at 99 live chapters each read
+  99, each pass, and the next sync refuses all three rows together.
+- **The template must stay "clean"**: `San Francisco` contiguous (no run or
+  paragraph splits) and the slug normalized to `aaif-sanfrancisco`.
+- **The map-marker fill is shared state.** `create_chapter.GREEN` is `--spec-3`
+  (`14B8B0`); `ooxml_style` maps the legacy `14964A` onto it and `MARKER_FILLS`
+  still recognises the old value so an unswept deck stays findable. Keep the
+  three in step.
+- **Slug and chapter name are two identities.** A renamed chapter routinely keeps
+  serving from its original Luma slug — see `references/rename-chapter.md`.
+
+## References — load on demand
+
+| Read this | When |
 |---|---|
-| the chapter folder | `Scotland` -> `Edinburgh` |
-| file / subfolder names | `Scotland CRM.xlsx`, `Icons/Scotland Agent.gif` |
-| OOXML text in `.docx`/`.pptx`/`.xlsx` | `AAIF Scotland` / `SCOTLAND · CHAPTER` |
-| document metadata (`docProps`) | the chapter label |
-
-That migration renamed only the **Chapters List rows**, so the feed said
-`Edinburgh` while every file an organizer opened said `Scotland`, and the folder
-name no longer matched the city — which is what `aaif-sync-chapters` matches
-chapters to folders on. The shape to look for: a feed row whose `Chapter Folder`
-link resolves to a folder with a different name.
-
-```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/rename_chapter.py --from Scotland --to Edinburgh
-python3 ${CLAUDE_SKILL_DIR}/scripts/rename_chapter.py --from Scotland --to Edinburgh --write
-# a folder already renamed, contents not (a half-finished rename):
-python3 ${CLAUDE_SKILL_DIR}/scripts/rename_chapter.py --folder Madison \
-    --from "Madison, WI" --to Madison --slug-from madisonwi --slug-to madison --write
-```
-
-**The Luma slug is NOT renamed unless you ask** (`--slug-from` / `--slug-to`). A
-chapter's name and its Luma page are two identities, and the page does not move
-just because the chapter was renamed — a renamed chapter routinely keeps serving
-from its original slug, so rewriting those links would replace a working URL
-with a 404. Check the live page, then pass the pair only once it has actually
-moved on luma.com.
-
-For the same reason the name pass is kept **out of** `aaif-<slug>` tokens
-entirely: `SCOTLAND` is a substring of `AAIF-SCOTLAND`, so a naive replace breaks
-a live link as a side effect of a rename that was told not to touch it. A test
-pins this.
-
-Also deliberate:
-
-- **`.rels` receives the slug substitution ONLY**, never the city-name pass —
-  the same narrowing `create_chapter` applies. A relationship part holds ids and
-  targets: rewriting a `Target="../embeddings/Utah_Data.xlsx"` while the zip
-  member keeps its name dangles the relationship and the document opens as
-  corrupt, and the repack validates CRCs, not relationships.
-- **Every string that would change is printed before the write**, including from
-  the CRM. A chapter's CRM is member data, and a row whose own text happens to
-  name the old city would be rewritten too — a human decides that, not the script.
-- **Originals are copied to `backups/rename-<UTC>/`** before anything uploads.
-- **The selection test and the verification test are the same function**, and it
-  asks `rename_part` itself whether a part would change. A predicate that only
-  looked at visible text missed `docProps` and `.rels` — files were never
-  queued, and the verify, sharing the blindness, printed "Verified" over them.
-- **The run re-reads every file from Drive afterwards** and exits non-zero if any
-  file name, or any text in a `.docx`/`.pptx`/`.xlsx`, still carries the old
-  name — or if any part could not be decoded, since a part the verifier could
-  not read is one it cannot vouch for.
-- **A rename whose names contain one another is refused** (`York` -> `New York`):
-  the transform would not be idempotent, so the verify would fail on a correct
-  run and a re-run would double-apply it.
-- **A mid-run upload failure says exactly what landed** — which files were
-  uploaded, that no names were changed, and where the originals are.
-- **The Chapters List row, the intake's city cells and Slack channels are NOT
-  touched.** The first two are `aaif-sync-chapters`' surfaces and must be updated
-  for the engines to keep matching the chapter to its folder; a channel rename
-  needs its own per-channel consent.
-
-## Backfilling existing decks
-
-`scripts/backfill_map_dots.py` re-places the markers in chapter decks that
-already exist. Decks created before the Gall Stereographic fit shipped (PR #20)
-carry their dot from the old placement, which was wrong in two distinct ways:
-the **projection** was ~9% too wide with a ~20 px offset (Tokyo landed in the
-Pacific), and the four `PIXEL_OVERRIDES` cities bypassed the projection entirely
-(Shanghai landed on Honshu because that hand-tuned **override** was wrong — not
-evidence about the formula).
-
-Run the plan (the default) to find out where the estate actually stands: an
-already-corrected estate reports every chapter as `already correct`, and that
-report — not a number written down here — is the authoritative answer. Reach for
-this after a refit, or to check the estate.
-
-Coordinates come from the **Chapters & Teams** sheet's `Generated Geolocation`
-column, joined to Drive by the folder URL in `Chapter Folder` — not from the
-folder name. That is what the website feed already draws, so the deck and the
-site agree; it is also the only source that maps a folder to its real city, and
-a folder's name can lag that city (they have been renamed before). A Drive
-folder with no sheet row is reported and skipped, never guessed at.
-
-```bash
-# Plan (default) — per-chapter drift in pixels, writes nothing:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py
-
-# Apply:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py --write
-
-# One chapter, coordinates given rather than read from the sheet:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py \
-    --city Shanghai --lat 31.2304 --lon 121.4737 --write
-```
-
-`--city` takes the Drive folder's **name** or the city the sheet gives that
-folder, so both `--city Scotland` and `--city Edinburgh` reach the same chapter.
-
-A deck already within `--tolerance` (default 1 px — a pixel or less is rounding,
-not misplacement) is left untouched, so **re-running is a no-op on decks that are
-already correct**. Drift is the worse of the dot and its label, so a refit that
-moves only the label is still caught. A deck whose slide 5 does not hold exactly
-one green dot and one green label is reported with a reason and skipped, never
-rewritten on a guess — and a run that could not evaluate part of the estate exits
-non-zero rather than reading as a finished backfill.
-
-There is **no undo** beyond Drive's revision history: `--write` replaces up to 80
-production decks in place. Read a plan run first.
-
-The script imports the projection and the OOXML surgery from `create_chapter.py`
-— do not reimplement either of those inside the backfill script.
-
-## Backfilling the host footer
-
-`scripts/backfill_host_footer.py` reworks the **"HOSTED BY / WITH" logo footer**
-in the event templates. The footer used to draw each logo as a bordered, filled
-rounded-rect button holding centred bold text; the current design has no boxes,
-puts the **AAIF lockup** in the host slot, and leaves the remaining slots as
-muted `LOGO 1`, `LOGO 2`, … placeholders, with the row packed left on one even
-gap.
-
-The lockup is built from the mark image the slide **already embeds for its own
-header**, plus the wordmark set in Space Grotesk bold. No media and no
-relationship is added, so the footer lockup cannot drift from the header's.
-
-Three cases the script keeps apart, and they are not interchangeable: an
-**unfilled slot** (`MEMBER LOGO`, `HOST VENUE CO.`, `VENUE NAME`, `SPONSOR`, or
-anything containing the word `LOGO`) is renumbered `LOGO n` and muted; a **real
-name** (the carousel's founding-member grid) keeps its text and ink always, and
-keeps its position too unless it sits in the host's own row, which is the one row
-re-packed; the old **`AAIF · SF` badge** beside the host is dropped, because the
-lockup now says the same thing. The script's
-own docstring explains why each rule is drawn where it is.
-
-Scope is **templates**, not the copies organizers have already made for a given
-event: every `.pptx` under a folder matching `Event Templates…` / `Event Name`,
-across all chapters, the online series, and the shared Templates folder. That set
-includes **TemplateCity** — the folder `create_chapter.py` clones for every new
-chapter — so a full sweep is what stops new chapters being minted on the old
-footer. A full-estate run that never reaches TemplateCity, that finds a chapter
-folder contributing no template, that sees a `.pptx`-bearing folder the name
-regex declined (all three are what a rename looks like), or that removes a
-file's boxes without drawing its lockup, prints an `ATTENTION` block and exits
-non-zero rather than reading as finished. A `--chapter` run checks only that
-last one — it is scoped by design and cannot speak for the estate. A file
-whose footer has already been reworked has no chips left to find, so it is not
-re-uploaded and **re-running is a no-op**.
-
-```bash
-# Plan (default) — list every template and its footer, writes nothing:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py
-
-# Apply across the estate:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py --write
-
-# One chapter (matches anywhere in the Drive path, case-insensitive):
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py \
-    --chapter "New York City" --write
-
-# Test the XML engine on a local file, no Drive at all:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py \
-    --rework-local ./Event-Hero-Square.pptx
-```
-
-There is **no undo** beyond Drive's revision history, and `--write` replaces
-every template the scan finds, in place — a plan run prints that count. Read one
-first.
-
-## Backfilling the projects roster
-
-`scripts/backfill_projects.py` brings the **`THE PROJECTS` roster** on each
-deck's About slide up to the projects AAIF actually hosts. The decks were drawn
-against four (`MCP · goose · AGENTS.md · agentgateway`); aaif.io/projects now
-lists six, with **A2A** and **Agent Router** added. The roster lives in
-`PROJECTS` at the top of the script — when the foundation takes on another
-project, edit that tuple and sweep again. Nothing watches for drift on its own,
-and the durable fix is the TemplateCity edit the sweep makes: the script exists
-to bring the copies already in Drive up to it.
-
-The roster is found **structurally** — the `THE PROJECTS` eyebrow, then the text
-shape directly below it on the same left edge — so a deck an organizer had
-already half-corrected is still found. Two guards sit on top of that:
-
-- A roster naming anything that is not one of the projects is a chapter's **own
-  wording**, so it is left untouched and reported. Adding a project therefore
-  never overwrites a hand-written line.
-- Six names do not fit the box four were drawn in. The box is **widened** to fit
-  but never past a gutter in front of whatever is to its right (on the About
-  slide, the `OPEN / BY DEFAULT` stat), so it cannot collide. If even the full
-  width is too narrow the type steps down; and a roster that still overruns —
-  because it is already at the smallest size the script will use, or because its
-  run declares no size to rewrite — is reported as **overflowing** rather than
-  quietly written. A shrunk or colliding roster is a design decision an operator
-  should see.
-
-Scope and the estate-coverage lines of the `ATTENTION` block come from
-`scripts/deck_estate.py`, shared with `backfill_host_footer.py`: templates only,
-across all chapters, the online series and the shared Templates folder. A run
-that never reaches **TemplateCity** — or that reaches it and finds no roster in
-it — says so and exits non-zero, because new chapters would otherwise still be
-minted with the old list. So does a run where an unusual share of templates
-showed no roster at all: the estate is one cloned design, so that is the matcher
-having stopped matching, not good news.
-
-Exit codes are `0` (nothing left to do), `1` (a plan run with work outstanding)
-and `2` (something a human must read: a failure, a skipped roster, an overflow,
-or coverage the scan could not achieve). A deck already naming the six is not
-re-uploaded, so **re-running is a no-op**; a plan run does not repack the decks
-it would change, which also means it does not exercise the repack — only
-`--write` does.
-
-```bash
-# Plan (default) — show every template's roster, writes nothing:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py
-
-# Apply across the estate:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py --write
-
-# One chapter (matches anywhere in the Drive path, case-insensitive):
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py \
-    --chapter "New York City" --write
-
-# Test the XML engine on a local file, no Drive at all:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py \
-    --rewrite-local ./Slides.pptx
-```
-
-There is **no undo** beyond Drive's revision history. Read a plan run first.
-
-## Conforming the estate to the design system
-
-`scripts/restyle_design_system.py` is the sweep that keeps every deck, tracker
-and CRM in the estate on the AAIF design system. The rules live in
-`lib/aaif_events/ooxml_style.py` — shared with the repo's own CI check, so what
-the sweep writes and what the tests assert cannot drift apart — and the
-background plates in `lib/aaif_events/agent_art.py`.
-
-Scope is **templates, not events**, and being *in* a template folder is not
-enough. The sweep only touches files whose NAME is a template — the set in
-`TEMPLATE_FILES` plus each chapter's own `<City> CRM.xlsx` — inside a chapter /
-online-series / shared-Templates folder or its `Event Templates (Copy for Each
-Event)`, `Event Template`, `Event Name` and `Banners (…)` subfolders.
-
-Organizers park their own work in those folders: a dated event deck, a "Copy
-of …", a personal draft. Rebranding someone's finished event deck is not this
-script's business, and the first estate run swept eleven such files before the
-allowlist existed (they were restored from the archive). Anything in a template
-folder that is not a template is **skipped and named in the report**, so a
-genuinely new template gets noticed rather than silently missed — add it to
-`TEMPLATE_FILES` when that happens. Copies deeper in the tree are counted too,
-so "out of scope" never reads as "missed".
-
-Only a CRM's *styling* is ever rewritten — its `xl/styles.xml` and workbook
-theme. Cell values live in `xl/worksheets/` and `xl/sharedStrings.xml`, which
-`restyle_part` never opens.
-
-A workbook is **SpreadsheetML, not DrawingML**: fonts are `<font><name
-val="Calibri"/></font>`, fills are `<patternFill><fgColor rgb="FF1E2761"/>`,
-and colours are ARGB (eight digits, alpha first). Handing those to the deck
-pass changes nothing silently, which is exactly what happened until this was
-written — every CRM in the estate audited "clean" while full of Calibri and
-navy.
-
-It is read-only by default, and **archives every pre-change file** to
-`./backups/restyle-<UTC>/` before uploading it — `--write` refuses to start if
-that directory cannot be created. A re-run over a conformant estate uploads
-nothing.
-
-An archive entry is **never overwritten**: the earliest copy is the pristine
-one, so a second run sharing a `--backup-dir` keeps it. Without that, the second
-run archives the already-restyled file over the original and the archive is
-silently useless as a rollback for exactly the files that needed two passes.
-
-```bash
-# Audit: what is still off the design system? (exit 1 if anything is)
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --check
-
-# Plan (default), then apply:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --write
-
-# One folder. Matched as a whole path SEGMENT, so "Templates" selects the
-# shared folder and not every chapter's "Event Templates (…)" subfolder:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
-    --chapter TemplateCity --write
-
-# ---- anything that needs generated art -------------------------------
-# Build it into a PRIVATE directory FIRST. A fixed /tmp path is world-writable
-# and predictable, so on a shared host someone else can pre-create it and choose
-# the bytes that then land in all 83 chapter decks.
-ART=$(mktemp -d)
-python3 -c "import sys; sys.path.insert(0, 'lib'); \
-    from aaif_events import agent_art as a; \
-    a.build('$ART'); a.build_logos('$ART')"
-
-# Give the two hero decks their background plates (idempotent):
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
-    --plates "$ART" --write
-
-# Retire the hand-made plate the decks were built with, replacing every
-# background this toolkit did not generate with the AAIF soft plate. Repairs
-# the text against the NEW plate in the same pass, which is why --fix-contrast
-# rides along:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
-    --retire-plates --fix-contrast --plates "$ART" --write
-
-# Audit TEXT LEGIBILITY: every run below WCAG AA against what is behind it.
-# Catches what a token check cannot — black-on-black is two correct tokens.
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --contrast
-
-# Repair it, by measurement — a slide is kept only when at least one run is
-# materially rescued and none crosses from passing to failing (or from readable
-# into the invisible band):
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
-    --fix-contrast --write
-
-# Give every chapter its own agent, the ten generic ones and the AAIF logos, in
-# an Icons/ folder. build_agents needs the chapter NAMES, so read them from the
-# same estate walk the sweep uses. NOT done by create_chapter: cloning
-# TemplateCity would hand a new chapter TemplateCity's agent, not its own.
-python3 -c "import sys; sys.path.insert(0, 'lib'); \
-    sys.path.insert(0, '${CLAUDE_SKILL_DIR}/scripts'); \
-    import create_chapter as cc, restyle_design_system as rd; \
-    from aaif_events import agent_art as a; \
-    names=[c['name'] for k in cc.list_children(rd.COMMUNITY_ROOT) \
-           if k['name']==rd.CHAPTERS_FOLDER \
-           for c in cc.list_children(k['id']) if c['mimeType']==cc.FOLDER]; \
-    a.build_agents('$ART', names)"
-python3 ${CLAUDE_SKILL_DIR}/scripts/upload_agents.py --art "$ART" --write
-
-# Run the engine on a local file, no Drive at all:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
-    --restyle-local ./Slides.pptx
-```
-
-A full run asserts it reached **TemplateCity**, **TemplateSeries** and the
-shared **Templates** folder and exits non-zero if it did not: those three mint
-everything else, so missing one means every chapter created afterwards is born
-off-brand again.
-
-**The map-marker fill is shared state.** `create_chapter.GREEN` is `--spec-3`
-(`14B8B0`) and `ooxml_style` maps the legacy `14964A` onto it. `MARKER_FILLS`
-still recognises the old value so a deck the sweep has not reached yet stays
-findable — keep the three in step, and a test pins that `GREEN` equals the
-design system's `--spec-3`.
-
-## Procedure
-
-1. **Confirm the city name and slug with the user.** Ask for the exact display
-   name (with spaces, e.g. "New York") and whether the Luma page exists / what
-   its slug is. If they don't know, the default slug is fine — the script will
-   tell you if it's not live.
-
-2. **Plan first** (the default — nothing is created without `--write`) to surface
-   the slug, Luma status, and any name collision:
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
-       --city "New York"
-   ```
-   (`--dry-run` is still accepted as a no-op alias.) The slug must match
-   `^[a-z0-9-]+$`; anything else aborts before the luma.com URL is built.
-   - If it aborts with "already exists", stop — the chapter is already there.
-   - If Luma shows NOT LIVE, tell the user the page needs creating at
-     `luma.com/aaif-<slug>` (or that the slug differs — re-run with `--slug`).
-
-3. **Create the chapter** — only after the user confirms the plan:
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
-       --city "New York" --write    # add --slug <x> if overriding
-   ```
-   The script clones TemplateCity → a new `<City>` folder under Chapters, then
-   downloads, rebrands, and re-uploads each `.pptx/.docx/.xlsx` in place. It
-   prints a tree and flags any file with `!! residual` tokens.
-
-   **Recovering a failed or partial run — `--resume`.** If a run dies midway
-   (a `gws` 403, template drift raising in the rebrand engine, network loss),
-   the half-created chapter folder is already in Drive and a plain re-run aborts
-   on the name collision. Don't trash the folder — re-run with `--resume`
-   (which, like any mutation, requires `--write`):
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York" --write --resume
-   ```
-   It enters the existing folder and clones/rebrands only what's missing — so
-   resuming a fully-cloned chapter is a no-op. The same flag is the backfill
-   path when a chapter is missing part of the template (e.g. Luxembourg, whose
-   6 design assets were never cloned). Two safeguards make the skip decision
-   trustworthy:
-   - Existing children are matched by their **rebranded or original** template
-     name. A survivor still under its original name (a folder part-cloned before
-     the rename step existed, or a hand copy) is renamed in place (logged `~ old
-     -> new`) and treated as present — never re-cloned as a duplicate.
-   - Every skipped Office file is **residual-checked**, because the likeliest
-     crash state is copied-but-never-rebranded. A clean file logs `exists,
-     skipped — residual-checked clean`. A dirty one is **reported, not
-     rewritten**: it logs `!! residual in existing file <name>` and fails the
-     run. Files already in Drive are never modified on faith — to have the
-     script repair them in place (download, rebrand, re-upload, dot moved), add
-     the explicit `--repair-existing` flag. Even then, **`*CRM.xlsx` and
-     `*Tracker.docx` are never rewritten** — they hold member data once a
-     chapter is live — and are always reported for a hand fix.
-
-   A present file whose *content* is corrupt but token-clean is still skipped,
-   not repaired. For a Luxembourg-style backfill (design assets missing, CRM and
-   tracker already in use), the sequence is: `--write --resume` to clone the
-   missing items; read the `!! residual in existing file` lines (the run ends
-   with exit 2 and "N existing file(s) still carry source tokens"); re-run with
-   `--write --resume --repair-existing` only if the flagged files are design
-   assets; anything flagged under `*CRM.xlsx` / `*Tracker.docx` is fixed by hand
-   in Drive. A residual in a *freshly cloned* file is a different failure (exit
-   1): the template or the rebrand engine is broken — fix that, don't resume.
-
-4. **Verify.** Confirm the run printed no `!! residual` flags and report the new
-   folder URL to the user. If the Luma page wasn't live, remind them to create it.
-   Open slide 5 ("THE NETWORK") of `Event Template/Slides.pptx` and confirm the
-   green dot sits on the correct city (the `Slides.pptx` line shows `+map dot` when
-   it was moved). A misplaced dot means the coordinates were wrong (re-run with
-   `--lat`/`--lon`) or the map art changed (refit the projection — see below). To
-   check against a render, export slide 5 to PNG via the Slides API (see the
-   tooling rule at the top of this file):
-   ```bash
-   PYTHONPATH=lib python3 -c "
-   from aaif_events.slides_export import render_slide_png
-   render_slide_png('<Slides.pptx file id>', 'slide5.png', slide_index=4)
-   "
-   ```
-
-## How it works / maintenance
-
-`scripts/create_chapter.py` is the engine. It rebrands at the paragraph level
-(concatenate the text runs, transform, write back into the first run) so it is
-robust to OOXML run-splitting. The `SF`-abbreviation casing is decided by the
-surrounding words. The Drive layer uses `gws` (`files.copy`, `create`, `get`,
-`update`).
-
-The slide-5 map dot is placed by `reposition_map_marker` using a lat/lon → pixel
-**Gall Stereographic** projection (`lon2x` linear in longitude; `lat2y` linear in
-`(1 + √2/2)·tan(lat/2)`), fitted 2026-07-30 against Natural Earth 110m coastlines
-composited over `image18.png` (mean residual 0.64 px). **If the template's map
-image changes, refit**: composite the transparent PNG over `#F6F5F1`, build a
-distance transform of the drawn pixels, and optimize (scale_x, scale_y, offset_x,
-offset_y, central meridian) per candidate projection family by Nelder-Mead to
-minimise the mean distance from projected coastline vertices (lat > -60; the map
-omits Antarctica) to the nearest drawn pixel. `scripts/test_create_chapter.py`
-covers the San Francisco calibration lock, the label offset, monotonicity/canvas
-bounds, and the 2-shapes-or-raise guard.
-
-To validate the engine after any edit, rebrand a throwaway copy of the template
-and diff it against an existing chapter (the canonical end-state):
-```bash
-# --rebrand-local requires --lat/--lon: local mode is fully offline and refuses
-# to geocode, so the coordinates must be passed explicitly.
-python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
-    --city "Los Angeles" --lat 34.05 --lon -118.24 --rebrand-local /path/to/template-copy
-# then compare paragraph text against the real Los Angeles chapter, and open
-# slide 5 of the rebranded Slides.pptx to confirm the dot moved (+map dot).
-# EXPECTED: the dot sits ~8-15 px from the existing chapter's — old decks were
-# placed by the pre-2026-07-30 anchors/overrides projection. Judge the dot
-# against the COASTLINE, not the old deck, and never "fix" the projection back
-# toward a hand-placed dot.
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_chapter.py   # unit tests
-```
-
-Constants (Chapters parent id, TemplateCity id) live at the top of the script.
-The template must stay "clean": `San Francisco` contiguous (no run/paragraph
-splits) and the slug normalized to `aaif-sanfrancisco`. If a future template edit
-re-introduces a split, the paragraph-level engine still handles it, but the big
-stacked title on Carousel slide 2 is intentionally a single adaptive line.
+| `references/rename-chapter.md` | Renaming an existing chapter, or repairing a half-finished rename. |
+| `references/deck-backfills.md` | Sweeping the existing estate: map dots after a refit, the host footer after a design change, the projects roster when AAIF takes on a project. |
+| `references/design-system-sweep.md` | Auditing or fixing estate styling, contrast, background plates, or agent art. |
+| `references/engine-internals.md` | Before editing the rebrand engine or the projection, or when the template's map image changes and needs a refit. |

@@ -7,12 +7,14 @@ marketplace and a single plugin (`aaif-events`) — `marketplace.json` and
 
 ## Adding or editing a skill
 
-A skill is a folder with a `SKILL.md` (plus an optional `scripts/` dir):
+A skill is a folder with a `SKILL.md` (plus optional `scripts/` and
+`references/` dirs):
 
 ```
 skills/<skill-name>/
-├── SKILL.md
-└── scripts/            # optional helper scripts
+├── SKILL.md            # the procedural spine — under 500 lines / 5k tokens
+├── scripts/            # helper scripts, each with a test_*.py beside it
+└── references/         # deep detail, loaded on demand
 ```
 
 `SKILL.md` starts with YAML frontmatter:
@@ -29,7 +31,40 @@ argument-hint: "<optional> [args]"
 Clear, step-by-step instructions…
 ```
 
-Guidelines:
+### Write the procedure, not the prose
+
+A `SKILL.md` is read by an agent that is about to act, with the whole document
+competing for attention against the conversation. Four rules follow from that,
+and the skills in this repo were restructured onto them:
+
+- **Keep `SKILL.md` under 500 lines and ~5,000 tokens.** That is the
+  [spec's](https://code.claude.com/docs/en/skills) guideline and it is not
+  advisory here: `aaif-sync-chapters` was 1,229 lines and 18k tokens, and an
+  agent reading it had to find the four sentences that governed the command it
+  was about to run. Move the rest to `references/`.
+- **Everything in `references/` needs a *when*.** Each file opens with a
+  one-line "load this when …", and `SKILL.md` closes with a table saying the
+  same thing. "See references/ for details" is not progressive disclosure — it
+  is a pointer the agent has no reason to follow at the right moment.
+- **Multi-step work is a checklist, not a paragraph.** Use
+  `- [ ] **1. Step** — command, then why it is here.` Steps with dependencies or
+  an approval gate especially: the report → approve → write contract is stated
+  once per skill and then referred to, rather than retyped per engine.
+- **Gotchas earn their place; explanations of the obvious do not.** A gotcha is
+  something that defies a reasonable assumption and that the agent *will* get
+  wrong unguarded — "a duplicated column header aborts the engine, on purpose",
+  not "handle errors appropriately". When you have to correct an agent, the
+  correction belongs in that section. Don't explain what a `.docx` is.
+
+If the agent reinvents the same logic on every run — composing the same `gws`
+query, parsing the same file — that is the signal to write a tested script and
+bundle it, not to describe the logic better.
+`skills/aaif-event-status/scripts/fetch_tracker.py` exists for exactly that
+reason: eight content skills used to describe the same two-call Drive lookup in
+prose, and the nested shell quoting was where it went wrong.
+
+### Other guidelines
+
 - **Reference bundled scripts with `${CLAUDE_SKILL_DIR}/scripts/...`**, never a
   hardcoded `.claude/skills/...` path — the variable resolves wherever the skill
   is installed.
@@ -70,7 +105,12 @@ below. These four are the ones whose mistake is invisible in the output:
   every `SKILL.md` that needs them (skills ship downstream without the repo
   docs): the tooling rule, the public-copy rule, and the attendee legal footer.
   Duplication is the decision; *drift* between the copies is the bug. **Edit
-  every copy together**, never just one.
+  every copy together**, never just one. Its sibling
+  **`check_tooling_banner_coverage.py`** catches the other half: a skill whose
+  scripts drive `gws` but whose `SKILL.md` carries no tooling rule at all.
+  Copies agreeing is worth nothing if a skill that needs one has none — which is
+  how splitting a sync skill into four lost the banner from every one of them
+  with the build still green.
 - **`check_no_local_redaction.py`** — `--redact` only works when the flag and
   the helpers that read it come from `lib/aaif_events/redact.py`. A helper
   reading a different module's flag is a helper `--redact` does not govern, and
@@ -89,7 +129,7 @@ pytest is what actually catches a broken import or a stale module name:
 
 ```bash
 PYTHONPATH=lib python -m pytest lib/aaif_events/tests -q    # shared library
-python skills/aaif-sync-chapters/scripts/test_sync_crm.py   # per-skill tests:
+python skills/aaif-sync-organizers/scripts/test_sync_crm.py # per-skill tests:
                                                             # plain scripts, exit 1 on failure
 python scripts/test_check_portable_skills.py                # the repo guards
 ```
@@ -106,7 +146,7 @@ done
 `migrations/` holds one-shots that have already run against the live estate.
 They stay tested because two live engines name one of them as the fix when a
 sheet is missing its columns — see
-`skills/aaif-sync-chapters/references/completed-migrations.md`.
+`skills/aaif-sync-organizers/references/completed-migrations.md`.
 
 ### Evals — the check for whether a skill actually fires
 

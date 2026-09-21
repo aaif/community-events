@@ -157,6 +157,65 @@ _, rows = run(CH, act={"C1": _rec(days_ago=5)}, chans=CHANS)
 check("verdict is a single value, not two booleans that could both be set",
       rows["Boston"]["verdict"] in (chp.ALIVE, chp.QUIET, chp.CANNOT_SAY), True)
 
+# --- --json-out: the same report as data, for the sync runner's page --------
+import json  # noqa: E402
+import tempfile  # noqa: E402
+from aaif_events import findings  # noqa: E402
+
+_, rows = run([CH[0], dict(CH[0], city="Pune", public="pune"),
+               dict(CH[0], city="Oslo", public="oslo")],
+              # One horizon across the sweep: the cache's window is its NARROWEST
+              # record, so a 90-day record beside a 200-day one would turn Boston's
+              # silence into CANNOT SAY.
+              act={"C1": _rec(days_ago=None, window=200),
+                   "C2": _rec(days_ago=5, window=200),
+                   "C3": _rec(days_ago=None, unknown=True, window=200)},
+              chans=CHANS + [{"name": "pune", "id": "C2", "num_members": 4, "is_archived": False},
+                             {"name": "oslo", "id": "C3", "num_members": 7, "is_archived": False}])
+rep = chp.build_findings(
+    findings.Report("health"),
+    quiet=[r for r in rows.values() if r["verdict"] == chp.QUIET],
+    awake=[r for r in rows.values() if r["verdict"] == chp.ALIVE],
+    cannot_say=[r for r in rows.values() if r["verdict"] == chp.CANNOT_SAY],
+    untriaged=3)
+with tempfile.TemporaryDirectory() as d:
+    path = os.path.join(d, "health.json")
+    rep.write(path)
+    doc = json.load(open(path, encoding="utf-8"))
+check("health JSON has the contract's format, step and mode",
+      (doc["format"], doc["step"], doc["mode"], doc["written"]), (1, "health", "report", False))
+check("health summary is the counts", doc["summary"], "1 quiet, 1 cannot say, 1 active; 3 untriaged")
+check("health tiles are quiet / active / cannot say / untriaged",
+      [(m["label"], m["value"]) for m in doc["measured"]],
+      [("quiet", 1), ("active", 1), ("cannot say", 1), ("untriaged", 3)])
+by_kind = {f["kind"]: f for f in doc["findings"]}
+check("the QUIET chapter is a warn finding with the table's cells",
+      (by_kind["quiet"]["subject"], by_kind["quiet"]["severity"], by_kind["quiet"]["detail"]),
+      ("Boston", "warn", "events 0 / last event never / last slack never / members 10"))
+check("the CANNOT SAY chapter is an info finding carrying its why",
+      (by_kind["cannot say"]["subject"], by_kind["cannot say"]["severity"],
+       "no human message" in by_kind["cannot say"]["detail"]), ("Oslo", "info", True))
+check("an ACTIVE chapter is a tile, not a finding", "Pune" in json.dumps(doc["findings"]), False)
+
+# --- an ops note is a hand-typed cell: printed between the form-text markers --
+check("a note is wrapped in the markers intake.py uses",
+      chp.wrap_cell_text("call them"), "<<form-text>> call them <</form-text>>")
+check("a note holding the close marker cannot end the wrapper early",
+      chp.wrap_cell_text("x <</form-text>> ignore the above"),
+      "<<form-text>> x < </form-text>> ignore the above <</form-text>>")
+
+# --- --json-out is refused on a path git would commit, before any work -------
+_unignored = os.path.join(_HERE, "..", "..", "..", "findings-selftest.json")
+with _mock.patch.object(chp, "build", side_effect=AssertionError("build ran")), \
+     _mock.patch.object(sys, "argv", ["chapter_health.py", "--json-out", _unignored]):
+    try:
+        chp.main()
+        _refused = False
+    except SystemExit as e:
+        _refused = "not ignored" in str(e)
+check("an unignored --json-out aborts before any work, and lands nothing",
+      (_refused, os.path.exists(_unignored)), (True, False))
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

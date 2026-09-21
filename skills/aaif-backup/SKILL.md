@@ -64,17 +64,37 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/backup.py --dest /some/dir
 
 ## Restore (manual)
 
-There's no automated restore — it's a deliberate, eyes-open step:
-1. Pick the snapshot you want from `backups/<slug>/`.
-2. Re-upload it over the live file with `gws drive files update`
-   (`--upload <file> --upload-content-type <mime>`), or open the `.xlsx`/`.docx` and
-   copy the needed cells/sections back by hand.
-   For the Intake Ops sheet, prefer copying values back over replacing the file so the
-   role-tab formulas and conditional formats stay intact.
+There is no automated restore — it is a deliberate, eyes-open step.
 
-## Notes
+- [ ] **1.** Pick the snapshot from `backups/<slug>/`. Filenames are UTC
+      timestamps, so the listing is the version history in order.
+- [ ] **2.** Re-upload it over the live file:
+      ```bash
+      gws drive files update --params '{"fileId":"<ID>"}' \
+        --upload <file> --upload-content-type <mime>
+      ```
+      **For the Intake Ops sheet, prefer copying values back** over replacing the
+      file, so the role-tab formulas and conditional formats stay intact.
+- [ ] **3.** Verify the restored file opens and its formulas still compute,
+      before telling the user it is done.
 
+## Gotchas
+
+- **Run this BEFORE `aaif-clean-data apply` or any bulk sheet edit.** That is
+  the whole point of the skill.
+- **The script refuses to start if the destination is committable** — not
+  git-ignored, or already holding tracked files, inside any repo. A `--dest`
+  outside every repo is always fine. This is a guard, not a nuisance: the
+  snapshots are binary copies of real applicant data.
+- **Replacing the Intake Ops sheet wholesale destroys its formulas.** The role
+  tabs are `ARRAYFORMULA` columns; an `.xlsx` re-upload lands literals over them.
 - Default target is the Intake Ops sheet (id `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o`),
-  the one source of applicant data that can't be regenerated.
-- Run this **before** `aaif-clean-data apply` or any bulk sheet edit.
-- Snapshots accumulate; prune old ones by hand if the folder grows large.
+  the one source of applicant data that cannot be regenerated.
+- **Snapshots accumulate and are never pruned.** Delete old ones by hand once
+  they stop being useful — every one is a full copy of real people's data.
+
+## Verify
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/test_backup.py
+```
