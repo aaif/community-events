@@ -44,8 +44,9 @@ by **header name**, never column letter.
 
 1. **Scan (default, read-only)** — detect & propose:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py scan        # human-readable
-   python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py scan --json # structured
+   python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py scan        # human-readable: flags in full, fixes as per-column counts + samples
+   python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py scan --json # structured (what apply reads)
+   python3 ${CLAUDE_SKILL_DIR}/scripts/clean.py scan --verbose  # every proposed fix
    ```
    Mechanical fixes proposed automatically: trim/collapse whitespace, re-case
    clearly all-upper/all-lower names & cities, canonicalize LinkedIn URLs

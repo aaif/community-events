@@ -140,8 +140,10 @@ that writes, and it runs only when the user asks for it.
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/intake.py
    ```
-   Add `--json` for structured data, `--all` for every row, or
-   `--status Accepted` to filter explicitly. If the user named one type
+   The listing is paged, 25 rows per tab (`--offset 25` for the next page,
+   `--limit 0` for all); the counts always cover the whole queue. Add `--json`
+   for structured data, `--all` for every row, or `--status Accepted` to
+   filter explicitly. If the user named one type
    (`organizers` / `hosts` / `speakers`), focus there but pull all so counts are right.
 
 - [ ] **2. Assess fit per applicant**, using these signals (don't over-weight any one):
