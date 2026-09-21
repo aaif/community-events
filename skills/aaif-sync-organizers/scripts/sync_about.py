@@ -498,7 +498,7 @@ def build_findings(docs, orphans, near, malformed, held, unread, mode,
                  "written" if written else "apply with --write")
         if d.applicants:
             rep.find("non-accepted applicant named", city,
-                     "%d applicant(s) removed by the rewrite" % len(d.applicants),
+                     "removed by the rewrite: %s" % "; ".join(map(redact_name, d.applicants)),
                      "warn", "approve the rewrite")
         if d.unknown:
             rep.find("line the intake cannot account for", city,
@@ -521,7 +521,7 @@ def build_findings(docs, orphans, near, malformed, held, unread, mode,
                  "warn", "fix the intake city, or create the folder")
     for m in orphans:
         rep.find("no chapter folder", m["city"],
-                 "%d accepted organizer(s)" % len(m["names"]), "warn",
+                 "; ".join(map(redact_name, m["names"])), "warn",
                  "run aaif-create-chapter")
     return rep
 

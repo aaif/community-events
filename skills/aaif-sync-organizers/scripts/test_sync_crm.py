@@ -1089,7 +1089,7 @@ check("set_redaction(False) leaves REDACT off", _redact.REDACT, False)
 # Subjects are chapters, cities or the intake tab; detail is a row number or a
 # count — never an address, never a cell's free text.
 import json as _json  # noqa: E402
-_held = [{"city": "Boston", "email": "cy@x.io", "status": "Prospect"},
+_held = [{"city": "Boston", "email": "cy@x.io", "status": "Prospect", "name": "Cy"},
          {"city": "boston", "email": "CY@x.io", "status": "Prospect"},   # same person, 2 rows
          {"city": "Pune", "email": "di@x.io", "status": "New"}]
 _kw = dict(people=3, chapters=2, changes=[("Boston", {"clear": 1, "add": 2, "fill": 1})],
@@ -1119,18 +1119,23 @@ for _f in _doc["findings"]:
     _byk.setdefault(_f["kind"], []).append((_f["subject"], _f["detail"], _f["severity"]))
 check("json-out: the workbook change names the chapter and the counts",
       _byk["workbook change"], [("Boston", "2 new / 1 changed / 1 dummy cleared", "warn")])
-check("json-out: one info finding per held chapter, folded on city, distinct people",
-      _byk["held under central approval"],
+check("json-out: one info finding per held chapter, folded on city, naming the people",
+      [(c, d.split(":")[0], s) for c, d, s in _byk["held under central approval"]],
       [("Boston", "1 pipeline organizer(s)", "info"), ("Pune", "1 pipeline organizer(s)", "info")])
+check("...and names who is held where the row has a name",
+      [d for _c, d, _s in _byk["held under central approval"]],
+      ["1 pipeline organizer(s): Cy", "1 pipeline organizer(s)"])
 check("json-out: a skipped workbook is bad", _byk["workbook skipped"][0][::2], ("Lagos", "bad"))
 check("json-out: demotion carries the row and the transition, no name",
       _byk["status moved backwards"], [("Boston", "row 4: Status 'Accepted' -> 'Prospect'", "warn")])
-check("json-out: a kept row is a row number", _byk["real-looking row not touched"],
-      [("Boston", "row 2", "info")])
-check("json-out: no address or fixture name anywhere in the file",
-      [f for f in _doc["findings"]
-       if "@" in f["subject"] + f["detail"]
-       or any(n in f["detail"] for n in ("Ed", "Fay", "Gus", "Hal", "Ivy"))], [])
+check("json-out: a kept row is a row number and the name in it",
+      [(c, d.startswith("row 2: ") and len(d) > len("row 2: "), s)
+       for c, d, s in _byk["real-looking row not touched"]],
+      [("Boston", True, "info")])
+# Names travel in `detail` where the text report prints them (the page has
+# to say what is going on with whom); an address is never a subject.
+check("json-out: no address is ever a subject",
+      [f for f in _doc["findings"] if "@" in f["subject"]], [])
 check("json-out: report mode never claims a write", _doc["written"], False)
 _w = sync_crm.build_findings("write", written=["Boston"], verified=True, **_kw).to_dict()
 check("json-out: write mode after verify is written",

@@ -535,7 +535,9 @@ def build_findings(n_rows, hits, folded, misses, cands, mode):
     if misses:
         rep.find("no account", SOURCE,
                  "%d row(s) resolve to no Slack account at the address on file "
-                 "(they may have joined under another address)" % len(misses),
+                 "(they may have joined under another address): %s"
+                 % (len(misses), "; ".join("%s (row %d)" % (redact_name(n), rn)
+                                           for rn, n, _e in misses)),
                  "info", "run with --suggest, or ask them to join Slack")
     return rep
 

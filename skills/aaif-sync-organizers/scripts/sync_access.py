@@ -512,20 +512,23 @@ def build_findings(p, role, mode, phases, failed=(), verify_bad=(), written=Fals
                    "%s (%s%s)" % (g["name"], role,
                                   ", via %s" % H_DRIVE_EMAIL if g.get("via_column") else ""),
                    "warn", apply)
-        for ch, _old, _new in p.get("superseded", ()):
+        for ch, old, new in p.get("superseded", ()):
             r.find("newer recorded address", ch,
-                   "the old grant stays in place and reads as stale",
+                   "%s is now recorded; the old grant to %s stays in place and reads "
+                   "as stale" % (redact_email(new), redact_email(old)),
                    "warn", "remove the old grant by hand")
         # The address travels here (through --redact, like the text report):
         # "audit this grant" is not actionable without knowing whose it is,
         # and the findings file lives in the private run directory.
         for ch, em, q_role in sorted(p["stale"]):
             r.find("unknown direct grant", ch,
-                   "%s holds %s — no intake row matches this address"
+                   "%s has %s access — no intake row matches this address"
                    % (redact_email(em), q_role),
                    "warn", "audit this grant: revoke it, or record it on an intake row")
-        for ch, _em, q_role in sorted(p.get("excused", ())):
-            r.find("grant excused by %s" % H_DRIVE_EMAIL, ch, q_role,
+        for ch, em, q_role in sorted(p.get("excused", ())):
+            r.find("grant excused by %s" % H_DRIVE_EMAIL, ch,
+                   "%s has %s access under the address recorded in %s, not the "
+                   "intake Email" % (redact_email(em), q_role, H_DRIVE_EMAIL),
                    "info", "confirm the cell is right")
         for o in p["orphans"]:
             r.find("no chapter folder", o["city"],

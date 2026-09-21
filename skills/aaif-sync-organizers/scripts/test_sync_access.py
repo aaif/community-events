@@ -640,7 +640,7 @@ check("json-out: one warn finding per new grant, subject = chapter",
       [k for k in _kinds if k[0] == "new grant"],
       [("new grant", "Boston", "warn"), ("new grant", "Pune", "warn")])
 check("json-out: the stale grant names the chapter, and says who holds what",
-      [(f["subject"], "holds writer" in f["detail"], "@" in f["detail"])
+      [(f["subject"], "has writer access" in f["detail"], "@" in f["detail"])
        for f in _doc["findings"] if f["kind"] == "unknown direct grant"],
       [("Berlin", True, True)])
 check("json-out: the lock is a finding on the parent",

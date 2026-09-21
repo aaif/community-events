@@ -1664,6 +1664,15 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
     """
     r = findings.Report("crm", mode)
     n_held = len({fold_email(p["email"]) for p in held})
+
+    def who(items):
+        """The people behind a row, as the text report names them."""
+        names = []
+        for x in items:
+            n = redact_name(x.get("name", "") if isinstance(x, dict) else str(x))
+            if n and n not in names:
+                names.append(n)
+        return "; ".join(names)
     r.summary = "%d people across %d chapters; %d workbook(s) would change" % (
         people, chapters, len(changes))
     if mode == "write":
@@ -1687,22 +1696,26 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
         r.find("workbook change", name, " / ".join(bits), "warn", "apply with --write")
     by_city = {}
     for p in held:
-        by_city.setdefault(fold_city(p["city"]), [p["city"], set()])[1].add(fold_email(p["email"]))
-    for city, emails in sorted(by_city.values()):
-        r.find("held under central approval", city, "%d pipeline organizer(s)" % len(emails),
+        by_city.setdefault(fold_city(p["city"]), [p["city"], {}])[1].setdefault(
+            fold_email(p["email"]), p)
+    for city, by_email in sorted(by_city.values(), key=lambda v: v[0]):
+        names = who(by_email.values())
+        r.find("held under central approval", city,
+               "%d pipeline organizer(s)%s" % (len(by_email), ": " + names if names else ""),
                "info", "AAIF ops decides")
     for name, why in skipped:
         r.find("workbook skipped", name, why, "bad", "fix the workbook and re-run")
     for m in near_misses:
         r.find("near-miss chapter name", m["city"],
-               "%d people ~ %s" % (len(m["people"]), ", ".join(m["candidates"])),
+               "%s ~ nearest folder: %s" % (who(m["people"]), ", ".join(m["candidates"])),
                "warn", "fix the intake city or rename the folder")
     for o in orphans:
-        r.find("no chapter folder", o["city"], "%d person/people" % len(o["people"]),
+        r.find("no chapter folder", o["city"], who(o["people"]),
                "warn", "run aaif-create-chapter")
     for name, rows in keepers:
         for row in rows:
-            r.find("real-looking row not touched", name, "row %d" % row["row"],
+            r.find("real-looking row not touched", name,
+                   "row %d: %s" % (row["row"], who([row]) or "(no name in the row)"),
                    "info", "clear by hand if it is fixture data")
     for name, header, old, new, op in demoted:
         r.find("status moved backwards", name,
@@ -1713,7 +1726,8 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
                "run migrate_interested_in.py --write")
     if fallbacks:
         r.find("no Form Responses match", "Form Responses",
-               "%d person/people get the generic branch text" % len(fallbacks),
+               "%d person/people get the generic branch text (rows %s)"
+               % (len(fallbacks), ", ".join(str(x) for x in fallbacks)),
                "info", "check the intake email spelling")
     for name in changed:
         r.find("workbook changed since plan", name, "not written", "warn", "re-run to sync it")

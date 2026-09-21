@@ -670,7 +670,8 @@ def scan():
             flags.append({"row": rn, "who": who,
                           "issue": "city=Other (run `clean.py cities` to derive it)"})
         if email:
-            seen_email.setdefault(email, []).append((rn, row[bi] if bi is not None else ""))
+            seen_email.setdefault(email, []).append(
+                (rn, row[bi] if bi is not None else "", name))
     flags.extend(duplicate_organizers(seen_email))
     return changes, flags
 
@@ -700,10 +701,11 @@ def duplicate_organizers(seen_email):
     """
     flags = []
     for email, rows in seen_email.items():
-        org = [rn for rn, brand in rows if is_organizer_brand(brand)]
+        org = [(rn, name) for rn, brand, name in rows if is_organizer_brand(brand)]
         if len(org) > 1:
-            flags.append({"row": org[0], "who": email,
-                          "issue": f"duplicate organizer application in rows {org}"})
+            who = next((n for _rn, n in org if n), email)
+            flags.append({"row": org[0][0], "who": who,
+                          "issue": f"duplicate organizer application in rows {[rn for rn, _n in org]}"})
     return flags
 
 
@@ -753,8 +755,10 @@ def build_findings(changes, flags):
               "missing name": "no name on the row"}
     for f in flags:
         kind = _flag_kind(f["issue"])
+        # The name where the row has one, the address where it does not: a
+        # row with neither is the "missing name" flag itself.
         who = f.get("who", "")
-        name = "" if ("@" in who or who.startswith("row ")) else who
+        name = "" if who.startswith("row ") else who
         if kind == "unresolved city":
             action = "run clean.py cities"
         elif kind == "duplicate organizer application":

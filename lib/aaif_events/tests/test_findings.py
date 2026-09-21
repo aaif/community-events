@@ -53,6 +53,15 @@ def test_read_returns_none_for_absent_or_foreign_files(tmp_path):
     assert findings.read(str(good))["step"] == "s"
 
 
+def test_named_shows_a_few_and_counts_the_rest():
+    assert findings.named([]) == ""
+    assert findings.named(["Ada"]) == "Ada"
+    assert findings.named(["Ada", "Bo", "Cy"]) == "Ada, Bo, Cy"
+    assert findings.named(["Ada", "Bo", "Cy", "Di"]) == "Ada, Bo, Cy and 1 other"
+    assert findings.named(["Ada", "Bo", "Cy", "Di", "Ed"]) == "Ada, Bo, Cy and 2 others"
+    assert findings.named(["", "Ada", " "], show=1) == "Ada"
+
+
 def test_add_flag_is_the_documented_flag():
     ap = findings.add_flag(argparse.ArgumentParser())
     assert ap.parse_args([]).json_out is None

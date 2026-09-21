@@ -632,7 +632,8 @@ check("run_scope() hands back the same report as data",
 _passes = [("Organizer channel",
             [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
               "is_private": True, "missing": [("Ada", "U1")],
-              "present": [("Bo", "U2")], "unaccounted": ["USTRANGER"]}],
+              "present": [("Bo", "U2")], "unaccounted": ["USTRANGER", "U5", "U6", "U7"],
+              "unaccounted_names": ["Zed", "Yan", "Xia", "Wen"]}],
             [("Boston", "Cy")],
             [("Madrid", "no Organizer Channel on the sheet")])]
 _rep = inv.build_findings(_passes, conflicts=1, mode="report")
@@ -768,6 +769,39 @@ check("--scope both still covers organizer, country and champs",
 check("the champs sentinel is not a legal column name",
       inv.CHAMPS_COLUMN.startswith("*"), True)
 
+
+
+# --- strangers are named, and ops staff are never strangers --------------------
+# The finding has to say who; a table cell cannot hold 22 names, so a few are
+# named and the rest counted. Staff is decided the way the audit decides it.
+_stranger_rows = [f for f in _rep.to_dict()["findings"] if f["kind"] == "not on the intake"]
+check("the stranger finding names a few and counts the rest",
+      _stranger_rows[0]["detail"],
+      "4 member(s) the intake does not list for this room: Zed, Yan, Xia and 1 other")
+
+
+class _UsersApi:
+    """users.info for a synthetic directory; anything else is an error."""
+    DIR = {"U5": {"id": "U5", "name": "yan", "real_name": "Yan",
+                  "profile": {"email": "yan@x.com"}},
+           "U8": {"id": "U8", "name": "ops", "real_name": "Ops Person",
+                  "profile": {"email": "ops@aaif.test"}},
+           "U9": {"id": "U9", "name": "seed", "real_name": "Seeded Ops",
+                  "profile": {"email": "seed@x.com"}}}
+
+    def call(self, method, **params):
+        assert method == "users.info"
+        return {"ok": True, "user": self.DIR[params["user"]]}
+
+
+_cfg = {"staff_email_domain": "aaif.test", "ops_staff_domains": [],
+        "ops_staff_emails": ["seed@x.com"]}
+_str, _staff = inv.describe_strangers(_UsersApi(), ["U5", "U8", "U9", "UGONE"], _cfg)
+check("a real stranger is named", _str[0], ("U5", "Yan"))
+check("ops by domain and ops by roster are set aside, not reported",
+      (_staff, [u for u, _n in _str]), (2, ["U5", "UGONE"]))
+check("a member Slack cannot describe keeps their id rather than vanishing",
+      _str[1], ("UGONE", "UGONE"))
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

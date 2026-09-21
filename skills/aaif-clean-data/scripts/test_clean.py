@@ -838,8 +838,11 @@ class TestScanFindings(unittest.TestCase):
         self.assertEqual([(f["subject"], f["detail"], f["severity"]) for f in fixes],
                          [(self.CHANGES[0]["header"], "1 row(s) to normalize", "info")])
         blob = json.dumps(doc)
-        for value in ("a@x.com", "A@X.COM", "b@x.com", "c@x.com"):
+        # The offending cell VALUES never travel (old/new, the bad link); the
+        # address stands in for a name only where the row has no name.
+        for value in ("A@X.COM", "linkedin"):
             self.assertNotIn(value, blob)
+        self.assertNotIn("@", "".join(f["subject"] for f in doc["findings"]))
         # The name the text report prints beside the row travels; a fixed
         # reason says why, so no detail is ever blank.
         self.assertEqual(by_subject["row 6"]["detail"],
@@ -870,18 +873,22 @@ class TestDuplicateOrganizers(unittest.TestCase):
     HOST = "I want to host/provide a venue"
 
     def test_speaker_plus_host_plus_organizer_is_one_person_three_forms(self):
-        seen = {"a@x.com": [(3, self.SPK), (4, self.HOST), (5, self.ORG)]}
+        seen = {"a@x.com": [(3, self.SPK, "Ada"), (4, self.HOST, "Ada"), (5, self.ORG, "Ada")]}
         self.assertEqual(clean.duplicate_organizers(seen), [])
 
     def test_two_talk_proposals_are_two_rows_not_a_duplicate(self):
-        seen = {"a@x.com": [(3, self.SPK), (9, self.SPK)]}
+        seen = {"a@x.com": [(3, self.SPK, "Ada"), (9, self.SPK, "Ada")]}
         self.assertEqual(clean.duplicate_organizers(seen), [])
 
     def test_two_organizer_applications_are_flagged_on_the_first(self):
-        seen = {"a@x.com": [(3, self.SPK), (5, self.ORG), (12, self.ORG)]}
+        seen = {"a@x.com": [(3, self.SPK, "Ada"), (5, self.ORG, "Ada"), (12, self.ORG, "")]}
         self.assertEqual(clean.duplicate_organizers(seen),
-                         [{"row": 5, "who": "a@x.com",
+                         [{"row": 5, "who": "Ada",
                            "issue": "duplicate organizer application in rows [5, 12]"}])
+
+    def test_a_nameless_duplicate_is_identified_by_its_address(self):
+        seen = {"a@x.com": [(5, self.ORG, ""), (12, self.ORG, "")]}
+        self.assertEqual(clean.duplicate_organizers(seen)[0]["who"], "a@x.com")
 
     def test_the_role_test_matches_the_tab_formula(self):
         self.assertTrue(clean.is_organizer_brand("I want to be an Organizer"))

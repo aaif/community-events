@@ -820,7 +820,9 @@ def build_findings(chapters, proposals, near, folderless, candidates,
                  "fix by hand (or write %r)" % NO_RESOURCE)
     if unresolved:
         rep.find("no Slack account", "Slack",
-                 "%d accepted organizer(s) have no Slack account" % len(unresolved),
+                 "%d accepted organizer(s) have no Slack account: %s"
+                 % (len(unresolved), "; ".join("%s (%s)" % (redact_name(n), c)
+                                                for c, n in unresolved)),
                  "warn", "they must join Slack before they can be invited")
     if skipped_slack:
         rep.find("partial", "Slack", "Slack unavailable — channel columns not checked",

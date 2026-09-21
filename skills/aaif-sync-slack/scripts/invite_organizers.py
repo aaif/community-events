@@ -169,7 +169,7 @@ def fetch(city_filter=None):
     return api, chapters, chans, by_city, resolved, len(conflicts)
 
 
-def collect(city_filter=None, column="Organizer Channel", fetched=None):
+def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None):
     """Return (rows, unresolved, no_channel) — who is missing from where.
 
     rows = [{city, channel, channel_id, missing: [(name, id)], present: [...],
@@ -259,11 +259,49 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None):
         # to ignore. Adds-never-removes is unchanged either way; this only
         # governs what gets reported.
         unaccounted = [] if is_champs else sorted(members - known)
+        # Who they are, and which of them are AAIF ops. Ops staff sit in every
+        # organizer room by the repo's own doing (provision_channels seeds
+        # them), so counting them as strangers would report the automation's
+        # footprint as a finding about a person, on every row. The config is
+        # read only when a room actually has someone to describe.
+        staff_n, strangers = 0, []
+        if unaccounted:
+            cfg = cfg or ao.load_config()
+            strangers, staff_n = describe_strangers(api, unaccounted, cfg)
         rows.append({"city": label, "channel": name,
                      "channel_id": chan["id"], "is_private": chan["is_private"],
                      "missing": missing, "present": present,
-                     "unaccounted": unaccounted})
+                     "unaccounted": [uid for uid, _n in strangers],
+                     "unaccounted_names": [n for _uid, n in strangers],
+                     "staff_in_room": staff_n})
     return rows, unresolved, no_channel
+
+
+def describe_strangers(api, uids, cfg):
+    """Name each unaccounted member, and set the ops staff aside.
+
+    Returns ([(uid, name)] for the real strangers, in the order given, and the
+    number of ops accounts dropped). Staff is decided the way the audit decides
+    it — `ao._is_staff` over the `Staff email domain`, `Ops staff domain` and
+    `Ops staff email` settings on the Slack Config tab — so the two reports
+    can never disagree about who is ops. A member Slack cannot describe keeps
+    their id as the name rather than vanishing from the count.
+    """
+    domains = [cfg.get("staff_email_domain", "")] + list(cfg.get("ops_staff_domains") or ())
+    domains = [d.strip().lower().lstrip("@") for d in domains if d and d.strip()]
+    ops = {e.strip().lower() for e in (cfg.get("ops_staff_emails") or ()) if e and e.strip()}
+    strangers, staff = [], 0
+    for uid in uids:
+        try:
+            rec = slackmod._user_record(api.call("users.info", user=uid)["user"])
+        except Exception:      # a deleted or restricted account: still a member
+            strangers.append((uid, uid))
+            continue
+        if ao._is_staff(rec.get("email", ""), domains, ops):
+            staff += 1
+            continue
+        strangers.append((uid, rec.get("real_name") or rec.get("name") or uid))
+    return strangers, staff
 
 
 def report(rows, unresolved, no_channel, label="Organizer channel"):
@@ -411,10 +449,11 @@ def build_findings(passes, conflicts, mode="report"):
                 rep.find("invite", "#" + r["channel"], redact_name(name),
                          "warn", gate)
             if r["unaccounted"]:
+                names = findings.named(map(redact_name, r.get("unaccounted_names") or ()))
                 rep.find("not on the intake", "#" + r["channel"],
-                         "%d member(s) the intake does not list for this room"
-                         % len(r["unaccounted"]), "info",
-                         "audit finding; see aaif-audit-slack")
+                         "%d member(s) the intake does not list for this room%s"
+                         % (len(r["unaccounted"]), (": " + names) if names else ""),
+                         "info", "audit finding; see aaif-audit-slack")
         if unresolved:
             # One row with the count, not one per person: there is nothing to
             # do per person from here (they have to join Slack), and the text

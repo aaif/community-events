@@ -380,9 +380,9 @@ check("the unreadable doc is not also 'skipped'", ("skipped", "Lagos") in _rows,
 check("a doc with no About.docx is skipped", ("skipped", "Oslo") in _rows, True)
 check("an in-sync doc is not a finding",
       [k for k in _rows if k[1] == "Pune"], [])
-check("the applicant disclosure is its own finding, as a count",
-      _rows[("non-accepted applicant named", "Boston")]["detail"],
-      "1 applicant(s) removed by the rewrite")
+check("the applicant disclosure is its own finding, naming who is removed",
+      _rows[("non-accepted applicant named", "Boston")]["detail"].startswith("removed by the rewrite: "),
+      True)
 check("held, near-miss, orphan and malformed rows each land",
       sorted(k for k in _rows if k[0] in ("held", "near-miss city", "no chapter folder",
                                           "malformed intake row")),

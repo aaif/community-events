@@ -497,9 +497,10 @@ check("findings: a malformed cell is bad and quotes the row, not the cell text",
       ("Oslo · Slack Channel", "bad", "row 3"))
 check("findings: a rewrite never carries the old cell text",
       "@old-cell-text" in _json.dumps(_doc), False)
-check("findings: organizers without Slack are one count under subject Slack, no names",
-      ([f["subject"] for f in _by["no Slack account"]], "Ada" in _json.dumps(_doc)),
-      (["Slack"], False))
+check("findings: organizers without Slack are one row under subject Slack, naming them",
+      ([f["subject"] for f in _by["no Slack account"]],
+       "Ada" in _by["no Slack account"][0]["detail"]),
+      (["Slack"], True))
 check("findings: a country without a channel is one row per country",
       (_by["country without channel"][0]["subject"],
        _by["country without channel"][0]["detail"]),

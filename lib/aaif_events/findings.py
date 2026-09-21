@@ -125,6 +125,22 @@ def read(path):
     return doc
 
 
+def named(names, show=3):
+    """`A, B, C and 19 others`: a few names, then the count of the rest.
+
+    A finding has to say who, and a room with 22 strangers cannot list 22
+    names in a table cell. The first `show` are named, the rest are counted;
+    the log carries them all. Blank names are dropped; order is kept.
+    """
+    seen = [n for n in (str(x).strip() for x in names) if n]
+    if not seen:
+        return ""
+    if len(seen) <= show:
+        return ", ".join(seen)
+    rest = len(seen) - show
+    return "%s and %d other%s" % (", ".join(seen[:show]), rest, "" if rest == 1 else "s")
+
+
 def add_flag(parser):
     """The one argparse flag every engine adds: `--json-out PATH`."""
     parser.add_argument("--json-out", metavar="PATH", default=None,
