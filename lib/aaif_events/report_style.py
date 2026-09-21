@@ -332,6 +332,16 @@ tr.has-issue td,tr.has-issue th{background:var(--warn-bg)}
 .toc ul{list-style:none; margin:0; padding:0; display:flex;
   flex-direction:column; gap:8px}
 .toc li{font-size:.95rem}
+/* One subject of the sync run page: its steps stacked with the page's own
+   rhythm (the .wrap gap reaches direct children only), ruled off from the
+   next subject. */
+.phase{display:flex; flex-direction:column; gap:28px;
+  border-top:1px solid var(--line-1,#E5E5E2); padding-top:1.5rem}
+.phase > h2{margin:0}
+/* A collapsed appendix: the disclosure line reads as a label, not a button. */
+details > summary{cursor:pointer; font-size:.8rem; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--ink-faint,#8C8C8C); margin-bottom:10px}
+details[open] > summary{color:var(--ink-1,#0A0A0A)}
 /* An engine's own stdout, carried verbatim: monospace, wrapped so a long
    proposal line never forces the page wide, in the sunken plate the tables
    use for their header row. */
