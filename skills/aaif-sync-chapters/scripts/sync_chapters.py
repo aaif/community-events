@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events import findings  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 from aaif_events import gws as _gws_mod  # noqa: E402
 # cell/header_index/col_letter are re-exported: five sibling scripts import
 # them from here. `header_index` now aborts on a DUPLICATED header, which this
@@ -292,11 +293,21 @@ def luma_status(slug):
     """'live' / 'absent' / 'unknown' for the Luma page a new row would point at."""
     return url_status("https://luma.com/aaif-" + slug)
 
-#: What one `--audit-luma` sweep measured. `dead`/`unknown` are (row, city,
-#: link); `blank` is (row, city); `throttled_at` is the row the sweep stopped
-#: on, or None. Kept as data so the printed report and the JSON findings are
-#: two readers of one sweep, never two sweeps.
-LumaAudit = namedtuple("LumaAudit", "checked dead unknown blank throttled_at")
+class LumaAudit(namedtuple("LumaAudit", "checked dead unknown blank throttled_at")):
+    """What one `--audit-luma` sweep measured.
+
+    `dead`, `unknown` and `blank` all hold (row, city, link) — a blank row's
+    link is "" — so every consumer walks one shape. `throttled_at` is the row
+    the sweep stopped on, or None; `partial` is that as a question. Kept as
+    data so the printed report and the JSON findings are two readers of one
+    sweep, never two sweeps.
+    """
+    __slots__ = ()
+
+    @property
+    def partial(self):
+        """True when luma.com rate-limited the sweep before it finished."""
+        return self.throttled_at is not None
 
 
 def audit_luma(report=None):
@@ -337,7 +348,7 @@ def sweep_luma():
         if not city:
             continue
         if not link:
-            blank.append((rownum, city))
+            blank.append((rownum, city, ""))
             continue
         # Paced, because an unthrottled sweep trips the limiter partway through
         # and everything after it is unverified.
@@ -355,6 +366,8 @@ def sweep_luma():
             dead.append((rownum, city, link))
         elif st == "unknown":
             unknown.append((rownum, city, link))
+    # Every dead or unverifiable row was one the sweep checked.
+    assert len(dead) + len(unknown) <= checked
     return LumaAudit(checked, dead, unknown, blank, throttled_at)
 
 
@@ -363,7 +376,7 @@ def luma_headline(sweep):
     return ("Luma audit: %d row(s) with a link checked; %d dead, %d unverifiable, "
             "%d row(s) with no link.%s"
             % (sweep.checked, len(sweep.dead), len(sweep.unknown), len(sweep.blank),
-               "  (stopped early — rate-limited)" if sweep.throttled_at else ""))
+               "  (stopped early — rate-limited)" if sweep.partial else ""))
 
 
 def luma_findings(report, sweep):
@@ -379,18 +392,18 @@ def luma_findings(report, sweep):
     report.measure("dead", len(sweep.dead), "bad" if sweep.dead else "ok")
     report.measure("unverifiable", len(sweep.unknown), "warn" if sweep.unknown else None)
     report.measure("no link", len(sweep.blank), "warn" if sweep.blank else None)
-    report.measure("rate-limited at", "row %d" % sweep.throttled_at if sweep.throttled_at else "no",
-                   "warn" if sweep.throttled_at else "ok")
+    report.measure("rate-limited at", "row %d" % sweep.throttled_at if sweep.partial else "no",
+                   "warn" if sweep.partial else "ok")
     for rownum, city, link in sweep.dead:
         report.find("dead link", city, "row %d: %s (404)" % (rownum, link),
                     severity="bad", action="create the Luma page or fix the link")
     for rownum, city, link in sweep.unknown:
         report.find("unverifiable link", city, "row %d: %s" % (rownum, link),
                     severity="warn", action="check by hand")
-    for rownum, city in sweep.blank:
+    for rownum, city, _link in sweep.blank:
         report.find("no link", city, "row %d" % rownum,
                     severity="warn", action="create the Luma page and fill the cell")
-    if sweep.throttled_at:
+    if sweep.partial:
         report.find("sweep rate-limited", "row %d" % sweep.throttled_at,
                     "rows after it were not checked", severity="warn",
                     action="re-run later")
@@ -399,33 +412,33 @@ def luma_findings(report, sweep):
 
 def print_luma_audit(sweep):
     """Print the sweep; return the pending-work count the exit code hangs on."""
-    checked, dead, unknown, blank, throttled_at = sweep
     print("\n" + luma_headline(sweep))
-    for label, items in (("DEAD (404 — the CTA button goes nowhere)", dead),
-                         ("could not verify — check by hand", unknown)):
+    for label, items in (("DEAD (404 — the CTA button goes nowhere)", sweep.dead),
+                         ("could not verify — check by hand", sweep.unknown)):
         if items:
             print("  %s:" % label)
             for rownum, city, link in items:
                 print("     row %-4d %-22s %s" % (rownum, city, link))
-    if blank:
+    if sweep.blank:
         print("  no Chapter Luma Link at all: %s"
-              % ", ".join("%s (row %d)" % (c, r) for r, c in blank))
+              % ", ".join("%s (row %d)" % (c, r) for r, c, _link in sweep.blank))
     # ALL THREE are pending work, and the caller turns this into the exit code.
     # Returning only len(dead) meant a sweep that luma.com rate-limited into 90
     # "unknown"s exited 0 — a night that verified nothing reading as a clean
     # one. `blank` counts too: a row with no link at all is the state this
     # engine now CREATES by default, so the audit that replaced the write-time
     # gate has to be the thing that reports it.
-    if throttled_at:
+    if sweep.partial:
         # The shared PARTIAL marker (see nightly.py): an involuntary skip must
         # never read as a clean result.
         print("  PARTIAL: luma.com rate-limited this sweep at row %d — the rows "
               "after it were NOT checked. Re-run later to finish."
-              % throttled_at)
-    if unknown:
+              % sweep.throttled_at)
+    if sweep.unknown:
         print("  PARTIAL: %d row(s) could not be verified — this run did NOT "
-              "prove those links are live." % len(unknown))
-    return len(dead) + len(unknown) + len(blank) + (1 if throttled_at else 0)
+              "prove those links are live." % len(sweep.unknown))
+    return (len(sweep.dead) + len(sweep.unknown) + len(sweep.blank)
+            + (1 if sweep.partial else 0))
 
 # ----------------------------------------------------------------------------
 # Read the two sheets
@@ -1011,6 +1024,10 @@ def main():
     findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    if a.json_out:
+        # Both steps (`chapters` and `luma`) land through the same flag, and the
+        # `chapters` file carries names: guarded before any work.
+        rs.assert_git_ignored(a.json_out)
 
     # One flag, two steps: the runner calls this script once for the sync
     # (`chapters`) and once more with --audit-luma (`luma`), and each call's

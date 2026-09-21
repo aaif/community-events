@@ -808,7 +808,10 @@ class TestApplyEndToEnd(unittest.TestCase):
 
 class TestScanFindings(unittest.TestCase):
     """`scan --json-out` writes the same report as data (format 1, step
-    `clean`). Row numbers are the subjects; no cell value may leave through it."""
+    `clean`). Row numbers are the subjects, never a person. `detail` carries
+    the row's name — or its address only when the row has no name — and a
+    fixed reason; the offending cell values (old/new, the bad link, the
+    malformed address) never leave through it."""
 
     CHANGES = [{"row": 3, "header": "Email", "old": " A@X.COM ", "new": "a@x.com"}]
     FLAGS = [{"row": 4, "who": "Ada", "issue": "missing email"},
@@ -826,7 +829,7 @@ class TestScanFindings(unittest.TestCase):
                          [("proposed fixes", 1), ("flags", 4), ("unresolved cities", 1)])
         self.assertFalse(doc["written"])
 
-    def test_findings_name_rows_and_kinds_never_cell_values(self):
+    def test_detail_names_the_row_or_its_address_never_the_offending_value(self):
         doc = clean.build_findings(self.CHANGES, self.FLAGS)
         by_subject = {f["subject"]: f for f in doc["findings"]}
         self.assertEqual(by_subject["row 6"]["kind"], "unresolved city")
@@ -838,11 +841,17 @@ class TestScanFindings(unittest.TestCase):
         self.assertEqual([(f["subject"], f["detail"], f["severity"]) for f in fixes],
                          [(self.CHANGES[0]["header"], "1 row(s) to normalize", "info")])
         blob = json.dumps(doc)
-        # The offending cell VALUES never travel (old/new, the bad link); the
-        # address stands in for a name only where the row has no name.
-        for value in ("A@X.COM", "linkedin"):
+        # The offending cell VALUES never travel: the old/new pair of a fix,
+        # the bad link, the malformed address as the *issue* text carried it.
+        for value in ("A@X.COM", "a@x.com", "linkedin", "invalid email: "):
             self.assertNotIn(value, blob)
         self.assertNotIn("@", "".join(f["subject"] for f in doc["findings"]))
+        # A named row travels by name and its address stays behind ...
+        self.assertEqual(by_subject["row 4"]["detail"], "Ada — no address on the row")
+        self.assertNotIn("@", by_subject["row 4"]["detail"] + by_subject["row 6"]["detail"])
+        # ... and a nameless row falls back to its address, explicitly.
+        self.assertEqual(by_subject["row 5"]["detail"], "b@x.com — the address is not well-formed")
+        self.assertEqual(by_subject["row 7"]["detail"], "c@x.com — rows [7, 9]")
         # The name the text report prints beside the row travels; a fixed
         # reason says why, so no detail is ever blank.
         self.assertEqual(by_subject["row 6"]["detail"],
@@ -929,6 +938,129 @@ class TestPrintScanCollapses(unittest.TestCase):
         out = self._scan(verbose=True)
         self.assertEqual(out.count("row  1"), 8)
         self.assertNotIn("more —", out)
+
+
+
+# ---------- --json-out guard and scan() end to end ----------
+from unittest import mock  # noqa: E402
+
+
+class _Proc:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+class TestJsonOutGuard(unittest.TestCase):
+    """`--json-out` refuses a path git would commit: the file names people and
+    the repo is public. Outside any repository is fine; inside, the path must
+    be ignored and not already tracked."""
+
+    def test_a_path_outside_any_repo_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            clean.assert_git_ignored(os.path.join(d, "findings.json"))   # no exit
+
+    def _fake_run(self, ignored, tracked):
+        def run(argv, **kw):
+            if "rev-parse" in argv:
+                return _Proc(0, stdout="/repo\n")
+            if "check-ignore" in argv:
+                return _Proc(0 if ignored else 1)
+            if "ls-files" in argv:
+                return _Proc(0 if tracked else 1)
+            raise AssertionError(argv)
+        return run
+
+    def test_an_unignored_path_inside_a_repo_aborts(self):
+        with mock.patch.object(clean.subprocess, "run", self._fake_run(False, False)):
+            with self.assertRaises(SystemExit) as e:
+                clean.assert_git_ignored("/repo/findings.json")
+        self.assertIn("not gitignored", str(e.exception))
+
+    def test_a_tracked_path_aborts_even_when_ignored(self):
+        with mock.patch.object(clean.subprocess, "run", self._fake_run(True, True)):
+            with self.assertRaises(SystemExit) as e:
+                clean.assert_git_ignored("/repo/findings.json")
+        self.assertIn("TRACKED", str(e.exception))
+
+    def test_an_ignored_untracked_path_passes(self):
+        with mock.patch.object(clean.subprocess, "run", self._fake_run(True, False)):
+            clean.assert_git_ignored("/repo/findings.json")
+
+    def test_a_git_error_other_than_no_repo_aborts(self):
+        def run(argv, **kw):
+            return _Proc(128, stderr="fatal: detected dubious ownership")
+        with mock.patch.object(clean.subprocess, "run", run):
+            with self.assertRaises(SystemExit):
+                clean.assert_git_ignored("/repo/findings.json")
+
+
+class TestScanEndToEnd(unittest.TestCase):
+    """scan() over a mocked tab, including the role column the duplicate rule
+    reads. Synthetic rows only."""
+
+    ORG = "I want to be an organizer for my city"
+    SPK = "I want to be a speaker"
+    HDR = ["Timestamp", "Full name", "Email", "LinkedIn URL", "City",
+           "What brings you here?", "Resolved City"]
+
+    def _scan(self, hdr, rows):
+        with mock.patch.object(clean, "read_tab", lambda tab: (hdr, rows)):
+            return clean.scan()
+
+    def test_two_organizer_rows_at_one_address_flag_a_speaker_pair_does_not(self):
+        rows = [["t", "Ada", "a@x.com", "https://linkedin.com/in/ada", "Boston", self.ORG, ""],
+                ["t", "Ada", "a@x.com", "https://linkedin.com/in/ada", "Boston", self.ORG, ""],
+                ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", self.SPK, ""],
+                ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", self.ORG, ""]]
+        _changes, flags = self._scan(self.HDR, rows)
+        self.assertEqual(flags, [{"row": 2, "who": "Ada",
+                                  "issue": "duplicate organizer application in rows [2, 3]"}])
+
+    def test_a_header_without_the_role_column_aborts(self):
+        hdr = [h for h in self.HDR if h != clean.H_BRAND]
+        rows = [["t", "Ada", "a@x.com", "", "Boston", ""]]
+        with self.assertRaises(SystemExit) as e:
+            self._scan(hdr, rows)
+        self.assertIn(clean.H_BRAND, str(e.exception))
+        self.assertIn("ABORT", str(e.exception))
+
+
+class TestMainJsonOut(unittest.TestCase):
+    """main() lands the findings file on a normal scan and never on an ABORT."""
+
+    HDR = TestScanEndToEnd.HDR
+
+    def _main(self, hdr, rows, path):
+        with mock.patch.object(clean, "read_tab", lambda tab: (hdr, rows)), \
+             mock.patch.object(clean, "assert_git_ignored", lambda p: None), \
+             mock.patch.object(sys, "argv", ["clean.py", "scan", "--json-out", path]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            clean.main()
+
+    def test_a_scan_lands_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "clean.json")
+            self._main(self.HDR, [["t", "Ada", "a@x.com", "", "Boston", "speaker", ""]], path)
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            self.assertEqual((doc["step"], doc["mode"], doc["written"]), ("clean", "report", False))
+
+    def test_an_abort_lands_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "clean.json")
+            with self.assertRaises(SystemExit):
+                self._main(["Timestamp", "Full name"], [["t", "Ada"]], path)
+            self.assertFalse(os.path.exists(path))
+
+    def test_the_guard_runs_before_the_sheet_is_read(self):
+        calls = []
+        with mock.patch.object(clean, "read_tab", lambda tab: calls.append("read") or ([], [])), \
+             mock.patch.object(clean, "assert_git_ignored",
+                               lambda p: calls.append("guard") or sys.exit("ABORT: x")), \
+             mock.patch.object(sys, "argv", ["clean.py", "scan", "--json-out", "x.json"]):
+            with self.assertRaises(SystemExit):
+                clean.main()
+        self.assertEqual(calls, ["guard"])
 
 
 if __name__ == "__main__":

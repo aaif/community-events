@@ -66,7 +66,8 @@ must be passed too, and the report must have been read.
 Usage:
     python3 post_country_directory.py                  # what would change
     python3 post_country_directory.py --write --i-have-approval
-    python3 post_country_directory.py --json-out directory.json   # the report as data too
+    # the report as data too — a gitignored path, it names channels:
+    python3 post_country_directory.py --json-out sync-reports/<stamp>/directory.json
 """
 
 import argparse
@@ -86,6 +87,7 @@ from sync_resources import read_grid  # noqa: E402
 from provision_channels import call_write, write_token, WRITE_METHODS  # noqa: E402
 
 from aaif_events import findings, slack as slackmod  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 
 #: A directory-style post is recognised by mentioning at least one channel
 #: (`<#C...>`) and using the word "chapter" — loose on purpose: the workspace
@@ -300,9 +302,14 @@ def build_findings(rows, skipped, mode="report"):
     """The text report as data: a `findings.Report` for step `directory`.
 
     Pure over what collect() returned, so every tile is a count report()
-    already printed and every finding is a row it already listed. The subject
-    is always the channel; the post text itself stays out (it is the log's to
-    show, and the page has no reason to repeat a message to a room).
+    already printed and every finding is a row it already listed. The findings
+    contract (`aaif_events.findings`): a finding's subject is never a person —
+    here it is always the channel; `detail` may carry a name or an address
+    only where the text report already prints one, through the same
+    `--redact` (this engine's details are counts and skip reasons, so none
+    does); and free text from a sheet or a message never reaches it — the
+    post text itself stays out (it is the log's to show, and the page has no
+    reason to repeat a message to a room).
     """
     rep = findings.Report("directory", mode)
     by_action = {a: sum(1 for r in rows if r["action"] == a)
@@ -373,6 +380,10 @@ def main():
     # the sync runner reads the file this writes.
     findings.add_flag(ap)
     a = ap.parse_args()
+    # Same guard as every `--out` in this estate: the file is uncommittable
+    # or the run does not start (public repo — CLAUDE.md).
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)
 
     rows, skipped = collect()
     todo = report(rows, skipped)

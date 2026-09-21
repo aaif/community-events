@@ -78,6 +78,7 @@ from sync_chapters import (CHAPTER_CAP, CHAPTERS_ID, H_MERGED_INTO,  # noqa: E40
                            NO_RESOURCE, cell, census_of, fold_city, get_values,
                            header_index, read_chapters, unknown_statuses)
 from aaif_events import findings, jsoncache  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.redact import (add_redact_flag, redact_name, redact_text,  # noqa: E402
                                 set_redaction)
 
@@ -345,6 +346,16 @@ def build_findings(report, quiet, awake, cannot_say, untriaged):
     return report
 
 
+CELL_TEXT_OPEN, CELL_TEXT_CLOSE = "<<form-text>>", "<</form-text>>"
+
+
+def wrap_cell_text(value):
+    """A hand-typed cell between the markers intake.py uses, with any `<<` inside
+    it neutralised to `< <` first — so a value holding the literal close marker
+    cannot end the wrapper early and pass the rest off as the engine's own."""
+    return "%s %s %s" % (CELL_TEXT_OPEN, value.replace("<<", "< <"), CELL_TEXT_CLOSE)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--window", type=int, default=DEFAULT_WINDOW,
@@ -360,6 +371,8 @@ def main():
     findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)   # the findings file carries names
 
     rows, chapters, have_slack, unparsed, meta = build(a.window, a.cache)
     if have_slack:
@@ -423,9 +436,11 @@ def main():
                  r["members"] if r["members"] is not None else "-",
                  r["status"] or "(untriaged)", redact_name(r["merged_into"]) if r["merged_into"] else ""))
         # The operator's own note on the row, quoted so it travels with the
-        # verdict. Free text: it is shown, never acted on.
+        # verdict. Free text: it is shown, never acted on — and wrapped in the
+        # same markers intake.py uses, so the data/instruction boundary is
+        # visible to whoever (or whatever) reads the log.
         if r["ops_notes"]:
-            print("  %-22s   ops notes: %s" % ("", redact_text(r["ops_notes"])))
+            print("  %-22s   ops notes: %s" % ("", wrap_cell_text(redact_text(r["ops_notes"]))))
 
     if cannot_say:
         print("\nCANNOT SAY (%d) — no activity found, but the evidence is "

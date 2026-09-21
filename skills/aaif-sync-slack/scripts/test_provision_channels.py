@@ -421,6 +421,107 @@ check("findings: an in-sync estate has ok tiles and no findings",
       ({m.get("tone") for m in _empty["measured"]} - {"ok", None}, _empty["findings"]),
       (set(), []))
 
+# --- main() lands the findings file on a normal exit, never on a refusal -------
+# The runner reads `written` from this file as its "wrote" signal, so the file
+# has to land on exit 0 AND on the exit-1 "some writes failed" path, and must
+# NOT land when main() refuses — a refusal writes nothing, and a stale file
+# from a refused run would read as a run that happened.
+import contextlib as _ctx  # noqa: E402
+import io as _io  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+from aaif_events import findings as _findings  # noqa: E402
+
+_REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "..", "..", ".."))
+
+
+class _MainApi:
+    """The Slack client main() builds: auth.test and the scope probe, no more."""
+
+    def ok(self, method, **kw):
+        assert method == "auth.test"
+        return {"team": "T", "team_id": "T1", "user_id": "USELF"}
+
+    def scopes(self):
+        return set(prov.NEEDED_SCOPES)
+
+
+# plan()'s tuple: creates, renames, blocked, merges, already, applied, refused
+_EMPTY_PLAN = ([], [], [], [], [], [], [])
+_CREATE_PLAN = ([("boston", False, "chapter channel for Boston")], [], [], [], [], [], [])
+_BLOCKED_PLAN = ([], [], [("bern-old", "bern-organizers")], [], [], [], [])
+
+
+def _main_with(argv, plan=_EMPTY_PLAN, create_result=None, json_out=None):
+    """Run main() end to end with every Slack and gws boundary mocked.
+
+    Returns (exit code or the SystemExit message, the findings doc or None,
+    the write methods called)."""
+    calls = []
+
+    def call_write(token, method, **params):
+        calls.append(method)
+        return create_result or {"ok": True, "channel": {"id": "C9", "name": params.get("name")}}
+
+    with _tempfile.TemporaryDirectory() as d:
+        path = json_out or os.path.join(d, "provision.json")
+        with _mock.patch.dict(os.environ, {prov.WRITE_TOKEN_ENV: "xoxp-test"}), \
+             _mock.patch.object(prov.slackmod, "Slack", lambda token=None: _MainApi()), \
+             _mock.patch.object(prov.slackmod, "channels", lambda api: []), \
+             _mock.patch.object(prov.ao, "read_chapters", lambda: (None, TABLES)), \
+             _mock.patch.object(prov, "read_erstwhile", lambda: (frozenset(), [], True)), \
+             _mock.patch.object(prov, "plan", lambda *a, **k: plan), \
+             _mock.patch.object(prov, "plan_archives", lambda *a, **k: []), \
+             _mock.patch.object(prov, "token_scopes",
+                                lambda token, which: set(prov.NEEDED_SCOPES)), \
+             _mock.patch.object(prov.ao, "load_config", lambda: {}), \
+             _mock.patch.object(prov, "read_chapter_folders", lambda: ({}, True)), \
+             _mock.patch.object(prov, "plan_folder_pins", lambda *a, **k: ([], [])), \
+             _mock.patch.object(prov, "call_write", call_write), \
+             _mock.patch.object(sys, "argv",
+                                ["provision_channels.py", "--json-out", path] + argv), \
+             _ctx.redirect_stdout(_io.StringIO()), _ctx.redirect_stderr(_io.StringIO()):
+            try:
+                code = prov.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, _findings.read(path), calls
+
+
+_code, _out, _calls = _main_with([])
+check("main: report mode lands the JSON on exit 0, nothing written",
+      (_code, _out["step"], _out["mode"], _out["written"], _calls),
+      (0, "provision", "report", False, []))
+_code, _out, _calls = _main_with(["--write", "--i-have-approval"])
+check("main: write mode with nothing to do lands the JSON, written=False",
+      (_code, _out["mode"], _out["written"], _calls), (0, "write", False, []))
+_code, _out, _calls = _main_with(["--write", "--i-have-approval"], plan=_CREATE_PLAN)
+check("main: an applied create lands written=True on exit 0",
+      (_code, _out["written"], _calls, [f["kind"] for f in _out["findings"]]),
+      (0, True, ["conversations.create"], ["create"]))
+_code, _out, _calls = _main_with(["--write", "--i-have-approval"], plan=_CREATE_PLAN,
+                                 create_result={"ok": False, "error": "invalid_name"})
+check("main: a failed write still lands the JSON on exit 1, written=False, as a bad row",
+      (_code, _out["written"],
+       [(f["kind"], f["subject"], f["severity"]) for f in _out["findings"]
+        if f["kind"] == "write failed"]),
+      (1, False, [("write failed", "Slack", "bad")]))
+_code, _out, _calls = _main_with(["--write"], plan=_CREATE_PLAN)
+check("main: --write without approval REFUSES and lands no JSON",
+      (isinstance(_code, str) and "REFUSING" in _code, _out, _calls), (True, None, []))
+_code, _out, _calls = _main_with(["--write", "--i-have-approval"], plan=_BLOCKED_PLAN)
+check("main: a blocked rename REFUSES the write and lands no JSON",
+      (isinstance(_code, str) and "REFUSING" in _code, _out, _calls), (True, None, []))
+# The findings file names channels and cities: like every --out, it must be
+# gitignored before anything runs. A path in this (public) repo is refused.
+_probe = os.path.join(_REPO, "provision-findings-probe.json")
+with _mock.patch.object(prov.slackmod, "load_token",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran"))):
+    _code, _out, _calls = _main_with([], json_out=_probe)
+check("main: a committable --json-out is refused before any work",
+      (isinstance(_code, str) and "REFUSING TO RUN" in _code, os.path.exists(_probe), _calls),
+      (True, False, []))
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

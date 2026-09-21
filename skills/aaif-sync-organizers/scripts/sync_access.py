@@ -70,6 +70,7 @@ from sync_crm import (CHAPTERS_PARENT, SYNC_STATUSES, TEMPLATE_FOLDER,
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, set_redaction)  # noqa: E402
 from aaif_events import findings  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 
 
 # Kept deliberately: this is the Linux Foundation's own staff access, not public
@@ -482,8 +483,11 @@ def build_findings(p, role, mode, phases, failed=(), verify_bad=(), written=Fals
 
     Pure: takes the plan and whatever the write phases returned, touches no
     network, so the test can drive it. Only counts report() already prints;
-    a subject is always a chapter or the parent folder, never an address —
-    `detail` carries a person's name only where the text report prints one.
+    a subject is always a chapter or the parent folder, never a person.
+    `detail` may carry a name or an address where the text report already
+    prints one — names through `redact_name`, addresses through
+    `redact_email`, so `--redact` governs both — and never free text from a
+    sheet cell (the `%s problem` lines are counted, not quoted).
     `phases` is which of grant/lock this invocation reported on: report mode
     covers both, `--write --phase X` only the one.
     """
@@ -495,8 +499,8 @@ def build_findings(p, role, mode, phases, failed=(), verify_bad=(), written=Fals
                     % (len(grants), len({g["chapter"] for g in grants}), len(in_place)))
         r.measure("grants in place", len(in_place), "ok")
         r.measure("new grants", len(grants), "warn" if grants else "ok")
-        r.measure("newer recorded address", len(p.get("superseded", ())),
-                  "warn" if p.get("superseded") else None)
+        r.measure("newer recorded address", len(p["superseded"]),
+                  "warn" if p["superseded"] else None)
         r.measure("unknown direct grants", len(p["stale"]), "warn" if p["stale"] else None)
         if failed:
             r.measure("grants failed", len(failed), "bad")
@@ -509,10 +513,10 @@ def build_findings(p, role, mode, phases, failed=(), verify_bad=(), written=Fals
     if "grant" in phases:
         for g in grants:
             r.find("new grant", g["chapter"],
-                   "%s (%s%s)" % (g["name"], role,
+                   "%s (%s%s)" % (redact_name(g["name"]), role,
                                   ", via %s" % H_DRIVE_EMAIL if g.get("via_column") else ""),
                    "warn", apply)
-        for ch, old, new in p.get("superseded", ()):
+        for ch, old, new in p["superseded"]:
             r.find("newer recorded address", ch,
                    "%s is now recorded; the old grant to %s stays in place and reads "
                    "as stale" % (redact_email(new), redact_email(old)),
@@ -525,26 +529,27 @@ def build_findings(p, role, mode, phases, failed=(), verify_bad=(), written=Fals
                    "%s has %s access — no intake row matches this address"
                    % (redact_email(em), q_role),
                    "warn", "audit this grant: revoke it, or record it on an intake row")
-        for ch, em, q_role in sorted(p.get("excused", ())):
+        for ch, em, q_role in sorted(p["excused"]):
             r.find("grant excused by %s" % H_DRIVE_EMAIL, ch,
                    "%s has %s access under the address recorded in %s, not the "
                    "intake Email" % (redact_email(em), q_role, H_DRIVE_EMAIL),
                    "info", "confirm the cell is right")
         for o in p["orphans"]:
             r.find("no chapter folder", o["city"],
-                   ", ".join(x["name"] for x in o["people"]),
+                   ", ".join(redact_name(x["name"]) for x in o["people"]),
                    "warn", "run aaif-create-chapter")
         for m in p["near"]:
             r.find("near-miss chapter name", m["city"], "~ " + ", ".join(m["candidates"]),
                    "warn", "fix the intake city or rename the folder")
-        if p.get("problems"):
+        if p["problems"]:
             # The problem lines quote (redacted) addresses; the page gets the count.
             r.find("%s problem" % H_DRIVE_EMAIL, SOURCE,
                    "%d cell(s) ignored or conflicting; the grant falls back to the "
                    "intake address" % len(p["problems"]),
                    "warn", "fix the rows")
         for ch, name, _em, why in failed:
-            r.find("grant failed", ch, "%s: %s" % (name, why), "bad", "fix the intake row and re-run")
+            r.find("grant failed", ch, "%s: %s" % (redact_name(name), why),
+                   "bad", "fix the intake row and re-run")
     if "lock" in phases:
         for x in p["public"]:
             r.find("public share", "Chapters/", "%s:%s" % (x["type"], x["role"]), "warn", apply)
@@ -825,6 +830,8 @@ def main():
     findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)   # the findings file carries names
     # Emailing a real person is the line the Slack write steps already draw
     # with --i-have-approval; the same consent is required here, at parse
     # time, before plan() touches the network.

@@ -402,7 +402,9 @@ check("a held row becomes a `held row` finding",
 # The luma step: same flag, different step name, built from one sweep.
 _sweep = sync_chapters.LumaAudit(
     checked=2, dead=[(2, "Boston", "https://luma.com/aaif-boston")],
-    unknown=[(3, "Pune", "https://luma.com/aaif-pune")], blank=[(4, "Oslo")], throttled_at=5)
+    unknown=[(3, "Pune", "https://luma.com/aaif-pune")], blank=[(4, "Oslo", "")], throttled_at=5)
+check("a sweep that stopped on a 429 is partial; a finished one is not",
+      (_sweep.partial, sync_chapters.LumaAudit(1, [], [], [], None).partial), (True, False))
 _ldoc = sync_chapters.luma_findings(_findings.Report("luma"), _sweep).to_dict()
 check("luma JSON step and tiles",
       (_ldoc["step"], [(m["label"], m["value"]) for m in _ldoc["measured"]]),
@@ -468,6 +470,22 @@ with _tempfile.TemporaryDirectory() as _d:
          _ctx.redirect_stdout(_io.StringIO()):
         _aborted = aborts(sync_chapters.main)
     check("a failed verify aborts and writes no JSON", (_aborted, os.path.exists(_path)), (True, False))
+# A --json-out path git would commit is refused before the sheet is read — on
+# the luma step too, since both land through the one flag.
+_unignored = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "..", "..", "findings-selftest.json")
+for _argv in ([], ["--audit-luma"]):
+    with mock.patch.object(sync_chapters, "compute", side_effect=AssertionError("compute ran")), \
+         mock.patch.object(sync_chapters, "get_values", side_effect=AssertionError("read ran")), \
+         mock.patch.object(sys, "argv", ["sync_chapters.py", "--json-out", _unignored] + _argv):
+        try:
+            sync_chapters.main()
+            _refused = False
+        except SystemExit as e:
+            _refused = "not ignored" in str(e)
+    check("an unignored --json-out aborts before any work, and lands nothing (%s)"
+          % (" ".join(_argv) or "chapters"),
+          (_refused, os.path.exists(_unignored)), (True, False))
 
 # --- partition_new_rows: a city with no live Luma page holds back, not aborts ---
 # One pending page used to sys.exit the whole write, freezing every OTHER

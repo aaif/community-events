@@ -80,6 +80,64 @@ def _scrubbed_env():
             and k != "LUMA_API_KEY"}
 
 
+def _repo_root(path):
+    """Git repo root containing `path`, or None when it lives outside any repo.
+    Walks up to the nearest existing dir first: the file may not exist yet."""
+    probe_dir = os.path.dirname(os.path.abspath(path)) or os.sep
+    while not os.path.isdir(probe_dir) and probe_dir != os.sep:
+        probe_dir = os.path.dirname(probe_dir) or os.sep
+    try:
+        # LC_ALL=C: the "not a git repository" match reads git's stderr, and a
+        # localized git would abort a legitimate outside-repo run instead.
+        proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True,
+                              env={**_scrubbed_env(), "LC_ALL": "C", "LANG": "C"})
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that "
+                 f"{path} is ignored; install git or pass --json-out outside any repository.")
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    stderr = (proc.stderr or "").strip()
+    if "not a git repository" in stderr.lower():
+        return None
+    # Any other failure (dubious ownership, corrupt .git, ...) aborts: mapping it
+    # to None would silently disengage the guard.
+    sys.exit(f"ABORT: `git rev-parse` failed in {probe_dir} (exit {proc.returncode}: "
+             f"{stderr[:200]}), so this cannot verify that {path} is ignored.")
+
+
+def assert_git_ignored(path):
+    """Refuse to write the findings file where git would happily commit it.
+
+    This report carries counts only, but every engine's `--json-out` gets the
+    same guard: the sync runner lands them side by side, its siblings name
+    people, and the repo this runs in is PUBLIC, so `.gitignore` coverage is a safety control, not tidiness —
+    verified at run time rather than trusted to a rule a rename can silently
+    stop matching. Mirrors the audit skills' guard; inlined because this script
+    is deliberately self-contained (see AGENTS.md on the lib coupling).
+
+    A path outside every repository is fine — there is nothing to commit it
+    to. `check-ignore` exits 128 (not 1) there, which is why the repo root is
+    resolved first instead of treating that exit as "unignored"."""
+    root = _repo_root(path)
+    if root is None:
+        return                       # outside any repo — nothing to leak into
+    abs_path = os.path.abspath(path)
+    env = _scrubbed_env()
+    ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", abs_path],
+                             capture_output=True, env=env).returncode == 0
+    # .gitignore has no effect on an already-tracked file.
+    tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", abs_path],
+                             capture_output=True, env=env).returncode == 0
+    if tracked:
+        sys.exit(f"ABORT: {path} is already TRACKED by the repo at {root} — "
+                 "git rm --cached it first. Engine reports stay out of git.")
+    if not ignored:
+        sys.exit(f"ABORT: {path} is not gitignored in {root}. Engine reports stay "
+                 "out of git; write it under a gitignored path (e.g. "
+                 "sync-reports/<stamp>/triage.json) or outside the repository.")
+
+
 def fetch(tab):
     """Return (headers, rows) for a tab; rows are padded to len(headers)."""
     # The range is the bare tab name — deliberately NOT a bounded window: a
@@ -230,7 +288,10 @@ def build_findings(data, label="awaiting review"):
     """The digest's headline as data: one tile and one finding per tab, each
     carrying only the COUNT. There is deliberately no per-person row — the
     digest above is the per-person view, and every value in it is
-    applicant-typed text the page must never have to wrap."""
+    applicant-typed text the page must never have to wrap. Subjects are tab
+    names, never a person; `detail` is a count, so no name or address travels
+    (the findings contract would allow the name the text report prints, but
+    this report prints none)."""
     total = sum(len(v) for v in data.values())
     counts = " · ".join(f"{len(v)} {t.lower()}" for t, v in data.items())
     doc = {"format": FINDINGS_FORMAT, "step": "triage", "mode": "report",
@@ -278,6 +339,8 @@ def main():
     ap.add_argument("--offset", type=int, default=0, metavar="N",
                     help="skip the first N rows of each tab's listing (paging)")
     args = ap.parse_args()
+    if args.json_out:
+        assert_git_ignored(args.json_out)   # before any work: the file must stay private
     sf = normalize_filter(args.status) if args.status is not None else DEFAULT_NEEDS_REVIEW
     data = collect(sf, args.all)
     if args.all:

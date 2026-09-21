@@ -140,6 +140,7 @@ from sync_resources import (ERSTWHILE_COLUMN, FOLDER_URL,  # noqa: E402
 import audit_organizers as ao  # noqa: E402
 from aaif_events import slack as slackmod  # noqa: E402
 from aaif_events import findings  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 
 API = "https://slack.com/api/"
 
@@ -992,9 +993,14 @@ def build_findings(creates, renames, blocked, applied, merges, archives, already
     """The printed plan as data — a findings.Report for `--json-out`.
 
     One row per thing the report lists a person acting on, and only counts
-    the report already prints. Nobody is named: an ops seed row carries how
-    many accounts a room is missing, not which, and a skipped folder link
-    keeps its reason but never the sheet cell that caused it.
+    the report already prints. The findings contract (`aaif_events.findings`):
+    a finding's subject is never a person — here it is a channel or a city;
+    `detail` may carry a name or an address only where the text report already
+    prints one, through the same `--redact`; and free text from a sheet cell
+    never reaches it. This engine's report names nobody in a finding, so an
+    ops seed row carries how many accounts a room is missing, not which, and
+    a skipped folder link keeps its reason but never the sheet cell that
+    caused it.
     """
     rep = findings.Report("provision", "write" if write else "report")
     held = [(o, n) for o, n in blocked] + [
@@ -1069,6 +1075,11 @@ def main():
                     help="required alongside --write; see the module docstring")
     findings.add_flag(ap)
     a = ap.parse_args()
+    # The findings file names channels and cities and lands beside the run's
+    # logs; like every `--out` in this estate it must be uncommittable before
+    # any work starts (public repo — CLAUDE.md).
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)
 
     # This estate's CLI credential expired for good in 2026-08 and cannot be
     # re-scoped, so reads run on the same env token the writes use — it

@@ -30,6 +30,15 @@ def check(label, got, want):
     print("%s %s" % ("ok  " if got == want else "FAIL", label))
 
 
+def aborts(fn):
+    """True if fn() calls sys.exit — the script's only refusal mechanism."""
+    try:
+        fn()
+    except SystemExit:
+        return True
+    return False
+
+
 # --- the write allowlist is the chokepoint, and it is shared -------------------
 check("invite goes through the same allowlist as create/rename",
       "conversations.invite" in prov.WRITE_METHODS, True)
@@ -80,10 +89,11 @@ class _Recorder:
 ROWS = [
     {"city": "Berlin", "channel": "berlin-organizers", "channel_id": "C1",
      "is_private": True, "missing": [("A", "U1"), ("B", "U2")],
-     "present": [("C", "U3")], "unaccounted": ["U9"]},
+     "present": [("C", "U3")], "strangers": [("Zed", "U9")],
+     "staff_in_room": 0, "undescribed": 0},
     {"city": "Pune", "channel": "pune-organizers", "channel_id": "C2",
      "is_private": True, "missing": [], "present": [("D", "U4")],
-     "unaccounted": []},
+     "strangers": [], "staff_in_room": 0, "undescribed": 0},
 ]
 
 _rec = _Recorder()
@@ -103,11 +113,13 @@ check("and only conversations.invite is used", _rec.calls[0][0],
 check("the count is people, not calls", (done, failed), (2, []))
 
 # Someone already in the channel is never re-sent, and someone the intake does
-# not list is never touched — `unaccounted` reaches no request at all.
+# not list is never touched — no id from `strangers` reaches any request.
 check("an already-present member is not re-invited",
       "U3" in _rec.calls[0][1]["users"], False)
-check("an unaccounted member is never in a request",
-      "U9" in _rec.calls[0][1]["users"], False)
+_stranger_uids = [uid for _n, uid in ROWS[0]["strangers"]]
+check("a stranger's id is never in a request",
+      (_stranger_uids, any(uid in _rec.calls[0][1]["users"] for uid in _stranger_uids)),
+      (["U9"], False))
 
 # --- a failed batch retries singly: Slack fails the WHOLE batch on one bad ----
 # invitee, so top-level already_in_channel means "at least one raced in", not
@@ -140,7 +152,7 @@ check("the raced member and the real invite both count as done, no failures",
 # --- a real per-person error is collected, and does not abandon the rest ------
 ROWS2 = ROWS + [{"city": "X", "channel": "x-organizers", "channel_id": "C3",
                  "is_private": True, "missing": [("E", "U5")], "present": [],
-                 "unaccounted": []}]
+                 "strangers": [], "staff_in_room": 0, "undescribed": 0}]
 _rec = _BatchThenSingle({"U1": {"ok": False, "error": "user_is_restricted"},
                          "U5": {"ok": True}})
 inv.call_write = _rec
@@ -457,11 +469,22 @@ _INTAKE = [{"email": "a@x.com", "name": "Ada", "city": "Boston"}]
 
 
 class _FakeInviteApi:
+    """The read client collect() sees. `users` scripts `users.info` by id; an
+    id not in it answers as Slack does for a deleted account."""
+
+    users = {}
+
     def __init__(self, *a, **kw):
-        pass
+        self.calls = []
 
     def require_scopes(self, *a):
         pass
+
+    def call(self, method, **params):
+        self.calls.append((method, params))
+        if method != "users.info":
+            raise AssertionError("collect() called %s" % method)
+        return self.users.get(params["user"], {"ok": False, "error": "user_not_found"})
 
 
 def _run_collect():
@@ -632,8 +655,9 @@ check("run_scope() hands back the same report as data",
 _passes = [("Organizer channel",
             [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
               "is_private": True, "missing": [("Ada", "U1")],
-              "present": [("Bo", "U2")], "unaccounted": ["USTRANGER", "U5", "U6", "U7"],
-              "unaccounted_names": ["Zed", "Yan", "Xia", "Wen"]}],
+              "present": [("Bo", "U2")],
+              "strangers": [("Zed", "USTRANGER"), ("Yan", "U5"), ("Xia", "U6"), ("Wen", "U7")],
+              "staff_in_room": 1, "undescribed": 0}],
             [("Boston", "Cy")],
             [("Madrid", "no Organizer Channel on the sheet")])]
 _rep = inv.build_findings(_passes, conflicts=1, mode="report")
@@ -657,10 +681,12 @@ check("a pending invite is a warn finding on the CHANNEL, naming the person",
       [(f["kind"], f["subject"], f["detail"], f["severity"])
        for f in _doc["findings"] if f["kind"] == "invite"],
       [("invite", "#boston-organizers", "Ada", "warn")])
-check("no-account is ONE row with the count, never a per-person list",
+check("no-account is ONE row per pass, with the count AND who",
       [(f["subject"], f["detail"]) for f in _doc["findings"]
        if f["kind"] == "no Slack account"],
-      [("Organizer channel", "1 accepted organizer(s) cannot be invited")])
+      [("Organizer channel", "1 accepted organizer(s) cannot be invited: Cy")])
+check("no undescribed member, no tile for it",
+      [m["label"] for m in _doc["measured"] if "describe" in m["label"]], [])
 check("a skipped chapter, a stranger in the room and a column conflict each land",
       sorted(f["kind"] for f in _doc["findings"]),
       ["Slack ID conflict", "channel skipped", "invite", "no Slack account",
@@ -750,8 +776,8 @@ check("the champs roster is the union of every chapter's accepted organizers",
 # Counting them as "in a channel the intake does not list them for" would put
 # ~135 false entries into that tally on the real workspace.
 _chrows2, _, _ = _run_collect_champs(members_in_room=["U1", "U2", "USTRANGER"])
-check("a non-organizer in the champs room is NOT reported as unaccounted",
-      _chrows2[0]["unaccounted"], [])
+check("a non-organizer in the champs room is NOT reported as a stranger",
+      _chrows2[0]["strangers"], [])
 check("but the same person IS still seen as present, not missing",
       sorted(n for n, _ in _chrows2[0]["present"]), ["Ada", "Bo"])
 
@@ -781,7 +807,8 @@ check("the stranger finding names a few and counts the rest",
 
 
 class _UsersApi:
-    """users.info for a synthetic directory; anything else is an error."""
+    """users.info for a synthetic directory; an unknown id answers as Slack
+    does for a deleted account, and `errors` scripts an ok:false per id."""
     DIR = {"U5": {"id": "U5", "name": "yan", "real_name": "Yan",
                   "profile": {"email": "yan@x.com"}},
            "U8": {"id": "U8", "name": "ops", "real_name": "Ops Person",
@@ -789,19 +816,185 @@ class _UsersApi:
            "U9": {"id": "U9", "name": "seed", "real_name": "Seeded Ops",
                   "profile": {"email": "seed@x.com"}}}
 
+    def __init__(self, errors=None):
+        self.errors = errors or {}
+
     def call(self, method, **params):
         assert method == "users.info"
-        return {"ok": True, "user": self.DIR[params["user"]]}
+        uid = params["user"]
+        if uid in self.errors:
+            return {"ok": False, "error": self.errors[uid]}
+        if uid not in self.DIR:
+            return {"ok": False, "error": "user_not_found"}
+        return {"ok": True, "user": self.DIR[uid]}
 
 
 _cfg = {"staff_email_domain": "aaif.test", "ops_staff_domains": [],
         "ops_staff_emails": ["seed@x.com"]}
-_str, _staff = inv.describe_strangers(_UsersApi(), ["U5", "U8", "U9", "UGONE"], _cfg)
-check("a real stranger is named", _str[0], ("U5", "Yan"))
+_str, _staff, _undescribed = inv.describe_strangers(
+    _UsersApi(), ["U5", "U8", "U9", "UGONE"], _cfg)
+check("a real stranger is named, in the (name, uid) shape missing/present use",
+      _str[0], ("Yan", "U5"))
 check("ops by domain and ops by roster are set aside, not reported",
-      (_staff, [u for u, _n in _str]), (2, ["U5", "UGONE"]))
-check("a member Slack cannot describe keeps their id rather than vanishing",
-      _str[1], ("UGONE", "UGONE"))
+      (_staff, [u for _n, u in _str]), (2, ["U5", "UGONE"]))
+check("user_not_found keeps the id as the name rather than vanishing, and is counted",
+      (_str[1], _undescribed), (("UGONE", "UGONE"), 1))
+
+# `api.call` hands back ok:false instead of raising, so a dead token used to
+# read as "every stranger is a deleted account" and the run went on as if it
+# had looked. Only a missing user is a fact about the member; the rest abort.
+for _err in ("invalid_auth", "token_revoked", "missing_scope",
+             "account_inactive", "ratelimited"):
+    def _describe(err=_err):
+        inv.describe_strangers(_UsersApi(errors={"U5": err}), ["U5"], _cfg)
+    check("users.info %s aborts the run rather than reading as a stranger" % _err,
+          aborts(_describe), True)
+_err_out = _io.StringIO()
+try:
+    with _ctx.redirect_stderr(_err_out):
+        inv.describe_strangers(_UsersApi(errors={"U5": "invalid_auth"}), ["U5"], _cfg)
+except SystemExit as _exc:
+    _msg = str(_exc)
+check("the abort names the method, the id and the error",
+      all(t in _msg for t in ("ABORT", "users.info U5", "invalid_auth")), True)
+
+
+def _raises(*a, **kw):
+    raise inv.slackmod.SlackError("users.info", "transport_failed", "synthetic")
+
+
+class _DownApi:
+    call = staticmethod(_raises)
+
+
+try:
+    inv.describe_strangers(_DownApi(), ["U5"], _cfg)
+    _propagated = None
+except inv.slackmod.SlackError as _exc:
+    _propagated = _exc.args
+check("a transport failure propagates as SlackError, never as a stranger",
+      _propagated is not None, True)
+
+# --- collect() itself: a stranger in an organizer room is named, ops set aside,
+# and the config passed in is used rather than read off the sheet ---------------
+_FakeInviteApi.users = {
+    "U9": {"ok": True, "user": {"id": "U9", "name": "yan", "real_name": "Yan",
+                                "profile": {"email": "yan@x.com"}}},
+    "U8": {"ok": True, "user": {"id": "U8", "name": "ops", "real_name": "Ops Person",
+                                "profile": {"email": "ops@aaif.test"}}},
+}
+
+
+def _no_config():
+    raise AssertionError("collect() read the Slack Config tab although cfg= was given")
+
+
+def _run_collect_strangers():
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+              "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["U1", "U9", "U8"]), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "U1"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+         _mock.patch.object(inv.ao, "load_config", _no_config), \
+         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+        return inv.collect(cfg=_cfg)
+
+
+try:
+    _st_rows, _, _ = _run_collect_strangers()
+finally:
+    _FakeInviteApi.users = {}
+check("collect() names the stranger and sets the ops seat aside",
+      (_st_rows[0]["strangers"], _st_rows[0]["staff_in_room"], _st_rows[0]["undescribed"]),
+      ([("Yan", "U9")], 1, 0))
+check("the roster member is present, not a stranger",
+      [n for n, _ in _st_rows[0]["present"]], ["Ada"])
+
+# build_findings() surfaces the undescribed count as a tile only when non-zero.
+_und_passes = [("Organizer channel",
+                [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
+                  "is_private": True, "missing": [], "present": [],
+                  "strangers": [("UGONE", "UGONE")], "staff_in_room": 0,
+                  "undescribed": 1}], [], [])]
+check("a member Slack could not describe is a warn tile",
+      [(m["label"], m["value"], m.get("tone")) for m in
+       inv.build_findings(_und_passes, 0).to_dict()["measured"]
+       if "describe" in m["label"]],
+      [("members Slack could not describe", 1, "warn")])
+
+
+# --- main() lands the findings file on exit 0 and on a failed invite, in
+# report and write mode, and never on an ABORT --------------------------------
+def _scoped(missing):
+    rows = [{"city": "Boston", "channel": "boston-organizers", "channel_id": "C1",
+             "is_private": True, "missing": missing, "present": [],
+             "strangers": [], "staff_in_room": 0, "undescribed": 0}]
+    passes = [("Organizer channel", rows, [], [])]
+
+    def run_scope(scope, city_filter=None, mode="report"):
+        return rows, len(missing), inv.build_findings(passes, 0, mode)
+    return run_scope
+
+
+class _ScopedApi:
+    def __init__(self, *a, **kw):
+        pass
+
+    def scopes(self):
+        return set(inv.NEEDED_SCOPES)
+
+
+def json_out_after(argv, missing=(), apply_result=(1, [])):
+    """Run main() with run_scope/apply mocked; (exit code or 'abort', JSON)."""
+    with _tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "invite.json")
+        with _mock.patch.object(inv, "run_scope", _scoped(list(missing))), \
+             _mock.patch.object(inv, "write_token", lambda: "t"), \
+             _mock.patch.object(inv.slackmod, "Slack", _ScopedApi), \
+             _mock.patch.object(inv, "apply", lambda rows, token: apply_result), \
+             _mock.patch.object(sys, "argv", ["invite_organizers.py", "--json-out", path] + argv), \
+             _ctx.redirect_stdout(_io.StringIO()):
+            try:
+                code = inv.main()
+            except SystemExit:
+                code = "abort"
+        return code, inv.findings.read(path)
+
+
+_code, _out = json_out_after([])
+check("report mode writes the JSON on exit 0",
+      (_code, _out["step"], _out["mode"], _out["written"]), (0, "invite", "report", False))
+_code, _out = json_out_after(["--write", "--i-have-approval"])
+check("write mode with nothing to do still lands the JSON, written=False",
+      (_code, _out["mode"], _out["written"]), (0, "write", False))
+_code, _out = json_out_after(["--write", "--i-have-approval"], missing=[("Ada", "U1")])
+check("an applied invite lands written=True on exit 0",
+      (_code, _out["written"], [(m["label"], m["value"]) for m in _out["measured"]][-2:]),
+      (0, True, [("invited", 1), ("invites failed", 0)]))
+_code, _out = json_out_after(["--write", "--i-have-approval"], missing=[("Ada", "U1")],
+                             apply_result=(0, ["boston-organizers: user_is_restricted (U1)"]))
+check("a failed invite exits 1 and still lands the JSON, written=False, with the failure as a row",
+      (_code, _out["written"], [f["kind"] for f in _out["findings"] if f["severity"] == "bad"]),
+      (1, False, ["invite failed"]))
+# --write without --i-have-approval is the ABORT: the log says why, no file.
+_code, _out = json_out_after(["--write"], missing=[("Ada", "U1")])
+check("a refused write aborts and writes no JSON", (_code, _out), ("abort", None))
+
+# The findings file names people: a --json-out git would commit is refused
+# before any work — run_scope must never be reached.
+_repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_committable = os.path.join(_repo, "zz-invite-findings-probe.json")
+with _mock.patch.object(inv, "run_scope",
+                        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("ran"))), \
+     _mock.patch.object(sys, "argv", ["invite_organizers.py", "--json-out", _committable]), \
+     _ctx.redirect_stdout(_io.StringIO()):
+    check("a committable --json-out is refused before any work",
+          (aborts(inv.main), os.path.exists(_committable)), (True, False))
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

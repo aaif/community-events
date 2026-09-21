@@ -418,5 +418,44 @@ with tempfile.TemporaryDirectory() as _td:
     check("main() lands the report after a verified write",
           (_rc, _got["mode"], _got["written"]), (2, "write", True))
 
+# An in-sync estate: the file still lands, on exit 0.
+with tempfile.TemporaryDirectory() as _td:
+    _path = os.path.join(_td, "about.json")
+    with mock.patch.object(sync_about, "compute",
+                           lambda a, w: ([_docs[1]], {}, [], [], [], [])), \
+         mock.patch.object(sync_about, "print_report", lambda *a: None), \
+         mock.patch.object(sys, "argv", ["sync_about.py", "--json-out", _path]):
+        _rc = sync_about.main()
+    with open(_path) as fh:
+        _got = _json.load(fh)
+    check("main() lands the report on exit 0 when nothing would change",
+          (_rc, _got["mode"], _got["findings"]), (0, "report", []))
+
+# A --json-out path git would commit is refused before the intake is read.
+_unignored = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "..", "..", "findings-selftest.json")
+with mock.patch.object(sync_about, "compute", side_effect=AssertionError("compute ran")), \
+     mock.patch.object(sys, "argv", ["sync_about.py", "--json-out", _unignored]):
+    try:
+        sync_about.main()
+        _refused = False
+    except SystemExit as e:
+        _refused = "not ignored" in str(e)
+check("main(): an unignored --json-out aborts before any work, and lands nothing",
+      (_refused, os.path.exists(_unignored)), (True, False))
+
+# The removed applicants are named the way the accepted list is: through
+# redact_name, so --redact masks both.
+from aaif_events import redact as _redact  # noqa: E402
+_redact.REDACT = True
+try:
+    _r = sync_about.build_findings(_docs[:1], [], [], [], [], [], "report").to_dict()
+finally:
+    _redact.REDACT = False
+_rk = {f["kind"]: f["detail"] for f in _r["findings"]}
+check("--redact masks the accepted list and the removed applicants alike",
+      (_rk["Organizers rewrite"], _rk["non-accepted applicant named"]),
+      ("2 line(s) -> G.", "removed by the rewrite: A."))
+
 print("\n%s (%d failure(s))" % ("ALL PASS" if not fails else "FAILURES", fails))
 sys.exit(1 if fails else 0)

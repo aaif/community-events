@@ -48,6 +48,7 @@ from sync_chapters import (INTAKE_ID, INTAKE_TAB, SYNC_STATUSES, cell,
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events import findings  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.redact import add_redact_flag, redact_name, set_redaction  # noqa: E402
 
 
@@ -458,10 +459,12 @@ def build_findings(docs, orphans, near, malformed, held, unread, mode,
     """The text report's counts and per-chapter calls as a `findings.Report`.
 
     Pure: takes what `compute()` and `main()` already worked out, so the page
-    and the log carry the same numbers. The chapter is the subject throughout.
-    A name appears only where `print_report` already prints it (the accepted
-    list a doc will carry), masked the same way; the lines a doc currently
-    holds and the malformed intake text stay out — both are free text.
+    and the log carry the same numbers. The chapter is the subject throughout,
+    never a person. A name appears only where `print_report` already prints
+    it (the accepted list a doc will carry, and the non-accepted applicants a
+    rewrite removes), through the same `redact_name`; the lines a doc
+    currently holds and the malformed intake text stay out — both are free
+    text.
     """
     rep = findings.Report("about", mode)
     rep.written = bool(written)
@@ -607,6 +610,8 @@ def main():
     findings.add_flag(ap)
     args = ap.parse_args()
     set_redaction(args.redact)
+    if args.json_out:
+        rs.assert_git_ignored(args.json_out)   # the findings file carries names
 
     with tempfile.TemporaryDirectory(prefix="aaif-about-") as workdir:
         # --write recomputes from a fresh read here — a stale proposal is never applied.

@@ -340,6 +340,75 @@ check("the skip constant is the string collect() really emits",
       pcd.SKIP_NO_CITY_ROOM, "no distinct, live city channel to link")
 
 
+# --- main() lands the findings file on a normal exit, never on a refusal -------
+# The runner reads `written` from this file as its "wrote" signal, so the file
+# has to land on exit 0 and on the exit-1 "some posts failed" path, and must
+# NOT land when main() refuses. collect()/report()/apply() are the module's
+# own boundaries and are mocked whole; the gate logic in between is what runs.
+from aaif_events import findings as _findings  # noqa: E402
+
+_REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "..", "..", ".."))
+_todo = [r for r in _rows if r["action"] in (pcd.ACTION_CREATE, pcd.ACTION_ADD_ON)]
+
+
+def _main_with(argv, todo=(), apply_result=(0, []), json_out=None):
+    """Run main() with the estate read mocked; (exit code or message, doc, #applied)."""
+    applied = []
+
+    def fake_apply(todo_, token):
+        applied.append(len(todo_))
+        return apply_result
+
+    with _tempfile.TemporaryDirectory() as d:
+        path = json_out or os.path.join(d, "directory.json")
+        with _mock.patch.object(pcd, "collect", lambda: (list(_rows), list(_skipped))), \
+             _mock.patch.object(pcd, "report", lambda rows, skipped: list(todo)), \
+             _mock.patch.object(pcd, "write_token", lambda *a, **k: "xoxp-test"), \
+             _mock.patch.object(pcd, "apply", fake_apply), \
+             _mock.patch.object(sys, "argv",
+                                ["post_country_directory.py", "--json-out", path] + argv), \
+             _ctx.redirect_stdout(_io.StringIO()):
+            try:
+                code = pcd.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, _findings.read(path), applied
+
+
+_code, _doc, _applied = _main_with([], todo=_todo)
+check("main: report mode lands the JSON on exit 0, nothing posted",
+      (_code, _doc["step"], _doc["mode"], _doc["written"], _applied),
+      (0, "directory", "report", False, []))
+_code, _doc, _applied = _main_with(["--write"], todo=[])
+check("main: --write with nothing to do lands the JSON, written=False",
+      (_code, _doc["mode"], _doc["written"], _applied), (0, "write", False, []))
+_code, _doc, _applied = _main_with(["--write", "--i-have-approval"], todo=_todo,
+                                   apply_result=(2, []))
+check("main: an applied post lands written=True on exit 0",
+      (_code, _doc["written"], _applied,
+       [m["value"] for m in _doc["measured"] if m["label"] == "posted"]),
+      (0, True, [2], [2]))
+_code, _doc, _applied = _main_with(["--write", "--i-have-approval"], todo=_todo,
+                                   apply_result=(1, ["kenya: not_authed"]))
+check("main: a failed post still lands the JSON on exit 1, as a bad row on the channel",
+      (_code, _doc["written"],
+       [(f["subject"], f["detail"], f["severity"]) for f in _doc["findings"]
+        if f["kind"] == "post failed"]),
+      (1, True, [("#kenya", "not_authed", "bad")]))
+_code, _doc, _applied = _main_with(["--write"], todo=_todo)
+check("main: --write without approval REFUSES, posts nothing and lands no JSON",
+      (isinstance(_code, str) and "REFUSING" in _code, _doc, _applied), (True, None, []))
+# The findings file names channels: like every --out, it must be gitignored
+# before anything runs. A path in this (public) repo is refused before collect().
+_probe = os.path.join(_REPO, "directory-findings-probe.json")
+with _mock.patch.object(pcd, "collect",
+                        lambda: (_ for _ in ()).throw(AssertionError("collected"))):
+    _code, _doc, _applied = _main_with([], json_out=_probe)
+check("main: a committable --json-out is refused before any work",
+      (isinstance(_code, str) and "REFUSING TO RUN" in _code, os.path.exists(_probe)),
+      (True, False))
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

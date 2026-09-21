@@ -63,7 +63,7 @@ Usage:
     python3 invite_organizers.py --scope country
     python3 invite_organizers.py --scope both --city Berlin
     python3 invite_organizers.py --scope both --write --i-have-approval
-    python3 invite_organizers.py --json-out invite.json   # the report as data too
+    python3 invite_organizers.py --json-out sync-reports/<stamp>/invite.json  # the report as data too (a gitignored path)
 """
 
 import argparse
@@ -84,7 +84,7 @@ from provision_channels import (call_write, write_token, WRITE_METHODS,  # noqa:
 
 import audit_organizers as ao  # noqa: E402
 import resolve_slack_ids as rsi  # noqa: E402
-from aaif_events import findings, slack as slackmod  # noqa: E402
+from aaif_events import findings, report_style as rs, slack as slackmod  # noqa: E402
 # --- stdout redaction -------------------------------------------------------
 # The report names real people. `--redact` (default ON when CI is set, because
 # a CI log is a publication on a public repo) masks them in every printed line.
@@ -172,8 +172,15 @@ def fetch(city_filter=None):
 def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None):
     """Return (rows, unresolved, no_channel) — who is missing from where.
 
-    rows = [{city, channel, channel_id, missing: [(name, id)], present: [...],
-             unaccounted: [ids]}].
+    rows = [{city, channel, channel_id, is_private,
+             missing: [(name, id)], present: [(name, id)],
+             strangers: [(name, id)], staff_in_room: n, undescribed: n}].
+
+    `strangers` are the members the intake never put in this room, in the
+    same (name, id) shape as `missing` and `present`; `staff_in_room` is how
+    many AAIF ops accounts were set aside before that list was made, and
+    `undescribed` how many of the strangers Slack could not describe (a
+    deleted account — the id stands in for the name).
 
     Grouped by the target *channel*, not by chapter row: an `Organizer Channel`
     is normally 1:1 with a city, but a `Country Channel` is routinely shared by
@@ -264,44 +271,62 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None
         # them), so counting them as strangers would report the automation's
         # footprint as a finding about a person, on every row. The config is
         # read only when a room actually has someone to describe.
-        staff_n, strangers = 0, []
+        strangers, staff_n, undescribed = [], 0, 0
         if unaccounted:
             cfg = cfg or ao.load_config()
-            strangers, staff_n = describe_strangers(api, unaccounted, cfg)
+            strangers, staff_n, undescribed = describe_strangers(api, unaccounted, cfg)
         rows.append({"city": label, "channel": name,
                      "channel_id": chan["id"], "is_private": chan["is_private"],
                      "missing": missing, "present": present,
-                     "unaccounted": [uid for uid, _n in strangers],
-                     "unaccounted_names": [n for _uid, n in strangers],
-                     "staff_in_room": staff_n})
+                     "strangers": strangers, "staff_in_room": staff_n,
+                     "undescribed": undescribed})
     return rows, unresolved, no_channel
+
+
+#: The only `users.info` errors that mean "this member exists but Slack will
+#: not describe them" — a deleted account is still on the room's member list.
+#: Anything else (`invalid_auth`, `token_revoked`, `missing_scope`,
+#: `account_inactive`, a final `ratelimited`) is the RUN failing, not the
+#: member, and swallowing it once reported every stranger in a room as their
+#: own id while the report went on printing as if it had looked.
+UNDESCRIBABLE = ("user_not_found", "users_not_found")
 
 
 def describe_strangers(api, uids, cfg):
     """Name each unaccounted member, and set the ops staff aside.
 
-    Returns ([(uid, name)] for the real strangers, in the order given, and the
-    number of ops accounts dropped). Staff is decided the way the audit decides
-    it — `ao._is_staff` over the `Staff email domain`, `Ops staff domain` and
-    `Ops staff email` settings on the Slack Config tab — so the two reports
-    can never disagree about who is ops. A member Slack cannot describe keeps
-    their id as the name rather than vanishing from the count.
+    Returns ([(name, uid)] for the real strangers, in the order given — the
+    same shape `missing` and `present` use — the number of ops accounts
+    dropped, and the number of members Slack could not describe). Staff is
+    decided the way the audit decides it — `ao._is_staff` over the `Staff
+    email domain`, `Ops staff domain` and `Ops staff email` settings on the
+    Slack Config tab — so the two reports can never disagree about who is
+    ops. A member Slack cannot describe (UNDESCRIBABLE) keeps their id as the
+    name rather than vanishing from the count; any other `ok:false` aborts,
+    and a transport failure (`SlackError`) propagates — both are real
+    failures of this run, never a fact about the member.
     """
     domains = [cfg.get("staff_email_domain", "")] + list(cfg.get("ops_staff_domains") or ())
     domains = [d.strip().lower().lstrip("@") for d in domains if d and d.strip()]
     ops = {e.strip().lower() for e in (cfg.get("ops_staff_emails") or ()) if e and e.strip()}
-    strangers, staff = [], 0
+    strangers, staff, undescribed = [], 0, 0
     for uid in uids:
-        try:
-            rec = slackmod._user_record(api.call("users.info", user=uid)["user"])
-        except Exception:      # a deleted or restricted account: still a member
-            strangers.append((uid, uid))
+        payload = api.call("users.info", user=uid)
+        if not payload.get("ok"):
+            error = payload.get("error", "unknown")
+            if error not in UNDESCRIBABLE:
+                sys.exit("ABORT: users.info %s failed: %s — this is the run "
+                         "failing (token, scope or rate limit), not a fact "
+                         "about the member; fix it and re-run." % (uid, error))
+            strangers.append((uid, uid))     # deleted account: still a member
+            undescribed += 1
             continue
+        rec = slackmod._user_record(payload["user"])
         if ao._is_staff(rec.get("email", ""), domains, ops):
             staff += 1
             continue
-        strangers.append((uid, rec.get("real_name") or rec.get("name") or uid))
-    return strangers, staff
+        strangers.append((rec.get("real_name") or rec.get("name") or uid, uid))
+    return strangers, staff, undescribed
 
 
 def report(rows, unresolved, no_channel, label="Organizer channel"):
@@ -328,7 +353,7 @@ def report(rows, unresolved, no_channel, label="Organizer channel"):
         for city, why in no_channel:
             print("  %-18s %s" % (city, why))
 
-    extra = sum(len(r["unaccounted"]) for r in rows)
+    extra = sum(len(r["strangers"]) for r in rows)
     if extra:
         print("\n%d person(s) in a channel the intake does not list them for. "
               "NOT removed —\nthat is an audit finding, not a cleanup task; see "
@@ -425,9 +450,14 @@ def build_findings(passes, conflicts, mode="report"):
     `run_scope()` reported, in report order — and `conflicts` is the count
     fetch() returned. Pure: every number here is one report() already
     printed, summed across passes the way the write gate sums them, so the
-    page never shows a figure the log cannot back. Names in `detail` go
-    through the same `--redact` the printed lines do; a person's email never
-    lands here at all — the subject is the channel.
+    page never shows a figure the log cannot back.
+
+    The findings contract: `subject` is never a person — it is the channel
+    (`#name`), the pass label, the chapter city, or the `Slack ID` column
+    name. `detail` MAY name a person where the text report already prints
+    them, through the same `--redact` (`redact_name`); an address never
+    lands here (the report prints none), and nothing from a sheet or form
+    cell does.
     """
     rep = findings.Report("invite", mode)
     to_add = sum(len(r["missing"]) for _, rows, _, _ in passes for r in rows)
@@ -441,6 +471,9 @@ def build_findings(passes, conflicts, mode="report"):
     rep.measure("already in", present, "ok")
     rep.measure("no Slack account", no_account, "warn" if no_account else None)
     rep.measure("Slack ID column conflicts", conflicts, "bad" if conflicts else None)
+    undescribed = sum(r["undescribed"] for _, rows, _, _ in passes for r in rows)
+    if undescribed:
+        rep.measure("members Slack could not describe", undescribed, "warn")
 
     gate = "apply with --write --i-have-approval"
     for label, rows, unresolved, no_channel in passes:
@@ -448,18 +481,21 @@ def build_findings(passes, conflicts, mode="report"):
             for name, _uid in r["missing"]:
                 rep.find("invite", "#" + r["channel"], redact_name(name),
                          "warn", gate)
-            if r["unaccounted"]:
-                names = findings.named(map(redact_name, r.get("unaccounted_names") or ()))
+            if r["strangers"]:
+                names = findings.named(redact_name(n) for n, _u in r["strangers"])
                 rep.find("not on the intake", "#" + r["channel"],
-                         "%d member(s) the intake does not list for this room%s"
-                         % (len(r["unaccounted"]), (": " + names) if names else ""),
+                         "%d member(s) the intake does not list for this room: %s"
+                         % (len(r["strangers"]), names),
                          "info", "audit finding; see aaif-audit-slack")
         if unresolved:
-            # One row with the count, not one per person: there is nothing to
-            # do per person from here (they have to join Slack), and the text
-            # report's per-name list is the place to read who.
+            # One row per pass with the count AND the names: there is nothing
+            # to do per person from here (they have to join Slack), but a
+            # finding that says "3 cannot be invited" without saying who
+            # sends the reader back to the log to find out.
             rep.find("no Slack account", label,
-                     "%d accepted organizer(s) cannot be invited" % len(unresolved),
+                     "%d accepted organizer(s) cannot be invited: %s"
+                     % (len(unresolved),
+                        findings.named(redact_name(n) for _c, n in unresolved)),
                      "warn", "ask them to join Slack; then resolve_slack_ids.py")
         for city, why in no_channel:
             rep.find("channel skipped", city, why, "warn",
@@ -490,6 +526,10 @@ def main():
     findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    # The findings file names people. Same guard every `--out` gets, before
+    # any work: a committable path is refused, not written.
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)
 
     all_rows, total, rep = run_scope(a.scope, a.city,
                                      mode="write" if a.write else "report")

@@ -355,8 +355,109 @@ with tempfile.TemporaryDirectory() as _td:
     check("the file is private to the operator", oct(os.stat(_path).st_mode & 0o777), "0o600")
 check("run() with no --json-out writes nothing",
       r.findings.Report("identity").write(None), None)
-_code, _ran = _main_with(["--json-out", "x.json"])
+with tempfile.TemporaryDirectory() as _td:
+    _code, _ran = _main_with(["--json-out", os.path.join(_td, "x.json")])
 check("--json-out is accepted and reaches run()", _ran, True)
+
+
+# --- main() lands the findings file on a normal exit, never on an abort -------
+# The runner reads `written` from this file as its "wrote" signal, so the
+# file has to land on every normal exit, in report and write mode alike, and
+# must NOT land when run() aborts or main() refuses. The sheet and Slack are
+# mocked at the module's own boundaries; run() itself is real.
+_REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "..", "..", ".."))
+HDR4 = ["Full name", "Email", "Slack ID", "Slack Email"]
+ROWS4 = [["Ada", "ada@x.com", "", ""], ["Bo", "bo@x.com", "", ""]]
+RESOLVED4 = {"ada@x.com": {"id": "U0AAAAAAAAA"}, "bo@x.com": {"id": None}}
+
+
+class _MainApi:
+    def ok(self, method, **kw):
+        assert method == "auth.test"
+        return {"team": "T", "team_id": "T1"}
+
+
+def _main_json(argv, rows=ROWS4, resolved=RESOLVED4, json_out=None):
+    """Run main() for real over a mocked sheet and Slack.
+
+    Returns (SystemExit code-or-message or None, the findings doc or None,
+    the cells write_cells() was handed)."""
+    written = []
+
+    def lookup(api, emails):
+        if isinstance(resolved, Exception):
+            raise resolved
+        return resolved
+
+    with tempfile.TemporaryDirectory() as td:
+        path = json_out or os.path.join(td, "identity.json")
+        with mock.patch.object(r, "read_source", lambda: (list(HDR4), [list(x) for x in rows])), \
+             mock.patch.object(r, "load_token", lambda *a, **k: "xoxp-test"), \
+             mock.patch.object(r, "Slack", lambda token=None: _MainApi()), \
+             mock.patch.object(r, "lookup_emails", lookup), \
+             mock.patch.object(r, "write_cells",
+                               lambda ci, pairs: written.append((ci, list(pairs)))), \
+             mock.patch.object(sys, "argv", ["resolve_slack_ids.py", "--json-out", path] + argv), \
+             contextlib.redirect_stdout(io.StringIO()):
+            try:
+                r.main()
+                code = None
+            except SystemExit as exc:
+                code = exc.code
+        return code, r.findings.read(path), written
+
+
+_code, _doc, _written = _main_json([])
+check("main: report mode lands the JSON on a normal exit, nothing written",
+      (_code, _doc["step"], _doc["mode"], _doc["written"], _written,
+       sorted({f["kind"] for f in _doc["findings"]})),
+      (None, "identity", "report", False, [], ["no account"]))
+_code, _doc, _written = _main_json(["--write"])
+check("main: --write fills the resolved id and lands written=True",
+      (_code, _doc["mode"], _doc["written"], _written),
+      (None, "write", True, [(2, [(2, "U0AAAAAAAAA")]), (3, [(2, "ada@x.com")])]))
+_done = [["Ada", "ada@x.com", "U0AAAAAAAAA", "ada@x.com"]]
+_code, _doc, _written = _main_json(["--write"], rows=_done,
+                                   resolved=AssertionError("looked up with nothing to do"))
+check("main: --write with nothing to resolve lands the JSON, written=False, no lookup",
+      (_code, _doc["mode"], _doc["written"], _written), (None, "write", False, []))
+_code, _doc, _written = _main_json(["--write"],
+                                   resolved={"ada@x.com": {"id": "not-an-id"}, "bo@x.com": {}})
+check("main: an API id not shaped like one ABORTS the write and lands no JSON",
+      (isinstance(_code, str) and "ABORT" in _code, _doc, _written), (True, None, []))
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as _fh:
+    json.dump([{"row": 2, "slack_id": "U0AAAAAAAAA", "slack_email": "ada@slack"}], _fh)
+    _reviewed = _fh.name
+try:
+    _code, _doc, _written = _main_json(["--apply", _reviewed, "--write"])
+    check("main: an applied review lands written=True in write mode",
+          (_code, _doc["mode"], _doc["written"], _doc["summary"], len(_written)),
+          (None, "write", True, "applied 1 reviewed Slack id(s)", 2))
+    _code, _doc, _written = _main_json(["--apply", _reviewed])
+    check("main: --apply without --write REFUSES and lands no JSON",
+          (isinstance(_code, str) and "REFUSING" in _code, _doc, _written), (True, None, []))
+finally:
+    os.unlink(_reviewed)
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as _fh:
+    json.dump([{"row": 2, "slack_id": "@handle"}], _fh)
+    _reviewed = _fh.name
+try:
+    _code, _doc, _written = _main_json(["--apply", _reviewed, "--write"])
+    check("main: an invalid review entry ABORTS and lands no JSON",
+          (isinstance(_code, str) and "ABORT" in _code, _doc, _written), (True, None, []))
+finally:
+    os.unlink(_reviewed)
+# The findings file carries names: like every --out, it must be gitignored
+# before anything runs. A path in this (public) repo is refused before the
+# sheet is read.
+_probe = os.path.join(_REPO, "identity-findings-probe.json")
+with mock.patch.object(r, "read_source",
+                       lambda: (_ for _ in ()).throw(AssertionError("read the sheet"))):
+    _code, _doc, _written = _main_json([], json_out=_probe)
+check("main: a committable --json-out is refused before any work",
+      (isinstance(_code, str) and "REFUSING TO RUN" in _code, os.path.exists(_probe)),
+      (True, False))
 
 
 if FAILS:

@@ -524,6 +524,67 @@ with _tempfile.TemporaryDirectory() as _d:
           sr.findings.read(_path)["step"], "resources")
     check("findings: the file is private (0600)", oct(os.stat(_path).st_mode & 0o777), "0o600")
 check("findings: write() without a path is a no-op", _rep.write(None), None)
+# The names travel through redact_name, like the text report's roster.
+from aaif_events import redact as _redact  # noqa: E402
+_redact.REDACT = True
+try:
+    _rr = sr.build_findings([ch("Boston", row=2)], [], [], [], [], {}, did_slack=True,
+                            malformed=[], unresolved=[("Boston", "Ada Lovelace")],
+                            skipped_slack=False).to_dict()
+finally:
+    _redact.REDACT = False
+check("findings: --redact masks the organizers without Slack",
+      [f["detail"] for f in _rr["findings"] if f["kind"] == "no Slack account"],
+      ["1 accepted organizer(s) have no Slack account: A. (Boston)"])
+
+import contextlib as _ctx  # noqa: E402
+import io as _io  # noqa: E402
+
+
+# main() lands the file on a normal exit in both modes, and not on an ABORT.
+def json_out_main(argv, proposals):
+    """Run main() over one mocked chapter row; (exit code, JSON or None)."""
+    grid = (None, {"index": {c: i for i, c in enumerate(HEADERS)}}, [ch("Boston", row=2)])
+    with _tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "out.json")
+        with mock.patch.object(sr, "read_grid", lambda city: grid), \
+             mock.patch.object(sr, "propose_folders", lambda c: (list(proposals), [], [])), \
+             mock.patch.object(sr, "slack_half", lambda c, plan: ([], [], {}, [], True)), \
+             mock.patch.object(sr, "apply", lambda p, layout: len(p)), \
+             mock.patch.object(sr, "verify", lambda p, city: None), \
+             mock.patch.object(sys, "argv", ["sync_resources.py", "--json-out", path] + argv), \
+             _ctx.redirect_stdout(_io.StringIO()):
+            code = sr.main()
+        return code, (sr.findings.read(path) if os.path.exists(path) else None)
+
+
+_FILL = [{"row": 2, "city": "Boston", "column": "Chapter Folder",
+          "value": "https://drive/x", "why": "exact"}]
+_code, _out = json_out_main([], [])
+check("main: report mode in sync lands the JSON on exit 0",
+      (_code, _out["step"], _out["mode"], _out["written"]), (0, "resources", "report", False))
+_code, _out = json_out_main([], _FILL)
+check("main: report mode with a proposal lands the JSON on exit 2",
+      (_code, _out["mode"], [f["kind"] for f in _out["findings"]]),
+      (2, "report", ["proposed cell"]))
+_code, _out = json_out_main(["--write"], [])
+check("main: write mode with nothing to do lands the JSON, written=False",
+      (_code, _out["mode"], _out["written"]), (0, "write", False))
+_code, _out = json_out_main(["--write"], _FILL)
+check("main: a verified write lands written=True on exit 0",
+      (_code, _out["mode"], _out["written"]), (0, "write", True))
+# A --json-out path git would commit is refused before the sheet is read.
+_unignored = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "..", "..", "findings-selftest.json")
+with mock.patch.object(sr, "read_grid", side_effect=AssertionError("read_grid ran")), \
+     mock.patch.object(sys, "argv", ["sync_resources.py", "--json-out", _unignored]):
+    try:
+        sr.main()
+        _refused = False
+    except SystemExit as e:
+        _refused = "not ignored" in str(e)
+check("main: an unignored --json-out aborts before any work, and lands nothing",
+      (_refused, os.path.exists(_unignored)), (True, False))
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

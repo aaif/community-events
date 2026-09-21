@@ -1122,9 +1122,9 @@ check("json-out: the workbook change names the chapter and the counts",
 check("json-out: one info finding per held chapter, folded on city, naming the people",
       [(c, d.split(":")[0], s) for c, d, s in _byk["held under central approval"]],
       [("Boston", "1 pipeline organizer(s)", "info"), ("Pune", "1 pipeline organizer(s)", "info")])
-check("...and names who is held where the row has a name",
+check("...and names who is held, or says the row has no name",
       [d for _c, d, _s in _byk["held under central approval"]],
-      ["1 pipeline organizer(s): Cy", "1 pipeline organizer(s)"])
+      ["1 pipeline organizer(s): Cy", "1 pipeline organizer(s): (no name)"])
 check("json-out: a skipped workbook is bad", _byk["workbook skipped"][0][::2], ("Lagos", "bad"))
 check("json-out: demotion carries the row and the transition, no name",
       _byk["status moved backwards"], [("Boston", "row 4: Status 'Accepted' -> 'Prospect'", "warn")])
@@ -1132,6 +1132,21 @@ check("json-out: a kept row is a row number and the name in it",
       [(c, d.startswith("row 2: ") and len(d) > len("row 2: "), s)
        for c, d, s in _byk["real-looking row not touched"]],
       [("Boston", True, "info")])
+# A nameless row is still a finding about a row: the detail says which.
+_nn = sync_crm.build_findings("report", **dict(
+    _kw, keepers=[("Boston", [{"row": 2, "name": "", "email": "gus@x.io"}])],
+    held=[{"city": "Pune", "email": "di@x.io", "status": "New", "row": 9}],
+    orphans=[{"city": "Oslo", "people": [{"name": ""}]}],
+    changes=[("Boston", {"weird": 1})])).to_dict()
+_nnk = {f["kind"]: f["detail"] for f in _nn["findings"]}
+check("json-out: a nameless kept row names its row",
+      _nnk["real-looking row not touched"], "row 2: (no name on row 2)")
+check("json-out: a nameless held person names their intake row",
+      _nnk["held under central approval"], "1 pipeline organizer(s): (no name on row 9)")
+check("json-out: a nameless person with no row is still not blank",
+      _nnk["no chapter folder"], "(no name)")
+check("json-out: a change of only unknown kinds still says the workbook changes",
+      _nnk["workbook change"], "changed")
 # Names travel in `detail` where the text report prints them (the page has
 # to say what is going on with whom); an address is never a subject.
 check("json-out: no address is ever a subject",
@@ -1147,6 +1162,72 @@ check("json-out: a failed write is bad, a drifted workbook is warn, nothing writ
        [f["severity"] for f in _w["findings"] if f["kind"] == "workbook changed since plan"],
        _w["written"], [m["value"] for m in _w["measured"] if m["label"] == "not written"]),
       (["bad"], ["warn"], False, [2]))
+
+
+# main() lands the file on a normal exit in both modes, and not on an ABORT.
+import contextlib  # noqa: E402
+import io  # noqa: E402
+
+
+def json_out_main(argv, ops, verify_ops=None):
+    """Run main() over one mocked Boston workbook; (exit code, JSON or None)."""
+    _n, parts, att = book()
+    bk = sync_crm.Book(folder={"name": "Boston", "id": "f1"},
+                       crm={"id": "x", "name": "Boston CRM.xlsx"}, names=_n, parts=parts,
+                       part=sheet_part(parts, "Attendees"), att=att, path="/dev/null")
+    plans = iter([ops] + ([verify_ops] if verify_ops is not None else []))
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "out.json")
+        with mock.patch.object(sync_crm, "read_survey_interests", lambda: {}), \
+             mock.patch.object(sync_crm, "read_role_tab", lambda *a, **k: ([], [], [])), \
+             mock.patch.object(sync_crm, "list_chapter_folders", lambda: [bk.folder]), \
+             mock.patch.object(sync_crm, "open_crm", lambda f, w: (bk, None)), \
+             mock.patch.object(sync_crm, "plan_workbook", lambda *a: next(plans)), \
+             mock.patch.object(sync_crm, "preexisting", lambda *a, **k: []), \
+             mock.patch.object(sync_crm, "check_dropdowns", lambda a: []), \
+             mock.patch.object(sync_crm, "backup_root", lambda k: d), \
+             mock.patch.object(sync_crm, "write_workbooks",
+                               lambda t, w, b: (["Boston"], [], [])), \
+             mock.patch.object(sys, "argv", ["sync_crm.py", "--json-out", path] + argv), \
+             contextlib.redirect_stdout(io.StringIO()):
+            try:
+                sync_crm.main()
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, (sync_crm.findings.read(path) if os.path.exists(path) else None)
+
+
+_ADD = [{"kind": "add", "rownum": 3, "name": "Ada", "email": "a@x.com",
+         "sets": {"Status": "Accepted"}}]
+_code, _out = json_out_main([], [])
+check("main: report mode in sync lands the JSON on exit 0",
+      (_code, _out["step"], _out["mode"], _out["written"]), (0, "crm", "report", False))
+_code, _out = json_out_main([], _ADD)
+check("main: report mode with a change lands the JSON on exit 2",
+      (_code, _out["mode"], _out["written"], [f["kind"] for f in _out["findings"]]),
+      (2, "report", False, ["workbook change"]))
+_code, _out = json_out_main(["--write"], [])
+check("main: write mode with nothing to do lands the JSON, written=False",
+      (_code, _out["mode"], _out["written"]), (0, "write", False))
+_code, _out = json_out_main(["--write"], _ADD, verify_ops=[])
+check("main: a verified write lands written=True on exit 0",
+      (_code, _out["mode"], _out["written"]), (0, "write", True))
+_code, _out = json_out_main(["--write"], _ADD, verify_ops=_ADD)
+check("main: a failed verify lands the JSON unwritten on exit 1",
+      (_code, _out["written"], [f["kind"] for f in _out["findings"] if f["severity"] == "bad"]),
+      (1, False, ["verify failed"]))
+# A --json-out path git would commit is refused before the intake is read.
+_unignored = os.path.join(sync_crm.REPO, "findings-selftest.json")
+with mock.patch.object(sync_crm, "run", side_effect=AssertionError("run ran")), \
+     mock.patch.object(sys, "argv", ["sync_crm.py", "--json-out", _unignored]):
+    try:
+        sync_crm.main()
+        _refused = False
+    except SystemExit as e:
+        _refused = "not ignored" in str(e)
+check("main: an unignored --json-out aborts before any work, and lands nothing",
+      (_refused, os.path.exists(_unignored)), (True, False))
 
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")

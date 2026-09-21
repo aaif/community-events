@@ -74,6 +74,63 @@ def gws(args):
     return json.loads(txt[i:]) if i >= 0 else {}
 
 
+def _repo_root(path):
+    """Git repo root containing `path`, or None when it lives outside any repo.
+    Walks up to the nearest existing dir first: the file may not exist yet."""
+    probe_dir = os.path.dirname(os.path.abspath(path)) or os.sep
+    while not os.path.isdir(probe_dir) and probe_dir != os.sep:
+        probe_dir = os.path.dirname(probe_dir) or os.sep
+    try:
+        # LC_ALL=C: the "not a git repository" match reads git's stderr, and a
+        # localized git would abort a legitimate outside-repo run instead.
+        proc = subprocess.run(["git", "-C", probe_dir, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True,
+                              env={**_scrubbed_env(), "LC_ALL": "C", "LANG": "C"})
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that "
+                 f"{path} is ignored; install git or pass --json-out outside any repository.")
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    stderr = (proc.stderr or "").strip()
+    if "not a git repository" in stderr.lower():
+        return None
+    # Any other failure (dubious ownership, corrupt .git, ...) aborts: mapping it
+    # to None would silently disengage the guard.
+    sys.exit(f"ABORT: `git rev-parse` failed in {probe_dir} (exit {proc.returncode}: "
+             f"{stderr[:200]}), so this cannot verify that {path} is ignored.")
+
+
+def assert_git_ignored(path):
+    """Refuse to write the findings file where git would happily commit it.
+
+    `--json-out` names rows and the people on them, and the repo this runs in
+    is PUBLIC, so `.gitignore` coverage is a safety control, not tidiness —
+    verified at run time rather than trusted to a rule a rename can silently
+    stop matching. Mirrors the audit skills' guard; inlined because this script
+    is deliberately self-contained (see AGENTS.md on the lib coupling).
+
+    A path outside every repository is fine — there is nothing to commit it
+    to. `check-ignore` exits 128 (not 1) there, which is why the repo root is
+    resolved first instead of treating that exit as "unignored"."""
+    root = _repo_root(path)
+    if root is None:
+        return                       # outside any repo — nothing to leak into
+    abs_path = os.path.abspath(path)
+    env = _scrubbed_env()
+    ignored = subprocess.run(["git", "-C", root, "check-ignore", "-q", abs_path],
+                             capture_output=True, env=env).returncode == 0
+    # .gitignore has no effect on an already-tracked file.
+    tracked = subprocess.run(["git", "-C", root, "ls-files", "--error-unmatch", abs_path],
+                             capture_output=True, env=env).returncode == 0
+    if tracked:
+        sys.exit(f"ABORT: {path} is already TRACKED by the repo at {root} — "
+                 "git rm --cached it first. The findings file names people.")
+    if not ignored:
+        sys.exit(f"ABORT: {path} is not gitignored in {root}. The findings file "
+                 "names people; write it under a gitignored path (e.g. "
+                 "sync-reports/<stamp>/clean.json) or outside the repository.")
+
+
 def read_tab(tab):
     """Read a whole tab. The range is the bare tab name — deliberately NOT a
     bounded one, and there is no parameter to make it bounded again: a hardcoded
@@ -711,8 +768,9 @@ def duplicate_organizers(seen_email):
 
 def _flag_kind(issue):
     """The flag's category with the offending cell value cut off: the text
-    report prints `invalid email: <address>`; the JSON carries only the kind,
-    because a cell value is a person's data and the page never needs it."""
+    report prints `invalid email: <address>`; the JSON carries only the kind.
+    The row's name (or, on a nameless row, its address) travels in `detail`
+    instead — see `build_findings`; the offending VALUE never does."""
     if issue.startswith("city=Other"):
         return "unresolved city"
     return issue.split(":", 1)[0].split(" in rows", 1)[0].strip()
@@ -720,8 +778,11 @@ def _flag_kind(issue):
 
 def build_findings(changes, flags):
     """The `scan` report as data (see `write_findings`), from the same two lists
-    `print_scan` prints. Row numbers are the subjects; no cell value — old or
-    new, name, address, link — leaves the sheet through this path."""
+    `print_scan` prints. Row numbers are the subjects — a subject is never a
+    person. `detail` carries what the text report already prints beside the
+    row: the row's name, or its address only when the row has no name. The
+    offending cell values — the old/new pair of a fix, a malformed address,
+    a bad link — never leave the sheet through this path."""
     unresolved = [f for f in flags if _flag_kind(f["issue"]) == "unresolved city"]
     doc = {"format": FINDINGS_FORMAT, "step": "clean", "mode": "report",
            "summary": f"{len(changes)} proposed fixes, {len(flags)} flags",
@@ -747,7 +808,9 @@ def build_findings(changes, flags):
                                 "severity": "info", "action": "apply with clean.py apply"})
     # Detail = the person's name (the text report prints it beside the row)
     # and a fixed reason. `who` falls back to the address when the name is
-    # blank, and an address never leaves the sheet through this path.
+    # blank, so a nameless row is identified by its address — and by nothing
+    # else: the offending cell value itself (the malformed address, the bad
+    # link) is cut off by `_flag_kind` and never lands here.
     reason = {"unresolved city": "the dropdown said Other and the free text did not resolve",
               "LinkedIn not a profile URL": "not a linkedin.com/in/ profile link",
               "missing email": "no address on the row",
@@ -1227,6 +1290,8 @@ def main():
     sub.add_parser("install-colors")
     a = ap.parse_args()
     if a.cmd == "scan":
+        if a.json_out:
+            assert_git_ignored(a.json_out)   # before any work: the file names people
         changes, flags = scan()
         if a.json:
             print(json.dumps({"changes": changes, "flags": flags}, indent=1))

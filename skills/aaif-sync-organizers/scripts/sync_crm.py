@@ -92,6 +92,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, redacting,  # noqa: E402
                                 set_redaction)
 from aaif_events import findings  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 
 
 #: Columns whose values are categorical, not personal — the only ones a
@@ -1659,18 +1660,31 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
     Pure — takes the lists _run already printed from, so the test can drive it
     without a workbook or the network. `changes` is [(chapter, {kind: n})] per
     workbook that would change. Subjects are chapters, cities or the intake
-    tab; `detail` carries a row number or a count, never an address, and never
-    a cell's free text.
+    tab, never a person; `detail` may carry a name where the text report
+    already prints one (through `redact_name`, so `--redact` governs both),
+    plus row numbers, counts and a `Status` value (a dropdown, not free
+    text). Free text from a sheet or form cell never reaches it.
     """
     r = findings.Report("crm", mode)
     n_held = len({fold_email(p["email"]) for p in held})
 
     def who(items):
-        """The people behind a row, as the text report names them."""
+        """The people behind a row, as the text report names them.
+
+        A nameless item still says something — "(no name on row N)" where the
+        row is known, "(no name)" otherwise — so a finding never carries a blank
+        detail for a person the sheet does hold.
+        """
         names = []
         for x in items:
-            n = redact_name(x.get("name", "") if isinstance(x, dict) else str(x))
-            if n and n not in names:
+            if isinstance(x, dict):
+                n = redact_name(x.get("name", "") or "")
+                if not n:
+                    row = x.get("row", x.get("rownum"))
+                    n = "(no name on row %s)" % row if row is not None else "(no name)"
+            else:
+                n = redact_name(str(x)) or "(no name)"
+            if n not in names:
                 names.append(n)
         return "; ".join(names)
     r.summary = "%d people across %d chapters; %d workbook(s) would change" % (
@@ -1693,7 +1707,9 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
         bits = ([("%d new" % n.get("add", 0))] if n.get("add") else []) \
             + ([("%d changed" % n.get("fill", 0))] if n.get("fill") else []) \
             + ([("%d dummy cleared" % n.get("clear", 0))] if n.get("clear") else [])
-        r.find("workbook change", name, " / ".join(bits), "warn", "apply with --write")
+        # A change dict of only unknown kinds still describes a workbook that
+        # would change; "changed" beats an empty detail.
+        r.find("workbook change", name, " / ".join(bits) or "changed", "warn", "apply with --write")
     by_city = {}
     for p in held:
         by_city.setdefault(fold_city(p["city"]), [p["city"], {}])[1].setdefault(
@@ -1715,7 +1731,7 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
     for name, rows in keepers:
         for row in rows:
             r.find("real-looking row not touched", name,
-                   "row %d: %s" % (row["row"], who([row]) or "(no name in the row)"),
+                   "row %d: %s" % (row["row"], who([row])),
                    "info", "clear by hand if it is fixture data")
     for name, header, old, new, op in demoted:
         r.find("status moved backwards", name,
@@ -2004,6 +2020,8 @@ def main():
     findings.add_flag(ap)
     args = ap.parse_args()
     set_redaction(args.redact)
+    if args.json_out:
+        rs.assert_git_ignored(args.json_out)   # the findings file carries names
     sys.exit(run(args))
 
 

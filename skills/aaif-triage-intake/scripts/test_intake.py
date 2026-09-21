@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import contextlib
+from unittest import mock
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -288,6 +289,88 @@ class TestDigestPaging(unittest.TestCase):
         out = self._digest({"Organizers": self._rows(3), "Hosts": [], "Speakers": []})
         self.assertIn("== Organizers (3) ==\n", out)
         self.assertNotIn("more on this tab", out)
+
+
+class _Proc:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+class TestJsonOutGuard(unittest.TestCase):
+    """`--json-out` refuses a path git would commit. Outside any repository is
+    fine; inside, the path must be ignored and not already tracked."""
+
+    def test_a_path_outside_any_repo_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            intake.assert_git_ignored(os.path.join(d, "findings.json"))   # no exit
+
+    def _fake_run(self, ignored, tracked):
+        def run(argv, **kw):
+            if "rev-parse" in argv:
+                return _Proc(0, stdout="/repo\n")
+            if "check-ignore" in argv:
+                return _Proc(0 if ignored else 1)
+            if "ls-files" in argv:
+                return _Proc(0 if tracked else 1)
+            raise AssertionError(argv)
+        return run
+
+    def test_an_unignored_path_inside_a_repo_aborts(self):
+        with mock.patch.object(intake.subprocess, "run", self._fake_run(False, False)):
+            with self.assertRaises(SystemExit) as e:
+                intake.assert_git_ignored("/repo/findings.json")
+        self.assertIn("not gitignored", str(e.exception))
+
+    def test_a_tracked_path_aborts_even_when_ignored(self):
+        with mock.patch.object(intake.subprocess, "run", self._fake_run(True, True)):
+            with self.assertRaises(SystemExit):
+                intake.assert_git_ignored("/repo/findings.json")
+
+    def test_an_ignored_untracked_path_passes(self):
+        with mock.patch.object(intake.subprocess, "run", self._fake_run(True, False)):
+            intake.assert_git_ignored("/repo/findings.json")
+
+
+class TestMainJsonOut(unittest.TestCase):
+    """main() lands the findings file on exit 0 and exit 2, and never on an
+    ABORT (the guard runs before the sheet is read)."""
+
+    HDR = ["Timestamp", "Status", "Full name", "Email"]
+
+    def _main(self, rows, path, argv=()):
+        sheets = {"Organizers": (self.HDR, rows)}
+        with mock.patch.object(intake, "fetch", lambda tab: sheets.get(tab, ([], []))), \
+             mock.patch.object(intake, "assert_git_ignored", lambda p: None), \
+             mock.patch.object(sys, "argv", ["intake.py", "--json-out", path, *argv]), \
+             redirect_stdout(io.StringIO()):
+            return intake.main()
+
+    def _doc(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_an_empty_queue_exits_0_and_lands_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "triage.json")
+            self.assertEqual(self._main([], path), 0)
+            doc = self._doc(path)
+            self.assertEqual((doc["step"], doc["mode"], doc["written"]), ("triage", "report", False))
+
+    def test_a_queue_exits_2_and_lands_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "triage.json")
+            self.assertEqual(self._main([["t", "", "Ada", "a@x.com"]], path), 2)
+            self.assertEqual(self._doc(path)["measured"][0]["value"], 1)
+
+    def test_the_guard_runs_before_the_sheet_is_read(self):
+        calls = []
+        with mock.patch.object(intake, "fetch", lambda tab: calls.append("fetch") or ([], [])), \
+             mock.patch.object(intake, "assert_git_ignored",
+                               lambda p: calls.append("guard") or sys.exit("ABORT: x")), \
+             mock.patch.object(sys, "argv", ["intake.py", "--json-out", "x.json"]):
+            with self.assertRaises(SystemExit):
+                intake.main()
+        self.assertEqual(calls, ["guard"])
 
 
 if __name__ == "__main__":

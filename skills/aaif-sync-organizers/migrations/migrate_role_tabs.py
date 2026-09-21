@@ -213,7 +213,10 @@ def plan_workbook(parts):
         return [], "%r resolves to no zip part" % SOURCE_TAB
     try:
         crm.Attendees(parts, src)
-    except Exception as exc:               # noqa: BLE001 — reported, never raised on
+    except ValueError as exc:
+        # The one thing Attendees raises for a sheet that is not a CRM (no
+        # sheetData, no header row, a missing column). Anything else is a bug
+        # in this script or a corrupt package, and propagates.
         return [], "%s is not a CRM sheet this migration understands (%s)" % (
             SOURCE_TAB, str(exc)[:120])
     return missing, None
@@ -296,6 +299,12 @@ def main():
 
     if failed:
         return 1
+    if skipped:
+        # A skipped workbook is a chapter the migration did not reach; a clean
+        # exit here would let the estate read as migrated when it is not.
+        print("\n%d chapter(s) skipped — not migrated; fix them and re-run."
+              % len(skipped))
+        return 2
     if todo and not a.write:
         print("\nRe-run with --write to apply. `Attendees` is never touched: the "
               "role tabs are additive and cloned from it, so they carry its "

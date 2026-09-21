@@ -665,6 +665,64 @@ _v = sync_access.build_findings(_jplan, "writer", "write", ("grant", "lock"),
 check("json-out: a verify failure is one bad finding, unwritten",
       ([f["severity"] for f in _v["findings"] if f["kind"] == "verify failed"], _v["written"]),
       (["bad"], False))
+# Every name in `detail` goes through redact_name, like the text report: a
+# new grant, a city with no folder, and a failed grant all mask under --redact.
+_redact.REDACT = True
+try:
+    _r = sync_access.build_findings(_jplan, "writer", "write", ("grant",),
+                                    failed=[("Pune", "Bo Peep", "b@x.com", "no Google account")]
+                                    ).to_dict()
+finally:
+    _redact.REDACT = False
+check("json-out: --redact masks the names a detail carries",
+      sorted((f["kind"], f["detail"].split(" ")[0]) for f in _r["findings"]
+             if f["kind"] in ("new grant", "no chapter folder", "grant failed")),
+      [("grant failed", "B.:"), ("new grant", "A."), ("new grant", "B."),
+       ("no chapter folder", "C.")])
+check("json-out: ...and no full name survives",
+      [w for w in ("Lovelace", "Peep") if w in _json.dumps(_r)], [])
+
+
+# main() lands the file on a normal exit in both modes, and not on an ABORT.
+def json_out_main(plan_, argv, grants=(0, []), verify=()):
+    """Run main() with the network mocked; (exit code, JSON or None)."""
+    with _tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "out.json")
+        with mock.patch.object(sync_access, "plan", lambda role: plan_), \
+             mock.patch.object(sync_access, "report", lambda *a: None), \
+             mock.patch.object(sync_access, "apply_grants", lambda *a: grants), \
+             mock.patch.object(sync_access, "apply_lock", lambda *a: 1), \
+             mock.patch.object(sync_access, "verify", lambda *a: list(verify)), \
+             mock.patch.object(sys, "argv", ["sync_access.py", "--json-out", path] + argv), \
+             _ctx.redirect_stdout(_io.StringIO()):
+            code = sync_access.main()
+        return code, (sync_access.findings.read(path) if os.path.exists(path) else None)
+
+
+_insync = dict(_jplan, grants=[], public=[], stale=[], orphans=[], superseded=[], problems=[])
+_code, _out = json_out_main(_insync, [])
+check("main: report mode in sync lands the JSON on exit 0",
+      (_code, _out["step"], _out["mode"], _out["written"]), (0, "access", "report", False))
+_code, _out = json_out_main(_jplan, [])
+check("main: report mode with drift lands the JSON on exit 2",
+      (_code, _out["mode"], _out["written"]), (2, "report", False))
+_code, _out = json_out_main(_insync, ["--write"])
+check("main: write mode with nothing to do lands the JSON, written=False",
+      (_code, _out["mode"], _out["written"]), (0, "write", False))
+_code, _out = json_out_main(_jplan, ["--write"], grants=(2, []))
+check("main: a verified write lands written=True on exit 0",
+      (_code, _out["mode"], _out["written"]), (0, "write", True))
+_code, _out = json_out_main(_jplan, ["--write"], grants=(2, []), verify=["x has no grant"])
+check("main: a failed verify lands the JSON unwritten on exit 1",
+      (_code, _out["written"], [f["kind"] for f in _out["findings"] if f["severity"] == "bad"]),
+      (1, False, ["verify failed"]))
+# A --json-out path git would commit is refused before plan() touches anything.
+_unignored = os.path.join(sync_crm.REPO, "findings-selftest.json")
+with mock.patch.object(sync_access, "plan", side_effect=AssertionError("plan ran")), \
+     mock.patch.object(sys, "argv", ["sync_access.py", "--json-out", _unignored]):
+    _refused = aborts(sync_access.main)
+check("main: an unignored --json-out aborts before any work, and lands nothing",
+      (_refused, os.path.exists(_unignored)), (True, False))
 
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")

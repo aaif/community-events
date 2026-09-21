@@ -56,6 +56,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
 from aaif_events import findings, jsoncache  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import (Slack, SlackError, gmail_variants,  # noqa: E402
                                load_token, lookup_emails, users)
 # --- stdout redaction -------------------------------------------------------
@@ -510,9 +511,13 @@ def build_findings(n_rows, hits, folded, misses, cands, mode):
     """The text report's counts and per-row calls as a `findings.Report`.
 
     Pure: takes what `run()` has already computed and printed, so the same
-    numbers reach the page as reach the log. A row is the subject everywhere —
-    an address never is — and a name appears only where the text report
-    already prints it.
+    numbers reach the page as reach the log. The findings contract
+    (`aaif_events.findings`): a finding's subject is never a person — here it
+    is the row, or the source tab for the one aggregate "no account" finding;
+    `detail` may carry a name only where the text report already prints it,
+    through the same `--redact` (`redact_name`), and an address never (the
+    log prints them masked; the page has no use for one); and free text from
+    a sheet cell never reaches it.
     """
     rep = findings.Report("identity", mode)
     n_todo = len(hits) + len(misses)
@@ -592,6 +597,11 @@ def main():
     findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    # The findings file carries names (redacted or not, as the log is) and
+    # lands beside the run's logs; like every `--out` in this estate it must
+    # be uncommittable before any work starts (public repo — CLAUDE.md).
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)
     # `--apply` used to write on its own. Every other script in this skill, and
     # the SKILL.md that documents them, treats `--write` as the single answer to
     # "does this invocation touch the sheet?" — a second, quieter write path

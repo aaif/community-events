@@ -76,6 +76,7 @@ import resolve_slack_ids as rsi  # noqa: E402
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, set_redaction)  # noqa: E402
 from aaif_events import findings  # noqa: E402
+from aaif_events import report_style as rs  # noqa: E402
 
 
 FOLDER_COLUMN = "Chapter Folder"
@@ -763,10 +764,11 @@ def build_findings(chapters, proposals, near, folderless, candidates,
     """The report() above as data — a findings.Report for `--json-out`.
 
     Same numbers, same rows, nothing measured here that the text report does
-    not print. Two things it prints are deliberately NOT carried: a malformed
-    cell's value (free text from the sheet, untrusted) and the names of
-    organizers without a Slack account (one count, no roster — the text
-    report is the place that redacts).
+    not print. A subject is a chapter, a column or `Slack`, never a person;
+    `detail` may carry a name where the text report already prints one —
+    the organizers without a Slack account, through the same `redact_name`
+    — and never free text from a sheet cell: a malformed cell's value and a
+    rewritten cell's old value are counted or referenced by row, not quoted.
     """
     rep = findings.Report("resources", "write" if write else "report")
     parts = ["%d chapter rows" % len(chapters), "%d cell(s) proposed" % len(proposals)]
@@ -884,6 +886,8 @@ def main():
     findings.add_flag(ap)
     a = ap.parse_args()
     set_redaction(a.redact)
+    if a.json_out:
+        rs.assert_git_ignored(a.json_out)   # the findings file carries names
 
     _, layout, chapters = read_grid(a.city)
 

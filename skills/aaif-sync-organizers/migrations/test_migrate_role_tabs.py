@@ -193,6 +193,38 @@ check("a pre-split workbook is refused rather than cloned", bool(why), True)
 check("...and the reason names the sheet, so the operator knows where to look",
       "Attendees" in (why or ""), True)
 
+# Only the "not a CRM sheet" refusal (a ValueError from Attendees) is a skip; an
+# internal error is a bug and must surface, not read as one more skipped chapter.
+from unittest import mock  # noqa: E402
+_n, p_bug = fixture()
+with mock.patch.object(crm, "Attendees", side_effect=RuntimeError("boom")):
+    try:
+        mig.plan_workbook(p_bug)
+        _raised = False
+    except RuntimeError:
+        _raised = True
+check("an internal error in the CRM reader propagates instead of skipping", _raised, True)
+
+
+# --- main(): a skipped chapter is not a clean exit -----------------------------
+def run_main(argv, open_result):
+    """main() with Drive mocked to one folder; returns the exit code."""
+    with mock.patch.object(crm, "list_chapter_folders",
+                           lambda: [{"name": "Boston", "id": "f1"}]), \
+         mock.patch.object(crm, "open_crm", lambda f, w: open_result), \
+         mock.patch.object(sys, "argv", ["migrate_role_tabs.py"] + argv):
+        return mig.main()
+
+
+_n, p_done = fixture()
+mig.migrate_workbook(p_done)
+_book = crm.Book(folder={"name": "Boston", "id": "f1"}, crm={"id": "x"}, names=_n,
+                 parts=p_done, part=crm.sheet_part(p_done, "Attendees"), att=None,
+                 path="/dev/null")
+check("main(): every chapter migrated exits 0", run_main([], (_book, None)), 0)
+check("main(): a chapter it could not open exits 2, not 0",
+      run_main([], (None, "no CRM in the folder")), 2)
+
 # --- part numbering ------------------------------------------------------------
 check("a free sheet part skips the numbers already in use",
       mig.next_free_sheet_part({"xl/worksheets/sheet1.xml": b"",
