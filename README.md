@@ -186,7 +186,7 @@ flowchart TD
     end
     P6 --> P7
 
-    P7 --> REPORT["<b>render_report</b><br/>run.json + every log → report.html"]
+    P7 --> REPORT["<b>render_report</b><br/>run.json + each step's findings → report.html<br/><i>the state per subject; logs in the appendix</i>"]
     REPORT --> OUT{"findings?"}
     OUT -->|"yes — fix at the source"| P1
     OUT -->|"no"| DONE(["estate in step"])

@@ -97,7 +97,9 @@ in this repo:
 
 - **`lib/aaif_events/`** — shared, stdlib-only modules (`slack`, `luma`, `gws`,
   `sheets`, `redact`, `tracker`, `office`, `report_style`, `jsoncache`,
-  `slides_export`). Skill scripts import these through a
+  `slides_export`, `findings` — the one shape every ops engine writes its
+  measured counts and findings in, so the sync run's page needs no per-engine
+  knowledge). Skill scripts import these through a
   `sys.path.insert(...parents[3] / "lib")` shim at the top of the file.
   **Cost:** a skill that imports `aaif_events` no longer works when zipped
   standalone for claude.ai — it only runs from a full checkout or plugin

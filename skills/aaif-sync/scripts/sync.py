@@ -112,6 +112,15 @@ REDACTING = frozenset({
 #: this set against the scripts' own source, as it does for REDACTING.
 RENDERS_HTML = frozenset({"coverage", "activity", "topics", "members", "audit"})
 
+#: Steps that take `--json-out PATH` and write their report as data — measured
+#: counts and findings in the shape `aaif_events.findings` defines. The runner
+#: points each at `<run_dir>/<step>.json`; the page opens on those, and the
+#: text log becomes the appendix. Pinned against the scripts' own source.
+EMITS_FINDINGS = frozenset({
+    "clean", "triage", "chapters", "luma", "health", "resources", "provision",
+    "identity", "about", "access", "crm", "invite", "directory",
+})
+
 #: The run's own page. The runner RECORDS — outcomes, exit codes, durations,
 #: which log is whose — into run.json, and a separate script DRAWS report.html
 #: from that manifest and the logs. Two files, two jobs: the runner stays
@@ -320,6 +329,8 @@ def step_cmd(step, write_mode, approved, unattended=False, out_dir=None):
         cmd.append("--no-redact")
     if step.name in RENDERS_HTML and out_dir:
         cmd += ["--out", os.path.join(out_dir, step.name)]
+    if step.name in EMITS_FINDINGS and out_dir:
+        cmd += ["--json-out", os.path.join(out_dir, step.name + ".json")]
     return cmd, write_mode
 
 
@@ -550,11 +561,13 @@ def main(argv=None):
             stage_shown = step.stage
         entry = {"phase": phase, "stage": step.stage, "step": step.name,
                  "gate": step.gate, "why": step.why, "log": step.name + ".log",
-                 "html": (step.name + ".html") if step.name in RENDERS_HTML else None}
+                 "html": (step.name + ".html") if step.name in RENDERS_HTML else None,
+                 "findings": (step.name + ".json") if step.name in EMITS_FINDINGS else None}
         record.append(entry)
         if step.gate == APPROVAL and a.write and not a.approved and not a.unattended:
             by_name[step.name] = SKIPPED
-            entry.update(outcome=SKIPPED, exit=None, seconds=0, log=None, html=None)
+            entry.update(outcome=SKIPPED, exit=None, seconds=0, log=None, html=None,
+                         findings=None)
             print("      %-10s %-15s (needs --i-have-approval)" % (step.name, SKIPPED))
             continue
         outcome, code, secs = run_step(
@@ -563,7 +576,7 @@ def main(argv=None):
         by_name[step.name] = outcome
         entry.update(outcome=outcome, exit=code, seconds=round(secs, 1))
         if outcome == FAILED:
-            entry["html"] = None
+            entry["html"] = entry["findings"] = None
         note = ""
         if step.gate == REPORT_ONLY:
             note = "  (report mode — never written by this runner)"
@@ -604,8 +617,8 @@ def write_manifest(run_dir, stamp, a, record, notes, code):
     ran = {e["step"]: e for e in record}
     steps = [ran.get(s.name) or {
         "phase": phase, "stage": s.stage, "step": s.name, "gate": s.gate,
-        "why": s.why, "log": None, "html": None, "outcome": NOT_RUN,
-        "exit": None, "seconds": None}
+        "why": s.why, "log": None, "html": None, "findings": None,
+        "outcome": NOT_RUN, "exit": None, "seconds": None}
         for phase, ss in PHASES for s in ss]
     doc = {"stamp": stamp, "mode": "write" if a.write else "report",
            "unattended": bool(a.unattended), "approved": bool(a.approved),

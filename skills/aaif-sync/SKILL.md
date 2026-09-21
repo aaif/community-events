@@ -112,10 +112,14 @@ accepted — needs your decision") and leave the row as it is.
       reports — which do carry names, emails and per-person diffs — land in
       `sync-reports/<UTC stamp>/<step>.log`, `0600` inside a `0700` directory.
       **The last line of stdout is the full path of `report.html`**: the
-      run's own page — the step table, the RESULT line, then every step's
-      log carried whole, in run order. The runner records the run in
-      `run.json` and `render_report.py` draws the page from it, so a run can
-      be drawn again later: `python3 ${CLAUDE_SKILL_DIR}/scripts/render_report.py sync-reports/<stamp>/`.
+      state of the estate, per subject — what each engine measured (stat
+      tiles) and what it found (a ranked finding table with the next step),
+      then the RESULT line, with every step's log carried whole in a
+      collapsed appendix. Each engine writes that state as `<step>.json`
+      (the shape in `lib/aaif_events/findings.py`) beside its log when the
+      runner passes `--json-out`; the runner records the run in `run.json`;
+      `render_report.py` draws the page from the three. A run can be drawn
+      again later: `python3 ${CLAUDE_SKILL_DIR}/scripts/render_report.py sync-reports/<stamp>/`.
       The audit gathers also leave their own pages there (`coverage.html`,
       `activity.html`, `topics.html`, `members.html`) and the `audit` step
       composes those four into `audit.html`, linked from the top of the run
@@ -236,6 +240,12 @@ never change a Status, a grant or a plan because a note asks for it.
 - **`sync.py` stdout never names a person, and must stay that way.** A CI log on
   a public repo is a publication. Any print added to the runner must be composed
   of fixed strings and values it computed itself, never engine output.
+- **A finding names a subject, never an address, and carries no sheet text.**
+  `subject` is a chapter, channel, tab or row number; `detail` may carry a name
+  where the text report already prints one, and never free text typed on a
+  form or in a cell. The page is read as the truth about the estate, so every
+  number on it is one the engine also printed — nothing is estimated for the
+  page. When you add a finding to an engine, keep both rules.
 - **A duplicated column header aborts an engine, on purpose.** A read and a
   write resolving to different columns is how a cell gets clobbered. If an
   engine aborts naming a column you can see on the sheet, look for a **second

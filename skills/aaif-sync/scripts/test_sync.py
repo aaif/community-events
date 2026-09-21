@@ -266,6 +266,8 @@ check("...carrying outcome, exit and log for the steps that ran",
       [("DRIFT", 2, "clean.log"), ("DRIFT", 2, "triage.log")])
 check("...and NOT_RUN, with no log, for the rest",
       {(s["outcome"], s["log"]) for s in _m["steps"][2:]}, {(sync.NOT_RUN, None)})
+check("...and where each step's findings file is",
+      [s["findings"] for s in _m["steps"][:2]], ["clean.json", "triage.json"])
 check("...and the RESULT notes and exit code",
       (_m["exit"], any(n.startswith("RESULT:") for n in _m["notes"])), (2, True))
 check("the renderer is the last subprocess, given the run directory",
@@ -461,6 +463,21 @@ for _p, _s in sync.selected([], False):
     if _s.name in sync.RENDERS_HTML:
         check("...pointed at the run dir", _cmd[_cmd.index("--out") + 1],
               os.path.join("/x/run", _s.name))
+# Every EMITS_FINDINGS step really takes --json-out (pinned against its
+# source), the runner points it at <run_dir>/<step>.json, and the manifest
+# records where. Audits render HTML instead and get no --json-out.
+# A lib-coupled engine gets the flag from findings.add_flag(); a portable one
+# spells it out. Either is the flag; a script with neither would die on a
+# usage error the first time the runner passed it.
+for _name in sync.EMITS_FINDINGS:
+    with open(_by[_name].path, encoding="utf-8") as _fh:
+        _src = _fh.read()
+    check("%s takes --json-out" % _name,
+          '"--json-out"' in _src or "findings.add_flag(" in _src, True)
+for _p, _s in sync.selected([], False):
+    _cmd, _wm = sync.step_cmd(_s, False, False, out_dir="/x/run")
+    check("%s gets --json-out iff it emits findings" % _s.name,
+          "--json-out" in _cmd, _s.name in sync.EMITS_FINDINGS)
 check("the composed audit is the last step of the pipeline",
       [s.name for _p, s in sync.selected([], False)][-1], "audit")
 
