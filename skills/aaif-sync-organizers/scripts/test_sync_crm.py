@@ -671,6 +671,20 @@ check("a sqref with no column letter is not filed under column A",
       sync_crm.dv_lists(b'<dataValidation sqref="2:1000" type="list">'
                         b'<formula1>"a,b"</formula1></dataValidation>'), {})
 
+# A sqref splits at every absent row, so a plain one-column dropdown in a sheet
+# with a gap arrives as several ranges. Rejecting it on the space alone reported
+# a CORRECT list as stale forever, and migrate_interested_in refused to rewrite
+# what it could not attribute — so nothing could ever clear the report.
+check("one column split across ranges is still that column's list",
+      sync_crm.dv_lists(b'<dataValidation sqref="E2:E8 E10:E1002" type="list">'
+                        b'<formula1>"a,b"</formula1></dataValidation>'), {4: "a,b"})
+check("a genuinely multi-column sqref is still skipped",
+      sync_crm.dv_lists(b'<dataValidation sqref="B2:B8 E10:E1002" type="list">'
+                        b'<formula1>"a,b"</formula1></dataValidation>'), {})
+check("an unattributable range poisons the whole multi-range sqref",
+      sync_crm.dv_lists(b'<dataValidation sqref="E2:E8 2:1002" type="list">'
+                        b'<formula1>"a,b"</formula1></dataValidation>'), {})
+
 # The self-serve lifecycle end-to-end: a Prospect synced while in the pipeline
 # is upgraded in place once the chapter accepts them — Status is in AUTO_STATUS
 # and the blank Trusted/Regular cell fills.

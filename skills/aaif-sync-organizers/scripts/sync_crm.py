@@ -924,14 +924,22 @@ def dv_lists(raw):
     A multi-column sqref is skipped rather than guessed at: it would attribute
     one list to several headers, and this function's only caller uses the
     answer to decide whether a chapter's schema is correct.
+
+    A sqref may name SEVERAL ranges separated by spaces and still cover exactly
+    one column — Excel writes `E2:E8 E10:E1002` whenever a row inside the range
+    does not exist — so the ranges are unioned and the check is on the columns
+    they resolve to, not on whether a space is present. Rejecting on the space
+    alone reported a correct dropdown as stale on every run forever, and (via
+    the identical test in migrate_interested_in) made the migration refuse to
+    touch the column, so nothing could clear it.
     """
     out = {}
     for m in _DV_BLOCK_RE.finditer(raw):
         sqref = m.group(1).decode()
         f = _DV_FORMULA_RE.search(m.group(2))
-        if f is None or " " in sqref.strip():
+        if f is None:
             continue
-        cols = {col_of(end) for end in sqref.split(":")}
+        cols = {col_of(end) for end in re.split(r"[\s:]+", sqref.strip()) if end}
         # -1 means "no column letter" — unattributable, not column A. Filing it
         # anyway is how a garbled sqref silently claims a real column's list.
         if len(cols) != 1 or -1 in cols:
