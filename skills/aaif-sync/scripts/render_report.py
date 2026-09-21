@@ -34,7 +34,7 @@ PAGE = "report.html"
 #: outcome -> pill tone. The strings are sync.py's; the two files agree by
 #: the test that renders a manifest sync.py wrote.
 TONE = {"in sync": "ok", "wrote+verified": "ok", "DRIFT": "warn",
-        "PARTIAL": "warn", "skipped": "mute", "FAILED": "bad"}
+        "PARTIAL": "warn", "skipped": "mute", "FAILED": "bad", "not run": "mute"}
 
 GATE_NOTE = {"report-only": "report mode — never written by this runner",
              "human": "summary only — a human decides",
@@ -55,6 +55,8 @@ def step_table(steps):
         note = GATE_NOTE.get(s.get("gate"), "")
         if s.get("outcome") == "skipped":
             note = "needs --i-have-approval"
+        elif s.get("outcome") == "not run":
+            note = "not selected this run"
         secs = s.get("seconds")
         rows.append(
             "<tr><td>%s</td><td>%s</td><td><a href=\"#%s\">%s</a></td><td>%s</td>"
@@ -72,7 +74,8 @@ def stats(steps):
     counts = {}
     for s in steps:
         counts[s.get("outcome")] = counts.get(s.get("outcome"), 0) + 1
-    order = ["DRIFT", "wrote+verified", "PARTIAL", "FAILED", "skipped", "in sync"]
+    order = ["DRIFT", "wrote+verified", "PARTIAL", "FAILED", "skipped", "in sync",
+             "not run"]
     tone = {"DRIFT": " s-warn", "PARTIAL": " s-warn", "FAILED": " s-bad"}
     cells = ['<div class="stat%s"><span class="v">%d</span><span class="k">%s</span></div>'
              % (tone.get(o, ""), counts[o], e(o)) for o in order if counts.get(o)]
@@ -95,8 +98,13 @@ def section(s, log_text):
     meta = "<p>%s %s</p>" % (pill(s.get("outcome")), e(s.get("why", "")))
     link = ('<p><a href="%s">Open %s</a></p>' % (e(s["html"]), e(s["html"]))
             if s.get("html") else "")
-    body = ('<pre class="log">%s</pre>' % e(log_text) if log_text.strip()
-            else '<p class="caveat">This step did not run, so there is no log.</p>')
+    if log_text.strip():
+        body = '<pre class="log">%s</pre>' % e(log_text)
+    elif s.get("outcome") == "not run":
+        body = ('<p class="caveat">Not selected this run. Run the phase, or '
+                '<code>sync.py %s</code>, to measure it.</p>' % e(s["step"]))
+    else:
+        body = '<p class="caveat">This step did not run, so there is no log.</p>'
     return ('<section class="appendix" id="%s"><span class="tag">%s</span>%s%s%s%s</section>'
             % (e(s["step"]), e(s["phase"]), head, meta, link, body))
 
@@ -108,9 +116,12 @@ def render(manifest, logs):
     if manifest.get("unattended"):
         mode += ", unattended"
     scope = manifest.get("phases") or ["every phase"]
-    lede = ('<p class="lede">%s mode over %s — %d step(s), exit %s. The table is the '
-            'run; each section below is one step\'s own report, carried whole.</p>'
-            % (e(mode), e(", ".join(scope)), len(steps), e(manifest.get("exit"))))
+    ran = [s for s in steps if s.get("outcome") != "not run"]
+    lede = ('<p class="lede">%s mode over %s — %d of %d step(s) ran, exit %s. The '
+            'table is the whole pipeline; each section below is one step\'s own '
+            'report, carried whole.</p>'
+            % (e(mode), e(", ".join(scope)), len(ran), len(steps),
+               e(manifest.get("exit"))))
     notes = "".join("<p><b>%s</b></p>" % e(n) for n in manifest.get("notes", []))
     audit = next((s for s in steps if s["step"] == "audit" and s.get("html")), None)
     audit_link = ('<p>The Slack audit as one page: <a href="%s">%s</a>.</p>'

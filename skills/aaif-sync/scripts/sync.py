@@ -270,6 +270,9 @@ UNATTENDED_PHASES = ("preflight", "chapters", "organizers")
 
 IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED = (
     "in sync", "DRIFT", "wrote+verified", "FAILED", "PARTIAL", "skipped")
+#: The manifest's word for a step this invocation did not select. Never an
+#: outcome the runner computes for by_name, so it never touches the exit code.
+NOT_RUN = "not run"
 
 
 def classify(code, wrote_marker, write_mode, partial_marker=False):
@@ -594,10 +597,20 @@ def write_manifest(run_dir, stamp, a, record, notes, code):
     RESULT notes and the mode the run was in. The logs themselves stay separate
     files: the manifest says where they are, and the renderer reads them.
     """
+    # Every step of the pipeline, every time, in pipeline order: a two-step
+    # write run still draws the whole estate, with the steps it did not touch
+    # marked NOT_RUN rather than absent — a page with two rows on it reads as
+    # a two-step estate.
+    ran = {e["step"]: e for e in record}
+    steps = [ran.get(s.name) or {
+        "phase": phase, "stage": s.stage, "step": s.name, "gate": s.gate,
+        "why": s.why, "log": None, "html": None, "outcome": NOT_RUN,
+        "exit": None, "seconds": None}
+        for phase, ss in PHASES for s in ss]
     doc = {"stamp": stamp, "mode": "write" if a.write else "report",
            "unattended": bool(a.unattended), "approved": bool(a.approved),
            "phases": list(a.phases) or None, "stages": a.stages,
-           "steps": record, "notes": notes, "exit": code}
+           "steps": steps, "notes": notes, "exit": code}
     fd = os.open(os.path.join(run_dir, MANIFEST),
                  os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:

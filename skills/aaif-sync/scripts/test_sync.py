@@ -256,11 +256,16 @@ check("an unattended write with pending Slack changes exits 2", _rc, 2)
 _rc, _seen = _drive(["preflight"], code=2, log_text="3 awaiting review\n")
 _m = _LAST_MANIFEST
 check("run.json is written", _m is not None, True)
-check("...one entry per step, in run order",
-      [s["step"] for s in _m["steps"]], ["clean", "triage"])
-check("...carrying outcome, exit and log per step",
-      [(s["outcome"], s["exit"], s["log"]) for s in _m["steps"]],
+# Every step, every time: a preflight-only run still lists the whole pipeline,
+# so the page it draws is the estate with two steps measured, not a two-step
+# estate. The steps not selected say so.
+check("...every pipeline step, in pipeline order",
+      [s["step"] for s in _m["steps"]], sync.STEP_NAMES)
+check("...carrying outcome, exit and log for the steps that ran",
+      [(s["outcome"], s["exit"], s["log"]) for s in _m["steps"][:2]],
       [("DRIFT", 2, "clean.log"), ("DRIFT", 2, "triage.log")])
+check("...and NOT_RUN, with no log, for the rest",
+      {(s["outcome"], s["log"]) for s in _m["steps"][2:]}, {(sync.NOT_RUN, None)})
 check("...and the RESULT notes and exit code",
       (_m["exit"], any(n.startswith("RESULT:") for n in _m["notes"])), (2, True))
 check("the renderer is the last subprocess, given the run directory",
@@ -268,7 +273,8 @@ check("the renderer is the last subprocess, given the run directory",
       (True, True))
 check("a skipped step is recorded with no log",
       [(s["outcome"], s["log"]) for s in
-       (_drive(["provision", "--write"]) and _LAST_MANIFEST)["steps"]],
+       (_drive(["provision", "--write"]) and _LAST_MANIFEST)["steps"]
+       if s["step"] == "provision"],
       [("skipped", None)])
 _pending = sync.summary_notes({"invite": sync.DRIFT}, True)[0]
 check("...and its note sends a human to the terminal with both flags",

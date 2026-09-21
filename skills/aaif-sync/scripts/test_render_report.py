@@ -36,6 +36,9 @@ MANIFEST = {
         {"phase": "chapters", "stage": "execute", "step": "provision", "gate": "approval",
          "why": "rooms", "log": None, "html": None,
          "outcome": "skipped", "exit": None, "seconds": 0},
+        {"phase": "events", "stage": "gather", "step": "luma", "gate": "read-only",
+         "why": "pages", "log": None, "html": None,
+         "outcome": "not run", "exit": None, "seconds": None},
         {"phase": "workspace", "stage": "gather", "step": "audit", "gate": "read-only",
          "why": "one page", "log": "audit.log", "html": "audit.html",
          "outcome": "in sync", "exit": 0, "seconds": 3.0},
@@ -50,7 +53,11 @@ page = rr.render(MANIFEST, LOGS)
 check("it is a complete document", page.startswith("<!doctype html>"), True)
 check("every step has a section", all('id="%s"' % s["step"] in page
                                        for s in MANIFEST["steps"]), True)
-check("every step is in the index", page.count('<li><a href="#'), 4)
+check("every step is in the index", page.count('<li><a href="#'), 5)
+check("a step not selected this run is on the page and says so",
+      ('id="luma"' in page, "Not selected this run" in page), (True, True))
+check("the lede counts what ran against the whole pipeline",
+      "4 of 5 step(s) ran" in page, True)
 check("the RESULT note is carried", "RESULT: drift" in page, True)
 check("a log is shown as text, never as markup",
       ("&lt;b&gt;row&lt;/b&gt;" in page, "<b>row</b>" in page), (True, False))
