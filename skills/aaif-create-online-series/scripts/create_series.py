@@ -192,9 +192,31 @@ def residual_tokens(path):
 # ----------------------------------------------------------------------------
 # Drive helpers (via the gws CLI)
 # ----------------------------------------------------------------------------
-_TRANSIENT = ("timed out", "internalError", "HTTP request failed",
+# This skill is the one of the four Drive cloners that is still ZIPPABLE: no
+# script in it imports `lib/aaif_events`, so it runs standalone on claude.ai.
+# That is why the `gws` plumbing below is a local copy rather than a boundary
+# over `aaif_events.gws` the way its siblings now are — and why the two fixes
+# that module carries have to be carried here too, by hand. If this skill ever
+# takes the lib coupling for another reason, delete all of this and call the
+# shared client instead.
+#
+# Substrings that mean "the API was sick, ask again".
+_TRANSIENT = ("timed out", "internalError", "Internal error", "HTTP request failed",
               "Connection", "temporarily", "rateLimit", "userRateLimit",
-              "backendError", "503", "500", "502")
+              "backendError")
+
+#: Bare "500"/"502" as substrings match any range or quota id that happens to
+#: contain those digits, so a PERMANENT error burns the full backoff before
+#: failing: `A500:K500 exceeds grid limits` is preceded by `A` and followed by
+#: `:`, and the old table matched it. Match HTTP statuses at token boundaries
+#: only. Kept in step with `aaif_events.gws.TRANSIENT_STATUS`.
+_TRANSIENT_STATUS = re.compile(r"(?<![0-9A-Za-z])(?:429|500|502|503|504)(?![0-9A-Za-z])")
+
+#: A Drive `create` or `copy` that succeeded server-side but answered like a
+#: timeout must NEVER be re-sent: the retry makes a second folder, or a second
+#: copy of a template file, under the same name, and nothing downstream
+#: notices. Reads, and `files.update` by id, are safe at the default.
+NO_RETRY = 1
 
 def _scrubbed_env():
     """os.environ minus the Slack/Luma secrets: gws never needs them, and a child
@@ -212,18 +234,19 @@ def _gws(cmd, cwd=None, retries=5):
         if r.returncode == 0:
             return r.stdout
         msg = (r.stderr or "") + (r.stdout or "")
-        if i < retries - 1 and any(k in msg for k in _TRANSIENT):
+        if i < retries - 1 and (any(k in msg for k in _TRANSIENT)
+                                or _TRANSIENT_STATUS.search(msg)):
             time.sleep(2 * (i + 1))
             continue
         raise RuntimeError("gws failed (%s): %s" % (r.returncode, msg.strip()[:400]))
 
-def gws_json(*args, params=None, body=None):
+def gws_json(*args, params=None, body=None, retries=5):
     cmd = ["gws", *args]
     if params is not None:
         cmd += ["--params", json.dumps(params)]
     if body is not None:
         cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd)
+    out = _gws(cmd, retries=retries)
     # Split on "\n" only — NOT splitlines(), which also splits on U+2028 and
     # friends INSIDE JSON string values, corrupting them when rejoined.
     s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
@@ -257,12 +280,12 @@ def list_children(folder_id):
     return res.get("files", [])
 
 def create_folder(name, parent):
-    return gws_json("drive", "files", "create",
+    return gws_json("drive", "files", "create", retries=NO_RETRY,
                     params={"supportsAllDrives": True},
                     body={"name": name, "mimeType": FOLDER, "parents": [parent]})["id"]
 
 def copy_file(file_id, name, parent):
-    return gws_json("drive", "files", "copy",
+    return gws_json("drive", "files", "copy", retries=NO_RETRY,
                     params={"fileId": file_id, "supportsAllDrives": True},
                     body={"name": name, "parents": [parent]})["id"]
 

@@ -5,6 +5,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 import sync_badges  # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402  (sync_badges put lib on the path)
 
 
 class TestNeededFilenames(unittest.TestCase):
@@ -141,19 +142,35 @@ class TestListChildrenPagination(unittest.TestCase):
 
 
 class TestGwsRetry(unittest.TestCase):
+    """`_gws` is a boundary over the shared client now, so the subprocess these
+    patch is `aaif_events.gws`'s. The behaviours pinned are the same ones, and
+    the last of them is the one that is still this script's own decision."""
+
     def test_retries_transient_failure_then_succeeds(self):
         results = [
             mock.Mock(returncode=1, stdout="", stderr="503 Service Unavailable"),
             mock.Mock(returncode=0, stdout="ok", stderr=""),
         ]
-        with mock.patch.object(sync_badges.subprocess, "run", side_effect=results), \
-             mock.patch.object(sync_badges.time, "sleep"):
+        with mock.patch.object(gwsmod.subprocess, "run", side_effect=results), \
+             mock.patch.object(gwsmod.time, "sleep"):
             out = sync_badges._gws(["gws", "noop"])
         self.assertEqual(out, "ok")
 
+    def test_a_transient_class_the_local_table_missed_is_now_retried(self):
+        # The table this script carried listed five substrings; the shared one
+        # lists ten. `backendError` was in neither of this script's, so a badge
+        # sync died where a sibling engine rode the same failure out.
+        results = [
+            mock.Mock(returncode=1, stdout="", stderr="backendError"),
+            mock.Mock(returncode=0, stdout="ok", stderr=""),
+        ]
+        with mock.patch.object(gwsmod.subprocess, "run", side_effect=results), \
+             mock.patch.object(gwsmod.time, "sleep"):
+            self.assertEqual(sync_badges._gws(["gws", "noop"]), "ok")
+
     def test_non_transient_failure_raises_immediately(self):
         result = mock.Mock(returncode=1, stdout="", stderr="permission denied")
-        with mock.patch.object(sync_badges.subprocess, "run", return_value=result) as run:
+        with mock.patch.object(gwsmod.subprocess, "run", return_value=result) as run:
             with self.assertRaises(RuntimeError):
                 sync_badges._gws(["gws", "noop"])
         self.assertEqual(run.call_count, 1)  # no retry on a non-transient error
@@ -162,10 +179,20 @@ class TestGwsRetry(unittest.TestCase):
         # Non-idempotent writes (create_folder, upload_new) pass retries=1 so a
         # timed-out `files.create` is never blindly retried into a duplicate.
         result = mock.Mock(returncode=1, stdout="", stderr="timed out")
-        with mock.patch.object(sync_badges.subprocess, "run", return_value=result) as run:
+        with mock.patch.object(gwsmod.subprocess, "run", return_value=result) as run:
             with self.assertRaises(RuntimeError):
                 sync_badges._gws(["gws", "noop"], retries=1)
         self.assertEqual(run.call_count, 1)
+
+    def test_the_two_non_idempotent_writes_still_pass_retries_1(self):
+        """The guard is a keyword at each call site, so pin the call sites."""
+        with mock.patch.object(sync_badges, "gws_json") as gj:
+            gj.return_value = {"id": "f1"}
+            sync_badges.create_folder("Badges", "parent1")
+        self.assertEqual(gj.call_args.kwargs.get("retries"), 1)
+        with mock.patch.object(sync_badges, "_gws") as g:
+            sync_badges.upload_new("a.svg", "parent1", "/tmp/a.svg")
+        self.assertEqual(g.call_args.kwargs.get("retries"), 1)
 
 
 class TestWritePathDispatch(unittest.TestCase):
@@ -273,15 +300,20 @@ class TestWritePathDispatch(unittest.TestCase):
 
 
 class TestScrubbedEnv(unittest.TestCase):
+    """The scrub is the shared one now (this script had its own copy). It must
+    still drop the Slack/Luma tokens and still KEEP what `gws` itself reads."""
+
     def test_drops_slack_and_luma_secrets_only(self):
         with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "x",
                                           "AAIF_SLACK_READ_TOKEN": "y",
-                                          "LUMA_API_KEY": "z", "HOME_KEEP": "1"}):
-            env = sync_badges._scrubbed_env()
+                                          "LUMA_API_KEY": "z", "HOME_KEEP": "1",
+                                          "GOOGLE_WORKSPACE_CLI_CONFIG": "c"}):
+            env = gwsmod.scrubbed_env()
         self.assertNotIn("AAIF_SLACK_WRITE_TOKEN", env)
         self.assertNotIn("AAIF_SLACK_READ_TOKEN", env)
         self.assertNotIn("LUMA_API_KEY", env)
         self.assertEqual(env["HOME_KEEP"], "1")
+        self.assertEqual(env["GOOGLE_WORKSPACE_CLI_CONFIG"], "c")
 
 
 if __name__ == "__main__":

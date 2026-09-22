@@ -24,7 +24,7 @@ Usage:
   # Test the text engine on a local folder of .pptx/.docx/.xlsx (no Drive):
   python create_chapter.py --city "Los Angeles" --rebrand-local ./somedir
 """
-import argparse, fnmatch, html, json, math, os, re, shutil, subprocess, sys, tempfile, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
+import argparse, fnmatch, html, json, math, os, re, shutil, sys, tempfile, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
 
 # The 100-chapter cap is defined ONCE, in aaif-sync-chapters. A chapter comes
 # into existence in two places — the Drive folder this script makes and the feed
@@ -33,6 +33,14 @@ import argparse, fnmatch, html, json, math, os, re, shutil, subprocess, sys, tem
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "aaif-sync-chapters", "scripts"))
 import sync_chapters as _chapters  # noqa: E402
+
+# This skill is already lib-coupled (restyle_design_system, upload_agents,
+# deck_estate and rename_chapter all import `aaif_events`), so it is already on
+# the README's not-zippable list. A private `gws` wrapper here bought nothing
+# back and cost a retry table that had drifted from the shared one.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "lib"))
+from aaif_events import gws as gwsmod  # noqa: E402
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "1PHvEgqnHo0RrsFyA47O9iRJGaKehC8Eg"   # the "TemplateCity" folder
@@ -415,49 +423,35 @@ def resolve_latlon(name, lat, lon):
 # ----------------------------------------------------------------------------
 # Drive helpers (via the gws CLI)
 # ----------------------------------------------------------------------------
-_TRANSIENT = ("timed out", "internalError", "HTTP request failed",
-              "Connection", "temporarily", "rateLimit", "userRateLimit",
-              "backendError", "503", "500", "502")
-
-def _scrubbed_env():
-    """os.environ minus the Slack/Luma secrets: gws never needs them, and a child
-    inherits the whole environment otherwise. Local so this script stays standalone."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
-            and k != "LUMA_API_KEY"}
+#: A Drive `create` or `copy` that succeeded server-side but answered like a
+#: timeout must NEVER be re-sent: the retry makes a second folder, or a second
+#: copy of a template file, under the same name — and nothing downstream
+#: notices. `list_children` then reports a subtree that has everything twice,
+#: and the rebrand walks both. Pass this as `retries` at every non-idempotent
+#: call site. Reads, and `files.update` by id, are safe at the shared default.
+NO_RETRY = gwsmod.NO_RETRY
 
 
-def _gws(cmd, cwd=None, retries=5):
-    """Run a gws command, retrying transient network/server errors."""
-    for i in range(retries):
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                           env=_scrubbed_env())
-        if r.returncode == 0:
-            return r.stdout
-        msg = (r.stderr or "") + (r.stdout or "")
-        if i < retries - 1 and any(k in msg for k in _TRANSIENT):
-            time.sleep(2 * (i + 1))
-            continue
-        raise RuntimeError("gws failed (%s): %s" % (r.returncode, msg.strip()[:400]))
+def _gws(cmd, cwd=None, retries=gwsmod.RETRIES):
+    """Run a gws command, retrying transient network/server errors.
 
-def gws_json(*args, params=None, body=None):
-    cmd = ["gws", *args]
-    if params is not None:
-        cmd += ["--params", json.dumps(params)]
-    if body is not None:
-        cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd)
-    # Split on "\n" only — NOT splitlines(), which also splits on U+2028 and
-    # friends INSIDE JSON string values, corrupting them when rejoined.
-    s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
-    if not s:
-        # Empty-but-successful stdout would silently become {} -> an empty file
-        # list -> a subtree that fails to clone while the run still says "Done".
-        raise RuntimeError("gws produced no JSON output for: %s" % " ".join(args))
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        raise RuntimeError("gws returned non-JSON output for %s: %s" % (" ".join(args), s[:200]))
+    A thin boundary over `aaif_events.gws.run`. The table this script used to
+    carry matched a bare `"500"` as a substring, so a permanent
+    `A500:K500 exceeds grid limits` read as transient and burned the full
+    backoff before failing anyway; the shared one matches HTTP statuses only
+    at token boundaries.
+    """
+    return gwsmod.run(cmd, retries=retries, cwd=cwd)
+
+def gws_json(*args, params=None, body=None, retries=gwsmod.RETRIES):
+    """`gws <args>` parsed as JSON, through the shared client.
+
+    An empty-but-successful stdout raises rather than becoming `{}`: it would
+    otherwise read as an empty file list, and a subtree that fails to clone
+    while the run still says "Done". `aaif_events.gws.json_out` keeps that, and
+    `GwsError` is a `RuntimeError`, so existing handlers are unaffected.
+    """
+    return gwsmod.json_out(*args, params=params, body=body, retries=retries)
 
 def gws_download(file_id, out):
     # gws rejects --output paths outside its cwd, so run it in the file's dir.
@@ -495,12 +489,12 @@ def list_children(folder_id):
             return out
 
 def create_folder(name, parent):
-    return gws_json("drive", "files", "create",
+    return gws_json("drive", "files", "create", retries=NO_RETRY,
                     params={"supportsAllDrives": True},
                     body={"name": name, "mimeType": FOLDER, "parents": [parent]})["id"]
 
 def copy_file(file_id, name, parent):
-    return gws_json("drive", "files", "copy",
+    return gws_json("drive", "files", "copy", retries=NO_RETRY,
                     params={"fileId": file_id, "supportsAllDrives": True},
                     body={"name": name, "parents": [parent]})["id"]
 

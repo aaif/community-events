@@ -123,6 +123,24 @@ in this repo:
   were in decided whether a 503 was survived or a duplicated column was
   caught.
 
+  **The test for "already coupled" is the skill, not the script.** Three more
+  scripts kept a private `gws` wrapper behind a "so this script stays
+  standalone" comment while a *sibling* script in the same folder imported
+  `lib` — which already put the whole skill on the README's not-zippable list.
+  The portability those copies were defending had been spent; what was left
+  was the drift, and it was real (a five-entry retry table against the shared
+  ten, one script with no retries at all). Before writing a local helper to
+  keep a skill portable, check `check_portable_skills.py`'s list: if the skill
+  is on it, the copy buys nothing.
+
+  **A retry is not free where the verb is not replayable.** A Drive
+  `files.create`/`files.copy` or a Sheets `appendDimension` that succeeded
+  server-side but answered like a timeout is indistinguishable from one that
+  never landed, so re-sending it makes a second folder, file or column and
+  nothing downstream detects the duplicate. `aaif_events.gws` cannot decide
+  this — only the caller knows its verb — so the guard is
+  `retries=gws.NO_RETRY` at each such call site, pinned by a test.
+
 Three duplications *are* enforced, for the same reason: skills ship downstream
 without this file, so the rule has to travel inside each `SKILL.md`. The
 tooling-rule banner, the public-copy rule and the attendee legal footer are each

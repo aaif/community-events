@@ -875,5 +875,36 @@ class TestMainGuards(unittest.TestCase):
         self.assertFalse(os.path.exists(seen["tmp"]))
 
 
+class TestNonIdempotentDriveWrites(unittest.TestCase):
+    """A `create`/`copy` that timed out may already have happened server-side.
+
+    Re-sending it makes a second folder, or a second copy of a template file,
+    under the same name — and `list_children` then reports a subtree holding
+    everything twice, which the rebrand walks. The guard is a keyword at each
+    call site, so pin the call sites.
+    """
+
+    def test_create_folder_is_never_retried(self):
+        with mock.patch.object(cc, "gws_json", return_value={"id": "f1"}) as gj:
+            cc.create_folder("Badges", "parent1")
+        self.assertEqual(gj.call_args.kwargs.get("retries"), cc.NO_RETRY)
+
+    def test_copy_file_is_never_retried(self):
+        with mock.patch.object(cc, "gws_json", return_value={"id": "c1"}) as gj:
+            cc.copy_file("src1", "Deck.pptx", "parent1")
+        self.assertEqual(gj.call_args.kwargs.get("retries"), cc.NO_RETRY)
+
+    def test_reads_keep_the_shared_retry_budget(self):
+        with mock.patch.object(cc, "gws_json", return_value={"files": []}) as gj:
+            cc.list_children("parent1")
+        self.assertNotIn("retries", gj.call_args.kwargs)
+
+    def test_an_update_by_id_keeps_the_shared_retry_budget(self):
+        # files.update names the file it replaces, so a re-send is harmless.
+        with mock.patch.object(cc, "_gws") as g:
+            cc.gws_upload("file1", "/tmp/x.pptx", cc.PPTX)
+        self.assertNotIn("retries", g.call_args.kwargs)
+
+
 if __name__ == "__main__":
     unittest.main()

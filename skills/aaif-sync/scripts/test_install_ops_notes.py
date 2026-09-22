@@ -74,9 +74,13 @@ class FakeGws:
         self.tabs = {k: (list(h), w) for k, (h, w) in tabs.items()}
         self.lose_writes = lose_writes
         self.calls = []
+        #: [(argv, retries)] — the retry budget each call was issued with, so a
+        #: test can pin that the non-idempotent widen is never re-sent.
+        self.budgets = []
 
-    def __call__(self, args):
+    def __call__(self, args, retries=None):
         self.calls.append(list(args))
+        self.budgets.append((list(args), retries))
         verb = tuple(args[:4])
         params = json.loads(args[args.index("--params") + 1])
         sid = params["spreadsheetId"]
@@ -200,6 +204,13 @@ check("appendDimension is issued only for the exactly-full grid",
       appends, [{"sheetId": hosts_sid, "dimension": "COLUMNS", "length": 1}])
 check("every appended header is styled",
       len([r for r in fake.batch_requests() if "repeatCell" in r]), len(ion.TARGETS))
+# The widen is the one call here that must never be re-sent: a create-shaped
+# request that succeeded but answered like a timeout adds a SECOND column on
+# the retry. Reads and the fixed-cell `values update` are safe at the default.
+check("the batchUpdate carrying the widen is issued with no retry budget",
+      sorted({r for a, r in fake.budgets if a[2] == "batchUpdate"}), [1])
+check("reads and the values update do not override the shared budget",
+      sorted({r for a, r in fake.budgets if a[2] != "batchUpdate"}), [None])
 check("the write lands in the fake estate",
       all(ion.HEADER in h for h, _w in fake.tabs.values()), True)
 check("the batchUpdate precedes the values update on each tab",

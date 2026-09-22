@@ -87,6 +87,17 @@ class TestRun:
             gws.run(["gws", "x"], retries=5)
         assert len(calls) == 5
 
+    def test_no_retry_sends_a_transient_failure_exactly_once(self, calls):
+        """The guard callers pass for a non-idempotent write.
+
+        `timed out` is the case that matters: the request may already have
+        landed, so the one thing this must not do is send it again.
+        """
+        calls.queue += [FakeProc(1, stderr="timed out"), FakeProc(0, stdout="ok")]
+        with pytest.raises(gws.GwsError):
+            gws.run(["gws", "x"], retries=gws.NO_RETRY)
+        assert len(calls) == 1
+
     def test_retries_zero_still_calls_once_and_raises(self, calls):
         """`retries=0` must not silently return None, as an early copy could."""
         calls.queue.append(FakeProc(1, stderr="timed out"))

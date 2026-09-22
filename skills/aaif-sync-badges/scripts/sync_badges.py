@@ -25,10 +25,13 @@ Usage:
     # One chapter only (matches the Drive chapter folder name, case-insensitive):
     python sync_badges.py --chapter "Mexico City" --write
 """
-import argparse, json, os, shutil, subprocess, sys, tempfile, time
+import argparse, json, os, shutil, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))), "lib"))
 import make_agent_badge, make_badges  # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 BADGES_SUBFOLDER = "Badges"                              # per-chapter subfolder name
@@ -57,52 +60,36 @@ assert len({s for _module, suffixes in STYLES for s in suffixes}) == \
     "STYLES suffixes must be disjoint across styles -- see styles_needed_for()"
 
 
-def _scrubbed_env():
-    """os.environ minus the Slack/Luma secrets. gws never needs them, and a child
-    process inherits everything by default. Local (not lib) so this script stays
-    standalone."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
-            and k != "LUMA_API_KEY"}
-
-
-_TRANSIENT = ("timed out", "Connection reset", "503", "502", "429")
-
-
-def _gws(cmd, cwd=None, retries=5):
+def _gws(cmd, cwd=None, retries=gwsmod.RETRIES):
     """Run a gws command, retrying transient-looking failures.
+
+    A thin boundary over `aaif_events.gws.run`. What stays here is the one
+    thing that is this script's own decision, not the shared plumbing's:
 
     retries=1 (no retry) is REQUIRED for any non-idempotent write (a Drive
     `files.create`, folder or file): if the create actually succeeded
     server-side but the response looked like a timeout, retrying it creates a
     second folder/file with the same name, and nothing on the destination side
     detects that duplicate. Reads and `files.update` (by file id) are safe to
-    retry at the default."""
-    for i in range(retries):
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=_scrubbed_env())
-        if r.returncode == 0:
-            return r.stdout
-        msg = (r.stderr or "") + (r.stdout or "")
-        if i < retries - 1 and any(k in msg for k in _TRANSIENT):
-            time.sleep(2 * (i + 1))
-            continue
-        raise RuntimeError("gws failed (%s): %s" % (r.returncode, msg.strip()[:400]))
+    retry at the default.
+
+    The retry TABLE is no longer local. This copy listed five substrings where
+    the shared one lists ten, so an `internalError`, a `rateLimit`, a
+    `backendError` or a 500 ended a badge sync that the very same sick API
+    would have survived in a sibling engine. Which script you were in decided
+    whether the run lived, which is exactly the drift `aaif_events.gws` exists
+    to end.
+    """
+    return gwsmod.run(cmd, retries=retries, cwd=cwd)
 
 
-def gws_json(*args, params=None, body=None, retries=5):
-    cmd = ["gws", *args]
-    if params is not None:
-        cmd += ["--params", json.dumps(params)]
-    if body is not None:
-        cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd, retries=retries)
-    s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
-    if not s:
-        raise RuntimeError("gws produced no JSON output for: %s" % " ".join(args))
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        raise RuntimeError("gws returned non-JSON output for %s: %s" % (" ".join(args), s[:200]))
+def gws_json(*args, params=None, body=None, retries=gwsmod.RETRIES):
+    """`gws <args>` parsed as JSON, through the shared client.
+
+    `GwsError` is a `RuntimeError`, so callers that already catch one are
+    unaffected by the move.
+    """
+    return gwsmod.json_out(*args, params=params, body=body, retries=retries)
 
 
 def list_children(folder_id):
@@ -123,7 +110,7 @@ def list_children(folder_id):
 
 
 def create_folder(name, parent):
-    return gws_json("drive", "files", "create", retries=1,  # non-idempotent write, see _gws
+    return gws_json("drive", "files", "create", retries=gwsmod.NO_RETRY,
                      params={"supportsAllDrives": True},
                      body={"name": name, "mimeType": FOLDER, "parents": [parent]})["id"]
 
@@ -139,7 +126,7 @@ def upload_new(name, parent, local_path):
           "--params", json.dumps({"supportsAllDrives": True}),
           "--json", json.dumps({"name": name, "parents": [parent]}),
           "--upload", os.path.basename(local_path),
-          "--upload-content-type", mime], cwd=d, retries=1)  # non-idempotent write, see _gws
+          "--upload-content-type", mime], cwd=d, retries=gwsmod.NO_RETRY)
 
 
 def upload_update(file_id, local_path):

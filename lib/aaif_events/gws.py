@@ -53,6 +53,18 @@ TRANSIENT_STATUS = re.compile(r"(?<![0-9A-Za-z])(?:429|500|502|503|504)(?![0-9A-
 #: Default attempts, including the first. Backoff is 2s, 4s, 6s, 8s.
 RETRIES = 5
 
+#: Pass `retries=NO_RETRY` for any call that is NOT idempotent — a Drive
+#: `files.create` or `files.copy`, a Sheets `appendDimension`. A request that
+#: succeeded server-side but answered like a timeout is indistinguishable here
+#: from one that never landed, and re-sending it makes a SECOND folder, file or
+#: column under the same name. Nothing downstream detects that duplicate: the
+#: next listing simply reports a subtree holding everything twice.
+#:
+#: This module cannot make the call itself — only the caller knows whether the
+#: verb it is sending is replayable — so the rule lives at each call site, and
+#: each of those sites has a test pinning the keyword.
+NO_RETRY = 1
+
 
 class GwsError(RuntimeError):
     """A `gws` call failed, or returned something that was not the JSON asked for."""

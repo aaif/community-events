@@ -484,5 +484,48 @@ class TestMainGuards(unittest.TestCase):
         self.assertFalse(os.path.exists(seen["tmp"]))
 
 
+class TestGwsRetryTable(unittest.TestCase):
+    """This skill stays zippable, so it keeps its own copy of the `gws`
+    plumbing. These pin the two fixes `aaif_events.gws` carries, which a local
+    copy can silently fall behind on."""
+
+    def _run(self, stderr, retries=5):
+        results = [mock.Mock(returncode=1, stdout="", stderr=stderr),
+                   mock.Mock(returncode=0, stdout="ok", stderr="")]
+        with mock.patch.object(cs.subprocess, "run", side_effect=results) as run, \
+             mock.patch.object(cs.time, "sleep"):
+            try:
+                out = cs._gws(["gws", "noop"], retries=retries)
+            except RuntimeError:
+                out = None
+        return out, run.call_count
+
+    def test_a_real_http_status_is_retried(self):
+        self.assertEqual(self._run("HTTP 503 Service Unavailable"), ("ok", 2))
+
+    def test_a_status_inside_an_a1_range_is_not_a_transient_error(self):
+        # `A500:K500 exceeds grid limits` is permanent. The old table matched
+        # the bare "500" inside it and burned the full backoff before failing.
+        self.assertEqual(self._run("A500:K500 exceeds grid limits"), (None, 1))
+
+    def test_internal_error_spelled_with_a_space_is_retried(self):
+        self.assertEqual(self._run("Internal error encountered"), ("ok", 2))
+
+    def test_a_non_idempotent_create_is_never_retried(self):
+        with mock.patch.object(cs, "gws_json", return_value={"id": "f1"}) as gj:
+            cs.create_folder("Sessions", "parent1")
+        self.assertEqual(gj.call_args.kwargs.get("retries"), cs.NO_RETRY)
+
+    def test_a_non_idempotent_copy_is_never_retried(self):
+        with mock.patch.object(cs, "gws_json", return_value={"id": "c1"}) as gj:
+            cs.copy_file("src1", "Deck.pptx", "parent1")
+        self.assertEqual(gj.call_args.kwargs.get("retries"), cs.NO_RETRY)
+
+    def test_a_read_keeps_the_default_retry_budget(self):
+        with mock.patch.object(cs, "gws_json", return_value={"files": []}) as gj:
+            cs.list_children("parent1")
+        self.assertNotIn("retries", gj.call_args.kwargs)
+
+
 if __name__ == "__main__":
     unittest.main()

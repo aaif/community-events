@@ -32,8 +32,12 @@ Reads and writes by header name, never by column letter.
 import argparse
 import json
 import os
-import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "lib"))
+
+from aaif_events import gws as gwsmod  # noqa: E402
 
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
@@ -52,19 +56,23 @@ HEADER_FORMAT = {"textFormat": {"bold": True},
                  "backgroundColor": {"red": 0.85, "green": 0.85, "blue": 0.85}}
 
 
-def _scrubbed_env():
-    """gws never needs the Slack/Luma secrets; a child inherits them otherwise."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
-            and k != "LUMA_API_KEY"}
+def gws(args, retries=gwsmod.RETRIES):
+    """Run a prepared `gws` argument list and parse whatever JSON comes back.
 
+    A thin boundary over `aaif_events.gws.run`, keeping two behaviours this
+    script relies on: it exits with a sentence rather than a traceback, and an
+    empty body is `{}` rather than an error, because a values `update` answers
+    with nothing useful.
 
-def gws(args):
-    out = subprocess.run(["gws"] + args, capture_output=True, text=True,
-                         env=_scrubbed_env())
-    if out.returncode != 0:
-        sys.exit("gws error: %s...\n%s" % (" ".join(args[:4]), out.stderr.strip()[:400]))
-    txt = out.stdout
+    This used to be a bare `subprocess.run` with no retry handling at all, so a
+    single intermittent 503 — which every other engine has always ridden out —
+    failed the run. It now retries on the shared table, and `install` passes
+    `gwsmod.NO_RETRY` for the one call that must not be re-sent.
+    """
+    try:
+        txt = gwsmod.clean_stdout(gwsmod.run(["gws"] + args, retries=retries))
+    except gwsmod.GwsError as exc:
+        sys.exit(str(exc))
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
     return json.loads(txt[i:]) if i >= 0 else {}
 
@@ -127,9 +135,15 @@ def install(sheet_id, tab, sid, p):
                   "startColumnIndex": p["col"] - 1, "endColumnIndex": p["col"]},
         "cell": {"userEnteredFormat": HEADER_FORMAT},
         "fields": "userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor"}})
+    # NO_RETRY: `appendDimension` is NOT idempotent. A widen that succeeded
+    # server-side but answered like a timeout would, on a retry, add a SECOND
+    # column — and the header then lands in the first of two, leaving a blank
+    # column on a tab whose whole contract is "the ops columns are the literal
+    # ones on the right". The repeatCell beside it is idempotent; they share a
+    # request list, so the list takes the stricter of the two.
     gws(["sheets", "spreadsheets", "batchUpdate", "--params",
          json.dumps({"spreadsheetId": sheet_id}), "--json",
-         json.dumps({"requests": reqs}), "--format", "json"])
+         json.dumps({"requests": reqs}), "--format", "json"], retries=gwsmod.NO_RETRY)
     gws(["sheets", "spreadsheets", "values", "update", "--params",
          json.dumps({"spreadsheetId": sheet_id,
                      "range": "'%s'!%s1" % (tab, col_letter(p["col"])),

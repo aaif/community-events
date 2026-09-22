@@ -6,7 +6,45 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- **Two Drive cloners retried a write that may already have landed.**
+  `create_chapter.py` and `create_series.py` sent `drive.files.create` and
+  `drive.files.copy` at the default five attempts. A create that succeeded
+  server-side but answered like a timeout is indistinguishable here from one
+  that never landed, so the retry made a *second* folder — or a second copy of
+  a template file — under the same name, and nothing downstream detects that
+  duplicate: the next listing simply reports a subtree holding everything
+  twice, and the rebrand walks both. `sync_badges.py` already passed
+  `retries=1` at its two write sites; the other two now do the same, the rule
+  has one definition (`aaif_events.gws.NO_RETRY`), and every call site that
+  carries the guard has a test pinning the keyword.
+- **`install_ops_notes.py` had no retry handling at all** — a bare
+  `subprocess.run`, so a single intermittent 503 that every other engine rides
+  out failed the run. It goes through the shared client now, and its one
+  non-idempotent request (`appendDimension`, which on a retry adds a second
+  column and strands the header in the first of two) is sent once.
+- **`sync_badges.py`'s retry table listed five substrings where the shared one
+  lists ten.** An `internalError`, a `rateLimit`, a `backendError` or a 500
+  ended a badge sync that the same sick API would have survived in a sibling
+  engine — which script you were in decided whether the run lived.
+- **`create_series.py` still matched a bare `500` as a substring**, the
+  permanent-error-burns-the-backoff bug fixed in 0.6.0 for the shared client.
+  This skill is the one Drive cloner that is still zippable, so it keeps its
+  own copy of the plumbing and now carries the boundary-matched statuses too,
+  with tests pinning both fixes against future drift.
+
+### Changed
+- **`create_chapter.py`, `sync_badges.py` and `install_ops_notes.py` call
+  `aaif_events.gws` instead of their own wrappers.** All three sit in skills
+  already on the README's not-zippable list — a *sibling* script in the same
+  folder imports `lib` — so the standalone-ness those copies were defending
+  had already been spent, and the only thing left was the drift.
+- **`check_portable_skills.py` reads imports, not substrings.** Its own
+  docstring said to tighten it the first time a file merely *mentioned*
+  `aaif_events` without importing it; `create_series.py`'s comment explaining
+  why it deliberately does not import the library is that file. It is an AST
+  pass over the import statements now, and a file that does not parse is a
+  hard failure rather than "not coupled".
 
 ## [0.6.0] — 2026-09-17
 

@@ -81,6 +81,42 @@ class TestRepo(unittest.TestCase):
     def test_the_readme_and_the_code_agree(self):
         self.assertEqual(chk.main(), 0)
 
+    def test_a_skill_that_only_names_the_library_in_prose_is_not_coupled(self):
+        """create_series.py explains why it does NOT import `aaif_events`.
+
+        Under the substring scan this check used to be, that comment read as
+        coupling and failed the build — which is the pressure that deletes the
+        comment rather than fixing the check.
+        """
+        self.assertNotIn("aaif-create-online-series", chk.coupled_skills())
+
+
+class TestImportsLib(unittest.TestCase):
+    def test_a_from_import_counts(self):
+        self.assertTrue(chk.imports_lib("from aaif_events import gws"))
+
+    def test_a_submodule_from_import_counts(self):
+        self.assertTrue(chk.imports_lib("from aaif_events.redact import set_redaction"))
+
+    def test_a_plain_import_counts(self):
+        self.assertTrue(chk.imports_lib("import aaif_events.slack"))
+
+    def test_an_import_inside_a_function_counts(self):
+        self.assertTrue(chk.imports_lib("def f():\n    from aaif_events import gws\n"))
+
+    def test_a_mention_in_a_comment_does_not(self):
+        self.assertFalse(chk.imports_lib("# see aaif_events.gws for the shared table"))
+
+    def test_a_mention_in_a_docstring_does_not(self):
+        self.assertFalse(chk.imports_lib('"""Kept in step with aaif_events.gws."""'))
+
+    def test_a_lookalike_package_does_not(self):
+        self.assertFalse(chk.imports_lib("import aaif_events_legacy"))
+
+    def test_an_unparsable_file_aborts_rather_than_reading_as_uncoupled(self):
+        with self.assertRaises(SystemExit):
+            chk.imports_lib("def f(:\n", "broken.py")
+
 
 if __name__ == "__main__":
     unittest.main()
