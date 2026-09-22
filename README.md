@@ -432,9 +432,14 @@ Code *plugin*:
   the shared `lib/aaif_events` package do **not** work zipped standalone; they
   need the full checkout (or plugin install), since the zip won't contain
   `lib/`. Those are `aaif-audit-slack`, `aaif-community-pulse`,
-  `aaif-create-chapter`, `aaif-create-event`, `aaif-event-status`,
-  `aaif-sync` (its report renderer), `aaif-sync-badges`, `aaif-sync-chapters`,
+  `aaif-create-chapter`, `aaif-create-event`, `aaif-create-online-series`,
+  `aaif-event-status`, `aaif-sync`, `aaif-sync-badges`, `aaif-sync-chapters`,
   `aaif-sync-organizers`, `aaif-sync-slack` and `aaif-update-event`.
+  `aaif-create-online-series` is the newest arrival and the clearest case of
+  the trade: it kept a private copy of the `gws` plumbing precisely to stay
+  zippable, and the copy fell two fixes behind — one of them a scrub that kept
+  an OAuth token out of a traceback. A copy nobody can keep in step is worse
+  than the coupling it avoids.
   `scripts/check_portable_skills.py` keeps this list honest — adding a
   `lib/aaif_events` import to a skill that is not listed here fails the build,
   so giving up a skill's portability stays a decision someone makes on purpose.

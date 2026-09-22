@@ -65,10 +65,20 @@ TOKEN_VARS = (READ_TOKEN_VAR, ENV_TOKEN_VAR)
 DOTENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), ".env")
 #: Secrets stripped from any child process environment — see scrubbed_env().
-_SECRET_ENV = re.compile(r"^(AAIF_SLACK_\w*_TOKEN|LUMA_API_KEY)$")
+#:
+#: `\w*_?` and not `\w*_`: the ten private copies this replaced all tested
+#: `startswith("AAIF_SLACK_") and endswith("_TOKEN")`, which matches a bare
+#: `AAIF_SLACK_TOKEN`. Requiring a middle segment did not, so consolidating on
+#: this regex silently NARROWED the scrub for every script that moved onto it,
+#: and the obvious short spelling of the variable would have been inherited by
+#: `gws`. Nothing sets that spelling today; the guard is not conditional on
+#: that staying true.
+_SECRET_ENV = re.compile(r"^(AAIF_SLACK_\w*_?TOKEN|LUMA_API_KEY)$")
+
 #: Additionally stripped under `scrubbed_env(strict=True)`: the `gws` CLI's
 #: own configuration (client id/secret, token paths) — only `gws` needs it.
-_STRICT_SECRET_ENV = re.compile(r"^(AAIF_SLACK_\w*_TOKEN|LUMA_API_KEY|GOOGLE_WORKSPACE_CLI_\w+)$")
+_STRICT_SECRET_ENV = re.compile(
+    r"^(AAIF_SLACK_\w*_?TOKEN|LUMA_API_KEY|GOOGLE_WORKSPACE_CLI_\w+)$")
 API = "https://slack.com/api/"
 
 

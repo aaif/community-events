@@ -17,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 import create_series as cs  # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402  (create_series put lib on the path)
 
 
 def make_zip(path, members):
@@ -484,47 +485,95 @@ class TestMainGuards(unittest.TestCase):
         self.assertFalse(os.path.exists(seen["tmp"]))
 
 
-class TestGwsRetryTable(unittest.TestCase):
-    """This skill stays zippable, so it keeps its own copy of the `gws`
-    plumbing. These pin the two fixes `aaif_events.gws` carries, which a local
-    copy can silently fall behind on."""
+class TestGwsIsTheSharedClient(unittest.TestCase):
+    """This script kept a private copy of the `gws` plumbing to stay zippable,
+    and the copy had fallen two fixes behind. It calls the shared client now,
+    so what is worth pinning is that it still does — a drift back to a local
+    wrapper is the regression, and it would be invisible in output."""
 
-    def _run(self, stderr, retries=5):
-        results = [mock.Mock(returncode=1, stdout="", stderr=stderr),
-                   mock.Mock(returncode=0, stdout="ok", stderr="")]
-        with mock.patch.object(cs.subprocess, "run", side_effect=results) as run, \
-             mock.patch.object(cs.time, "sleep"):
-            try:
-                out = cs._gws(["gws", "noop"], retries=retries)
-            except RuntimeError:
-                out = None
-        return out, run.call_count
+    def test_the_helpers_are_the_shared_client(self):
+        self.assertIs(cs.gws_json, gwsmod.json_out)
+        self.assertIs(cs._gws, gwsmod.run)
+        self.assertEqual(cs.NO_RETRY, gwsmod.NO_RETRY)
+
+    def _procs(self, *results):
+        return mock.patch.object(gwsmod.subprocess, "run", side_effect=list(results))
+
+    def _proc(self, rc=0, stdout="", stderr=""):
+        return mock.Mock(returncode=rc, stdout=stdout, stderr=stderr)
+
+    def test_a_status_inside_an_a1_range_is_not_transient(self):
+        """The bug the local copy carried: bare `"500"` matched `A500:K500
+        exceeds grid limits`, a permanent error, and burned the full backoff."""
+        with self._procs(self._proc(1, stderr="A500:K500 exceeds grid limits"),
+                         self._proc(0, stdout="ok")) as run, \
+                mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cs._gws(["gws", "noop"])
+        self.assertEqual(run.call_count, 1)
 
     def test_a_real_http_status_is_retried(self):
-        self.assertEqual(self._run("HTTP 503 Service Unavailable"), ("ok", 2))
-
-    def test_a_status_inside_an_a1_range_is_not_a_transient_error(self):
-        # `A500:K500 exceeds grid limits` is permanent. The old table matched
-        # the bare "500" inside it and burned the full backoff before failing.
-        self.assertEqual(self._run("A500:K500 exceeds grid limits"), (None, 1))
+        with self._procs(self._proc(1, stderr="HTTP 503 Service Unavailable"),
+                         self._proc(0, stdout="ok")) as run, \
+                mock.patch.object(gwsmod.time, "sleep"):
+            self.assertEqual(cs._gws(["gws", "noop"]), "ok")
+        self.assertEqual(run.call_count, 2)
 
     def test_internal_error_spelled_with_a_space_is_retried(self):
-        self.assertEqual(self._run("Internal error encountered"), ("ok", 2))
+        with self._procs(self._proc(1, stderr="Internal error encountered"),
+                         self._proc(0, stdout="ok")) as run, \
+                mock.patch.object(gwsmod.time, "sleep"):
+            self.assertEqual(cs._gws(["gws", "noop"]), "ok")
+        self.assertEqual(run.call_count, 2)
 
-    def test_a_non_idempotent_create_is_never_retried(self):
-        with mock.patch.object(cs, "gws_json", return_value={"id": "f1"}) as gj:
-            cs.create_folder("Sessions", "parent1")
-        self.assertEqual(gj.call_args.kwargs.get("retries"), cs.NO_RETRY)
+    def test_the_child_never_inherits_the_slack_or_luma_secrets(self):
+        with mock.patch.dict(os.environ, {"AAIF_SLACK_TOKEN": "x",
+                                          "AAIF_SLACK_WRITE_TOKEN": "y",
+                                          "LUMA_API_KEY": "z", "KEEP": "1"}), \
+                self._procs(self._proc(0, stdout="ok")) as run:
+            cs._gws(["gws", "noop"])
+        env = run.call_args.kwargs["env"]
+        for k in ("AAIF_SLACK_TOKEN", "AAIF_SLACK_WRITE_TOKEN", "LUMA_API_KEY"):
+            self.assertNotIn(k, env)
+        self.assertEqual(env["KEEP"], "1")
 
-    def test_a_non_idempotent_copy_is_never_retried(self):
-        with mock.patch.object(cs, "gws_json", return_value={"id": "c1"}) as gj:
-            cs.copy_file("src1", "Deck.pptx", "parent1")
-        self.assertEqual(gj.call_args.kwargs.get("retries"), cs.NO_RETRY)
+    def test_a_failure_never_echoes_the_response_body(self):
+        with self._procs(self._proc(1, stdout='{"values":[["Ada","a@x.com"]]}')):
+            with self.assertRaises(RuntimeError) as cm:
+                cs._gws(["gws", "drive", "files", "list"])
+        self.assertNotIn("a@x.com", str(cm.exception))
+        self.assertIn("drive files list", str(cm.exception))
 
-    def test_a_read_keeps_the_default_retry_budget(self):
-        with mock.patch.object(cs, "gws_json", return_value={"files": []}) as gj:
-            cs.list_children("parent1")
-        self.assertNotIn("retries", gj.call_args.kwargs)
+
+class TestNonIdempotentDriveWrites(unittest.TestCase):
+    """Driven to a counted subprocess, not to a keyword in `call_args`.
+
+    Asserting `kwargs["retries"] == NO_RETRY` at the call site passes even when
+    the argument is dropped at every layer below it — verified by mutation.
+    """
+
+    def _timeout(self):
+        return mock.patch.object(
+            gwsmod.subprocess, "run",
+            return_value=mock.Mock(returncode=1, stdout="", stderr="timed out"))
+
+    def test_create_folder_sends_the_create_exactly_once(self):
+        with self._timeout() as run, mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cs.create_folder("Sessions", "parent1")
+        self.assertEqual(run.call_count, 1)
+
+    def test_copy_file_sends_the_copy_exactly_once(self):
+        with self._timeout() as run, mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cs.copy_file("src1", "Deck.pptx", "parent1")
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_read_keeps_the_shared_retry_budget(self):
+        with self._timeout() as run, mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cs.list_children("parent1")
+        self.assertEqual(run.call_count, gwsmod.RETRIES)
 
 
 if __name__ == "__main__":

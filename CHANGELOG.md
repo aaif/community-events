@@ -23,15 +23,46 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   out failed the run. It goes through the shared client now, and its one
   non-idempotent request (`appendDimension`, which on a retry adds a second
   column and strands the header in the first of two) is sent once.
-- **`sync_badges.py`'s retry table listed five substrings where the shared one
-  lists ten.** An `internalError`, a `rateLimit`, a `backendError` or a 500
-  ended a badge sync that the same sick API would have survived in a sibling
-  engine — which script you were in decided whether the run lived.
+- **`sync_badges.py`'s retry table carried five substrings** against the
+  shared table's eleven plus its boundary-matched statuses. It genuinely
+  dropped `internalError`/`Internal error`, a bare 500 or 504, `HTTP request
+  failed`, `temporarily`, `userRateLimit` and `Connection refused`/`aborted`:
+  a badge sync died on those where a sibling engine rode the same sick API
+  out.
 - **`create_series.py` still matched a bare `500` as a substring**, the
-  permanent-error-burns-the-backoff bug fixed in 0.6.0 for the shared client.
-  This skill is the one Drive cloner that is still zippable, so it keeps its
-  own copy of the plumbing and now carries the boundary-matched statuses too,
-  with tests pinning both fixes against future drift.
+  permanent-error-burns-the-backoff bug fixed in 0.6.0 for the shared client —
+  and, worse, interpolated the child's raw stdout+stderr into its exceptions.
+  `gws` dumps its environment on some failures and the scrub deliberately KEEPS
+  `GOOGLE_WORKSPACE_CLI_*` because `gws` needs it, so an OAuth client secret
+  and refresh token are exactly what such a dump holds; this is also the
+  zippable skill, the one most likely to be run by someone who pastes the
+  traceback into a public issue. It kept a private copy to stay zippable and
+  the copy fell two fixes behind, so the copy is gone: the skill takes the lib
+  coupling and is on the README's standalone-zip list.
+- **`lib/aaif_events/slides_export.py` carried a fifth copy** — inside the
+  shared package, under a comment saying it mirrored `create_chapter.py`'s. It
+  did, bare `"500"` and all, and its `files.copy` was unguarded: a retried copy
+  orphans a second `TEMP - render_slide_png` beside the source, which against
+  TemplateCity is then cloned into every chapter made afterwards.
+- **Four non-replayable calls elsewhere in the tree were on the retrying
+  budget**: `upload_agents.py`'s `files.create`, `slides_export.py`'s
+  `files.copy`, and `migrate_resource_columns.py`'s two `insertDimension`
+  batches and its `addSheet` (Sheets does not refuse a duplicate tab title —
+  it renames the second one, which the exists-check then never matches again).
+- **`aaif_events.slack.scrubbed_env` was narrower than the ten private copies
+  it replaced.** `AAIF_SLACK_\w*_TOKEN` requires a middle segment, so a bare
+  `AAIF_SLACK_TOKEN` — which `startswith`/`endswith` matched — survived into
+  every `gws` child. Nothing sets that spelling today.
+- **A `gws` failure now names the verb and never the payload.** The message was
+  `gws failed (1): ...` out of scripts that issue a dozen calls across two
+  spreadsheets, and it folded in the child's stdout — where a `values.get` that
+  streams half its rows and then exits nonzero puts those rows. It says
+  `gws sheets spreadsheets batchUpdate failed (1): ...` now, from stderr only.
+- **`install_ops_notes.py` treated a read with no JSON in it as an empty
+  sheet.** That became "no tab titled X — a rename, not an empty sheet", "X has
+  no header row", or "wrote Ops Notes but a fresh read does not show it" after
+  a write that landed — and re-running on that last one issues a second
+  `appendDimension`. Only the two writes tolerate silence now.
 
 ### Changed
 - **`create_chapter.py`, `sync_badges.py` and `install_ops_notes.py` call
@@ -41,10 +72,19 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   had already been spent, and the only thing left was the drift.
 - **`check_portable_skills.py` reads imports, not substrings.** Its own
   docstring said to tighten it the first time a file merely *mentioned*
-  `aaif_events` without importing it; `create_series.py`'s comment explaining
-  why it deliberately does not import the library is that file. It is an AST
-  pass over the import statements now, and a file that does not parse is a
-  hard failure rather than "not coupled".
+  `aaif_events` without importing it. `deck_estate.py` (explaining that it is
+  not the library) and `sync.py` (driving every engine by subprocess) are those
+  files. It is an AST pass over the import statements now, and a file that does
+  not parse is a hard failure rather than "not coupled".
+
+### Added
+- **`scripts/check_non_idempotent_retries.py`** (pre-commit + CI), because
+  `retries=NO_RETRY` at the call site is opt-in and opt-in was not enough: the
+  rule shipped with four counterexamples already in the tree. Two tiers — exact
+  for Drive, where the verb is the first three arguments (in either the
+  positional or the argv-list shape the file helpers use), and module-level for
+  Sheets, where the request key is built in a different function from the call
+  that sends it. An exception is argued in its `ALLOW`, with a reason.
 
 ## [0.6.0] — 2026-09-17
 

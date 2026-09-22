@@ -123,14 +123,17 @@ in this repo:
   were in decided whether a 503 was survived or a duplicated column was
   caught.
 
-  **The test for "already coupled" is the skill, not the script.** Three more
-  scripts kept a private `gws` wrapper behind a "so this script stays
-  standalone" comment while a *sibling* script in the same folder imported
-  `lib` — which already put the whole skill on the README's not-zippable list.
+  **The test for "already coupled" is the skill, not the script.** Two scripts
+  kept a private `gws` wrapper behind a "so this script stays standalone"
+  comment, and a third had a bare `subprocess.run` with no retries at all —
+  all three in skills a *sibling* script had already put on the README's
+  not-zippable list.
   The portability those copies were defending had been spent; what was left
   was the drift, and it was real (a five-entry retry table against the shared
-  ten, one script with no retries at all). Before writing a local helper to
-  keep a skill portable, check `check_portable_skills.py`'s list: if the skill
+  eleven, one script with no retries at all, and a copy whose exceptions
+  printed the child's raw output where the shared one scrubs it). Before
+  writing a local helper to keep a skill portable, check the README's
+  standalone-zip list, which `check_portable_skills.py` enforces: if the skill
   is on it, the copy buys nothing.
 
   **A retry is not free where the verb is not replayable.** A Drive
@@ -139,7 +142,15 @@ in this repo:
   never landed, so re-sending it makes a second folder, file or column and
   nothing downstream detects the duplicate. `aaif_events.gws` cannot decide
   this — only the caller knows its verb — so the guard is
-  `retries=gws.NO_RETRY` at each such call site, pinned by a test.
+  `retries=gws.NO_RETRY` at each such call site. That made it opt-in, and
+  opt-in was not enough: when the rule was first written down, four call sites
+  in the tree already violated it, one of them inside `lib/` behind a private
+  wrapper that could not express the keyword.
+  `scripts/check_non_idempotent_retries.py` is the counterexample detector, and
+  each guarded site has a test driving a COUNTED subprocess — asserting the
+  keyword in `call_args` passes even when the argument is dropped a layer
+  below, which is how the first version of that test suite stayed green
+  against a guard that did nothing.
 
 Three duplications *are* enforced, for the same reason: skills ship downstream
 without this file, so the rule has to travel inside each `SKILL.md`. The
@@ -202,6 +213,8 @@ python scripts/check_tooling_banner_coverage.py   # a gws skill with no tooling 
 python scripts/test_check_tooling_banner_coverage.py  # that guard's own tests
 python scripts/check_no_local_redaction.py   # --redact comes from lib, never a local copy
 python scripts/check_portable_skills.py      # lib coupling matches the README's caveat
+python scripts/check_non_idempotent_retries.py    # a gws create/copy is sent once
+python scripts/test_check_non_idempotent_retries.py  # that guard's own tests
 python scripts/extract_design_tokens.py --check  # design tokens aren't stale
 claude plugin validate .                                       # marketplace.json + plugin.json
 claude plugin eval . --no-publish --trust-plugin  # does the right skill FIRE? (needs model access)

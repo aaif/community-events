@@ -34,10 +34,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "aaif-sync-chapters", "scripts"))
 import sync_chapters as _chapters  # noqa: E402
 
-# This skill is already lib-coupled (restyle_design_system, upload_agents,
-# deck_estate and rename_chapter all import `aaif_events`), so it is already on
-# the README's not-zippable list. A private `gws` wrapper here bought nothing
-# back and cost a retry table that had drifted from the shared one.
+# This skill is already lib-coupled — `rename_chapter.py` and
+# `restyle_design_system.py` import `aaif_events` — so it is already on the
+# README's not-zippable list. A private `gws` wrapper here bought nothing back
+# and cost a retry table that had drifted from the shared one.
+#
+# (`upload_agents.py` and `deck_estate.py` NAME the library without importing
+# it, which is why `check_portable_skills.py` reads imports rather than
+# substrings. An earlier draft of this comment listed them as importers, off a
+# grep — the same false positive, one layer up.)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "..", "lib"))
 from aaif_events import gws as gwsmod  # noqa: E402
@@ -423,35 +428,23 @@ def resolve_latlon(name, lat, lon):
 # ----------------------------------------------------------------------------
 # Drive helpers (via the gws CLI)
 # ----------------------------------------------------------------------------
-#: A Drive `create` or `copy` that succeeded server-side but answered like a
-#: timeout must NEVER be re-sent: the retry makes a second folder, or a second
-#: copy of a template file, under the same name — and nothing downstream
-#: notices. `list_children` then reports a subtree that has everything twice,
-#: and the rebrand walks both. Pass this as `retries` at every non-idempotent
-#: call site. Reads, and `files.update` by id, are safe at the shared default.
-NO_RETRY = gwsmod.NO_RETRY
-
-
-def _gws(cmd, cwd=None, retries=gwsmod.RETRIES):
-    """Run a gws command, retrying transient network/server errors.
-
-    A thin boundary over `aaif_events.gws.run`. The table this script used to
-    carry matched a bare `"500"` as a substring, so a permanent
-    `A500:K500 exceeds grid limits` read as transient and burned the full
-    backoff before failing anyway; the shared one matches HTTP statuses only
-    at token boundaries.
-    """
-    return gwsmod.run(cmd, retries=retries, cwd=cwd)
-
-def gws_json(*args, params=None, body=None, retries=gwsmod.RETRIES):
-    """`gws <args>` parsed as JSON, through the shared client.
-
-    An empty-but-successful stdout raises rather than becoming `{}`: it would
-    otherwise read as an empty file list, and a subtree that fails to clone
-    while the run still says "Done". `aaif_events.gws.json_out` keeps that, and
-    `GwsError` is a `RuntimeError`, so existing handlers are unaffected.
-    """
-    return gwsmod.json_out(*args, params=params, body=body, retries=retries)
+# Aliases, not wrappers. A pass-through that redeclares `retries` is a second
+# place the budget can be dropped, and one a test cannot reach: nothing here
+# passes a budget to `_gws` (its only callers are the idempotent download and
+# upload), so a mutation removing the pass-through survived the whole suite
+# while changing nothing. A seam that cannot be tested and does not earn its
+# keep is better deleted than covered.
+#
+# What the shared client brings over the copy this replaced: it matches HTTP
+# statuses at token boundaries, so a permanent `A500:K500 exceeds grid limits`
+# no longer reads as transient and burns the full backoff; and it scrubs the
+# child's output, which is where `gws` prints its environment on some failures.
+# `json_out` still raises on an empty-but-successful stdout — that would
+# otherwise read as an empty file list, and a subtree that fails to clone while
+# the run still says "Done" — and `GwsError` is a `RuntimeError`, so every
+# existing handler still catches.
+_gws = gwsmod.run
+gws_json = gwsmod.json_out
 
 def gws_download(file_id, out):
     # gws rejects --output paths outside its cwd, so run it in the file's dir.
@@ -489,12 +482,19 @@ def list_children(folder_id):
             return out
 
 def create_folder(name, parent):
-    return gws_json("drive", "files", "create", retries=NO_RETRY,
+    # NO_RETRY: a create that succeeded server-side but answered like a timeout
+    # must not be re-sent. The retry makes a second folder under the same name,
+    # `list_children` then reports a subtree holding everything twice, and the
+    # rebrand walks both. Referenced through `gwsmod` rather than aliased here:
+    # a local binding is a second definition site, and the test that pins this
+    # would follow it if it drifted.
+    return gws_json("drive", "files", "create", retries=gwsmod.NO_RETRY,
                     params={"supportsAllDrives": True},
                     body={"name": name, "mimeType": FOLDER, "parents": [parent]})["id"]
 
 def copy_file(file_id, name, parent):
-    return gws_json("drive", "files", "copy", retries=NO_RETRY,
+    # NO_RETRY — see create_folder; a re-sent copy is a duplicate template file.
+    return gws_json("drive", "files", "copy", retries=gwsmod.NO_RETRY,
                     params={"fileId": file_id, "supportsAllDrives": True},
                     body={"name": name, "parents": [parent]})["id"]
 
@@ -783,6 +783,18 @@ def main():
     try:
         new_id = clone_and_rebrand(TEMPLATE_FOLDER, CHAPTERS_PARENT, name, ctx,
                                    existing_id=resume_id)
+    except gwsmod.GwsError as exc:
+        # Non-idempotent Drive writes are sent once, so a transient blip now
+        # ends the run mid-clone where five attempts used to absorb it. That is
+        # the trade, and it is safe — but only because whatever landed is
+        # adopted by name on the next pass. Say so: a bare traceback in the
+        # middle of a stream of "+ Folder/" lines tells an operator nothing
+        # about whether to re-run, and the script already prints this exact
+        # sentence on the other path that finds a half-made chapter.
+        sys.exit("\nABORT mid-clone: %s\n"
+                 "Whatever was created is left in place under %r — nothing is "
+                 "duplicated, because a write is never re-sent. Re-run with "
+                 "--write --resume to clone only what is missing." % (exc, name))
     finally:
         shutil.rmtree(ctx["tmp"], ignore_errors=True)
         if os.path.exists(ctx["tmp"]):

@@ -33,7 +33,22 @@ Usage:
   # Test the text engine on a local folder of .pptx/.docx/.xlsx (no Drive):
   python create_series.py --series "Reading Group" --rebrand-local ./somedir
 """
-import argparse, fnmatch, html, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata, urllib.error, urllib.request, zipfile
+import argparse, fnmatch, html, json, os, re, shutil, sys, tempfile, unicodedata, urllib.error, urllib.request, zipfile
+
+# The `gws` plumbing is the shared client's. This skill used to keep a private
+# copy so it stayed zippable for claude.ai, and the copy had already fallen two
+# fixes behind: it matched a bare `"500"` as a substring (so a permanent
+# `A500:K500 exceeds grid limits` burned the full backoff), and it interpolated
+# the child's raw stdout+stderr into its exceptions — unscrubbed, where `gws`
+# dumps its environment on some failures and the OAuth client secret and refresh
+# token are exactly what such a dump holds. Hand-porting fixes into a copy is
+# how a copy ends up two behind, and this one is reached by the operator least
+# equipped to notice. Zippability was the wrong side of that trade; the skill
+# is on the README's needs-a-full-checkout list now.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "lib"))
+
+from aaif_events import gws as gwsmod  # noqa: E402
 
 ONLINE_PARENT   = "1g2vHrqDHfh9wBkDJryJIl8wqXA4J-d4i"   # the top-level "Online" Drive folder
 TEMPLATE_FOLDER = "1M15wzKvQqd_jQz5cG16NO_YcbWU3EH1j"   # the "TemplateSeries" folder
@@ -192,72 +207,9 @@ def residual_tokens(path):
 # ----------------------------------------------------------------------------
 # Drive helpers (via the gws CLI)
 # ----------------------------------------------------------------------------
-# This skill is the one of the four Drive cloners that is still ZIPPABLE: no
-# script in it imports `lib/aaif_events`, so it runs standalone on claude.ai.
-# That is why the `gws` plumbing below is a local copy rather than a boundary
-# over `aaif_events.gws` the way its siblings now are — and why the two fixes
-# that module carries have to be carried here too, by hand. If this skill ever
-# takes the lib coupling for another reason, delete all of this and call the
-# shared client instead.
-#
-# Substrings that mean "the API was sick, ask again".
-_TRANSIENT = ("timed out", "internalError", "Internal error", "HTTP request failed",
-              "Connection", "temporarily", "rateLimit", "userRateLimit",
-              "backendError")
-
-#: Bare "500"/"502" as substrings match any range or quota id that happens to
-#: contain those digits, so a PERMANENT error burns the full backoff before
-#: failing: `A500:K500 exceeds grid limits` is preceded by `A` and followed by
-#: `:`, and the old table matched it. Match HTTP statuses at token boundaries
-#: only. Kept in step with `aaif_events.gws.TRANSIENT_STATUS`.
-_TRANSIENT_STATUS = re.compile(r"(?<![0-9A-Za-z])(?:429|500|502|503|504)(?![0-9A-Za-z])")
-
-#: A Drive `create` or `copy` that succeeded server-side but answered like a
-#: timeout must NEVER be re-sent: the retry makes a second folder, or a second
-#: copy of a template file, under the same name, and nothing downstream
-#: notices. Reads, and `files.update` by id, are safe at the default.
-NO_RETRY = 1
-
-def _scrubbed_env():
-    """os.environ minus the Slack/Luma secrets: gws never needs them, and a child
-    inherits the whole environment otherwise. Local so this script stays standalone."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
-            and k != "LUMA_API_KEY"}
-
-
-def _gws(cmd, cwd=None, retries=5):
-    """Run a gws command, retrying transient network/server errors."""
-    for i in range(retries):
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                           env=_scrubbed_env())
-        if r.returncode == 0:
-            return r.stdout
-        msg = (r.stderr or "") + (r.stdout or "")
-        if i < retries - 1 and (any(k in msg for k in _TRANSIENT)
-                                or _TRANSIENT_STATUS.search(msg)):
-            time.sleep(2 * (i + 1))
-            continue
-        raise RuntimeError("gws failed (%s): %s" % (r.returncode, msg.strip()[:400]))
-
-def gws_json(*args, params=None, body=None, retries=5):
-    cmd = ["gws", *args]
-    if params is not None:
-        cmd += ["--params", json.dumps(params)]
-    if body is not None:
-        cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd, retries=retries)
-    # Split on "\n" only — NOT splitlines(), which also splits on U+2028 and
-    # friends INSIDE JSON string values, corrupting them when rejoined.
-    s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
-    if not s:
-        # Empty-but-successful stdout would silently become {} -> an empty file
-        # list -> a subtree that fails to clone while the run still says "Done".
-        raise RuntimeError("gws produced no JSON output for: %s" % " ".join(args))
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        raise RuntimeError("gws returned non-JSON output for %s: %s" % (" ".join(args), s[:200]))
+_gws = gwsmod.run
+gws_json = gwsmod.json_out
+NO_RETRY = gwsmod.NO_RETRY
 
 def gws_download(file_id, out):
     # gws rejects --output paths outside its cwd, so run it in the file's dir.

@@ -56,6 +56,7 @@ from typing import NamedTuple, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import create_chapter as cc      # noqa: E402
 import restyle_design_system as rd   # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402  (cc put lib on the path)
 
 ICONS_FOLDER = "Icons"
 GIF = "image/gif"
@@ -158,8 +159,13 @@ def sync_chapter(chapter_id, name, art_dir, write, tmpdir):
             mime = MIME_BY_EXT[os.path.splitext(fname)[1].lower()]
             if write:
                 if hit is None:
+                    # NO_RETRY: a create that succeeded server-side but
+                    # answered like a timeout must not be re-sent — the retry
+                    # makes a second file of the same name in the same folder,
+                    # and the next pass's `same` check then compares against an
+                    # arbitrary one of the two.
                     meta = cc.gws_json(
-                        "drive", "files", "create",
+                        "drive", "files", "create", retries=gwsmod.NO_RETRY,
                         params={"supportsAllDrives": True, "fields": "id"},
                         body={"name": fname, "parents": [folder_id], "mimeType": mime})
                     cc.gws_upload(meta["id"], path, mime)

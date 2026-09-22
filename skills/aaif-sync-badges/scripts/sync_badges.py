@@ -66,19 +66,21 @@ def _gws(cmd, cwd=None, retries=gwsmod.RETRIES):
     A thin boundary over `aaif_events.gws.run`. What stays here is the one
     thing that is this script's own decision, not the shared plumbing's:
 
-    retries=1 (no retry) is REQUIRED for any non-idempotent write (a Drive
+    `retries=gwsmod.NO_RETRY` is REQUIRED for any non-idempotent write (a Drive
     `files.create`, folder or file): if the create actually succeeded
     server-side but the response looked like a timeout, retrying it creates a
     second folder/file with the same name, and nothing on the destination side
     detects that duplicate. Reads and `files.update` (by file id) are safe to
     retry at the default.
 
-    The retry TABLE is no longer local. This copy listed five substrings where
-    the shared one lists ten, so an `internalError`, a `rateLimit`, a
-    `backendError` or a 500 ended a badge sync that the very same sick API
-    would have survived in a sibling engine. Which script you were in decided
-    whether the run lived, which is exactly the drift `aaif_events.gws` exists
-    to end.
+    The retry TABLE is no longer local. This copy carried five substrings
+    against the shared table's eleven plus its boundary-matched HTTP statuses.
+    The ones it genuinely dropped are `internalError` / `Internal error`, a
+    bare 500 or 504, `HTTP request failed`, `temporarily`, `userRateLimit`, and
+    `Connection refused`/`aborted` — a badge sync died on those where a sibling
+    engine rode the same sick API out. (Not `rateLimit` or `backendError` in
+    the ordinary case: Google sends those WITH a 429 or 503, which this copy's
+    bare status substrings did match. The narrower claim is the true one.)
     """
     return gwsmod.run(cmd, retries=retries, cwd=cwd)
 
@@ -110,7 +112,8 @@ def list_children(folder_id):
 
 
 def create_folder(name, parent):
-    return gws_json("drive", "files", "create", retries=gwsmod.NO_RETRY,
+    return gws_json("drive", "files", "create",  # non-idempotent, see _gws
+                    retries=gwsmod.NO_RETRY,
                      params={"supportsAllDrives": True},
                      body={"name": name, "mimeType": FOLDER, "parents": [parent]})["id"]
 
@@ -126,7 +129,8 @@ def upload_new(name, parent, local_path):
           "--params", json.dumps({"supportsAllDrives": True}),
           "--json", json.dumps({"name": name, "parents": [parent]}),
           "--upload", os.path.basename(local_path),
-          "--upload-content-type", mime], cwd=d, retries=gwsmod.NO_RETRY)
+          "--upload-content-type", mime],
+         cwd=d, retries=gwsmod.NO_RETRY)   # non-idempotent, see _gws
 
 
 def upload_update(file_id, local_path):
@@ -279,6 +283,15 @@ def main():
                     print(f"  uploaded {name}/{BADGES_SUBFOLDER}/{fn}")
                 total += 1
         print(f"\nDone. {total} file(s) written.")
+    except gwsmod.GwsError as exc:
+        # A non-idempotent write is sent once, so a transient blip ends the run
+        # where five attempts used to absorb it. Safe to re-run — the plan is
+        # rebuilt from a live Drive listing every time — but the operator needs
+        # the count, because the traceback it replaces said nothing about how
+        # much had landed.
+        sys.exit(f"\nABORT after {total} file(s) written: {exc}\n"
+                 "Nothing is duplicated (a write is never re-sent). Re-run: "
+                 "the plan is rebuilt from Drive, so only the rest is uploaded.")
     finally:
         try:
             shutil.rmtree(tmp)

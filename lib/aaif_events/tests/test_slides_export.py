@@ -7,9 +7,14 @@ from aaif_events import slides_export as se
 
 
 class TestGws(unittest.TestCase):
-    """_gws's retry contract, mirroring TestCall in test_luma.py: transient
-    errors retry, everything else fails fast. time.sleep is patched so the
-    backoff doesn't actually happen."""
+    """The retry contract this module reaches Drive/Slides under.
+
+    `se._gws`/`se._gws_json` are aliases of the shared client now; this module
+    used to carry its own copy, with that copy's bare `"500"` substring bug.
+    These stay because they pin the contract AT THIS MODULE'S BOUNDARY: if
+    someone re-introduces a private wrapper here, these are what should fail.
+    `subprocess.run` is patched on the stdlib module, so they intercept either
+    way. time.sleep is patched so the backoff doesn't actually happen."""
 
     def setUp(self):
         p = mock.patch("time.sleep")
@@ -62,21 +67,54 @@ class TestGws(unittest.TestCase):
 
 
 class TestGwsJson(unittest.TestCase):
+    """Stdout handling at this module's boundary.
+
+    These patch `subprocess.run`, not `se._gws`. Patching the alias would set a
+    module attribute that `json_out` never reads — it calls `run` inside the
+    shared client — so the test would sail past the mock and shell out to a
+    real `gws`. It did, while this file was being moved onto the shared client,
+    which is the failure mode worth leaving a note about: a mock that mocks
+    nothing does not fail, it makes a network call."""
+
+    def _stdout(self, text):
+        return mock.patch("subprocess.run",
+                          return_value=mock.Mock(returncode=0, stdout=text, stderr=""))
+
     def test_empty_output_raises(self):
-        with mock.patch.object(se, "_gws", return_value="   \n  "):
+        with self._stdout("   \n  "):
             with self.assertRaises(RuntimeError) as cm:
                 se._gws_json("drive", "files", "copy")
             self.assertIn("no JSON output", str(cm.exception))
 
     def test_non_json_output_raises(self):
-        with mock.patch.object(se, "_gws", return_value="<html>oops</html>"):
+        with self._stdout("<html>oops</html>"):
             with self.assertRaises(RuntimeError) as cm:
                 se._gws_json("drive", "files", "copy")
             self.assertIn("non-JSON output", str(cm.exception))
 
+    def test_a_non_json_body_is_never_echoed(self):
+        """It is Drive data. The shared client reports length and first char."""
+        with self._stdout('<html><body>Ada Lovelace, a@x.com</body></html>'):
+            with self.assertRaises(RuntimeError) as cm:
+                se._gws_json("drive", "files", "copy")
+        self.assertNotIn("a@x.com", str(cm.exception))
+        self.assertNotIn("Ada", str(cm.exception))
+
     def test_strips_keyring_backend_noise_line(self):
-        with mock.patch.object(se, "_gws", return_value='Using keyring backend: keyring\n{"id": "abc"}'):
+        with self._stdout('Using keyring backend: keyring\n{"id": "abc"}'):
             self.assertEqual(se._gws_json("drive", "files", "copy"), {"id": "abc"})
+
+    def test_the_throwaway_copy_is_never_retried(self):
+        """A retried `files.copy` orphans a second "TEMP - render_slide_png"
+        beside the source; against TemplateCity it is then cloned into every
+        chapter made afterwards. Driven to a counted subprocess, not a kwarg."""
+        with mock.patch("subprocess.run",
+                        return_value=mock.Mock(returncode=1, stdout="",
+                                               stderr="timed out")) as run, \
+                mock.patch("time.sleep"):
+            with self.assertRaises(RuntimeError):
+                se.render_slide_png("file1", 0, "/tmp/nope.png")
+        self.assertEqual(run.call_count, 1)
 
     def test_params_and_body_become_cli_flags(self):
         with mock.patch("subprocess.run",

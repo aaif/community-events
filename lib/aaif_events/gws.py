@@ -31,9 +31,11 @@ import time
 from .report_style import redact as _scrub
 from .slack import scrubbed_env
 
-#: Substrings that mean "the API was sick, ask again". The union of the two
-#: tables that existed before; `Internal error` came from only one of them, and
-#: its absence in the other is the drift this module removes.
+#: Substrings that mean "the API was sick, ask again". Originally the union of
+#: the two full tables that existed then (`Internal error` came from only one
+#: of them, and its absence in the other is the drift this module removed) —
+#: and since the last of the private copies was folded in, simply the table.
+#: There is no other one left to be a union OF.
 TRANSIENT = ("timed out", "internalError", "Internal error", "HTTP request failed",
              "Connection reset", "Connection refused", "Connection aborted",
              "temporarily", "rateLimit", "userRateLimit", "backendError")
@@ -75,6 +77,27 @@ def transient(msg):
     return any(k in msg for k in TRANSIENT) or bool(TRANSIENT_STATUS.search(msg))
 
 
+def verb(cmd):
+    """The leading non-flag tokens of a gws command line: `drive files create`.
+
+    Every failure message names this, because "gws failed (1)" out of a script
+    that issues a dozen calls across two spreadsheets tells an operator nothing
+    about which one died — and `install_ops_notes` exits mid-loop, so which one
+    is the difference between "nothing happened" and "a grid was widened and
+    its header never written".
+
+    ONLY the verb. The rest of the argv is `--params`/`--json` blobs carrying
+    sheet rows and form answers, and an error message is exactly where those
+    must not appear.
+    """
+    out = []
+    for tok in cmd[1:]:
+        if tok.startswith("-"):
+            break
+        out.append(tok)
+    return " ".join(out) or " ".join(cmd[:1])
+
+
 def run(cmd, retries=RETRIES, cwd=None):
     """Run a `gws` command line, returning stdout.
 
@@ -90,10 +113,11 @@ def run(cmd, retries=RETRIES, cwd=None):
     prints its environment or a request dump on some failures, and
     `scrubbed_env` deliberately KEEPS `GOOGLE_WORKSPACE_CLI_*` because `gws`
     needs it — so the OAuth client secret and refresh token are exactly what
-    such a dump contains. Three callers turn the exception straight into
+    such a dump contains. Several callers turn the exception straight into
     `sys.exit(str(exc))`, and an operator pastes that into an issue on a public
-    repo. `slides_export` already scrubbed for this reason; this module is now
-    the single path every script reaches Google through.
+    repo. `slides_export` scrubbed for this reason before it was folded in here;
+    this module is now the path every script in the repo reaches Google through,
+    `slides_export` included.
     """
     attempts = max(1, retries)
     for i in range(attempts):
@@ -103,17 +127,27 @@ def run(cmd, retries=RETRIES, cwd=None):
             return proc.stdout
         msg = (proc.stderr or "") + (proc.stdout or "")
         if i < attempts - 1 and transient(msg):
-            print("  gws call failed (attempt %d/%d), retrying in %ds: %s"
-                  % (i + 1, attempts, 2 * (i + 1), _scrub(msg.strip(), 120)),
+            print("  gws %s failed (attempt %d/%d), retrying in %ds: %s"
+                  % (verb(cmd), i + 1, attempts, 2 * (i + 1),
+                     _scrub((proc.stderr or "").strip(), 120)),
                   file=sys.stderr)
             time.sleep(2 * (i + 1))
             continue
-        raise GwsError("gws failed (%s): %s"
-                       % (proc.returncode, _scrub(msg.strip())))
+        # stdout is in `msg` for the retry decision only — some gws builds print
+        # the error there. It is NOT shown: when a `values.get` streams part of
+        # its response and then exits nonzero, that partial body is sheet data,
+        # and `_scrub` masks credential shapes, not a person's name. `json_out`
+        # takes care not to print a body one layer up; showing it here would
+        # undo that.
+        shown = _scrub((proc.stderr or "").strip())
+        if not shown:
+            shown = "(nothing on stderr; %d chars on stdout)" % len(proc.stdout or "")
+        raise GwsError("gws %s failed (%s): %s"
+                       % (verb(cmd), proc.returncode, shown))
     # Unreachable: the final iteration fails the `i < attempts - 1` guard and
     # raises above. Kept as a guard against a future edit to the loop, which is
     # the only way a caller could otherwise receive None.
-    raise GwsError("gws exhausted %d attempt(s): %s" % (attempts, " ".join(cmd[:4])))
+    raise GwsError("gws exhausted %d attempt(s): %s" % (attempts, verb(cmd)))
 
 
 def clean_stdout(out):

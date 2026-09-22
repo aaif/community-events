@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 import create_chapter as cc  # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402
 
 A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
 P = 'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
@@ -880,30 +881,47 @@ class TestNonIdempotentDriveWrites(unittest.TestCase):
 
     Re-sending it makes a second folder, or a second copy of a template file,
     under the same name — and `list_children` then reports a subtree holding
-    everything twice, which the rebrand walks. The guard is a keyword at each
-    call site, so pin the call sites.
+    everything twice, which the rebrand walks.
+
+    These drive a COUNTED subprocess. An earlier version asserted
+    `call_args.kwargs["retries"]` at the call site, which passes even when the
+    argument is dropped at every layer beneath it: dropping the pass-through in
+    `gws.json_out` left the guard inert and the whole suite green.
     """
 
-    def test_create_folder_is_never_retried(self):
-        with mock.patch.object(cc, "gws_json", return_value={"id": "f1"}) as gj:
-            cc.create_folder("Badges", "parent1")
-        self.assertEqual(gj.call_args.kwargs.get("retries"), cc.NO_RETRY)
+    def _timeout(self):
+        return mock.patch.object(
+            gwsmod.subprocess, "run",
+            return_value=mock.Mock(returncode=1, stdout="", stderr="timed out"))
 
-    def test_copy_file_is_never_retried(self):
-        with mock.patch.object(cc, "gws_json", return_value={"id": "c1"}) as gj:
-            cc.copy_file("src1", "Deck.pptx", "parent1")
-        self.assertEqual(gj.call_args.kwargs.get("retries"), cc.NO_RETRY)
+    def test_create_folder_sends_the_create_exactly_once(self):
+        with self._timeout() as run, mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cc.create_folder("Badges", "parent1")
+        self.assertEqual(run.call_count, 1)
 
-    def test_reads_keep_the_shared_retry_budget(self):
-        with mock.patch.object(cc, "gws_json", return_value={"files": []}) as gj:
-            cc.list_children("parent1")
-        self.assertNotIn("retries", gj.call_args.kwargs)
+    def test_copy_file_sends_the_copy_exactly_once(self):
+        with self._timeout() as run, mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cc.copy_file("src1", "Deck.pptx", "parent1")
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_read_keeps_the_shared_retry_budget(self):
+        with self._timeout() as run, mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cc.list_children("parent1")
+        self.assertEqual(run.call_count, gwsmod.RETRIES)
 
     def test_an_update_by_id_keeps_the_shared_retry_budget(self):
         # files.update names the file it replaces, so a re-send is harmless.
-        with mock.patch.object(cc, "_gws") as g:
-            cc.gws_upload("file1", "/tmp/x.pptx", cc.PPTX)
-        self.assertNotIn("retries", g.call_args.kwargs)
+        with self._timeout() as run, mock.patch.object(gwsmod.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                cc.gws_upload("file1", "/tmp/x.pptx", cc.PPTX)
+        self.assertEqual(run.call_count, gwsmod.RETRIES)
+
+    def test_the_guard_is_not_a_local_alias(self):
+        """A second definition site would let this drift with its own test."""
+        self.assertFalse(hasattr(cc, "NO_RETRY"))
 
 
 if __name__ == "__main__":

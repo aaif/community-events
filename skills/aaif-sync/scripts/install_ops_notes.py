@@ -56,13 +56,23 @@ HEADER_FORMAT = {"textFormat": {"bold": True},
                  "backgroundColor": {"red": 0.85, "green": 0.85, "blue": 0.85}}
 
 
-def gws(args, retries=gwsmod.RETRIES):
+def gws(args, retries=gwsmod.RETRIES, want_json=True):
     """Run a prepared `gws` argument list and parse whatever JSON comes back.
 
-    A thin boundary over `aaif_events.gws.run`, keeping two behaviours this
-    script relies on: it exits with a sentence rather than a traceback, and an
-    empty body is `{}` rather than an error, because a values `update` answers
-    with nothing useful.
+    A thin boundary over `aaif_events.gws.run`. It exits with a sentence rather
+    than a traceback for any failure `gws` itself can produce — a `GwsError`, a
+    body that is not JSON, or no `gws` on PATH at all.
+
+    `want_json=False` is for the two WRITES, whose response is genuinely
+    uninformative: a values `update` answers with nothing useful. It must not
+    be the default. A read that answers with no JSON is not "no rows": it
+    travels one line further and becomes "ABORT: no tab titled 'Organizers' —
+    a rename, not an empty sheet" (which rules out what actually happened),
+    "'Organizers' has no header row" (of a tab that has one), or — the
+    dangerous one — "wrote 'Ops Notes' but a fresh read does not show it",
+    after a write that landed. An operator who re-runs on that last message
+    gets a second `appendDimension`, which is the duplicate column the guard in
+    `install` exists to prevent, reached the long way round.
 
     This used to be a bare `subprocess.run` with no retry handling at all, so a
     single intermittent 503 — which every other engine has always ridden out —
@@ -71,10 +81,22 @@ def gws(args, retries=gwsmod.RETRIES):
     """
     try:
         txt = gwsmod.clean_stdout(gwsmod.run(["gws"] + args, retries=retries))
-    except gwsmod.GwsError as exc:
-        sys.exit(str(exc))
+    except (gwsmod.GwsError, OSError) as exc:
+        sys.exit("gws error: %s" % exc)
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
-    return json.loads(txt[i:]) if i >= 0 else {}
+    if i < 0:
+        if want_json:
+            # Length only. The body is a header row.
+            sys.exit("gws %s returned no JSON (%d chars) — that is a failed "
+                     "read, not an empty sheet." % (gwsmod.verb(["gws"] + args), len(txt)))
+        return {}
+    try:
+        return json.loads(txt[i:])
+    except ValueError as exc:
+        # `min(... "{[")` can land on a `[warn] ...` notice sitting before the
+        # JSON. Every other exit here is a sentence; this one was a traceback.
+        sys.exit("gws %s returned unparsable JSON (%s)."
+                 % (gwsmod.verb(["gws"] + args), exc))
 
 
 def col_letter(n):
@@ -140,15 +162,19 @@ def install(sheet_id, tab, sid, p):
     # column — and the header then lands in the first of two, leaving a blank
     # column on a tab whose whole contract is "the ops columns are the literal
     # ones on the right". The repeatCell beside it is idempotent; they share a
-    # request list, so the list takes the stricter of the two.
+    # request list, so the list takes the stricter of the two. The widen is
+    # conditional and the guard deliberately is NOT: making the budget depend
+    # on `p["widen"]` is how a future edit drops it.
     gws(["sheets", "spreadsheets", "batchUpdate", "--params",
          json.dumps({"spreadsheetId": sheet_id}), "--json",
-         json.dumps({"requests": reqs}), "--format", "json"], retries=gwsmod.NO_RETRY)
+         json.dumps({"requests": reqs}), "--format", "json"],
+        retries=gwsmod.NO_RETRY, want_json=False)
     gws(["sheets", "spreadsheets", "values", "update", "--params",
          json.dumps({"spreadsheetId": sheet_id,
                      "range": "'%s'!%s1" % (tab, col_letter(p["col"])),
                      "valueInputOption": "RAW"}),
-         "--json", json.dumps({"values": [[HEADER]]}), "--format", "json"])
+         "--json", json.dumps({"values": [[HEADER]]}), "--format", "json"],
+        want_json=False)
 
 
 def main(argv=None):

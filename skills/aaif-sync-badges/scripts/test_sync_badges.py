@@ -157,11 +157,13 @@ class TestGwsRetry(unittest.TestCase):
         self.assertEqual(out, "ok")
 
     def test_a_transient_class_the_local_table_missed_is_now_retried(self):
-        # The table this script carried listed five substrings; the shared one
-        # lists ten. `backendError` was in neither of this script's, so a badge
-        # sync died where a sibling engine rode the same failure out.
+        # `internalError` with no HTTP status beside it is the case this
+        # script's five-substring table genuinely dropped. Picked deliberately
+        # over `backendError`, which Google sends WITH a 503 — a status the old
+        # table matched, so a `backendError` fixture would have "passed"
+        # against the old code too and demonstrated nothing.
         results = [
-            mock.Mock(returncode=1, stdout="", stderr="backendError"),
+            mock.Mock(returncode=1, stdout="", stderr="internalError"),
             mock.Mock(returncode=0, stdout="ok", stderr=""),
         ]
         with mock.patch.object(gwsmod.subprocess, "run", side_effect=results), \
@@ -184,15 +186,50 @@ class TestGwsRetry(unittest.TestCase):
                 sync_badges._gws(["gws", "noop"], retries=1)
         self.assertEqual(run.call_count, 1)
 
-    def test_the_two_non_idempotent_writes_still_pass_retries_1(self):
-        """The guard is a keyword at each call site, so pin the call sites."""
-        with mock.patch.object(sync_badges, "gws_json") as gj:
-            gj.return_value = {"id": "f1"}
-            sync_badges.create_folder("Badges", "parent1")
-        self.assertEqual(gj.call_args.kwargs.get("retries"), 1)
-        with mock.patch.object(sync_badges, "_gws") as g:
-            sync_badges.upload_new("a.svg", "parent1", "/tmp/a.svg")
-        self.assertEqual(g.call_args.kwargs.get("retries"), 1)
+    def test_the_two_non_idempotent_writes_send_exactly_one_subprocess(self):
+        """Counted, not asserted on a keyword.
+
+        `kwargs["retries"] == NO_RETRY` at the call site passes even when the
+        argument is dropped at every layer beneath it — dropping the
+        pass-through inside `gws.json_out` left the guard inert with the whole
+        suite green.
+        """
+        timeout = mock.Mock(returncode=1, stdout="", stderr="timed out")
+        for call in (lambda: sync_badges.create_folder("Badges", "parent1"),
+                     lambda: sync_badges.upload_new("a.svg", "p1", "/tmp/a.svg")):
+            with mock.patch.object(gwsmod.subprocess, "run",
+                                   return_value=timeout) as run, \
+                    mock.patch.object(gwsmod.time, "sleep"):
+                with self.assertRaises(RuntimeError):
+                    call()
+            self.assertEqual(run.call_count, 1)
+
+    def test_a_read_and_an_update_by_id_keep_the_shared_budget(self):
+        timeout = mock.Mock(returncode=1, stdout="", stderr="timed out")
+        for call in (lambda: sync_badges.list_children("p1"),
+                     lambda: sync_badges.upload_update("f1", "/tmp/a.svg")):
+            with mock.patch.object(gwsmod.subprocess, "run",
+                                   return_value=timeout) as run, \
+                    mock.patch.object(gwsmod.time, "sleep"):
+                with self.assertRaises(RuntimeError):
+                    call()
+            self.assertEqual(run.call_count, gwsmod.RETRIES)
+
+    def test_the_child_is_launched_with_the_secrets_scrubbed(self):
+        """Patching stdlib `subprocess.run` intercepts a local wrapper just as
+        well as the shared client, so it alone does not prove this script goes
+        through `aaif_events.gws`. The scrubbed env does: a hand-rolled
+        `subprocess.run` would not carry it."""
+        with mock.patch.dict(os.environ, {"AAIF_SLACK_TOKEN": "x",
+                                          "LUMA_API_KEY": "z", "KEEP": "1"}), \
+                mock.patch.object(gwsmod.subprocess, "run",
+                                  return_value=mock.Mock(returncode=0, stdout="{}",
+                                                         stderr="")) as run:
+            sync_badges.list_children("p1")
+        env = run.call_args.kwargs["env"]
+        self.assertNotIn("AAIF_SLACK_TOKEN", env)
+        self.assertNotIn("LUMA_API_KEY", env)
+        self.assertEqual(env["KEEP"], "1")
 
 
 class TestWritePathDispatch(unittest.TestCase):
@@ -297,23 +334,6 @@ class TestWritePathDispatch(unittest.TestCase):
         upload_update.assert_not_called()
         badges_build.assert_not_called()
         agent_build.assert_not_called()
-
-
-class TestScrubbedEnv(unittest.TestCase):
-    """The scrub is the shared one now (this script had its own copy). It must
-    still drop the Slack/Luma tokens and still KEEP what `gws` itself reads."""
-
-    def test_drops_slack_and_luma_secrets_only(self):
-        with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "x",
-                                          "AAIF_SLACK_READ_TOKEN": "y",
-                                          "LUMA_API_KEY": "z", "HOME_KEEP": "1",
-                                          "GOOGLE_WORKSPACE_CLI_CONFIG": "c"}):
-            env = gwsmod.scrubbed_env()
-        self.assertNotIn("AAIF_SLACK_WRITE_TOKEN", env)
-        self.assertNotIn("AAIF_SLACK_READ_TOKEN", env)
-        self.assertNotIn("LUMA_API_KEY", env)
-        self.assertEqual(env["HOME_KEEP"], "1")
-        self.assertEqual(env["GOOGLE_WORKSPACE_CLI_CONFIG"], "c")
 
 
 if __name__ == "__main__":
