@@ -87,6 +87,41 @@ class TestRun:
             gws.run(["gws", "x"], retries=5)
         assert len(calls) == 5
 
+    def test_no_retry_sends_a_transient_failure_exactly_once(self, calls):
+        """The guard callers pass for a non-idempotent write.
+
+        `timed out` is the case that matters: the request may already have
+        landed, so the one thing this must not do is send it again.
+        """
+        calls.queue += [FakeProc(1, stderr="timed out"), FakeProc(0, stdout="ok")]
+        with pytest.raises(gws.GwsError):
+            gws.run(["gws", "x"], retries=gws.NO_RETRY)
+        assert len(calls) == 1
+
+    def test_the_verb_is_named_and_the_argv_blobs_are_not(self, calls):
+        """"gws failed (1)" out of a script issuing a dozen calls says nothing.
+
+        The verb is safe to print; the rest of the argv is `--params`/`--json`
+        holding sheet rows and form answers.
+        """
+        calls.queue.append(FakeProc(1, stderr="does not have permission"))
+        with pytest.raises(gws.GwsError) as exc:
+            gws.run(["gws", "sheets", "spreadsheets", "values", "get",
+                     "--params", '{"range": "Ada Lovelace"}'])
+        assert "sheets spreadsheets values get" in str(exc.value)
+        assert "Ada Lovelace" not in str(exc.value)
+
+    def test_a_streamed_response_body_is_not_shown_on_failure(self, calls):
+        """Some gws builds print the error on stdout, so stdout decides the
+        retry. It must not decide what the operator SEES: a `values.get` that
+        streams half its rows and then exits nonzero puts those rows here."""
+        calls.queue.append(FakeProc(1, stdout='{"values": [["Ada", "a@x.com"]]}'))
+        with pytest.raises(gws.GwsError) as exc:
+            gws.run(["gws", "sheets", "spreadsheets", "values", "get"])
+        assert "a@x.com" not in str(exc.value)
+        assert "Ada" not in str(exc.value)
+        assert "on stdout" in str(exc.value)   # says there WAS output
+
     def test_retries_zero_still_calls_once_and_raises(self, calls):
         """`retries=0` must not silently return None, as an early copy could."""
         calls.queue.append(FakeProc(1, stderr="timed out"))
@@ -181,6 +216,31 @@ class TestSecretsNeverReachTheReader:
                         FakeProc(0, stdout="ok")]
         gws.run(["gws", "x"])
         assert "1//0aaaaaaaaaaaaaaaaaaaaaaaaaa" not in capsys.readouterr().err
+
+
+class TestJsonOutHonoursTheRetryBudget:
+    """`json_out` is where three scripts' `retries=NO_RETRY` actually has to
+    land. Asserting the keyword at the call site cannot see this: dropping the
+    `retries=retries` pass-through here leaves the guard inert everywhere while
+    every call-site test still passes. Verified — that mutation survived the
+    whole suite before this class existed."""
+
+    def test_no_retry_reaches_the_subprocess_as_one_attempt(self, calls):
+        calls.queue += [FakeProc(1, stderr="timed out"), FakeProc(0, stdout="{}")]
+        with pytest.raises(gws.GwsError):
+            gws.json_out("drive", "files", "create", retries=gws.NO_RETRY)
+        assert len(calls) == 1
+
+    def test_the_default_still_retries(self, calls):
+        calls.queue += [FakeProc(1, stderr="timed out"), FakeProc(0, stdout="{}")]
+        assert gws.json_out("drive", "files", "list") == {}
+        assert len(calls) == 2
+
+    def test_values_passes_its_budget_down_too(self, calls):
+        calls.queue += [FakeProc(1, stderr="timed out"), FakeProc(0, stdout="{}")]
+        with pytest.raises(gws.GwsError):
+            gws.values("sheet1", "A1:B2", retries=gws.NO_RETRY)
+        assert len(calls) == 1
 
 
 class TestValues:

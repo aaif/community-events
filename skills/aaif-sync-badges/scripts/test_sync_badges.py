@@ -5,6 +5,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 import sync_badges  # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402  (sync_badges put lib on the path)
 
 
 class TestNeededFilenames(unittest.TestCase):
@@ -141,19 +142,37 @@ class TestListChildrenPagination(unittest.TestCase):
 
 
 class TestGwsRetry(unittest.TestCase):
+    """`_gws` is a boundary over the shared client now, so the subprocess these
+    patch is `aaif_events.gws`'s. The behaviours pinned are the same ones, and
+    the last of them is the one that is still this script's own decision."""
+
     def test_retries_transient_failure_then_succeeds(self):
         results = [
             mock.Mock(returncode=1, stdout="", stderr="503 Service Unavailable"),
             mock.Mock(returncode=0, stdout="ok", stderr=""),
         ]
-        with mock.patch.object(sync_badges.subprocess, "run", side_effect=results), \
-             mock.patch.object(sync_badges.time, "sleep"):
+        with mock.patch.object(gwsmod.subprocess, "run", side_effect=results), \
+             mock.patch.object(gwsmod.time, "sleep"):
             out = sync_badges._gws(["gws", "noop"])
         self.assertEqual(out, "ok")
 
+    def test_a_transient_class_the_local_table_missed_is_now_retried(self):
+        # `internalError` with no HTTP status beside it is the case this
+        # script's five-substring table genuinely dropped. Picked deliberately
+        # over `backendError`, which Google sends WITH a 503 — a status the old
+        # table matched, so a `backendError` fixture would have "passed"
+        # against the old code too and demonstrated nothing.
+        results = [
+            mock.Mock(returncode=1, stdout="", stderr="internalError"),
+            mock.Mock(returncode=0, stdout="ok", stderr=""),
+        ]
+        with mock.patch.object(gwsmod.subprocess, "run", side_effect=results), \
+             mock.patch.object(gwsmod.time, "sleep"):
+            self.assertEqual(sync_badges._gws(["gws", "noop"]), "ok")
+
     def test_non_transient_failure_raises_immediately(self):
         result = mock.Mock(returncode=1, stdout="", stderr="permission denied")
-        with mock.patch.object(sync_badges.subprocess, "run", return_value=result) as run:
+        with mock.patch.object(gwsmod.subprocess, "run", return_value=result) as run:
             with self.assertRaises(RuntimeError):
                 sync_badges._gws(["gws", "noop"])
         self.assertEqual(run.call_count, 1)  # no retry on a non-transient error
@@ -162,10 +181,55 @@ class TestGwsRetry(unittest.TestCase):
         # Non-idempotent writes (create_folder, upload_new) pass retries=1 so a
         # timed-out `files.create` is never blindly retried into a duplicate.
         result = mock.Mock(returncode=1, stdout="", stderr="timed out")
-        with mock.patch.object(sync_badges.subprocess, "run", return_value=result) as run:
+        with mock.patch.object(gwsmod.subprocess, "run", return_value=result) as run:
             with self.assertRaises(RuntimeError):
                 sync_badges._gws(["gws", "noop"], retries=1)
         self.assertEqual(run.call_count, 1)
+
+    def test_the_two_non_idempotent_writes_send_exactly_one_subprocess(self):
+        """Counted, not asserted on a keyword.
+
+        `kwargs["retries"] == NO_RETRY` at the call site passes even when the
+        argument is dropped at every layer beneath it — dropping the
+        pass-through inside `gws.json_out` left the guard inert with the whole
+        suite green.
+        """
+        timeout = mock.Mock(returncode=1, stdout="", stderr="timed out")
+        for call in (lambda: sync_badges.create_folder("Badges", "parent1"),
+                     lambda: sync_badges.upload_new("a.svg", "p1", "/tmp/a.svg")):
+            with mock.patch.object(gwsmod.subprocess, "run",
+                                   return_value=timeout) as run, \
+                    mock.patch.object(gwsmod.time, "sleep"):
+                with self.assertRaises(RuntimeError):
+                    call()
+            self.assertEqual(run.call_count, 1)
+
+    def test_a_read_and_an_update_by_id_keep_the_shared_budget(self):
+        timeout = mock.Mock(returncode=1, stdout="", stderr="timed out")
+        for call in (lambda: sync_badges.list_children("p1"),
+                     lambda: sync_badges.upload_update("f1", "/tmp/a.svg")):
+            with mock.patch.object(gwsmod.subprocess, "run",
+                                   return_value=timeout) as run, \
+                    mock.patch.object(gwsmod.time, "sleep"):
+                with self.assertRaises(RuntimeError):
+                    call()
+            self.assertEqual(run.call_count, gwsmod.RETRIES)
+
+    def test_the_child_is_launched_with_the_secrets_scrubbed(self):
+        """Patching stdlib `subprocess.run` intercepts a local wrapper just as
+        well as the shared client, so it alone does not prove this script goes
+        through `aaif_events.gws`. The scrubbed env does: a hand-rolled
+        `subprocess.run` would not carry it."""
+        with mock.patch.dict(os.environ, {"AAIF_SLACK_TOKEN": "x",
+                                          "LUMA_API_KEY": "z", "KEEP": "1"}), \
+                mock.patch.object(gwsmod.subprocess, "run",
+                                  return_value=mock.Mock(returncode=0, stdout="{}",
+                                                         stderr="")) as run:
+            sync_badges.list_children("p1")
+        env = run.call_args.kwargs["env"]
+        self.assertNotIn("AAIF_SLACK_TOKEN", env)
+        self.assertNotIn("LUMA_API_KEY", env)
+        self.assertEqual(env["KEEP"], "1")
 
 
 class TestWritePathDispatch(unittest.TestCase):
@@ -270,18 +334,6 @@ class TestWritePathDispatch(unittest.TestCase):
         upload_update.assert_not_called()
         badges_build.assert_not_called()
         agent_build.assert_not_called()
-
-
-class TestScrubbedEnv(unittest.TestCase):
-    def test_drops_slack_and_luma_secrets_only(self):
-        with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "x",
-                                          "AAIF_SLACK_READ_TOKEN": "y",
-                                          "LUMA_API_KEY": "z", "HOME_KEEP": "1"}):
-            env = sync_badges._scrubbed_env()
-        self.assertNotIn("AAIF_SLACK_WRITE_TOKEN", env)
-        self.assertNotIn("AAIF_SLACK_READ_TOKEN", env)
-        self.assertNotIn("LUMA_API_KEY", env)
-        self.assertEqual(env["HOME_KEEP"], "1")
 
 
 if __name__ == "__main__":

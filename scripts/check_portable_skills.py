@@ -12,19 +12,29 @@ import at a time, and the README's list of affected skills had drifted to five
 where eight were coupled. Someone reading it would zip one of the other three
 and find out at runtime.
 
-This compares the two: the skills whose non-test scripts MENTION
-`aaif_events`, against the skills the README names. A substring scan, not the
-AST pass its sibling guard uses — a comment explaining why a script avoids the
-library would read as coupling. Every hit today is a real import; tighten this
-the first time that stops being true. Either list moving without
-the other is the failure. Adding an import is still allowed — it just has to be
-written down in the same commit.
+This compares the two: the skills whose non-test scripts IMPORT `aaif_events`,
+against the skills the README names. Either list moving without the other is
+the failure. Adding an import is still allowed — it just has to be written down
+in the same commit.
+
+This was a substring scan until a script grew a comment saying why it
+deliberately does NOT import the library — exactly the false positive the old
+docstring said to tighten on when it arrived. It is an AST pass over the import
+statements now, so prose about `aaif_events` is prose:
+`aaif-create-chapter/scripts/deck_estate.py` explains that it is *not*
+`lib/aaif_events`, and `aaif-sync/scripts/sync.py` names the package while
+importing nothing, driving every engine by subprocess instead. Neither is
+coupled; under the substring scan both read as coupled.
+
+A file that does not parse is a hard failure rather than "not coupled": a scan
+that answers "no import" for a broken file answers the wrong question.
 
 Only non-test scripts count. A test already runs from the checkout, so importing
 the library there costs nothing.
 
 Usage:  python3 scripts/check_portable_skills.py
 """
+import ast
 import glob
 import os
 import re
@@ -40,14 +50,46 @@ MARKER = "do **not** work zipped standalone"
 MARKER_RE = re.compile(r"\s+".join(re.escape(w) for w in MARKER.split()))
 
 
+def imports_lib(source, path="<source>"):
+    """True when this module actually imports `aaif_events` (not just names it).
+
+    Both spellings the repo uses count: `from aaif_events import gws` and
+    `import aaif_events.redact`, at any nesting — a couple of scripts import
+    inside a function.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        sys.exit("ABORT: %s does not parse (%s). A guard that reads an "
+                 "unparsable file as 'not coupled' answers the wrong "
+                 "question." % (path, exc))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "aaif_events":
+            return True
+        if isinstance(node, ast.Import):
+            if any(a.name.split(".")[0] == "aaif_events" for a in node.names):
+                return True
+    # An AST pass sees `import` statements, and a dynamic import is not one.
+    # `importlib.import_module("aaif_events.gws")` would read as portable and
+    # leave the README wrong — the same quiet drift this guard exists to catch,
+    # one spelling further out. Nothing in the repo does it; rather than model
+    # it, refuse it, so the question comes to a person.
+    if "aaif_events" in source and ("importlib" in source or "__import__" in source):
+        sys.exit("ABORT: %s reaches for `aaif_events` and also mentions a "
+                 "dynamic import. This guard reads `import` statements, so it "
+                 "cannot tell whether that skill is coupled. Import it "
+                 "normally, or teach this check the case on purpose." % path)
+    return False
+
+
 def coupled_skills():
-    """Skills whose non-test scripts mention `aaif_events` (see the caveat above)."""
+    """Skills whose non-test scripts import `aaif_events` (see the docstring)."""
     out = set()
     for path in glob.glob("skills/*/scripts/*.py") + glob.glob("skills/*/migrations/*.py"):
         if os.path.basename(path).startswith("test_"):
             continue
         with open(path, encoding="utf-8") as fh:
-            if "aaif_events" in fh.read():
+            if imports_lib(fh.read(), path):
                 out.add(path.split(os.sep)[1])
     return out
 

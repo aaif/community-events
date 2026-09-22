@@ -24,7 +24,7 @@ Usage:
   # Test the text engine on a local folder of .pptx/.docx/.xlsx (no Drive):
   python create_chapter.py --city "Los Angeles" --rebrand-local ./somedir
 """
-import argparse, fnmatch, html, json, math, os, re, shutil, subprocess, sys, tempfile, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
+import argparse, fnmatch, html, json, math, os, re, shutil, sys, tempfile, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
 
 # The 100-chapter cap is defined ONCE, in aaif-sync-chapters. A chapter comes
 # into existence in two places — the Drive folder this script makes and the feed
@@ -33,6 +33,19 @@ import argparse, fnmatch, html, json, math, os, re, shutil, subprocess, sys, tem
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "aaif-sync-chapters", "scripts"))
 import sync_chapters as _chapters  # noqa: E402
+
+# This skill is already lib-coupled — `rename_chapter.py` and
+# `restyle_design_system.py` import `aaif_events` — so it is already on the
+# README's not-zippable list. A private `gws` wrapper here bought nothing back
+# and cost a retry table that had drifted from the shared one.
+#
+# (`upload_agents.py` and `deck_estate.py` NAME the library without importing
+# it, which is why `check_portable_skills.py` reads imports rather than
+# substrings. An earlier draft of this comment listed them as importers, off a
+# grep — the same false positive, one layer up.)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "lib"))
+from aaif_events import gws as gwsmod  # noqa: E402
 
 CHAPTERS_PARENT = "1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx"   # the "Chapters" Drive folder
 TEMPLATE_FOLDER = "1PHvEgqnHo0RrsFyA47O9iRJGaKehC8Eg"   # the "TemplateCity" folder
@@ -415,49 +428,23 @@ def resolve_latlon(name, lat, lon):
 # ----------------------------------------------------------------------------
 # Drive helpers (via the gws CLI)
 # ----------------------------------------------------------------------------
-_TRANSIENT = ("timed out", "internalError", "HTTP request failed",
-              "Connection", "temporarily", "rateLimit", "userRateLimit",
-              "backendError", "503", "500", "502")
-
-def _scrubbed_env():
-    """os.environ minus the Slack/Luma secrets: gws never needs them, and a child
-    inherits the whole environment otherwise. Local so this script stays standalone."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
-            and k != "LUMA_API_KEY"}
-
-
-def _gws(cmd, cwd=None, retries=5):
-    """Run a gws command, retrying transient network/server errors."""
-    for i in range(retries):
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                           env=_scrubbed_env())
-        if r.returncode == 0:
-            return r.stdout
-        msg = (r.stderr or "") + (r.stdout or "")
-        if i < retries - 1 and any(k in msg for k in _TRANSIENT):
-            time.sleep(2 * (i + 1))
-            continue
-        raise RuntimeError("gws failed (%s): %s" % (r.returncode, msg.strip()[:400]))
-
-def gws_json(*args, params=None, body=None):
-    cmd = ["gws", *args]
-    if params is not None:
-        cmd += ["--params", json.dumps(params)]
-    if body is not None:
-        cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd)
-    # Split on "\n" only — NOT splitlines(), which also splits on U+2028 and
-    # friends INSIDE JSON string values, corrupting them when rejoined.
-    s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
-    if not s:
-        # Empty-but-successful stdout would silently become {} -> an empty file
-        # list -> a subtree that fails to clone while the run still says "Done".
-        raise RuntimeError("gws produced no JSON output for: %s" % " ".join(args))
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        raise RuntimeError("gws returned non-JSON output for %s: %s" % (" ".join(args), s[:200]))
+# Aliases, not wrappers. A pass-through that redeclares `retries` is a second
+# place the budget can be dropped, and one a test cannot reach: nothing here
+# passes a budget to `_gws` (its only callers are the idempotent download and
+# upload), so a mutation removing the pass-through survived the whole suite
+# while changing nothing. A seam that cannot be tested and does not earn its
+# keep is better deleted than covered.
+#
+# What the shared client brings over the copy this replaced: it matches HTTP
+# statuses at token boundaries, so a permanent `A500:K500 exceeds grid limits`
+# no longer reads as transient and burns the full backoff; and it scrubs the
+# child's output, which is where `gws` prints its environment on some failures.
+# `json_out` still raises on an empty-but-successful stdout — that would
+# otherwise read as an empty file list, and a subtree that fails to clone while
+# the run still says "Done" — and `GwsError` is a `RuntimeError`, so every
+# existing handler still catches.
+_gws = gwsmod.run
+gws_json = gwsmod.json_out
 
 def gws_download(file_id, out):
     # gws rejects --output paths outside its cwd, so run it in the file's dir.
@@ -495,12 +482,19 @@ def list_children(folder_id):
             return out
 
 def create_folder(name, parent):
-    return gws_json("drive", "files", "create",
+    # NO_RETRY: a create that succeeded server-side but answered like a timeout
+    # must not be re-sent. The retry makes a second folder under the same name,
+    # `list_children` then reports a subtree holding everything twice, and the
+    # rebrand walks both. Referenced through `gwsmod` rather than aliased here:
+    # a local binding is a second definition site, and the test that pins this
+    # would follow it if it drifted.
+    return gws_json("drive", "files", "create", retries=gwsmod.NO_RETRY,
                     params={"supportsAllDrives": True},
                     body={"name": name, "mimeType": FOLDER, "parents": [parent]})["id"]
 
 def copy_file(file_id, name, parent):
-    return gws_json("drive", "files", "copy",
+    # NO_RETRY — see create_folder; a re-sent copy is a duplicate template file.
+    return gws_json("drive", "files", "copy", retries=gwsmod.NO_RETRY,
                     params={"fileId": file_id, "supportsAllDrives": True},
                     body={"name": name, "parents": [parent]})["id"]
 
@@ -789,6 +783,18 @@ def main():
     try:
         new_id = clone_and_rebrand(TEMPLATE_FOLDER, CHAPTERS_PARENT, name, ctx,
                                    existing_id=resume_id)
+    except gwsmod.GwsError as exc:
+        # Non-idempotent Drive writes are sent once, so a transient blip now
+        # ends the run mid-clone where five attempts used to absorb it. That is
+        # the trade, and it is safe — but only because whatever landed is
+        # adopted by name on the next pass. Say so: a bare traceback in the
+        # middle of a stream of "+ Folder/" lines tells an operator nothing
+        # about whether to re-run, and the script already prints this exact
+        # sentence on the other path that finds a half-made chapter.
+        sys.exit("\nABORT mid-clone: %s\n"
+                 "Whatever was created is left in place under %r — nothing is "
+                 "duplicated, because a write is never re-sent. Re-run with "
+                 "--write --resume to clone only what is missing." % (exc, name))
     finally:
         shutil.rmtree(ctx["tmp"], ignore_errors=True)
         if os.path.exists(ctx["tmp"]):

@@ -69,6 +69,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "aaif-sync-chapters", "script
 from sync_chapters import (CHAPTERS_ID, CHAPTERS_TAB, NO_RESOURCE,  # noqa: E402
                            RESOURCE_COLUMNS, cell, col_letter, fold_city,
                            get_values, gws_json)
+from aaif_events import gws as _gws_mod  # noqa: E402  (sync_chapters put lib on the path)
 
 #: The column the new block is inserted *after*. Anchored on a header name, not
 #: an index, so a future layout change makes this abort instead of quietly
@@ -216,7 +217,11 @@ def add_missing_columns(plan_cols, gid):
             "start": {"sheetId": gid, "rowIndex": 0, "columnIndex": at},
             "rows": [{"values": [{"userEnteredValue": {"stringValue": name}}]}],
             "fields": "userEnteredValue"}})
-    gws_json("sheets", "spreadsheets", "batchUpdate",
+    # NO_RETRY: `insertDimension` is not replayable. An insert that succeeded
+    # server-side but answered like a timeout would, on a retry, insert the
+    # columns a SECOND time — and the verify below reads by header name, so it
+    # finds the names it asked for and passes over a duplicated block.
+    gws_json("sheets", "spreadsheets", "batchUpdate", retries=_gws_mod.NO_RETRY,
              params={"spreadsheetId": CHAPTERS_ID},
              body={"requests": requests})
 
@@ -306,7 +311,8 @@ def apply(anchor, seeds, gid):
             "fields": "userEnteredValue",
         }})
 
-    gws_json("sheets", "spreadsheets", "batchUpdate",
+    # NO_RETRY — this list carries `insertDimension`; see the note above.
+    gws_json("sheets", "spreadsheets", "batchUpdate", retries=_gws_mod.NO_RETRY,
              params={"spreadsheetId": CHAPTERS_ID},
              body={"requests": requests})
     return len(requests)
@@ -405,7 +411,10 @@ def migrate_config(path):
                             "fields": "sheets(properties(title))"})
     exists = any(s["properties"]["title"] == CONFIG_TAB for s in meta.get("sheets", []))
     if not exists:
-        gws_json("sheets", "spreadsheets", "batchUpdate",
+        # NO_RETRY: `addSheet` is not replayable either, and Sheets does not
+        # refuse a duplicate title — it renames the second one ("Slack Config
+        # 2"), which the exists-check above would then never match again.
+        gws_json("sheets", "spreadsheets", "batchUpdate", retries=_gws_mod.NO_RETRY,
                  params={"spreadsheetId": CHAPTERS_ID},
                  body={"requests": [{"addSheet": {"properties": {
                      "title": CONFIG_TAB,

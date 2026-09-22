@@ -7,56 +7,23 @@ own renderer (used here) does not.
 
 Requires the `gws` CLI (Drive + Slides scopes) on PATH and authenticated.
 """
-import json
 import os
-import subprocess
 import sys
-import time
 import urllib.request
 
-from aaif_events.report_style import redact
-from aaif_events.slack import scrubbed_env
+from aaif_events import gws as _gws_mod
 
 _SLIDES_MIME = "application/vnd.google-apps.presentation"
 
-# Mirrors skills/aaif-create-chapter/scripts/create_chapter.py's _gws/gws_json —
-# same retry list and empty/non-JSON-output guards, so a transient Drive/Slides
-# hiccup here self-heals the same way it does for the rest of the toolkit.
-_TRANSIENT = ("timed out", "internalError", "HTTP request failed",
-              "Connection", "temporarily", "rateLimit", "userRateLimit",
-              "backendError", "503", "500", "502")
-
-
-def _gws(cmd, retries=5):
-    for i in range(retries):
-        r = subprocess.run(cmd, capture_output=True, text=True, env=scrubbed_env())
-        if r.returncode == 0:
-            return r.stdout
-        msg = (r.stderr or "") + (r.stdout or "")
-        if i < retries - 1 and any(k in msg for k in _TRANSIENT):
-            time.sleep(2 * (i + 1))
-            continue
-        # Bounded and redacted: gws has printed its auth state on failure, and
-        # this message ends up in terminals and bug reports.
-        raise RuntimeError("gws failed (%s) for %s: %s"
-                          % (r.returncode, " ".join(cmd)[:200], redact(msg.strip())))
-
-
-def _gws_json(*args, params=None, body=None):
-    cmd = ["gws", *args]
-    if params is not None:
-        cmd += ["--params", json.dumps(params)]
-    if body is not None:
-        cmd += ["--json", json.dumps(body)]
-    out = _gws(cmd)
-    s = "\n".join(l for l in out.split("\n") if "keyring backend" not in l).strip()
-    if not s:
-        raise RuntimeError("gws produced no JSON output for: %s" % " ".join(args))
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        raise RuntimeError("gws returned non-JSON output for %s: %s"
-                           % (" ".join(args), redact(s, 200)))
+# This module carried its own `_gws`/`_gws_json` pair, under a comment saying it
+# mirrored create_chapter.py's. It did, including that copy's bare `"500"`
+# substring, which matched a permanent `A500:K500 exceeds grid limits` and burned
+# the full backoff before failing anyway. A sibling of the shared client, inside
+# the same package, is the one copy with no portability argument behind it at
+# all, so there is now no copy: `gws.json_out` is the same three guards (retry
+# table, empty stdout, non-JSON body) with the fixes.
+_gws = _gws_mod.run
+_gws_json = _gws_mod.json_out
 
 
 def _download(url, out_path, timeout=30):
@@ -85,7 +52,13 @@ def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000
     trashes it afterward — the source file is never modified."""
     presentation_id = None
     try:
-        copy = _gws_json("drive", "files", "copy",
+        # NO_RETRY: a `files.copy` that succeeded server-side but answered like
+        # a timeout would, on a retry, make a SECOND throwaway copy — and the
+        # `finally` below only knows the id of the one it got an answer for. The
+        # orphan is exactly the stray "TEMP - render_slide_png" the comment there
+        # describes: it has no `parents`, so it lands beside the source, and
+        # against TemplateCity it is then cloned into every subsequent chapter.
+        copy = _gws_json("drive", "files", "copy", retries=_gws_mod.NO_RETRY,
                           params={"fileId": file_id, "supportsAllDrives": True, "fields": "id"},
                           body={"name": "TEMP - render_slide_png", "mimeType": _SLIDES_MIME})
         presentation_id = copy["id"]

@@ -128,6 +128,23 @@ repos:
         language: python
         pass_filenames: false
         files: '\.py$'
+  # --- A write that may already have landed is never re-sent ----------------
+  # A Drive files.create/copy, or a Sheets appendDimension/insertDimension/
+  # addSheet, that succeeded server-side but answered like a timeout is
+  # indistinguishable from one that never landed. The default budget retries
+  # it, making a second folder, file, column or tab that NOTHING downstream
+  # detects. The guard is a keyword at the call site, which made it opt-in:
+  # when the rule was first written down, four sites in the tree already
+  # violated it. Enforced rather than reviewed, for the same reason as the two
+  # hooks above — the duplicate is invisible until someone trips over it.
+  - repo: local
+    hooks:
+      - id: check-non-idempotent-retries
+        name: a non-replayable gws call is sent once
+        entry: python3 scripts/check_non_idempotent_retries.py
+        language: python
+        pass_filenames: false
+        files: '\.py$'
   # --- Real people's identifiers never enter a public repo ------------------
   # A real organizer's address and two real Slack ids were committed here once,
   # under a rule in AGENTS.md that already forbade it. Rewriting history cleaned

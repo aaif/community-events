@@ -81,6 +81,61 @@ class TestRepo(unittest.TestCase):
     def test_the_readme_and_the_code_agree(self):
         self.assertEqual(chk.main(), 0)
 
+    def test_prose_about_the_library_is_not_an_import(self):
+        """Two non-test scripts name `aaif_events` and import nothing:
+        `deck_estate.py` (explaining that it is NOT the library) and `sync.py`
+        (which drives every engine by subprocess, importing none of them).
+        Under the substring scan this check used to be, both read as coupled —
+        which is the pressure that deletes the comment rather than fixing the
+        check.
+
+        Their skills are on the list for other reasons, so this asserts the
+        function, not the membership.
+        """
+        for path in ("skills/aaif-create-chapter/scripts/deck_estate.py",
+                     "skills/aaif-sync/scripts/sync.py"):
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            self.assertIn("aaif_events", src, path)     # it is named
+            self.assertFalse(chk.imports_lib(src, path), path)   # not imported
+
+
+class TestImportsLib(unittest.TestCase):
+    def test_a_from_import_counts(self):
+        self.assertTrue(chk.imports_lib("from aaif_events import gws"))
+
+    def test_a_submodule_from_import_counts(self):
+        self.assertTrue(chk.imports_lib("from aaif_events.redact import set_redaction"))
+
+    def test_a_plain_import_counts(self):
+        self.assertTrue(chk.imports_lib("import aaif_events.slack"))
+
+    def test_an_import_inside_a_function_counts(self):
+        self.assertTrue(chk.imports_lib("def f():\n    from aaif_events import gws\n"))
+
+    def test_a_mention_in_a_comment_does_not(self):
+        self.assertFalse(chk.imports_lib("# see aaif_events.gws for the shared table"))
+
+    def test_a_mention_in_a_docstring_does_not(self):
+        self.assertFalse(chk.imports_lib('"""Kept in step with aaif_events.gws."""'))
+
+    def test_a_lookalike_package_does_not(self):
+        self.assertFalse(chk.imports_lib("import aaif_events_legacy"))
+
+    def test_a_dynamic_import_aborts_rather_than_reading_as_portable(self):
+        """An AST pass cannot see `importlib.import_module("aaif_events.gws")`,
+        so it must not answer "portable" for it."""
+        with self.assertRaises(SystemExit):
+            chk.imports_lib('m = importlib.import_module("aaif_events.gws")',
+                            "dyn.py")
+
+    def test_importlib_without_the_library_is_fine(self):
+        self.assertFalse(chk.imports_lib("import importlib\nimportlib.reload(x)"))
+
+    def test_an_unparsable_file_aborts_rather_than_reading_as_uncoupled(self):
+        with self.assertRaises(SystemExit):
+            chk.imports_lib("def f(:\n", "broken.py")
+
 
 if __name__ == "__main__":
     unittest.main()

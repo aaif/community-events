@@ -30,6 +30,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import upload_agents as ua        # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402
 import create_chapter as cc       # noqa: E402
 
 #: The shared files every chapter's folder holds, exactly as the real art
@@ -109,6 +110,8 @@ class _FakeDrive:
         self.children = children or {}
         self.files = files or {}
         self.uploaded, self.created, self.made_folders = [], [], []
+        #: the retry budget each `files.create` was issued with
+        self.create_budgets = []
         #: {filename: the mimeType the file was CREATED with in Drive}
         self.declared = {}
         self._next = 0
@@ -142,8 +145,11 @@ class _FakeDrive:
         self.children.setdefault(parent, []).append(fid)
         return fid
 
-    def gws_json(self, *args, params=None, body=None):
+    def gws_json(self, *args, params=None, body=None, retries=None):
+        # `retries` is recorded, not ignored: a `files.create` here is not
+        # replayable, and the keyword is the only thing saying so.
         fid = self._id("file")
+        self.create_budgets.append(retries)
         self.created.append(body["name"])
         self.declared[body["name"]] = body["mimeType"]
         self.files[fid] = (body["name"], b"")
@@ -223,6 +229,15 @@ class TestSyncingOneChapter(unittest.TestCase):
         self.assertEqual(drive.declared["AAIF Mark.png"], "image/png")
         self.assertEqual(drive.declared["Agent 01.gif"], "image/gif")
         self.assertEqual(drive.declared["Boston Agent.gif"], "image/gif")
+
+    def test_a_created_file_is_never_re_sent(self):
+        """A create that timed out may already have landed; the retry would
+        put a second file of the same name in the same folder, and the next
+        pass's `same` check then compares against an arbitrary one of the two."""
+        drive = _FakeDrive({"chap": []}, {}).install(self)
+        ua.sync_chapter("chap", "Boston", self.art, True, self.work)
+        self.assertTrue(drive.create_budgets)
+        self.assertEqual(set(drive.create_budgets), {gwsmod.NO_RETRY})
 
     def test_mime_by_ext_covers_everything_the_matchers_can_admit(self):
         """`MIME_BY_EXT[...]` is a bare subscript, so it must be TOTAL over

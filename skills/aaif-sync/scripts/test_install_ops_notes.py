@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import install_ops_notes as ion  # noqa: E402
+from aaif_events import gws as gwsmod  # noqa: E402  (ion put lib on the path)
 
 FAILS = []
 
@@ -74,9 +75,13 @@ class FakeGws:
         self.tabs = {k: (list(h), w) for k, (h, w) in tabs.items()}
         self.lose_writes = lose_writes
         self.calls = []
+        #: [(argv, retries)] — the retry budget each call was issued with, so a
+        #: test can pin that the non-idempotent widen is never re-sent.
+        self.budgets = []
 
-    def __call__(self, args):
+    def __call__(self, args, retries=None, want_json=True):
         self.calls.append(list(args))
+        self.budgets.append((list(args), retries, want_json))
         verb = tuple(args[:4])
         params = json.loads(args[args.index("--params") + 1])
         sid = params["spreadsheetId"]
@@ -200,6 +205,22 @@ check("appendDimension is issued only for the exactly-full grid",
       appends, [{"sheetId": hosts_sid, "dimension": "COLUMNS", "length": 1}])
 check("every appended header is styled",
       len([r for r in fake.batch_requests() if "repeatCell" in r]), len(ion.TARGETS))
+# The widen is the one call here that must never be re-sent: a create-shaped
+# request that succeeded but answered like a timeout adds a SECOND column on
+# the retry. Reads and the fixed-cell `values update` are safe at the default.
+check("the batchUpdate carrying the widen is issued with no retry budget",
+      sorted({r for a, r, _w in fake.budgets if a[2] == "batchUpdate"}), [1])
+check("reads and the values update do not override the shared budget",
+      sorted({r for a, r, _w in fake.budgets if a[2] != "batchUpdate"}), [None])
+# A read that answers with no JSON is a FAILED read, and saying otherwise turns
+# into "no tab titled X" / "no header row" / "wrote it but the read disagrees".
+# Only the two writes may treat silence as `{}`.
+check("only the two writes tolerate a body with no JSON in it",
+      sorted({(gwsmod.verb(["gws"] + a), w) for a, _r, w in fake.budgets}),
+      [("sheets spreadsheets batchUpdate", False),
+       ("sheets spreadsheets get", True),
+       ("sheets spreadsheets values get", True),
+       ("sheets spreadsheets values update", False)])
 check("the write lands in the fake estate",
       all(ion.HEADER in h for h, _w in fake.tabs.values()), True)
 check("the batchUpdate precedes the values update on each tab",
@@ -239,6 +260,48 @@ check("the missing-tab abort names the tab", "Hosts" in str(rc), True)
 check("the missing-tab abort issues no write", fake.of(*_writes) + fake.of(*_upd), [])
 
 print()
+# --- the real ion.gws, with only the subprocess mocked ----------------------
+#
+# Everything above swaps `ion.gws` for a fake, so the function itself — the
+# biggest behaviour change here, from a bare `subprocess.run` with no retry
+# handling to the shared client — was never executed by a test.
+from unittest import mock  # noqa: E402
+def _proc(rc=0, stdout="", stderr=""):
+    return mock.Mock(returncode=rc, stdout=stdout, stderr=stderr)
+def _real_gws(procs, **kw):
+    """(result-or-SystemExit-message, subprocess call count)."""
+    with mock.patch.object(gwsmod.subprocess, "run", side_effect=procs) as run, \
+            mock.patch.object(gwsmod.time, "sleep"), \
+            contextlib.redirect_stdout(io.StringIO()):
+        try:
+            return ion.gws(["sheets", "spreadsheets", "get"], **kw), run.call_count
+        except SystemExit as e:
+            return str(e.code), run.call_count
+check("a transient failure is retried, which a bare subprocess.run never did",
+      _real_gws([_proc(1, stderr="503 Service Unavailable"),
+                 _proc(0, stdout='{"ok": 1}')]),
+      ({"ok": 1}, 2))
+check("a permanent failure exits with a sentence naming the verb",
+      "sheets spreadsheets get" in _real_gws([_proc(1, stderr="permission denied")])[0],
+      True)
+check("a permanent failure is not retried",
+      _real_gws([_proc(1, stderr="permission denied")])[1], 1)
+check("NO_RETRY sends a timed-out call exactly once",
+      _real_gws([_proc(1, stderr="timed out")] * 5,
+                retries=gwsmod.NO_RETRY)[1], 1)
+check("a read with no JSON in the body aborts rather than reading as {}",
+      "failed read" in _real_gws([_proc(0, stdout="warming up\n")])[0], True)
+check("a write may answer with nothing",
+      _real_gws([_proc(0, stdout="")], want_json=False), ({}, 1))
+check("a body that is not JSON exits with a sentence, not a traceback",
+      "unparsable" in _real_gws([_proc(0, stdout="[warn] refreshing\nnope")])[0],
+      True)
+check("no gws on PATH exits with a sentence too",
+      "gws error" in _real_gws(FileNotFoundError("no gws"))[0], True)
+check("the keyring notice is not mistaken for a body",
+      _real_gws([_proc(0, stdout='Using keyring backend: x\n{"ok": 2}')]),
+      ({"ok": 2}, 1))
+
 if FAILS:
     print("FAILURES:\n" + "\n".join(FAILS))
     sys.exit(1)

@@ -32,8 +32,12 @@ Reads and writes by header name, never by column letter.
 import argparse
 import json
 import os
-import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "lib"))
+
+from aaif_events import gws as gwsmod  # noqa: E402
 
 INTAKE_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
@@ -52,21 +56,47 @@ HEADER_FORMAT = {"textFormat": {"bold": True},
                  "backgroundColor": {"red": 0.85, "green": 0.85, "blue": 0.85}}
 
 
-def _scrubbed_env():
-    """gws never needs the Slack/Luma secrets; a child inherits them otherwise."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("AAIF_SLACK_") and k.endswith("_TOKEN"))
-            and k != "LUMA_API_KEY"}
+def gws(args, retries=gwsmod.RETRIES, want_json=True):
+    """Run a prepared `gws` argument list and parse whatever JSON comes back.
 
+    A thin boundary over `aaif_events.gws.run`. It exits with a sentence rather
+    than a traceback for any failure `gws` itself can produce — a `GwsError`, a
+    body that is not JSON, or no `gws` on PATH at all.
 
-def gws(args):
-    out = subprocess.run(["gws"] + args, capture_output=True, text=True,
-                         env=_scrubbed_env())
-    if out.returncode != 0:
-        sys.exit("gws error: %s...\n%s" % (" ".join(args[:4]), out.stderr.strip()[:400]))
-    txt = out.stdout
+    `want_json=False` is for the two WRITES, whose response is genuinely
+    uninformative: a values `update` answers with nothing useful. It must not
+    be the default. A read that answers with no JSON is not "no rows": it
+    travels one line further and becomes "ABORT: no tab titled 'Organizers' —
+    a rename, not an empty sheet" (which rules out what actually happened),
+    "'Organizers' has no header row" (of a tab that has one), or — the
+    dangerous one — "wrote 'Ops Notes' but a fresh read does not show it",
+    after a write that landed. An operator who re-runs on that last message
+    gets a second `appendDimension`, which is the duplicate column the guard in
+    `install` exists to prevent, reached the long way round.
+
+    This used to be a bare `subprocess.run` with no retry handling at all, so a
+    single intermittent 503 — which every other engine has always ridden out —
+    failed the run. It now retries on the shared table, and `install` passes
+    `gwsmod.NO_RETRY` for the one call that must not be re-sent.
+    """
+    try:
+        txt = gwsmod.clean_stdout(gwsmod.run(["gws"] + args, retries=retries))
+    except (gwsmod.GwsError, OSError) as exc:
+        sys.exit("gws error: %s" % exc)
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
-    return json.loads(txt[i:]) if i >= 0 else {}
+    if i < 0:
+        if want_json:
+            # Length only. The body is a header row.
+            sys.exit("gws %s returned no JSON (%d chars) — that is a failed "
+                     "read, not an empty sheet." % (gwsmod.verb(["gws"] + args), len(txt)))
+        return {}
+    try:
+        return json.loads(txt[i:])
+    except ValueError as exc:
+        # `min(... "{[")` can land on a `[warn] ...` notice sitting before the
+        # JSON. Every other exit here is a sentence; this one was a traceback.
+        sys.exit("gws %s returned unparsable JSON (%s)."
+                 % (gwsmod.verb(["gws"] + args), exc))
 
 
 def col_letter(n):
@@ -127,14 +157,24 @@ def install(sheet_id, tab, sid, p):
                   "startColumnIndex": p["col"] - 1, "endColumnIndex": p["col"]},
         "cell": {"userEnteredFormat": HEADER_FORMAT},
         "fields": "userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor"}})
+    # NO_RETRY: `appendDimension` is NOT idempotent. A widen that succeeded
+    # server-side but answered like a timeout would, on a retry, add a SECOND
+    # column — and the header then lands in the first of two, leaving a blank
+    # column on a tab whose whole contract is "the ops columns are the literal
+    # ones on the right". The repeatCell beside it is idempotent; they share a
+    # request list, so the list takes the stricter of the two. The widen is
+    # conditional and the guard deliberately is NOT: making the budget depend
+    # on `p["widen"]` is how a future edit drops it.
     gws(["sheets", "spreadsheets", "batchUpdate", "--params",
          json.dumps({"spreadsheetId": sheet_id}), "--json",
-         json.dumps({"requests": reqs}), "--format", "json"])
+         json.dumps({"requests": reqs}), "--format", "json"],
+        retries=gwsmod.NO_RETRY, want_json=False)
     gws(["sheets", "spreadsheets", "values", "update", "--params",
          json.dumps({"spreadsheetId": sheet_id,
                      "range": "'%s'!%s1" % (tab, col_letter(p["col"])),
                      "valueInputOption": "RAW"}),
-         "--json", json.dumps({"values": [[HEADER]]}), "--format", "json"])
+         "--json", json.dumps({"values": [[HEADER]]}), "--format", "json"],
+        want_json=False)
 
 
 def main(argv=None):
