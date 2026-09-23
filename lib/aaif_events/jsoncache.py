@@ -28,6 +28,7 @@ import datetime as dt
 import json
 import os
 import tempfile
+import threading
 
 #: Bump when the envelope shape changes **or when any cached payload's shape
 #: changes** — the payload is the part that actually varies (this module has
@@ -198,3 +199,54 @@ def age(path, now=None):
     if days == 1:
         return "fetched yesterday"
     return "fetched %d days ago%s" % (days, " — consider --refresh" if days > 14 else "")
+
+
+class RunMemo:
+    """An append-only memo that lives for one sync run: `{key: JSON value}`.
+
+    Not a cache in the sense above — no expiry, no stamp — because its owner
+    (the sync runner) puts it in the run directory, which is deleted with the
+    run's reports. The Slack and gws clients each hold one; see
+    `slack.RUN_MEMO_ENV` and `gws.READ_MEMO_ENV` for why and when.
+
+    One line per answer, appended with a single `os.write`: steps run one
+    after another, so a step killed mid-write leaves at most one torn line,
+    and loading skips it as a miss. The file is 0600 from creation — the
+    answers are people's profiles and sheet rows. The lock is for engines
+    that call a client from a thread pool (sync_crm, sync_about).
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._table = None
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if self._table is None:
+            self._table = {}
+            try:
+                with open(self.path, encoding="utf-8") as fh:
+                    for line in fh:
+                        try:
+                            key, value = json.loads(line)
+                        except ValueError:
+                            continue   # a torn line is a miss
+                        self._table[key] = value
+            except FileNotFoundError:
+                pass
+        return self._table
+
+    def get(self, key):
+        """The remembered value, or None. Callers own the result (a fresh
+        parse on load; do not mutate it if you call get twice)."""
+        with self._lock:
+            return self._load().get(key)
+
+    def put(self, key, value):
+        with self._lock:
+            self._load()[key] = value
+            fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, (json.dumps([key, value]) + "\n").encode())
+            finally:
+                os.close(fd)

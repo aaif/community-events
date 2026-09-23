@@ -721,6 +721,46 @@ for _skill in ("aaif-sync", "aaif-sync-chapters", "aaif-sync-organizers",
                           and f not in _doc)
         check("%s/SKILL.md names every test in %s/" % (_skill, _sub), _missing, [])
 
+# --- the run's Slack memo lives and dies with the run directory ---------------
+# It must sit inside the run dir (0700, gitignored, deleted with the reports), the
+# name must match what the lib reads, and the engine must otherwise see our env.
+sys.path.insert(0, os.path.join(sync.REPO, "lib"))
+from aaif_events import slack as _slack  # noqa: E402
+check("the runner's memo variable is the one the lib reads",
+      sync.SLACK_MEMO_ENV, _slack.RUN_MEMO_ENV)
+_env = sync.step_env("/r/2026-01-01T000000Z", run_writes=False)
+check("the memo path is inside the run directory",
+      os.path.dirname(_env[sync.SLACK_MEMO_ENV]), "/r/2026-01-01T000000Z")
+check("the engine still inherits the runner's environment",
+      _env.get("PATH"), os.environ.get("PATH"))
+with mock.patch.object(sync.subprocess, "run") as _run, \
+        tempfile.TemporaryDirectory() as _td:
+    _run.return_value.returncode = 0
+    sync.run_step(sync.selected([], False)[0][1], os.path.join(_td, "x.log"), False, False)
+    check("run_step spawns the engine with the memo in its env",
+          _run.call_args.kwargs["env"][sync.SLACK_MEMO_ENV],
+          os.path.join(_td, sync.SLACK_MEMO_FILE))
+
+# --- the Google read memo is a report-run thing only ---------------------------
+from aaif_events import gws as _gws  # noqa: E402
+check("the runner's read-memo variable is the one the lib reads",
+      sync.GWS_MEMO_ENV, _gws.READ_MEMO_ENV)
+check("a report run gets a read memo inside its run directory",
+      sync.step_env("/r/s", run_writes=False).get(sync.GWS_MEMO_ENV),
+      os.path.join("/r/s", sync.GWS_MEMO_FILE))
+check("a run that asked to write gets NO read memo, for any step",
+      sync.GWS_MEMO_ENV in sync.step_env("/r/s", run_writes=True), False)
+with mock.patch.dict(os.environ, {sync.GWS_MEMO_ENV: "/elsewhere"}):
+    check("an inherited read memo never leaks into a write run",
+          sync.GWS_MEMO_ENV in sync.step_env("/r/s", run_writes=True), False)
+_access = [st for _ph, st in sync.selected([], False) if st.name == "access"][0]
+with mock.patch.object(sync.subprocess, "run") as _run, \
+        tempfile.TemporaryDirectory() as _td:
+    _run.return_value.returncode = 0
+    sync.run_step(_access, os.path.join(_td, "access.log"), True, False)
+    check("access — never written — still gets no read memo in a --write run",
+          sync.GWS_MEMO_ENV in _run.call_args.kwargs["env"], False)
+
 print()
 if FAILS:
     print("FAILURES:\n" + "\n".join(FAILS))

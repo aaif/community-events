@@ -100,6 +100,10 @@ STAGE_GATES = {GATHER: (READ_ONLY, HUMAN), PLAN: (OPEN, REPORT_ONLY),
 #: and refetched by whichever step reads it first, announced on that step's log.
 #: The runner therefore needs no refresh policy of its own, and must not force
 #: one: throwing away an hour-old pull on every run is the opposite of caching.
+#:
+#: WITHIN a run, the steps share two memos in the run directory (see
+#: step_env): Slack identity lookups, always, and Google reads, in a report run
+#: only. They die with the run directory, so they are not state between runs.
 
 #: Steps that take --redact/--no-redact. The runner passes --no-redact: the
 #: logs are 0600 files in a 0700 gitignored directory, the NEEDS-A-HUMAN note
@@ -364,8 +368,39 @@ def step_cmd(step, write_mode, approved, unattended=False, out_dir=None):
 STEP_TIMEOUT_S = 3600
 
 
+#: The run's Slack identity memo (see aaif_events.slack.RUN_MEMO_ENV). The name
+#: is spelled here rather than imported: the runner stays lib-free.
+SLACK_MEMO_ENV = "AAIF_SLACK_RUN_MEMO"
+SLACK_MEMO_FILE = "slack-memo.jsonl"
+#: The run's Google read memo (see aaif_events.gws.READ_MEMO_ENV).
+GWS_MEMO_ENV = "AAIF_GWS_RUN_MEMO"
+GWS_MEMO_FILE = "gws-memo.jsonl"
+
+
+def step_env(run_dir, run_writes):
+    """The engine's environment: ours, plus the paths of this run's memos.
+
+    Both sit in the run directory, so they inherit its 0700, its .gitignore
+    rule and its deletion — they cannot outlive the run's reports, and a later
+    run starts with none of either.
+
+    `run_writes` is whether the RUN asked to write, not whether this step may:
+    under --write, `access` never writes yet runs after `crm` has, so a read it
+    was handed from before that write would be stale. The Google memo is
+    therefore off for the whole of such a run. The Slack memo stays on — it
+    holds only identity lookups, which nothing in a run changes.
+    """
+    env = dict(os.environ)
+    env.pop(GWS_MEMO_ENV, None)   # never inherited from whoever launched us
+    env[SLACK_MEMO_ENV] = os.path.join(run_dir, SLACK_MEMO_FILE)
+    if not run_writes:
+        env[GWS_MEMO_ENV] = os.path.join(run_dir, GWS_MEMO_FILE)
+    return env
+
+
 def run_step(step, log_path, write_mode, approved, unattended=False):
     run_dir = os.path.dirname(log_path)
+    env = step_env(run_dir, run_writes=write_mode)   # before gating narrows it
     cmd, write_mode = step_cmd(step, write_mode, approved, unattended, run_dir)
     t0 = time.monotonic()
     # 0o600: the log holds names and emails; no other local user gets to read
@@ -378,6 +413,7 @@ def run_step(step, log_path, write_mode, approved, unattended=False):
         # there, and a FAILED outcome is undiagnosable without it.
         try:
             code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                  env=env,
                                   timeout=STEP_TIMEOUT_S).returncode
         except subprocess.TimeoutExpired:
             log.write("\nTIMEOUT: no exit after %d s — the runner killed it; "
