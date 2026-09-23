@@ -655,3 +655,94 @@ def test_lookup_emails_stops_varying_the_spelling_on_a_fatal_error(monkeypatch):
     with pytest.raises(slack.SlackError):
         slack.lookup_emails(api, ["a.b@gmail.com"])
     assert len(calls) == 1
+
+
+# --- the per-run identity memo ------------------------------------------------
+
+HIT = {"ok": True, "user": {"id": "U1", "profile": {}}}
+
+
+def test_no_memo_env_means_every_lookup_goes_to_slack(monkeypatch):
+    monkeypatch.delenv(slack.RUN_MEMO_ENV, raising=False)
+    api, calls = client(monkeypatch, [HIT, HIT])
+    api.call("users.lookupByEmail", email="a@x.com")
+    api.call("users.lookupByEmail", email="a@x.com")
+    assert len(calls) == 2
+
+
+def test_memo_answers_a_repeat_lookup_from_a_later_step(monkeypatch, tmp_path):
+    """The point: step two of a run does not re-ask what step one learned."""
+    memo = tmp_path / "memo.jsonl"
+    monkeypatch.setenv(slack.RUN_MEMO_ENV, str(memo))
+    api, calls = client(monkeypatch, [HIT])
+    slack.lookup_emails(api, ["a@x.com"])
+    assert len(calls) == 1
+    # A second client stands for a second step: a new process, same file.
+    later, later_calls = client(monkeypatch, [])
+    assert slack.lookup_emails(later, ["a@x.com"])["a@x.com"]["id"] == "U1"
+    assert later_calls == []
+    assert oct(memo.stat().st_mode & 0o777) == "0o600"
+
+
+def test_memo_never_remembers_a_miss(monkeypatch, tmp_path):
+    """Someone can join Slack mid-run; a later step must ask again."""
+    monkeypatch.setenv(slack.RUN_MEMO_ENV, str(tmp_path / "memo.jsonl"))
+    api, calls = client(monkeypatch, [{"ok": False, "error": "users_not_found"}, HIT])
+    assert slack.lookup_emails(api, ["a@x.com"])["a@x.com"]["id"] is None
+    assert slack.lookup_emails(api, ["a@x.com"])["a@x.com"]["id"] == "U1"
+    assert len(calls) == 2
+
+
+def test_memo_never_remembers_a_failed_call(monkeypatch, tmp_path):
+    """A missing_scope is a broken token, not an answer."""
+    monkeypatch.setenv(slack.RUN_MEMO_ENV, str(tmp_path / "memo.jsonl"))
+    api, calls = client(monkeypatch, [{"ok": False, "error": "missing_scope"}, HIT])
+    assert api.call("users.lookupByEmail", email="a@x.com")["error"] == "missing_scope"
+    assert api.call("users.lookupByEmail", email="a@x.com")["ok"]
+    assert len(calls) == 2
+
+
+def test_memo_answers_users_info_per_token(monkeypatch, tmp_path):
+    """users.info is memoised; a second token (another step, maybe another
+    workspace) is not answered from the first token's lookups."""
+    memo = tmp_path / "memo.jsonl"
+    monkeypatch.setenv(slack.RUN_MEMO_ENV, str(memo))
+    api, calls = client(monkeypatch, [HIT, HIT])
+    api.call("users.info", user="U1")
+    api.call("users.info", user="U1")            # same token: a hit
+    assert len(calls) == 1
+    other = slack.Slack(token="xoxp-other", sleep=lambda s: None)
+    other.call("users.info", user="U1")          # other token: asks again
+    assert len(calls) == 2
+    assert "xoxp" not in memo.read_text()
+
+
+def test_memo_skips_channel_membership(monkeypatch, tmp_path):
+    """conversations.members changes under --write between steps."""
+    monkeypatch.setenv(slack.RUN_MEMO_ENV, str(tmp_path / "memo.jsonl"))
+    members = {"ok": True, "members": ["U1"], "response_metadata": {}}
+    api, calls = client(monkeypatch, [members, members])
+    api.call("conversations.members", channel="C1")
+    api.call("conversations.members", channel="C1")
+    assert len(calls) == 2
+
+
+def test_a_memo_hit_is_a_fresh_copy(monkeypatch, tmp_path):
+    """A caller mutating what it got must not change the next caller's hit."""
+    monkeypatch.setenv(slack.RUN_MEMO_ENV, str(tmp_path / "memo.jsonl"))
+    api, _ = client(monkeypatch, [HIT])
+    api.call("users.info", user="U1")["user"]["id"] = "CHANGED"
+    api.call("users.info", user="U1")["user"]["id"] = "CHANGED"
+    assert api.call("users.info", user="U1")["user"]["id"] == "U1"
+
+
+def test_memo_survives_a_torn_last_line(monkeypatch, tmp_path):
+    memo = tmp_path / "memo.jsonl"
+    monkeypatch.setenv(slack.RUN_MEMO_ENV, str(memo))
+    api, _ = client(monkeypatch, [HIT])
+    api.call("users.info", user="U1")
+    with open(memo, "a") as fh:
+        fh.write('["half a line')
+    later, later_calls = client(monkeypatch, [])
+    assert later.call("users.info", user="U1")["user"]["id"] == "U1"
+    assert later_calls == []

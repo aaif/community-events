@@ -46,6 +46,7 @@ Exit codes, matching the per-engine convention:
 """
 
 import argparse
+import atexit
 import datetime as dt
 import json
 import os
@@ -100,6 +101,11 @@ STAGE_GATES = {GATHER: (READ_ONLY, HUMAN), PLAN: (OPEN, REPORT_ONLY),
 #: and refetched by whichever step reads it first, announced on that step's log.
 #: The runner therefore needs no refresh policy of its own, and must not force
 #: one: throwing away an hour-old pull on every run is the opposite of caching.
+#:
+#: WITHIN a run, the steps share two memos in the run directory (see
+#: step_env): Slack identity lookups, always, and Google reads, in a report run
+#: only. The runner deletes both when the run ends, so they are not state
+#: between runs.
 
 #: Steps that take --redact/--no-redact. The runner passes --no-redact: the
 #: logs are 0600 files in a 0700 gitignored directory, the NEEDS-A-HUMAN note
@@ -364,8 +370,51 @@ def step_cmd(step, write_mode, approved, unattended=False, out_dir=None):
 STEP_TIMEOUT_S = 3600
 
 
+#: The run's Slack identity memo (see aaif_events.slack.RUN_MEMO_ENV). The name
+#: is spelled here rather than imported: the runner stays lib-free.
+SLACK_MEMO_ENV = "AAIF_SLACK_RUN_MEMO"
+SLACK_MEMO_FILE = "slack-memo.jsonl"
+#: The run's Google read memo (see aaif_events.gws.READ_MEMO_ENV).
+GWS_MEMO_ENV = "AAIF_GWS_RUN_MEMO"
+GWS_MEMO_FILE = "gws-memo.jsonl"
+
+
+def step_env(run_dir, run_writes):
+    """The engine's environment: ours, plus the paths of this run's memos.
+
+    Both sit in the run directory, so they inherit its 0700 and its
+    .gitignore rule, and `drop_memos` deletes them when the run ends: they hold
+    whole intake tabs and Slack profiles, more than any report keeps, and
+    nothing reads them once the last step is done.
+
+    `run_writes` is whether the RUN asked to write, not whether this step may:
+    under --write, `luma` never writes, yet it reads the Chapters List after
+    `chapters` and `resources` have written it, so a read it was handed from
+    before those writes would be stale. The Google memo is therefore off for
+    the whole of such a run. The Slack memo stays on — it keeps only accounts
+    that were found, and nothing a run writes changes whose account an
+    address is.
+    """
+    env = dict(os.environ)
+    env.pop(GWS_MEMO_ENV, None)   # never inherited from whoever launched us
+    env[SLACK_MEMO_ENV] = os.path.join(run_dir, SLACK_MEMO_FILE)
+    if not run_writes:
+        env[GWS_MEMO_ENV] = os.path.join(run_dir, GWS_MEMO_FILE)
+    return env
+
+
+def drop_memos(run_dir):
+    """Delete this run's memo files. Idempotent; a missing file is fine."""
+    for name in (SLACK_MEMO_FILE, GWS_MEMO_FILE):
+        try:
+            os.remove(os.path.join(run_dir, name))
+        except FileNotFoundError:
+            pass
+
+
 def run_step(step, log_path, write_mode, approved, unattended=False):
     run_dir = os.path.dirname(log_path)
+    env = step_env(run_dir, run_writes=write_mode)   # before gating narrows it
     cmd, write_mode = step_cmd(step, write_mode, approved, unattended, run_dir)
     t0 = time.monotonic()
     # 0o600: the log holds names and emails; no other local user gets to read
@@ -378,6 +427,7 @@ def run_step(step, log_path, write_mode, approved, unattended=False):
         # there, and a FAILED outcome is undiagnosable without it.
         try:
             code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                  env=env,
                                   timeout=STEP_TIMEOUT_S).returncode
         except subprocess.TimeoutExpired:
             log.write("\nTIMEOUT: no exit after %d s — the runner killed it; "
@@ -650,6 +700,9 @@ def main(argv=None):
     print("full reports (contain names/emails — NOT for public logs): %s" % run_dir)
     print()
 
+    # The memos go when the run does — including a run that crashes or is
+    # interrupted, which never reaches the explicit call after the last step.
+    atexit.register(drop_memos, run_dir)
     by_name, phase_shown, stage_shown = {}, None, None
     record = []   # what run.json carries: one entry per step, in run order
     for phase, step in steps:
@@ -696,6 +749,7 @@ def main(argv=None):
         print("      %-10s %-15s exit %d  %4.0fs  %s.log%s"
               % (step.name, outcome, code, secs, step.name, note))
 
+    drop_memos(run_dir)   # nothing reads them after the last step
     print()
     notes = summary_notes(by_name, a.write)
     for line in notes:

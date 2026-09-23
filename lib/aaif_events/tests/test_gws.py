@@ -304,3 +304,91 @@ class TestFiles:
         cmd = calls[0]["cmd"]
         assert cmd[cmd.index("--upload") + 1] == "f.xlsx"
         assert cmd[cmd.index("--upload-content-type") + 1] == "application/x"
+
+
+class TestReadMemo:
+    """The sync runner's per-run memo of Google reads (report runs only)."""
+
+    GET = ["gws", "sheets", "spreadsheets", "values", "batchGet",
+           "--params", json.dumps({"spreadsheetId": "S", "ranges": ["A:B"]})]
+
+    def test_off_unless_the_runner_sets_it(self, calls, monkeypatch):
+        monkeypatch.delenv(gws.READ_MEMO_ENV, raising=False)
+        gws.run(self.GET)
+        gws.run(self.GET)
+        assert len(calls) == 2
+
+    def test_a_repeat_read_is_answered_from_the_file(self, calls, monkeypatch, tmp_path):
+        memo = tmp_path / "gws-memo.jsonl"
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(memo))
+        calls.queue = [FakeProc(stdout='{"valueRanges": [{"values": [["Ada"]]}]}')]
+        assert gws.values("S", "A:B") == [["Ada"]]
+        monkeypatch.setattr(gws, "_memos", {})   # a later step: a new process
+        assert gws.values("S", "A:B") == [["Ada"]]
+        assert len(calls) == 1
+        assert oct(memo.stat().st_mode & 0o777) == "0o600"
+
+    def test_writes_and_downloads_always_go_to_google(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        update = ["gws", "sheets", "spreadsheets", "values", "update", "--params", "{}"]
+        media = ["gws", "drive", "files", "get", "--params",
+                 json.dumps({"fileId": "F", "alt": "media"})]
+        for cmd in (update, update, media, media):
+            gws.run(cmd)
+        gws.run(["gws", "drive", "files", "get", "--output", "f"], cwd=str(tmp_path))
+        gws.run(["gws", "drive", "files", "get", "--output", "f"], cwd=str(tmp_path))
+        assert len(calls) == 6
+
+    def test_a_failed_read_is_never_remembered(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        calls.queue = [FakeProc(returncode=1, stderr="permission denied"),
+                       FakeProc(stdout="{}")]
+        with pytest.raises(gws.GwsError):
+            gws.run(self.GET)
+        gws.run(self.GET)
+        assert len(calls) == 2
+
+    def test_a_torn_last_line_is_a_miss_not_a_crash(self, calls, monkeypatch, tmp_path):
+        memo = tmp_path / "m.jsonl"
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(memo))
+        gws.run(self.GET)
+        with open(memo, "a") as fh:
+            fh.write('["half')
+        monkeypatch.setattr(gws, "_memos", {})
+        gws.run(self.GET)
+        assert len(calls) == 1
+
+    def test_output_without_cwd_is_still_a_download(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        cmd = ["gws", "drive", "files", "get", "--params", '{"fileId": "F"}',
+               "--output", "f"]
+        gws.run(cmd)
+        gws.run(cmd)
+        assert len(calls) == 2
+
+    def test_unreadable_params_are_never_memoised(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        cmd = ["gws", "drive", "files", "list", "--params", "{not json"]
+        gws.run(cmd)
+        gws.run(cmd)
+        assert len(calls) == 2
+
+    def test_every_read_verb_is_memoised(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        for verb in gws.MEMO_VERBS:
+            cmd = ["gws", *verb, "--params", '{"id": "X"}']
+            gws.run(cmd)
+            gws.run(cmd)
+        assert len(calls) == len(gws.MEMO_VERBS)
+
+    def test_an_exit_zero_non_answer_is_not_remembered(self, calls, monkeypatch, tmp_path):
+        """An error body or an outage page may be a one-off; remembered, it
+        would reach every later step as "this folder is empty"."""
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        calls.queue = [FakeProc(stdout='{"error": {"code": 500}}'),
+                       FakeProc(stdout="<html>down</html>"),
+                       FakeProc(stdout="Using keyring backend: keyring\n"),
+                       FakeProc(stdout='{"files": []}')]
+        for _ in range(5):
+            gws.run(self.GET)
+        assert len(calls) == 4   # three non-answers re-asked, then one hit

@@ -202,6 +202,24 @@ treated as too old.
 The runner therefore forces no refresh of its own, and must not: throwing away
 an hour-old pull on every run is the opposite of caching.
 
+**Within one run, identity lookups are asked once.** Five steps (coverage,
+resources, provision, identity, invite) each resolve the same organizers by
+email, and `users.lookupByEmail` is throttled to ~1.5s a call — so the runner
+hands every engine `AAIF_SLACK_RUN_MEMO`, a `slack-memo.jsonl` inside the run
+directory, and the shared Slack client answers a repeat `users.lookupByEmail`
+or `users.info` from it. Only accounts that were found are kept — never a
+failed call, never a "no such user" (someone can join mid-run), and never
+channel membership, which `--write` changes between steps. In a **report** run
+the same holds for Google reads (`AAIF_GWS_RUN_MEMO`, `gws-memo.jsonl`): the
+intake tabs, the Chapters List and the chapter-folder listings are read once,
+not once per step, and only a well-formed answer is kept. A run that asked for
+`--write` gets no read memo at all — not even for steps that may not write —
+because a later step must see an earlier step's write. **The runner deletes
+both files when the run ends**, crashed or not: they hold whole intake tabs
+and Slack profiles, more than any report keeps. A standalone engine run has
+neither. Measured 2026-09-22: `chapters organizers` in report mode went from
+~50 min to ~11.
+
 **None of it can be committed.** This repo is public and these files hold the
 member directory, every synced person's name and address, and per-person diffs.
 Three layers: `.gitignore` covers every cache and report path; the audits and

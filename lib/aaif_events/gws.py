@@ -26,9 +26,11 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 from .report_style import redact as _scrub
+from .jsoncache import RunMemo
 from .slack import scrubbed_env
 
 #: Substrings that mean "the API was sick, ask again". Originally the union of
@@ -98,6 +100,81 @@ def verb(cmd):
     return " ".join(out) or " ".join(cmd[:1])
 
 
+#: Set by the sync runner, and only for a REPORT run: the path of a file in the
+#: run directory that remembers what each read returned, so the next step
+#: asking the same question gets the answer without asking Google again.
+#:
+#: Why: nearly every engine re-reads the same intake tabs and Chapters List,
+#: and `about` and `crm` list the same ~98 chapter folders — and the intake's
+#: formula tabs are slow (8s on a good call; 16-40s and a retry on a bad one,
+#: measured 2026-09-22). Report-only because under --write an earlier step's
+#: write must be visible to a later step's read; the runner leaves this unset
+#: for the whole of any run that asked to write, not just for the steps that
+#: were allowed to. Unset (every standalone run), nothing is memoised.
+READ_MEMO_ENV = "AAIF_GWS_RUN_MEMO"
+
+#: The `gws` verbs whose answer depends only on the arguments while nothing
+#: writes. Downloads are not here: they go through `cwd` with `--output` and
+#: are refused below as well.
+MEMO_VERBS = frozenset({
+    ("sheets", "spreadsheets", "values", "get"),
+    ("sheets", "spreadsheets", "values", "batchGet"),
+    ("sheets", "spreadsheets", "get"),
+    ("drive", "files", "list"),
+    ("drive", "files", "get"),
+    ("drive", "permissions", "list"),
+})
+
+_memos = {}                      # {memo path: RunMemo} — one per process
+_memos_lock = threading.Lock()   # engines read Drive from a thread pool
+
+
+def _memo():
+    """This run's read memo, or None when the runner did not set one."""
+    path = os.environ.get(READ_MEMO_ENV)
+    if not path:
+        return None
+    with _memos_lock:
+        return _memos.setdefault(path, RunMemo(path))
+
+
+def _is_download(cmd):
+    """Whether `cmd` fetches a file body rather than a JSON answer."""
+    if "--output" in cmd:
+        return True
+    for flag, value in zip(cmd, cmd[1:]):
+        if flag == "--params":
+            try:
+                return "alt" in json.loads(value)
+            except (ValueError, TypeError):
+                return True   # unreadable params: never guess, never memoise
+    return False
+
+
+def _is_answer(out):
+    """Whether an exit-0 `out` is a read worth remembering: a JSON object with
+    no `error` key. Anything else — the keyring notice alone, an HTML outage
+    page, an error body — may be a one-off, and remembering it would replay it
+    to every later step, where a caller reading `res.get("files", [])` would
+    take an error for "this folder is empty"."""
+    try:
+        res = json.loads(clean_stdout(out))
+    except ValueError:
+        return False
+    return isinstance(res, dict) and "error" not in res
+
+
+def _memo_key(cmd, cwd):
+    """The memo key for `cmd`, or None when it must go to Google."""
+    if cwd is not None:
+        return None
+    if tuple(cmd[1:5]) not in MEMO_VERBS and tuple(cmd[1:4]) not in MEMO_VERBS:
+        return None
+    if _is_download(cmd):
+        return None
+    return json.dumps(cmd[1:])
+
+
 def run(cmd, retries=RETRIES, cwd=None):
     """Run a `gws` command line, returning stdout.
 
@@ -119,11 +196,19 @@ def run(cmd, retries=RETRIES, cwd=None):
     this module is now the path every script in the repo reaches Google through,
     `slides_export` included.
     """
+    memo = _memo()
+    key = _memo_key(cmd, cwd) if memo is not None else None
+    if key is not None:
+        hit = memo.get(key)
+        if hit is not None:
+            return hit
     attempts = max(1, retries)
     for i in range(attempts):
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
                               env=scrubbed_env())
         if proc.returncode == 0:
+            if key is not None and _is_answer(proc.stdout):
+                memo.put(key, proc.stdout)
             return proc.stdout
         msg = (proc.stderr or "") + (proc.stdout or "")
         if i < attempts - 1 and transient(msg):

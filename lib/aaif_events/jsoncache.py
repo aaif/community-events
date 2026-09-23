@@ -27,7 +27,9 @@ permanently if the run were killed in between.
 import datetime as dt
 import json
 import os
+import sys
 import tempfile
+import threading
 
 #: Bump when the envelope shape changes **or when any cached payload's shape
 #: changes** — the payload is the part that actually varies (this module has
@@ -198,3 +200,68 @@ def age(path, now=None):
     if days == 1:
         return "fetched yesterday"
     return "fetched %d days ago%s" % (days, " — consider --refresh" if days > 14 else "")
+
+
+class RunMemo:
+    """An append-only memo that lives for one sync run: `{key: JSON value}`.
+
+    Not a cache in the sense above — no expiry, no stamp — because its owner
+    (the sync runner) puts it in the run directory and deletes it when the
+    run's last step has finished. The Slack and gws clients each hold one; see
+    `slack.RUN_MEMO_ENV` and `gws.READ_MEMO_ENV` for why and when.
+
+    One line per answer. Steps run one after another, so a step killed
+    mid-write leaves at most one torn line; loading skips it as a miss, and it
+    also costs the next answer appended after it (that one is glued onto the
+    torn line). The file is 0600 from creation — the answers are people's
+    profiles and sheet rows. The lock is for engines that call a client from a
+    thread pool (sync_crm, sync_about).
+
+    Values are kept as JSON text and parsed on every `get`, so each caller
+    gets its own copy and cannot corrupt a later hit by mutating one.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._table = None   # {key: JSON text}
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if self._table is None:
+            self._table = {}
+            try:
+                with open(self.path, encoding="utf-8") as fh:
+                    for line in fh:
+                        try:
+                            key, text = json.loads(line)
+                        except ValueError:
+                            continue   # a torn line is a miss
+                        self._table[key] = text
+            except FileNotFoundError:
+                pass
+        return self._table
+
+    def get(self, key):
+        """A fresh copy of the remembered value, or None on a miss."""
+        with self._lock:
+            text = self._load().get(key)
+        return None if text is None else json.loads(text)
+
+    def put(self, key, value):
+        """Remember `value`. Failing to remember is never an error: the answer
+        the caller already holds is good, so a full disk or a vanished run
+        directory costs the next step a re-ask, not this step its run."""
+        text = json.dumps(value)
+        line = (json.dumps([key, text]) + "\n").encode()
+        with self._lock:
+            self._load()[key] = text
+            try:
+                fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                try:
+                    while line:              # os.write may write only part
+                        line = line[os.write(fd, line):]
+                finally:
+                    os.close(fd)
+            except OSError as exc:
+                print("  run memo: could not record an answer (%s); later steps "
+                      "will ask again" % type(exc).__name__, file=sys.stderr)

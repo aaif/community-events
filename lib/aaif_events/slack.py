@@ -46,6 +46,7 @@ mechanisms they demonstrate are stable.
   `purpose.last_set` are genuine human edits and are exposed instead.
 """
 
+import hashlib
 import http.client
 import json
 import os
@@ -55,6 +56,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from .jsoncache import RunMemo
 
 CRED_PATH = os.path.expanduser("~/.slack/credentials.json")
 READ_TOKEN_VAR = "AAIF_SLACK_READ_TOKEN"
@@ -169,6 +172,30 @@ TIMEOUT_S = 30
 #: Everything else means the audit is broken, not that the person is absent —
 #: see lookup_emails().
 BENIGN_LOOKUP_MISSES = frozenset({"users_not_found"})
+
+#: Where a sync run keeps its identity-lookup memo. The runner points this at a
+#: file inside its own report directory (0700, gitignored) and deletes it when
+#: the run's last step has finished.
+#:
+#: Why it exists: `users.lookupByEmail` is Tier 3 (~1.5s a call once throttled),
+#: and five steps of one run — coverage, resources, provision, identity, invite —
+#: each resolved the same ~180 organizers from scratch, ~20 minutes of a run
+#: spent re-asking questions it had already been answered. It is safe because
+#: nothing the pipeline writes to Slack (a channel created, renamed or pinned,
+#: a person invited) changes which account an address belongs to or what
+#: `users.info` says about it.
+#:
+#: Unset (every standalone run), nothing is memoised.
+RUN_MEMO_ENV = "AAIF_SLACK_RUN_MEMO"
+
+#: The methods the run memo may answer. Only a successful answer is kept. A
+#: failure — ratelimited, invalid_auth — must never become the whole run's
+#: answer, and neither is a "no such user": someone can join Slack while a long
+#: --write run is under way, and `invite` hours later must not report them as
+#: having no account on the strength of an answer from before they did.
+#: `conversations.members` is deliberately absent: under --write, provision and
+#: invite change membership between steps, so a remembered list would be stale.
+MEMO_METHODS = frozenset({"users.lookupByEmail", "users.info"})
 
 
 class SlackError(RuntimeError):
@@ -292,6 +319,13 @@ class Slack:
     def __init__(self, token=None, sleep=time.sleep):
         self._token = token or load_token()
         self._sleep = sleep
+        path = os.environ.get(RUN_MEMO_ENV)
+        self._memo = RunMemo(path) if path else None
+        # Steps look people up with different tokens (coverage with the read
+        # token, invite with the write token), and two tokens can be two
+        # workspaces, so each token's answers are kept apart. A hash, never the
+        # token: the memo is a file on disk.
+        self._memo_ns = hashlib.sha256(self._token.encode()).hexdigest()[:12]
 
     def _request(self, method, data=b""):
         return urllib.request.Request(
@@ -304,9 +338,18 @@ class Slack:
         if method not in ALLOWED_METHODS:
             raise ValueError(
                 "%s is not a read-only audit method; refusing to call it." % method)
-        body = urllib.parse.urlencode(
-            {k: v for k, v in params.items() if v is not None}).encode()
-        return self._fetch(method, body)[0]
+        sent = {k: v for k, v in params.items() if v is not None}
+        body = urllib.parse.urlencode(sent).encode()
+        if method not in MEMO_METHODS or self._memo is None:
+            return self._fetch(method, body)[0]
+        key = json.dumps([self._memo_ns, method, sent], sort_keys=True)
+        hit = self._memo.get(key)
+        if hit is not None:
+            return hit
+        payload = self._fetch(method, body)[0]
+        if payload.get("ok"):
+            self._memo.put(key, payload)
+        return payload
 
     def _fetch(self, method, body):
         """The retry loop under call() and scopes(): (payload, headers).
