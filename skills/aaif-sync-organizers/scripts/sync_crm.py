@@ -66,6 +66,7 @@ Usage:
 """
 import argparse, datetime, io, itertools, os, re, shutil, subprocess, sys, tempfile, zipfile
 from collections import Counter, namedtuple
+from concurrent.futures import ThreadPoolExecutor
 from xml.etree import ElementTree as ET
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1601,7 +1602,11 @@ def open_crm(folder, workdir):
     crm, why = find_crm(folder["id"])
     if crm is None:
         return None, why
-    path = os.path.join(workdir, "%s.xlsx" % re.sub(r"[^\w.-]", "_", folder["name"]))
+    # The folder id keeps two names that sanitise alike (é and ñ both become _)
+    # from sharing a path — which, with the reads now running in a pool, would
+    # be two downloads racing into one file.
+    path = os.path.join(workdir, "%s-%s.xlsx" % (
+        re.sub(r"[^\w.-]", "_", folder["name"]), folder["id"]))
     # Everything from the download onward is guarded, not just Attendees(): a
     # truncated download raises zipfile.BadZipFile, a missing rels part raises
     # KeyError, and ET.ParseError is a SyntaxError — NOT a ValueError. Catching
@@ -1844,8 +1849,16 @@ def _run(args, workdir):
     # read-only dropdown check has to reach chapters that gained nobody this
     # run. (This used to PATCH the dropdown; schema moved to
     # migrate_interested_in.py on 2026-08-25.)
-    for folder in folders:
-        book, why = open_crm(folder, workdir)
+    #
+    # Opening is ~2 Drive calls per chapter (list the folder, download the
+    # workbook), ~0.75s each, and was done one chapter at a time: two minutes of
+    # a sync run spent waiting in line. The reads are independent and each lands
+    # at its own path, so they run in a small pool; the planning below stays
+    # sequential and in folder order, so the report reads exactly as before.
+    # 6 workers, as sync_about uses for the same folders.
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        opened = list(ex.map(open_crm, folders, itertools.repeat(workdir)))
+    for folder, (book, why) in zip(folders, opened):
         if book is None:
             skipped.append((folder["name"], why))
             print("  %-18s SKIPPED — %s" % (folder["name"], why))
