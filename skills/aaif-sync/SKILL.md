@@ -108,6 +108,11 @@ accepted — needs your decision") and leave the row as it is.
       ```bash
       python3 ${CLAUDE_SKILL_DIR}/scripts/sync.py
       ```
+      **This is what "sync" means: all 18 steps, straight through.** Don't
+      narrow it to a phase to save time, and don't stop mid-run to check in;
+      read the result when it ends. On a Mac the runner holds `caffeinate`
+      for its own lifetime: a laptop that sleeps mid-run comes back with an
+      expired Google session and a FAILED step.
       stdout is a per-step outcome table and **never names a person**. The full
       reports — which do carry names, emails and per-person diffs — land in
       `sync-reports/<UTC stamp>/<step>.log`, `0600` inside a `0700` directory.

@@ -50,6 +50,7 @@ import atexit
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -662,6 +663,21 @@ def build_parser():
     return ap
 
 
+def keep_awake():
+    """Hold the Mac awake until this process exits.
+
+    A full run takes ~20 minutes of step time, and on 2026-09-22 a laptop that
+    slept mid-run came back with an expired Google session: `access` FAILED
+    and the run took four hours of wall clock. `caffeinate -w` watches our pid
+    and lets go by itself when we exit, however we exit. Elsewhere (Linux CI,
+    no caffeinate) this does nothing — a server does not idle-sleep.
+    """
+    if sys.platform != "darwin" or not shutil.which("caffeinate"):
+        return
+    subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def main(argv=None):
     ap = build_parser()
     a = ap.parse_args(argv)
@@ -693,6 +709,7 @@ def main(argv=None):
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     guard_report_dir(a.report_dir)
     run_dir = fresh_run_dir(a.report_dir, stamp)
+    keep_awake()
 
     print("aaif-sync — %s mode%s — %d step(s)"
           % ("write" if a.write else "report",

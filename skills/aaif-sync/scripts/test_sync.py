@@ -31,6 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nightly  # noqa: E402
 import sync  # noqa: E402
 
+# Every test below that drives main() would otherwise spawn a real caffeinate.
+_real_keep_awake = sync.keep_awake
+sync.keep_awake = lambda: None
+
 FAILS = []
 
 
@@ -795,6 +799,23 @@ sync.drop_memos(_rd)   # idempotent: the atexit hook runs it a second time
 check("drop_memos removes both files and tolerates their absence",
       sorted(os.listdir(_rd)), [])
 os.rmdir(_rd)
+
+# --- a run keeps the Mac awake, and only the Mac ------------------------------
+with mock.patch.object(sync.subprocess, "Popen") as _popen, \
+        mock.patch.object(sync.sys, "platform", "darwin"), \
+        mock.patch.object(sync.shutil, "which", lambda n: "/usr/bin/caffeinate"):
+    _real_keep_awake()
+    check("on macOS the run holds caffeinate tied to its own pid",
+          _popen.call_args.args[0], ["caffeinate", "-i", "-w", str(os.getpid())])
+with mock.patch.object(sync.subprocess, "Popen") as _popen, \
+        mock.patch.object(sync.sys, "platform", "linux"):
+    _real_keep_awake()
+    check("off macOS nothing is spawned", _popen.called, False)
+with mock.patch.object(sync.subprocess, "Popen") as _popen, \
+        mock.patch.object(sync.sys, "platform", "darwin"), \
+        mock.patch.object(sync.shutil, "which", lambda n: None):
+    _real_keep_awake()
+    check("a Mac without caffeinate runs anyway", _popen.called, False)
 
 print()
 if FAILS:
