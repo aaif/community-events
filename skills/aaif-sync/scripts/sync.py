@@ -663,6 +663,9 @@ def build_parser():
     return ap
 
 
+_CAFFEINATE = None
+
+
 def keep_awake():
     """Hold the Mac awake until this process exits.
 
@@ -672,10 +675,16 @@ def keep_awake():
     and lets go by itself when we exit, however we exit. Elsewhere (Linux CI,
     no caffeinate) this does nothing — a server does not idle-sleep.
     """
-    if sys.platform != "darwin" or not shutil.which("caffeinate"):
+    global _CAFFEINATE
+    exe = shutil.which("caffeinate") if sys.platform == "darwin" else None
+    if not exe:
         return
-    subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # An empty environment: caffeinate needs nothing from ours, and ours can
+    # hold the Slack tokens. Kept in a global so the handle is never collected
+    # (and warned about) while the process it watches is still running.
+    _CAFFEINATE = subprocess.Popen([exe, "-i", "-w", str(os.getpid())], env={},
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
 
 
 def main(argv=None):

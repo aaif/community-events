@@ -806,7 +806,10 @@ with mock.patch.object(sync.subprocess, "Popen") as _popen, \
         mock.patch.object(sync.shutil, "which", lambda n: "/usr/bin/caffeinate"):
     _real_keep_awake()
     check("on macOS the run holds caffeinate tied to its own pid",
-          _popen.call_args.args[0], ["caffeinate", "-i", "-w", str(os.getpid())])
+          _popen.call_args.args[0],
+          ["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())])
+    check("caffeinate inherits none of the runner's environment (tokens)",
+          _popen.call_args.kwargs.get("env"), {})
 with mock.patch.object(sync.subprocess, "Popen") as _popen, \
         mock.patch.object(sync.sys, "platform", "linux"):
     _real_keep_awake()
