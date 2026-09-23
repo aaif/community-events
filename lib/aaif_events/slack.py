@@ -46,7 +46,6 @@ mechanisms they demonstrate are stable.
   `purpose.last_set` are genuine human edits and are exposed instead.
 """
 
-import copy
 import hashlib
 import http.client
 import json
@@ -175,30 +174,28 @@ TIMEOUT_S = 30
 BENIGN_LOOKUP_MISSES = frozenset({"users_not_found"})
 
 #: Where a sync run keeps its identity-lookup memo. The runner points this at a
-#: file inside its own report directory (0700, gitignored, deleted with the
-#: reports), so the memo lives exactly as long as one run and no longer.
+#: file inside its own report directory (0700, gitignored) and deletes it when
+#: the run's last step has finished.
 #:
 #: Why it exists: `users.lookupByEmail` is Tier 3 (~1.5s a call once throttled),
 #: and five steps of one run — coverage, resources, provision, identity, invite —
 #: each resolved the same ~180 organizers from scratch, ~20 minutes of a run
-#: spent re-asking questions it had already been answered. An identity does not
-#: change between two steps of one run, and this client cannot write (see
-#: ALLOWED_METHODS), so nothing a later step reads can be made stale by an
-#: earlier step through this client.
+#: spent re-asking questions it had already been answered. It is safe because
+#: nothing the pipeline writes to Slack (a channel created, renamed or pinned,
+#: a person invited) changes which account an address belongs to or what
+#: `users.info` says about it.
 #:
 #: Unset (every standalone run), nothing is memoised.
 RUN_MEMO_ENV = "AAIF_SLACK_RUN_MEMO"
 
-#: The methods the run memo may answer, each with the error codes that are a
-#: genuine answer ("no such person") and so may be remembered. Any other error
-#: — ratelimited, invalid_auth, missing_scope — is a failure of the call, never
-#: memoised, or one bad minute would become the whole run's answer.
+#: The methods the run memo may answer. Only a successful answer is kept. A
+#: failure — ratelimited, invalid_auth — must never become the whole run's
+#: answer, and neither is a "no such user": someone can join Slack while a long
+#: --write run is under way, and `invite` hours later must not report them as
+#: having no account on the strength of an answer from before they did.
 #: `conversations.members` is deliberately absent: under --write, provision and
 #: invite change membership between steps, so a remembered list would be stale.
-MEMO_METHODS = {
-    "users.lookupByEmail": BENIGN_LOOKUP_MISSES,
-    "users.info": frozenset({"user_not_found"}),
-}
+MEMO_METHODS = frozenset({"users.lookupByEmail", "users.info"})
 
 
 class SlackError(RuntimeError):
@@ -324,9 +321,10 @@ class Slack:
         self._sleep = sleep
         path = os.environ.get(RUN_MEMO_ENV)
         self._memo = RunMemo(path) if path else None
-        # Two tokens can be two workspaces (provision reads with one and writes
-        # with another), so each token's answers are kept apart. A hash, never
-        # the token: the memo is a file on disk.
+        # Steps look people up with different tokens (coverage with the read
+        # token, invite with the write token), and two tokens can be two
+        # workspaces, so each token's answers are kept apart. A hash, never the
+        # token: the memo is a file on disk.
         self._memo_ns = hashlib.sha256(self._token.encode()).hexdigest()[:12]
 
     def _request(self, method, data=b""):
@@ -342,16 +340,15 @@ class Slack:
                 "%s is not a read-only audit method; refusing to call it." % method)
         sent = {k: v for k, v in params.items() if v is not None}
         body = urllib.parse.urlencode(sent).encode()
-        answers = MEMO_METHODS.get(method)
-        if answers is None or self._memo is None:
+        if method not in MEMO_METHODS or self._memo is None:
             return self._fetch(method, body)[0]
         key = json.dumps([self._memo_ns, method, sent], sort_keys=True)
         hit = self._memo.get(key)
         if hit is not None:
-            return copy.deepcopy(hit)   # callers may mutate what they get
+            return hit
         payload = self._fetch(method, body)[0]
-        if payload.get("ok") or payload.get("error") in answers:
-            self._memo.put(key, copy.deepcopy(payload))
+        if payload.get("ok"):
+            self._memo.put(key, payload)
         return payload
 
     def _fetch(self, method, body):

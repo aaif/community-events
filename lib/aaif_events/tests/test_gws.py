@@ -357,3 +357,38 @@ class TestReadMemo:
         monkeypatch.setattr(gws, "_memos", {})
         gws.run(self.GET)
         assert len(calls) == 1
+
+    def test_output_without_cwd_is_still_a_download(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        cmd = ["gws", "drive", "files", "get", "--params", '{"fileId": "F"}',
+               "--output", "f"]
+        gws.run(cmd)
+        gws.run(cmd)
+        assert len(calls) == 2
+
+    def test_unreadable_params_are_never_memoised(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        cmd = ["gws", "drive", "files", "list", "--params", "{not json"]
+        gws.run(cmd)
+        gws.run(cmd)
+        assert len(calls) == 2
+
+    def test_every_read_verb_is_memoised(self, calls, monkeypatch, tmp_path):
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        for verb in gws.MEMO_VERBS:
+            cmd = ["gws", *verb, "--params", '{"id": "X"}']
+            gws.run(cmd)
+            gws.run(cmd)
+        assert len(calls) == len(gws.MEMO_VERBS)
+
+    def test_an_exit_zero_non_answer_is_not_remembered(self, calls, monkeypatch, tmp_path):
+        """An error body or an outage page may be a one-off; remembered, it
+        would reach every later step as "this folder is empty"."""
+        monkeypatch.setenv(gws.READ_MEMO_ENV, str(tmp_path / "m.jsonl"))
+        calls.queue = [FakeProc(stdout='{"error": {"code": 500}}'),
+                       FakeProc(stdout="<html>down</html>"),
+                       FakeProc(stdout="Using keyring backend: keyring\n"),
+                       FakeProc(stdout='{"files": []}')]
+        for _ in range(5):
+            gws.run(self.GET)
+        assert len(calls) == 4   # three non-answers re-asked, then one hit

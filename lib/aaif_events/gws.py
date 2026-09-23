@@ -151,6 +151,19 @@ def _is_download(cmd):
     return False
 
 
+def _is_answer(out):
+    """Whether an exit-0 `out` is a read worth remembering: a JSON object with
+    no `error` key. Anything else — the keyring notice alone, an HTML outage
+    page, an error body — may be a one-off, and remembering it would replay it
+    to every later step, where a caller reading `res.get("files", [])` would
+    take an error for "this folder is empty"."""
+    try:
+        res = json.loads(clean_stdout(out))
+    except ValueError:
+        return False
+    return isinstance(res, dict) and "error" not in res
+
+
 def _memo_key(cmd, cwd):
     """The memo key for `cmd`, or None when it must go to Google."""
     if cwd is not None:
@@ -194,8 +207,8 @@ def run(cmd, retries=RETRIES, cwd=None):
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
                               env=scrubbed_env())
         if proc.returncode == 0:
-            if key is not None:
-                memo.put(key, proc.stdout)   # only a success is an answer
+            if key is not None and _is_answer(proc.stdout):
+                memo.put(key, proc.stdout)
             return proc.stdout
         msg = (proc.stderr or "") + (proc.stdout or "")
         if i < attempts - 1 and transient(msg):

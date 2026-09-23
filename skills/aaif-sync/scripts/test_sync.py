@@ -761,6 +761,41 @@ with mock.patch.object(sync.subprocess, "run") as _run, \
     check("access — never written — still gets no read memo in a --write run",
           sync.GWS_MEMO_ENV in _run.call_args.kwargs["env"], False)
 
+# --- the memos go when the run does --------------------------------------------
+# They hold whole intake tabs and Slack profiles; nothing reads them after the
+# last step, so a finished run must not leave them in sync-reports/.
+check("a --write run still gets the Slack memo",
+      sync.SLACK_MEMO_ENV in sync.step_env("/r/s", run_writes=True), True)
+_memo_seen = []
+_inner = _fake_engine([], 0, "")
+
+
+def _engine_that_memoises(cmd, stdout=None, stderr=None, **kw):
+    for var in (sync.SLACK_MEMO_ENV, sync.GWS_MEMO_ENV):
+        path = (kw.get("env") or {}).get(var)
+        if path:
+            with open(path, "a") as fh:
+                fh.write('["k", "v"]\n')
+            _memo_seen.append(path)
+    return _inner(cmd, stdout=stdout, stderr=stderr, **kw)
+
+
+with mock.patch.object(sync.subprocess, "run", _engine_that_memoises), \
+        tempfile.TemporaryDirectory() as _td, \
+        contextlib.redirect_stdout(io.StringIO()):
+    sync.main(["chapters", "--report-dir", _td])
+    check("engines were handed memo paths", bool(_memo_seen), True)
+    check("no memo file survives a finished run",
+          [p for p in set(_memo_seen) if os.path.exists(p)], [])
+_rd = tempfile.mkdtemp()
+for _n in (sync.SLACK_MEMO_FILE, sync.GWS_MEMO_FILE):
+    open(os.path.join(_rd, _n), "w").close()
+sync.drop_memos(_rd)
+sync.drop_memos(_rd)   # idempotent: the atexit hook runs it a second time
+check("drop_memos removes both files and tolerates their absence",
+      sorted(os.listdir(_rd)), [])
+os.rmdir(_rd)
+
 print()
 if FAILS:
     print("FAILURES:\n" + "\n".join(FAILS))

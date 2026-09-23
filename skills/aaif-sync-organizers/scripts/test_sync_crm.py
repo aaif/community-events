@@ -1243,6 +1243,58 @@ with mock.patch.object(sync_crm, "run", side_effect=AssertionError("run ran")), 
 check("main: an unignored --json-out aborts before any work, and lands nothing",
       (_refused, os.path.exists(_unignored)), (True, False))
 
+# --- the workbooks are opened in a pool; the report must not notice ---------------
+# Workers finish in any order. Planning must still walk folders in folder order,
+# and a folder that could not be opened must be skipped in its own place.
+import time as _time  # noqa: E402
+
+_folders = [{"name": n, "id": "f%d" % i} for i, n in enumerate(("Austin", "Boston", "Chicago", "Denver"))]
+_nb, _pb, _ab = book()
+
+
+def _slow_open(folder, workdir):
+    # The first folder finishes last, the last first.
+    _time.sleep(0.05 * (len(_folders) - int(folder["id"][1:])))
+    if folder["name"] in ("Boston", "Denver"):
+        return None, "no '<City> CRM.xlsx' in the folder"
+    return sync_crm.Book(folder=folder, crm={"id": folder["id"], "name": "x CRM.xlsx"},
+                         names=_nb, parts=_pb, part=sheet_part(_pb, "Attendees"),
+                         att=_ab, path="/dev/null"), None
+
+
+with tempfile.TemporaryDirectory() as _d, \
+     mock.patch.object(sync_crm, "read_survey_interests", lambda: {}), \
+     mock.patch.object(sync_crm, "read_role_tab", lambda *a, **k: ([], [], [])), \
+     mock.patch.object(sync_crm, "list_chapter_folders", lambda: list(_folders)), \
+     mock.patch.object(sync_crm, "open_crm", _slow_open), \
+     mock.patch.object(sync_crm, "plan_workbook", lambda *a: []), \
+     mock.patch.object(sync_crm, "preexisting", lambda *a, **k: []), \
+     mock.patch.object(sync_crm, "check_dropdowns", lambda a: []), \
+     mock.patch.object(sync_crm, "backup_root", lambda k: _d), \
+     mock.patch.object(sys, "argv", ["sync_crm.py"]), \
+     contextlib.redirect_stdout(io.StringIO()) as _out:
+    try:
+        sync_crm.main()
+    except SystemExit:
+        pass
+_names = {f["name"] for f in _folders}
+_skipped = [ln.split()[0] for ln in _out.getvalue().splitlines()
+            if "SKIPPED" in ln and ln.split()[0] in _names]
+check("pool: unopenable folders are reported in folder order, not finish order",
+      _skipped, ["Boston", "Denver"])
+
+# Two chapter names that sanitise alike must not share a download path now
+# that downloads run side by side.
+_paths = []
+with mock.patch.object(sync_crm, "find_crm", lambda fid: ({"id": fid, "name": "x CRM.xlsx"}, None)), \
+     mock.patch.object(sync_crm, "download", lambda fid, path: _paths.append(path) or b""), \
+     mock.patch.object(sync_crm, "load_parts", lambda raw: ([], {})), \
+     mock.patch.object(sync_crm, "sheet_part", lambda parts, name: None):
+    sync_crm.open_crm({"name": "Montréal", "id": "fA"}, "/tmp/w")
+    sync_crm.open_crm({"name": "Montrèal", "id": "fB"}, "/tmp/w")
+check("pool: names that sanitise alike get distinct download paths",
+      len(set(_paths)), 2)
+
 print()
 print("FAILED %d check(s)" % fails if fails else "All checks passed.")
 sys.exit(1 if fails else 0)
