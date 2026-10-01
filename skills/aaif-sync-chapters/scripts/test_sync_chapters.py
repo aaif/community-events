@@ -754,41 +754,76 @@ check("a near-miss candidate row is held",
                                           near_misses=[{"candidates": [("Oslo", 3)]}]),
       ([], [_feed[1]]))
 
-# Candidates are a human's queue, not drift: they never reach a write and never
-# hold the exit at 2, or every run would report drift that --write cannot clear.
+check("a malformed CITY value still holds the chapter it names",
+      sync_chapters.retirement_candidates(_eligible, _feed,
+                                          malformed=[{"city": "Oslo<b>"}]),
+      ([], [_feed[1]]))
+check("...but never a different chapter that merely shares a prefix",
+      sync_chapters.retirement_candidates(
+          _eligible, [chap(2, "Boston", "Ada"), chap(3, "Oslo", "Bo")],
+          malformed=[{"city": "Oslofjord"}]),
+      ([_feed[1]], []))
+_nameless = [{"name": "", "g": "Oslo", "h": "", "events": "", "why": "",
+              "placed": [], "inferred": []}]
+check("an unresolved organizer whose structured city resolves holds that city",
+      sync_chapters.retirement_candidates(_eligible, _feed, _nameless), ([], [_feed[1]]))
+check("a typed but unrecognised Status is named, so the person sees why",
+      (sync_chapters.status_note(dict(_feed[1], status="deprecated")),
+       sync_chapters.status_note(_feed[1])),
+      (" (Status 'deprecated' is not Merged or Deprecated)", ""))
+
+# Candidates leave the exit code alone: --write could never clear them, so
+# counting them would report drift on every run.
 _code, _out = json_out_after([empty_state(retire=[_feed[1]])], [])
 check("a candidate-only report exits 0 and names the city as a finding",
       (_code, [(f["kind"], f["subject"]) for f in _out["findings"]]),
       (0, [("retirement candidate", "Oslo")]))
-_applied = []
-with _tempfile.TemporaryDirectory() as _d, \
-     mock.patch.object(sync_chapters, "compute", side_effect=[empty_state(retire=[_feed[1]])]), \
-     mock.patch.object(sync_chapters, "print_report", lambda s: None), \
-     mock.patch.object(sync_chapters, "gws_json", side_effect=lambda *a, **k: _applied.append(k)), \
-     mock.patch.object(sys, "argv", ["sync_chapters.py", "--write", "--json-out",
-                                     os.path.join(_d, "o.json")]), \
-     _ctx.redirect_stdout(_io.StringIO()):
-    _code = sync_chapters.main()
-check("--write with only candidates sends nothing to Sheets", (_code, _applied), (0, []))
 
-# The real read -> proposal path over an unsupported row: the proposal carries
-# no write for it at all, so nothing downstream can clear it.
+# The guarantee, driven end to end: a REAL proposal holding both an add (Boston)
+# and a candidate (Oslo) goes through main() --write and the real apply_changes.
+# What reaches Sheets must touch Boston's row only and never blank a cell.
 _intake = [["Status", "Full name", "City (Existing)", "City (New)",
             "Run events before?", "Why organize / ties"],
            ["Accepted", "Ada", "Boston", "", "", ""],
+           ["Accepted", "Cy", "Boston", "", "", ""],
            ["Prospect", "Bo", "Oslo", "", "", ""]]
 _grid = [HEADERS, list(ROW2), [""] * len(HEADERS)]
+_grid[1][HEADERS.index("Organizers")] = "Ada"
 _grid[2][HEADERS.index("City")] = "Oslo"
 _grid[2][HEADERS.index("Organizers")] = "Bo"
 with mock.patch.object(sync_chapters, "get_values", side_effect=lambda fid, _r:
                        _intake if fid == sync_chapters.INTAKE_ID else _grid):
     _computed = sync_chapters.compute()
-check("a prospect-only city is a candidate through the real intake parser",
-      [c["city"] for c in _computed.retire], ["Oslo"])
-check("...and the proposal holds no add or row write that touches it",
-      [x["row"] for x in _computed.adds + _computed.new_rows if x["row"] == 3], [])
-check("apply_changes has no removal parameter to pass candidates through",
-      "removals" in sync_chapters.apply_changes.__code__.co_varnames, False)
+check("the real proposal holds an add for Boston and Oslo as a candidate",
+      ([a["city"] for a in _computed.adds], [c["city"] for c in _computed.retire]),
+      (["Boston"], ["Oslo"]))
+_sent = []
+with _tempfile.TemporaryDirectory() as _d, \
+     mock.patch.object(sync_chapters, "compute",
+                       side_effect=[_computed, empty_state(retire=_computed.retire)]), \
+     mock.patch.object(sync_chapters, "print_report", lambda s: None), \
+     mock.patch.object(sync_chapters, "assert_rows_unchanged"), \
+     mock.patch.object(sync_chapters, "gws_json",
+                       side_effect=lambda *a, **k: _sent.append(k["body"])), \
+     mock.patch.object(sys, "argv", ["sync_chapters.py", "--write", "--json-out",
+                                     os.path.join(_d, "o.json")]), \
+     _ctx.redirect_stdout(_io.StringIO()):
+    _code = sync_chapters.main()
+_ranges = [d["range"] for b in _sent for d in b["data"]]
+_values = [v for b in _sent for d in b["data"] for r in d["values"] for v in r]
+check("--write sends one batch that touches only the add's row", (_code, _ranges),
+      (0, ["'Chapters & Teams'!%s2" % sync_chapters.col_letter(HEADERS.index("Organizers"))]))
+check("...and blanks no cell", [v for v in _values if v == ""], [])
+
+_buf = _io.StringIO()
+with _ctx.redirect_stdout(_buf):
+    sync_chapters.print_report(_computed._replace(
+        retire=[dict(_feed[1], status="Retired")], retire_held=[chap(4, "Lima", "")]))
+_printed = _buf.getvalue()
+check("the report lists candidates and held rows, with the Status note",
+      ("row 3: Oslo (Status 'Retired' is not Merged or Deprecated)" in _printed,
+       "row 4: Lima" in _printed, "NEVER cleared" in _printed),
+      (True, True, True))
 
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)

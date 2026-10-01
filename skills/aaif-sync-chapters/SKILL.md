@@ -30,8 +30,9 @@ qualifying organizer is reported as a *retirement candidate*; retiring it is a
 human decision, recorded as `Status=Deprecated`, or `Status=Merged` plus
 `Merged Into` — the row and its editorial cells stay. Check for a renamed or
 misfiled city before deciding (the capital-city renames and shadow chapters
-look exactly like dead ones). Candidates are not drift and never reach
-`--write`. Never infer eligibility from form free text.
+look exactly like dead ones). Candidates never reach `--write` and leave the
+exit code alone; they do appear on the run page's Drift tab, as decisions
+waiting for a person. Never infer eligibility from form free text.
 
 ## Untrusted input
 
@@ -100,7 +101,7 @@ whole estate.
   override flag, so a false positive does not cost one confirmation — it blocks
   the city permanently. `San Diego` must never land in `San Francisco`.
 - **Merge, don't overwrite.** Names already in the `Organizers` cell but absent
-  from the intake are left alone on qualifying city rows — they are manual entries.
+  from the intake are left alone — they are manual entries.
 - **Never remove a chapter — deprecate it or merge it.** No path in this
   engine clears a row; retirement candidates are a report for a human, who sets
   `Status` (and `Merged Into`) by hand. 2026-10-01, user-decided, after a first

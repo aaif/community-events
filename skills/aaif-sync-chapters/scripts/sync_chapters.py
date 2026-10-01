@@ -759,7 +759,11 @@ def retirement_candidates(entries, chapters, unresolved=(), malformed=(), near_m
     """
     accepted = {fold_city(e["city"]) for e in entries}
     blocked = {row for m in near_misses for _city, row in m["candidates"]}
-    unclear = {fold_city(m["city"]) for m in malformed}
+    unclear = set()
+    # A row is malformed because of its name OR its city, and a bad city value
+    # ('Oslo<b>' folds to 'oslo b') no longer equals the chapter's key. Hold any
+    # chapter that the folded value starts with, on a word boundary.
+    bad_cities = [fold_city(m["city"]) for m in malformed if m.get("city")]
     for u in unresolved:
         blocked.update(row for _city, row in u.get("placed", []))
         city = resolve_city(u.get("g", ""), u.get("h", ""))
@@ -770,8 +774,20 @@ def retirement_candidates(entries, chapters, unresolved=(), malformed=(), near_m
         key = fold_city(c["city"])
         if key in accepted or (c.get("status") or "").strip() in RETIRED_STATUSES:
             continue
-        (held if c["row"] in blocked or key in unclear else candidates).append(c)
+        bad = any(b == key or b.startswith(key + " ") for b in bad_cities)
+        (held if c["row"] in blocked or key in unclear or bad else candidates).append(c)
     return candidates, held
+
+def status_note(c):
+    """Why a row whose Status was filled in is still a candidate.
+
+    The dropdown is advisory, so `deprecated` or `Retired` can be typed, and
+    only the exact RETIRED_STATUSES spellings retire a row. Without this the
+    person who set it sees the row re-listed every run with no reason given.
+    """
+    st = (c.get("status") or "").strip()
+    return (" (Status %r is not %s)" % (st, " or ".join(RETIRED_STATUSES))
+            if st and st not in RETIRED_STATUSES else "")
 
 # ----------------------------------------------------------------------------
 # Report
@@ -873,7 +889,7 @@ def print_report(st):
         print("\nRetirement candidates — no qualifying organizer names this city "
               "(NEVER cleared; a human decides):")
         for c in st.retire:
-            print("  row %d: %s" % (c["row"], c["city"]))
+            print("  row %d: %s%s" % (c["row"], c["city"], status_note(c)))
         print("  Check for a renamed or misfiled city first, then set Status=Deprecated, "
               "or Status=Merged with %r = the chapter it folded into. "
               "chapter_health.py ranks the evidence." % H_MERGED_INTO)
@@ -912,7 +928,7 @@ def build_findings(report, st, held=()):
     report.measure("retirement candidates", len(st.retire), "warn" if st.retire else None)
     for c in st.retire:
         report.find("retirement candidate", c["city"],
-                    "row %d: no qualifying organizer names this city" % c["row"],
+                    "row %d: no qualifying organizer names this city%s" % (c["row"], status_note(c)),
                     severity="warn", action="never cleared: check for a renamed city, then "
                     "set Status=Deprecated, or Merged + %s" % H_MERGED_INTO)
     for c in st.retire_held:

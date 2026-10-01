@@ -32,8 +32,11 @@ everything in **one** `values batchUpdate` — a partial failure cannot half-syn
   keeps the row and its Summary/Image/Ops Notes and stops it counting toward the
   cap. Near-match candidates, malformed city/name rows, and unresolved
   organizers already named on a chapter row *hold* the question instead. Free-text
-  city hints decide nothing. Candidates are not drift: they leave the exit code
-  alone, or every run would report drift that `--write` can never clear.
+  city hints decide nothing. Candidates leave the exit code alone, or every run
+  would report drift that `--write` can never clear; they still appear on the
+  run page's Drift tab, because they are decisions waiting for a person. A filled
+  but unrecognised Status (`deprecated`, `Retired`) is named on the candidate
+  line, since only the exact spellings retire a row.
 
 - **Status filter is exact-string**: `Accepted` and `Existing (from MLOps)` only.
   (Matching a prefix like `Existing` once missed all 23 MLOps rows.)
