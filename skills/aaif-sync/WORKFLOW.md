@@ -13,15 +13,7 @@ python3 <skill-root>/scripts/sync.py chapters   # one phase, or one step
 python3 <skill-root>/scripts/sync.py --write    # apply, after approval
 ```
 
-| # | Phase | Subject | Engines live in |
-|---|---|---|---|
-| 1 | `preflight` | is the source sound? intake data + the decision queue | `aaif-clean-data`, `aaif-triage-intake` |
-| 2 | `chapters` | does the chapter exist — on the sheet, in Drive, in Slack? | `aaif-sync-chapters`, `aaif-sync-slack`, `aaif-audit-slack` |
-| 3 | `organizers` | who runs it, and can they reach their own things? | `aaif-sync-organizers`, `aaif-sync-slack` |
-| 4 | `events` | is every chapter's page live, and is it still running events? | `aaif-audit-slack`, `aaif-sync-chapters` |
-| 5 | `speakers` | what does the community talk about? | `aaif-audit-slack` |
-| 6 | `hosts` | where does it meet? *(no estate-wide engine yet)* | — |
-| 7 | `workspace` | what does an ordinary member see? — then the Slack audit as one page | `aaif-audit-slack` |
+The seven phases and their order are the table in [SKILL.md](SKILL.md).
 
 **Each phase runs its stages in order: `gather` → `plan` → `execute`.**
 
