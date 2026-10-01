@@ -1,7 +1,9 @@
 ---
 name: aaif-speaker-invite
 description: Write a short, warm speaker-invite DM or email for an AAIF in-person event. Use when asked to draft a speaker invite, outreach DM, or ask-someone-to-speak message for an AAIF event.
-argument-hint: '[speaker name + event / paste tracker entry]'
+compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin checkout, Python 3, authenticated gws, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[speaker name + event / paste tracker entry]'
 ---
 
 # AAIF Speaker Outreach / Invite

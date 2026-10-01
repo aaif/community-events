@@ -26,7 +26,7 @@ and diff it against an existing chapter (the canonical end-state):
 ```bash
 # --rebrand-local requires --lat/--lon: local mode is fully offline and refuses
 # to geocode, so the coordinates must be passed explicitly.
-python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
+python3 <skill-root>/scripts/create_chapter.py \
     --city "Los Angeles" --lat 34.05 --lon -118.24 --rebrand-local /path/to/template-copy
 # then compare paragraph text against the real Los Angeles chapter, and open
 # slide 5 of the rebranded Slides.pptx to confirm the dot moved (+map dot).
@@ -34,7 +34,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py \
 # placed by the pre-2026-07-30 anchors/overrides projection. Judge the dot
 # against the COASTLINE, not the old deck, and never "fix" the projection back
 # toward a hand-placed dot.
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_chapter.py   # unit tests
+python3 <skill-root>/scripts/test_create_chapter.py   # unit tests
 ```
 
 Constants (Chapters parent id, TemplateCity id) live at the top of the script.

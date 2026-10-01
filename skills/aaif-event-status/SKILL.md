@@ -1,10 +1,15 @@
 ---
 name: aaif-event-status
 description: Report task status for an AAIF chapter or online series — which event tasks are overdue or due soon, grouped by owner, read from the Event Tracker.docx — plus read-only Luma registration stats (going/waitlist/checked-in counts) for pushed events. Use when asked for the status / health / what's-due / RSVP numbers of a chapter or series' events.
-argument-hint: '<chapter|series> [event]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma statistics additionally require a calendar API key.
+metadata:
+  com.anthropic.claude-code.argument-hint: '<chapter|series> [event]'
 ---
 
 # AAIF Event Status
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -41,22 +46,22 @@ ever written back — not to Drive, not to the tracker, not to any sheet.
       Online — the mode is implicit in which parent holds the name), finds
       `Event Tracker.docx`, and downloads it to a fresh `0700` temp directory:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_tracker.py "New York City"
+      python3 <skill-root>/scripts/fetch_tracker.py "New York City"
       ```
       It prints `tracker: <path>`. **Do not hand-compose `gws drive files list`
       queries for this** — the nested quoting is where it goes wrong, and the
       script already handles a name with an apostrophe.
 - [ ] **2. Run the digest** (local, deterministic, no network):
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/event_status.py <path> ["event"]
+      python3 <skill-root>/scripts/event_status.py <path> ["event"]
       ```
       Status is computed against today from each task's DUE cell; clock-time
       day-of tasks and `Done` tasks are excluded.
 - [ ] **3. Registration stats**, for events whose tracker `LUMA URL` holds their
       event page (written by `aaif-create-event`'s Luma push):
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py <path> ["event"]
-      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_stats.py --url https://luma.com/EVENT_SLUG
+      python3 <skill-root>/scripts/luma_stats.py <path> ["event"]
+      python3 <skill-root>/scripts/luma_stats.py --url https://luma.com/EVENT_SLUG
       ```
       Going, pending, waitlist, invited, declined, checked-in, plus registration
       state. The script detects whether Luma is connected (that calendar's API
@@ -75,7 +80,7 @@ The eight content skills (`aaif-announcement-post`, `aaif-recap-post`,
 the same question, and this is the answer to it:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_tracker.py "New York City" \
+python3 <skill-root>/scripts/fetch_tracker.py "New York City" \
     --event "Agentic AI Night"          # or --event next / --event latest
 ```
 
@@ -104,7 +109,7 @@ fields.
 ## Verify
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_fetch_tracker.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_event_status.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_luma_stats.py
+python3 <skill-root>/scripts/test_fetch_tracker.py
+python3 <skill-root>/scripts/test_event_status.py
+python3 <skill-root>/scripts/test_luma_stats.py
 ```

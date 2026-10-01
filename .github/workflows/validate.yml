@@ -33,10 +33,9 @@ jobs:
         # banner, no-secret-args, no-real-pii, and the workflow lint.
 
   plugin-validate:
-    # Anthropic's own validator. The repo root is both the marketplace and the
-    # single plugin (marketplace source "./"), so one call validates both the
-    # marketplace.json and the plugin.json schema. SKILL.md frontmatter is
-    # covered by the check-skill-frontmatter hook in the pre-commit job above.
+    # Anthropic's validator checks the Claude marketplace and compatibility
+    # manifest. The pre-commit job separately validates root plugin.json against
+    # Agent Plugins v1 and every SKILL.md against Agent Skills.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -44,7 +43,7 @@ jobs:
           persist-credentials: false
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code@2.1.239
-      - name: Validate marketplace and plugin manifests
+      - name: Validate Claude marketplace and compatibility manifest
         run: claude plugin validate .
 
   pytest:

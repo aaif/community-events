@@ -1,7 +1,9 @@
 ---
 name: aaif-announcement-post
 description: Write the LinkedIn launch/announcement post for an AAIF event when RSVPs open. Use when asked to draft the announcement, launch post, or "RSVPs are open" post for an AAIF event.
-argument-hint: '[event title / paste tracker entry]'
+compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin checkout, Python 3, authenticated gws, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[event title / paste tracker entry]'
 ---
 
 # AAIF Event Announcement (LinkedIn)

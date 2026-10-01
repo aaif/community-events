@@ -35,9 +35,9 @@ Two conventions make a scheduled run workable:
   computed values, never engine output.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py                # report the unattended phases
-python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py --write        # apply what is safe unattended
-python3 ${CLAUDE_SKILL_DIR}/scripts/nightly.py crm resources  # a subset, still in pipeline order
+python3 <skill-root>/scripts/nightly.py                # report the unattended phases
+python3 <skill-root>/scripts/nightly.py --write        # apply what is safe unattended
+python3 <skill-root>/scripts/nightly.py crm resources  # a subset, still in pipeline order
 ```
 
 `--write` keeps each engine's own refusals: `sync_chapters` still holds back a

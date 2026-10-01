@@ -77,9 +77,11 @@ work around it: a workflow log on a public repo is world-readable forever.
 
 ## Architecture
 
-The repo root is simultaneously the marketplace and the single plugin
-(`marketplace.json` has `source: "./"`), so the *whole checkout* is what gets
-installed — which is why skill scripts can reach outside their own folder.
+The repo root is simultaneously a portable Agent Plugin and the source of the
+Claude marketplace's single plugin (`marketplace.json` has `source: "./"`). Root
+`plugin.json` is canonical for portable identity; `.claude-plugin/plugin.json`
+is the required Claude compatibility manifest. The *whole checkout* is what
+gets installed — which is why skill scripts can reach outside their own folder.
 
 The ops skills have **one front door**, `aaif-sync`, and its `scripts/sync.py`
 is the single definition of the pipeline: which engines run, in what order, and
@@ -215,8 +217,11 @@ python scripts/check_no_local_redaction.py   # --redact comes from lib, never a 
 python scripts/check_portable_skills.py      # lib coupling matches the README's caveat
 python scripts/check_non_idempotent_retries.py    # a gws create/copy is sent once
 python scripts/test_check_non_idempotent_retries.py  # that guard's own tests
+python scripts/check_frontmatter.py skills/*/SKILL.md  # Agent Skills spec + compatibility
+python scripts/check_skill_portability.py  # no client-specific path/tool syntax
+python scripts/check_manifests.py  # root portable + Claude manifests agree
 python scripts/extract_design_tokens.py --check  # design tokens aren't stale
-claude plugin validate .                                       # marketplace.json + plugin.json
+claude plugin validate .                          # Claude marketplace + manifest
 claude plugin eval . --no-publish --trust-plugin  # does the right skill FIRE? (needs model access)
 ```
 

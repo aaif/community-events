@@ -1,10 +1,15 @@
 ---
 name: aaif-create-online-series
 description: Create a new AAIF online event series in the "Online" Google Drive folder by cloning TemplateSeries and rebranding all assets. Use when asked to add/launch/set up a new AAIF online series (reading group, paper club, webinar, online discussion) — not a city chapter.
-argument-hint: '<Series Name> [--slug <lumaslug>] [--write] [--resume] [--repair-existing]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws with Google Drive access, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '<Series Name> [--slug <lumaslug>] [--write] [--resume] [--repair-existing]'
 ---
 
 # Create AAIF Online Series
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -87,7 +92,7 @@ Same shape as `aaif-create-chapter`: plan, approve, write, verify.
 - [ ] **2. Plan** (the default — nothing is created without `--write`) to surface
    the slug, Luma status, and any name collision:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
+   python3 <skill-root>/scripts/create_series.py \
        --series "Reading Group"
    ```
    (`--dry-run` is still accepted as a no-op alias.) The slug must match
@@ -98,7 +103,7 @@ Same shape as `aaif-create-chapter`: plan, approve, write, verify.
 
 - [ ] **3. Create the series** — only after the user confirms the plan:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
+   python3 <skill-root>/scripts/create_series.py \
        --series "Reading Group" --write   # add --slug <x> if overriding
    ```
    The script clones TemplateSeries → a new `<Series>` folder under Online, then
@@ -111,7 +116,7 @@ Same shape as `aaif-create-chapter`: plan, approve, write, verify.
    on the name collision. Don't trash the folder — re-run with `--resume`
    (which, like any mutation, requires `--write`):
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py --series "Reading Group" --write --resume
+   python3 <skill-root>/scripts/create_series.py --series "Reading Group" --write --resume
    ```
    It enters the existing folder and clones/rebrands only what's missing — so
    resuming a fully-cloned series is a no-op. It is also the backfill path when
@@ -161,9 +166,9 @@ customized starting point, same as the example-event block.
 To validate the engine after any edit, rebrand a throwaway copy of the template
 and check for residuals + that identity reads right:
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/create_series.py \
+python3 <skill-root>/scripts/create_series.py \
     --series "Reading Group" --rebrand-local /path/to/templateseries-copy
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_series.py   # unit tests (offline)
+python3 <skill-root>/scripts/test_create_series.py   # unit tests (offline)
 ```
 
 The template must stay "clean": `San Francisco` contiguous and the slug normalized

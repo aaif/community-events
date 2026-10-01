@@ -1,10 +1,15 @@
 ---
 name: aaif-sync-chapters
 description: Push accepted intake cities and organizer names onto the public Chapters List sheet — appending a row for a city that has none, merging organizer names into the row that exists — and audit every chapter row's Luma page. Reports and proposes by default; writes only on explicit approval. Use when asked to add a new city to the chapters sheet, update the chapters list, sync chapter rows, check the 100-chapter cap, or find chapters whose Luma link is dead.
-argument-hint: '[--audit-luma] [--write]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws with Google Sheets access, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[--audit-luma] [--write]'
 ---
 
 # Sync the intake → the Chapters List feed
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 One engine, `sync_chapters.py`. It reads the **AAIF Community Intake Ops** sheet
 and writes the **AAIF Community Chapters List** — the tab the website reads.
@@ -68,11 +73,11 @@ Exit codes: **`0`** in sync, **`2`** the report proposes changes, else failure.
 ## Commands
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_chapters.py                # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_chapters.py --write
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_chapters.py --audit-luma   # every row's page
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_chapters.py --require-luma # hold back rows with no live page
-python3 ${CLAUDE_SKILL_DIR}/scripts/chapter_health.py               # retire-or-keep evidence
+python3 <skill-root>/scripts/sync_chapters.py                # report
+python3 <skill-root>/scripts/sync_chapters.py --write
+python3 <skill-root>/scripts/sync_chapters.py --audit-luma   # every row's page
+python3 <skill-root>/scripts/sync_chapters.py --require-luma # hold back rows with no live page
+python3 <skill-root>/scripts/chapter_health.py               # retire-or-keep evidence
 ```
 
 `--redact` masks names and free-text answers; on by default when `CI` is
@@ -118,9 +123,9 @@ whole estate.
       edit for the whole sync.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_chapters.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_chapter_cap.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_chapter_health.py
+python3 <skill-root>/scripts/test_sync_chapters.py
+python3 <skill-root>/scripts/test_chapter_cap.py
+python3 <skill-root>/scripts/test_chapter_health.py
 ```
 
 ## References — load on demand

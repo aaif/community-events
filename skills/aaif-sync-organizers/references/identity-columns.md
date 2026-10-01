@@ -18,11 +18,11 @@ told us and what Drive grants are keyed to.
 | `Drive Email` | `track_drive_email.py`, **and a human** | the address on their chapter folder's ACL — and the address `sync_access.py` grants |
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py            # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --write    # fill by email lookup
-python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --suggest  # + name candidates
-python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --apply ids.json --write
-python3 ${CLAUDE_SKILL_DIR}/scripts/track_drive_email.py --write    # after step 6
+python3 <skill-root>/scripts/resolve_slack_ids.py            # report
+python3 <skill-root>/scripts/resolve_slack_ids.py --write    # fill by email lookup
+python3 <skill-root>/scripts/resolve_slack_ids.py --suggest  # + name candidates
+python3 <skill-root>/scripts/resolve_slack_ids.py --apply ids.json --write
+python3 <skill-root>/scripts/track_drive_email.py --write    # after step 6
 ```
 
 **An id, never a handle.** A handle is a display name its owner can change, so an

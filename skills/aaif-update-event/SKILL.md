@@ -1,10 +1,15 @@
 ---
 name: aaif-update-event
 description: Apply a change to an existing AAIF event (chapter or series) — edit detail fields like speakers/venue/capacity, or move the date and recompute all task due-dates, then flag which marketing/banner assets are now stale (speaker, venue/location, platform/join-link, and date changes set flags); can also sync the change to the live Luma event page (diff shown first, pushed only on explicit user approval). Use when asked to update/change/edit an event's details or date.
-argument-hint: '<chapter|series> <event> [--set "LABEL=value"] [--date "..."]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma updates additionally require a calendar API key.
+metadata:
+  com.anthropic.claude-code.argument-hint: '<chapter|series> <event> [--set "LABEL=value"] [--date "..."]'
 ---
 
 # AAIF Update Event
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -55,17 +60,17 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
 - [ ] **2. Preview** with `--dry-run`. It prints the field diff (old → new) and
       the stale-asset list, and writes nothing:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
+      python3 <skill-root>/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
         --set "SPEAKER(S)=Jane Doe (Agent Infra)" --dry-run
       ```
 - [ ] **3. Apply** it locally:
       ```bash
       # add/replace a field
-      python3 ${CLAUDE_SKILL_DIR}/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
+      python3 <skill-root>/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
         --set "SPEAKER(S)=Jane Doe (Agent Infra)"
 
       # move the date — recomputes every due date from the ORIGINAL date
-      python3 ${CLAUDE_SKILL_DIR}/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
+      python3 <skill-root>/scripts/update_event.py $WORK/tracker.docx "Agentic AI Night" \
         --date "Wed · July 8, 2026 · 17:30 — late"
       ```
 - [ ] **4. Upload it back:**
@@ -86,13 +91,13 @@ Hand it to the user to apply on the Luma page themselves.
 
 - [ ] **1. Diff** — the default, sends nothing:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_sync.py $WORK/tracker.docx "Agentic AI Night" \
+      python3 <skill-root>/scripts/luma_sync.py $WORK/tracker.docx "Agentic AI Night" \
         --timezone Europe/Berlin
       ```
 - [ ] **2. Show the user the diff and get explicit approval.** Luma is live.
 - [ ] **3. Apply:**
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_sync.py $WORK/tracker.docx "Agentic AI Night" \
+      python3 <skill-root>/scripts/luma_sync.py $WORK/tracker.docx "Agentic AI Night" \
         --timezone Europe/Berlin --apply [--notify-guests]
       ```
       It re-fetches the event afterwards and verifies the diff is clean.
@@ -123,6 +128,6 @@ Hand it to the user to apply on the Luma page themselves.
 ## Verify
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_update_event.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_luma_sync.py
+python3 <skill-root>/scripts/test_update_event.py
+python3 <skill-root>/scripts/test_luma_sync.py
 ```

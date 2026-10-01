@@ -47,8 +47,8 @@ The only script in the repo that **writes to Slack**. It reads the sheet, create
 what the plan names and applies `RENAMES`.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/provision_channels.py               # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/provision_channels.py --write --i-have-approval
+python3 <skill-root>/scripts/provision_channels.py               # report
+python3 <skill-root>/scripts/provision_channels.py --write --i-have-approval
 ```
 
 It does **not** share the audit's Slack client. `lib/aaif_events/slack.py` refuses
@@ -144,9 +144,9 @@ Answers "who is missing from their organizer channel", and behind a second gate,
 adds them.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py            # who is missing
-python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py --city Berlin
-python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py --write --i-have-approval
+python3 <skill-root>/scripts/invite_organizers.py            # who is missing
+python3 <skill-root>/scripts/invite_organizers.py --city Berlin
+python3 <skill-root>/scripts/invite_organizers.py --write --i-have-approval
 ```
 
 **Identity comes from the intake, not from the handles column.**
@@ -164,8 +164,8 @@ to know which of the 8 is theirs. This script keeps that post complete as
 chapters are added, without ever rewriting the wording a human chose:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/post_country_directory.py                          # what would change
-python3 ${CLAUDE_SKILL_DIR}/scripts/post_country_directory.py --write --i-have-approval
+python3 <skill-root>/scripts/post_country_directory.py                          # what would change
+python3 <skill-root>/scripts/post_country_directory.py --write --i-have-approval
 ```
 
 **Additive only — never `chat.update`.** The workspace already carries at

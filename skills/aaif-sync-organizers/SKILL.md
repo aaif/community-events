@@ -1,10 +1,15 @@
 ---
 name: aaif-sync-organizers
 description: Push accepted and pipeline intake people into each chapter's own files — the Organizers list in its About doc, the people rows in its private Attendee CRM, and the per-chapter Drive grants that let its organizers open the folder — plus the Slack ID and Drive Email identity columns. Reports and proposes by default; writes only on explicit approval. Use when asked to sync organizers, update a chapter's About doc, add intake people to a chapter CRM, give an organizer access to their chapter folder, or fix someone whose Slack or Drive address does not match their intake row.
-argument-hint: '[about|crm|access] [--city <name>] [--write]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws, network access, and an AAIF Slack token for identity reconciliation.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[about|crm|access] [--city <name>] [--write]'
 ---
 
 # Sync the intake → About docs, chapter CRMs, chapter access
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 Three engines over each chapter's own files, plus two identity reconcilers.
 **This is phase 4 of the estate sync** — `aaif-sync` runs the whole pipeline;
@@ -81,21 +86,21 @@ Exit codes: **`0`** in sync, **`2`** the report proposes changes, else failure.
 ## Commands
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_about.py                  # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_about.py --city Melbourne
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_about.py --write
+python3 <skill-root>/scripts/sync_about.py                  # report
+python3 <skill-root>/scripts/sync_about.py --city Melbourne
+python3 <skill-root>/scripts/sync_about.py --write
 
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_crm.py                    # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_crm.py --verbose          # name every un-synced row
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_crm.py --write
+python3 <skill-root>/scripts/sync_crm.py                    # report
+python3 <skill-root>/scripts/sync_crm.py --verbose          # name every un-synced row
+python3 <skill-root>/scripts/sync_crm.py --write
 
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_access.py                 # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_access.py --write         # grant THEN lock
+python3 <skill-root>/scripts/sync_access.py                 # report
+python3 <skill-root>/scripts/sync_access.py --write         # grant THEN lock
 
 # identity columns — see references/identity-columns.md
-python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --write    # fill by email lookup
-python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_slack_ids.py --suggest  # + name candidates
-python3 ${CLAUDE_SKILL_DIR}/scripts/track_drive_email.py --write    # after access
+python3 <skill-root>/scripts/resolve_slack_ids.py --write    # fill by email lookup
+python3 <skill-root>/scripts/resolve_slack_ids.py --suggest  # + name candidates
+python3 <skill-root>/scripts/track_drive_email.py --write    # after access
 ```
 
 `--city <name>` scopes `about` and `crm` to one chapter; `sync_access.py` has no
@@ -153,15 +158,15 @@ such flag. `--redact` masks emails and names, on by default under CI.
       immediately to its left.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_about.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_crm.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_access.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_resolve_slack_ids.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_track_drive_email.py
-python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_status_prospect.py
-python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_interested_in.py
-python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_column_order.py
-python3 ${CLAUDE_SKILL_DIR}/migrations/test_migrate_role_tabs.py
+python3 <skill-root>/scripts/test_sync_about.py
+python3 <skill-root>/scripts/test_sync_crm.py
+python3 <skill-root>/scripts/test_sync_access.py
+python3 <skill-root>/scripts/test_resolve_slack_ids.py
+python3 <skill-root>/scripts/test_track_drive_email.py
+python3 <skill-root>/migrations/test_migrate_status_prospect.py
+python3 <skill-root>/migrations/test_migrate_interested_in.py
+python3 <skill-root>/migrations/test_migrate_column_order.py
+python3 <skill-root>/migrations/test_migrate_role_tabs.py
 ```
 
 ## Per-role CRM tabs (`migrations/migrate_role_tabs.py`)
@@ -173,9 +178,9 @@ per-role CRM tabs exist to keep the two applications separate rather than
 merged into one row"*.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_role_tabs.py                # report
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_role_tabs.py --city Boston
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_role_tabs.py --write        # apply
+python3 <skill-root>/migrations/migrate_role_tabs.py                # report
+python3 <skill-root>/migrations/migrate_role_tabs.py --city Boston
+python3 <skill-root>/migrations/migrate_role_tabs.py --write        # apply
 ```
 
 - **`Attendees` is never touched.** It holds `Signal`, hand-typed notes and

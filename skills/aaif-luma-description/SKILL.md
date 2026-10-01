@@ -1,7 +1,9 @@
 ---
 name: aaif-luma-description
 description: Write the Luma event-page description for an AAIF in-person event. Use when asked to draft the Luma description / event page copy for an AAIF event.
-argument-hint: '[event title / paste tracker entry]'
+compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin checkout, Python 3, authenticated gws, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[event title / paste tracker entry]'
 ---
 
 # AAIF Luma Event Description

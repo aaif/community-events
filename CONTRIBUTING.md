@@ -1,9 +1,10 @@
 # Contributing
 
-Thanks for helping improve the AAIF Community Events Toolkit. The repo root is both the
-marketplace and a single plugin (`aaif-events`) — `marketplace.json` and
-`plugin.json` sit side by side in `.claude-plugin/`, and the skills live under
-`skills/` at the repo root.
+Thanks for helping improve the AAIF Community Events Toolkit. The repo root is a
+single portable Agent Plugin (`aaif-events`) and also the source of Claude's
+one-plugin marketplace. Root `plugin.json` is the shared Codex/Cursor manifest;
+`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` are retained
+for Claude Code. Skills live under `skills/` at the repo root.
 
 ## Adding or editing a skill
 
@@ -13,6 +14,7 @@ A skill is a folder with a `SKILL.md` (plus optional `scripts/` and
 ```
 skills/<skill-name>/
 ├── SKILL.md            # the procedural spine — under 500 lines / 5k tokens
+├── WORKFLOW.md         # optional long procedure, linked from SKILL.md
 ├── scripts/            # helper scripts, each with a test_*.py beside it
 └── references/         # deep detail, loaded on demand
 ```
@@ -23,8 +25,10 @@ skills/<skill-name>/
 ---
 name: aaif-something
 description: One line — what it does AND when to use it ("Use when asked to …"),
-  so Claude auto-activates it at the right moment.
-argument-hint: "<optional> [args]"
+  so a compatible agent activates it at the right moment.
+compatibility: Declare required runtimes, CLIs, credentials, network, and full-checkout dependencies.
+metadata:
+  com.anthropic.claude-code.argument-hint: '<optional> [args]'
 ---
 
 # Title
@@ -38,7 +42,7 @@ competing for attention against the conversation. Four rules follow from that,
 and the skills in this repo were restructured onto them:
 
 - **Keep `SKILL.md` under 500 lines and ~5,000 tokens.** That is the
-  [spec's](https://code.claude.com/docs/en/skills) guideline and it is not
+  [Agent Skills specification's](https://agentskills.io/specification) guideline and it is not
   advisory here: `aaif-sync-chapters` was 1,229 lines and 18k tokens, and an
   agent reading it had to find the four sentences that governed the command it
   was about to run. Move the rest to `references/`.
@@ -65,19 +69,24 @@ prose, and the nested shell quoting was where it went wrong.
 
 ### Other guidelines
 
-- **Reference bundled scripts with `${CLAUDE_SKILL_DIR}/scripts/...`**, never a
-  hardcoded `.claude/skills/...` path — the variable resolves wherever the skill
-  is installed.
+- **Reference bundled resources relative to `SKILL.md`.** In executable command
+  examples use `<skill-root>/scripts/...`, define `<skill-root>` as the directory
+  containing the loaded `SKILL.md`, and never depend on a client-specific path
+  variable such as `CLAUDE_SKILL_DIR`.
 - Keep the `description` action-oriented; it's what triggers auto-activation.
+- Keep top-level frontmatter limited to Agent Skills fields. Put client hints in
+  the string-to-string `metadata` mapping under a namespaced key. This preserves
+  the value for catalog tooling; strict portable frontmatter cannot also provide
+  Claude Code's argument-autocomplete UI without a second skill copy. See
+  `PORTABILITY.md`.
 - **Secrets are never command-line parameters.** argv is visible in `ps` and
   gets echoed in logs/console, so no `--token`/`--key` style flags — scripts read
   tokens and API keys from environment variables (or `.env` / keychain) only.
   `scripts/check_no_secret_args.py` enforces this in CI.
-- **Quote `argument-hint` values fully.** A value like `"<City>" [--slug <x>]`
-  (a quoted scalar followed by bare text) is *invalid YAML* — the whole
-  frontmatter then fails to parse and the skill loads with empty metadata
-  (description dropped, so it never auto-activates). Single-quote the entire
-  value instead: `argument-hint: '<City> [--slug <x>]'`.
+- **Quote metadata hint values fully.** A value like `"<City>" [--slug <x>]`
+  is invalid YAML. Use
+  `com.anthropic.claude-code.argument-hint: '<City> [--slug <x>]'` inside
+  `metadata`.
 - Read and write Google Sheets/Drive **by header name / resource lookup**, not by
   fixed column letters, so skills survive layout changes.
 - These skills ship with AAIF's own Google resource IDs. If you're adapting them
@@ -96,10 +105,9 @@ pre-commit run --all-files     # run them now against the whole repo
 ```
 
 The hooks cover JSON/YAML/whitespace hygiene, Ruff (bug-focused lint of the
-helper scripts), codespell, gitleaks secret scanning, a SKILL.md frontmatter
-check, and seven repo-specific guards — `check_no_secret_args.py`,
-`check_workflows.py` and `extract_design_tokens.py --check` alongside the four
-below. These four are the ones whose mistake is invisible in the output:
+helper scripts), codespell, gitleaks secret scanning, Agent Skills and Agent
+Plugins validation, and the repo-specific guards. The four below catch mistakes
+that are otherwise invisible in normal output:
 
 - **`check_tooling_banner.py`** — three banners are deliberately copied into
   every `SKILL.md` that needs them (skills ship downstream without the repo
@@ -167,16 +175,19 @@ measures what the skill contributes rather than what the base model already
 does. It needs model access and therefore does **not** run in `validate.yml`,
 which holds no credential because it runs on fork PRs. See `evals/README.md`.
 
-Then validate the manifests. The repo root is both the marketplace and the
-single plugin (marketplace `source: "./"`), so one call validates the
-`marketplace.json` **and** the `plugin.json` schema:
+Then validate both manifest layers. The repository check validates the root
+Agent Plugins v1 manifest, keeps its identity/version aligned with Claude's
+manifest, and rejects redundant Codex/Cursor overlays. Claude's validator checks
+the Claude marketplace and compatibility manifest:
 
 ```bash
+python scripts/check_manifests.py
 claude plugin validate .
 ```
 
-This does *not* parse SKILL.md frontmatter — that's covered by the
-`check-skill-frontmatter` pre-commit hook above. CI runs both on each PR.
+Claude's command does *not* parse portable `SKILL.md` frontmatter — that is
+covered by `check_frontmatter.py` and `check_skill_portability.py`. CI runs all
+of them on each PR.
 Finally, install your local copy to try it live:
 
 ```bash
