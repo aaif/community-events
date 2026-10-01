@@ -2,7 +2,7 @@
 
 All notable changes to the **AAIF Community Events Toolkit** plugin are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
-plugin version is the `version` field in `.claude-plugin/plugin.json`.
+plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
@@ -65,6 +65,12 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   `appendDimension`. Only the two writes tolerate silence now.
 
 ### Changed
+- All 23 skills now declare compatibility, keep Claude's argument hint as
+  namespaced string metadata, and use a client-neutral `<skill-root>` path
+  placeholder resolved from the loaded `SKILL.md`.
+- The sync run's report splits a step's findings into **Drift** and **Synced**
+  tabs when it has both, and shows warn/info as a glyph; print/PDF shows both
+  panels.
 - **`create_chapter.py`, `sync_badges.py` and `install_ops_notes.py` call
   `aaif_events.gws` instead of their own wrappers.** All three sit in skills
   already on the README's not-zippable list — a *sibling* script in the same
@@ -78,6 +84,10 @@ plugin version is the `version` field in `.claude-plugin/plugin.json`.
   not parse is a hard failure rather than "not coupled".
 
 ### Added
+- A root Agent Plugins v1 `plugin.json` shared by Codex and Cursor, plus
+  cross-client capability and authorization guidance in `PORTABILITY.md`.
+- Repository validators for portable manifests, complete Agent Skills
+  frontmatter, and client-neutral resource/tool wording.
 - **`scripts/check_non_idempotent_retries.py`** (pre-commit + CI), because
   `retries=NO_RETRY` at the call site is opt-in and opt-in was not enough: the
   rule shipped with four counterexamples already in the tree. Two tiers — exact

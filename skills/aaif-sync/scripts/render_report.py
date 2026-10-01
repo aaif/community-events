@@ -96,10 +96,23 @@ def tiles(measured):
     return '<div class="stats">%s</div>' % "".join(cells)
 
 
+#: warn and info read as a glyph, not a word — a light for "still open",
+#: a check for "already matches". `bad` keeps its red pill: it is the one
+#: severity nothing here asked to change, and a wrong guess at its glyph
+#: would read as a design decision no one made.
+SEV_GLYPH = {"warn": "\U0001f7e0", "info": "✅"}
+
+
+def sev_cell(sev):
+    glyph = SEV_GLYPH.get(sev)
+    return ('<span class="sev-glyph" title="%s">%s</span>' % (e(sev), glyph) if glyph
+            else pill(sev, SEV_TONE.get(sev, "mute")))
+
+
 def _table(rows):
     body = "".join(
         "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
-        % (pill(f.get("severity", ""), SEV_TONE.get(f.get("severity"), "mute")),
+        % (sev_cell(f.get("severity", "")),
            e(f.get("kind")), e(f.get("subject")), e(f.get("detail")), e(f.get("action")))
         for f in rows)
     return ('<div class="tablewrap"><table><thead><tr><th></th><th>finding</th>'
@@ -107,17 +120,62 @@ def _table(rows):
             '<tbody>%s</tbody></table></div>' % body)
 
 
+def _folded(rows, ranked):
+    """A step's rows, ROWS_OPEN shown and the rest behind a disclosure.
+    `ranked` names the sort that put the worst first, so the rest folded
+    away are named as such — never true of `synced`, which has no severity
+    left to rank by."""
+    out = _table(rows[:ROWS_OPEN])
+    rest = rows[ROWS_OPEN:]
+    if rest:
+        tail = "and %d more, least severe last" if ranked else "and %d more"
+        out += ('<details><summary>%s</summary>%s</details>'
+                % (e(tail % len(rest)), _table(rest)))
+    return out
+
+
+def _panel(rows, panel, ranked, shown):
+    """One filtered slice of a step's findings, as a hideable panel."""
+    return ('<div class="fpanel" data-panel="%s"%s>%s</div>'
+            % (e(panel), "" if shown else " hidden", _folded(rows, ranked)))
+
+
 def findings_table(rows):
+    """A step's findings, split into two switchable panels: rows still open
+    (`severity` bad/warn — an unknown severity sorts as bad, same as the
+    single-table version this replaces) against rows already applied
+    (`severity` info, e.g. a written rewrite). One table reading top-to-bottom
+    mixed both, so a handful of drift rows were easy to miss among the
+    already-synced ones. A step with only one kind gets no tabs — there is
+    nothing to switch between. `.findings-block` needs no per-step id: the
+    driving script scopes every query to the clicked button's own block."""
     if not rows:
         return ""
-    rows = sorted(rows, key=lambda f: (SEV_ORDER.get(f.get("severity"), 9),
-                                       f.get("kind", ""), f.get("subject", "")))
-    head, rest = rows[:ROWS_OPEN], rows[ROWS_OPEN:]
-    out = _table(head)
-    if rest:
-        out += ('<details><summary>%s</summary>%s</details>'
-                % (e("and %d more, least severe last" % len(rest)), _table(rest)))
-    return out
+    drift = sorted((f for f in rows if f.get("severity") != "info"),
+                   key=lambda f: (SEV_ORDER.get(f.get("severity"), 9),
+                                  f.get("kind", ""), f.get("subject", "")))
+    synced = sorted((f for f in rows if f.get("severity") == "info"),
+                    key=lambda f: (f.get("kind", ""), f.get("subject", "")))
+    if not drift or not synced:
+        return _folded(drift or synced, ranked=bool(drift))
+    return ('<div class="findings-block">'
+            '<div class="tabs" role="tablist">'
+            '<button class="f" data-filter="drift" aria-pressed="true">Drift %d</button>'
+            '<button class="f" data-filter="synced" aria-pressed="false">Synced %d</button>'
+            '</div>%s%s</div>'
+            % (len(drift), len(synced),
+               _panel(drift, "drift", True, True), _panel(synced, "synced", False, False)))
+
+
+FINDINGS_JS = """
+document.querySelectorAll('.findings-block').forEach(block=>{
+  const btns=[...block.querySelectorAll('button.f')];
+  btns.forEach(b=>b.addEventListener('click',()=>{
+    btns.forEach(o=>o.setAttribute('aria-pressed',String(o===b)));
+    block.querySelectorAll('.fpanel').forEach(p=>{p.hidden = p.dataset.panel!==b.dataset.filter;});
+  }));
+});
+"""
 
 
 def step_state(s, doc):
@@ -318,7 +376,7 @@ def render(manifest, logs, docs):
             + "".join(log_section(s, logs.get(s.get("log") or "", "")) for s in steps)
             + "</section>"
             + rs.closing(meta="aaif.io · sync-reports/%s" % e(stamp)))
-    return rs.page("AAIF estate sync %s" % stamp, body)
+    return rs.page("AAIF estate sync %s" % stamp, body, script=FINDINGS_JS)
 
 
 def main(argv=None):

@@ -396,6 +396,21 @@ ul.plain{margin:14px 0 0; padding-left:20px; color:var(--ink-soft); font-size:.9
 ul.plain li{margin-bottom:7px}
 footer{color:var(--ink-faint); font-size:.8rem; border-top:1px solid var(--line-1);
   padding-top:20px}
+/* A step's findings, split into two switchable panels (render_report.py):
+   drift still open, synced already applied. The buttons are the shared .f
+   filter chip restyled to read as tabs — flush, square, an underline on the
+   active one — rather than the standalone pill-filter chips button.f means
+   on the audit's coverage matrix, which keep their own look untouched. */
+.findings-block{margin-top:6px}
+.findings-block .tabs{display:flex; gap:2px; border-bottom:1px solid var(--line-1)}
+.findings-block .tabs button.f{border-radius:0; border:none; border-bottom:2px solid transparent;
+  background:transparent; color:var(--ink-soft); padding:7px 16px; margin-bottom:-1px}
+.findings-block .tabs button.f:hover{background:var(--sunken); color:var(--ink-1)}
+.findings-block .tabs button.f[aria-pressed="true"]{background:transparent; color:var(--ink-1);
+  border-bottom-color:var(--accent)}
+.findings-block .fpanel{margin-top:10px}
+/* warn/info as a glyph in the finding table's first column — see SEV_GLYPH. */
+.sev-glyph{font-size:.95rem}
 @media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
 
 @media print{
@@ -409,7 +424,8 @@ footer{color:var(--ink-faint); font-size:.8rem; border-top:1px solid var(--line-
   body{font-size:9.5pt; background:#fff}
   .wrap{max-width:none; padding:0; gap:22px}
   h1{font-size:22pt} h2{font-size:13pt} h3{font-size:10.5pt}
-  .controls{display:none}
+  .controls,.findings-block .tabs{display:none}
+  .fpanel{display:block!important}
   .tablewrap{overflow:visible; border-radius:0}
   table{min-width:0; font-size:8pt}
   th,td{padding:3.5px 7px}

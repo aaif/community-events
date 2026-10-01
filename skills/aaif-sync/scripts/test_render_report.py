@@ -153,11 +153,16 @@ check("exactly ROWS_OPEN rows do not fold",
 _exact["findings"].append({"kind": "tidy", "subject": "row x", "detail": "",
                            "severity": "info", "action": ""})
 check("ROWS_OPEN + 1 rows fold exactly one",
-      "and 1 more, least severe last" in rr.render(MANIFEST, LOGS, dict(DOCS, chapters=_exact)), True)
+      "and 1 more" in rr.render(MANIFEST, LOGS, dict(DOCS, chapters=_exact)), True)
 check("a long finding list folds past ROWS_OPEN",
-      ("and %d more" % (61 - rr.ROWS_OPEN) in _long, _long.count("<td>tidy</td>")), (True, 60))
+      # 1 bad + 60 info split into a drift tab (unfolded) and a synced tab
+      # (folds at ROWS_OPEN) — folding is per-panel now, not over all rows.
+      ("and %d more" % (60 - rr.ROWS_OPEN) in _long, _long.count("<td>tidy</td>")), (True, 60))
 check("...and the worst row stays open, above the fold",
-      _long.index("bad one") < _long.index("and %d more" % (61 - rr.ROWS_OPEN)), True)
+      _long.index("bad one") < _long.index("and %d more" % (60 - rr.ROWS_OPEN)), True)
+check("drift and synced findings switch between two tabs",
+      ("data-filter=\"drift\"" in _long, "data-filter=\"synced\"" in _long,
+       "findings-block" in _long), (True, True, True))
 check("the design system is embedded (tokens, not a fallback note)",
       "AAIF design tokens were not available" in page, False)
 
