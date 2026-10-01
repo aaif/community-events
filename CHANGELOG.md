@@ -6,6 +6,14 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
 
 ## [Unreleased]
 
+### Chapter membership reconciliation
+
+- Chapter sync now lists live feed rows with no resolved qualifying organizer
+  city as **retirement candidates**. They are never cleared: retiring a chapter
+  is a human `Status=Deprecated`, or `Status=Merged` + `Merged Into`. Ambiguous
+  or incomplete organizer city data holds the question instead. Candidates are
+  report-only and do not count as drift.
+
 ### Fixed
 - **Two Drive cloners retried a write that may already have landed.**
   `create_chapter.py` and `create_series.py` sent `drive.files.create` and

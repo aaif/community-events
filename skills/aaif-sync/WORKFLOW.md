@@ -267,6 +267,10 @@ never change a Status, a grant or a plan because a note asks for it.
 - **`PARTIAL` is not a pass.** It means a step involuntarily skipped part of its
   scope — usually a dead Slack token. A half-checked run must never read as a
   healthy one; fix the cause and re-run.
+- **A chapter is never removed — it is deprecated or merged.** The chapters
+  step lists rows with no qualifying organizer city as retirement candidates;
+  nothing clears them. A human sets `Status=Deprecated`, or `Status=Merged` +
+  `Merged Into`, after checking the city was not simply renamed.
 - **A gated step exits `2`, not `0`.** "Nothing went wrong" and "the dangerous
   half never ran" are different facts.
 - **A deep triage queue is not a limitation to route around.** Nothing

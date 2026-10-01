@@ -383,7 +383,8 @@ check("chapters summary is the headline's counts, no names",
 check("chapters tiles are the report's counts, in order",
       [(m["label"], m["value"]) for m in _doc["measured"]],
       [("qualifying organizers", 2), ("cities", 2), ("chapter rows", 2), ("adds", 1),
-       ("new rows", 1), ("near-misses", 1), ("unresolved", 1)])
+       ("new rows", 1), ("near-misses", 1), ("unresolved", 1),
+       ("retirement candidates", 0)])
 _by_kind = {f["kind"]: f for f in _doc["findings"]}
 check("one finding per add / new row / near-miss / malformed row",
       sorted(_by_kind), ["add", "malformed text", "near-miss", "new row"])
@@ -728,5 +729,66 @@ with mock.patch.dict(os.environ, {"AAIF_SLACK_WRITE_TOKEN": "xoxb-secret",
             if k.startswith("AAIF_SLACK_") or k == "LUMA_API_KEY"],
            (_seen["env"] or {}).get("KEEP_ME")),
           (True, [], "1"))
+# --- a chapter row is never cleared: unsupported cities are retirement CANDIDATES
+_eligible = [entry(2, "Ada", "Boston")]
+_feed = [chap(2, "Boston", "Ada"), chap(3, "Oslo", "Bo")]
+check("a city with no qualifying organizer is a retirement candidate",
+      sync_chapters.retirement_candidates(_eligible, _feed), ([_feed[1]], []))
+_retired = [chap(2, "Boston", "Ada"), dict(chap(3, "Oslo", "Bo"), status="Deprecated"),
+            dict(chap(4, "Noida", ""), status="Merged")]
+check("a row already Deprecated or Merged is never a candidate again",
+      sync_chapters.retirement_candidates(_eligible, _retired), ([], []))
+_u = [{"name": "Bo", "g": "Other", "h": "", "events": "", "why": "",
+       "placed": [], "inferred": []}]
+sync_chapters.annotate_unresolved(_u, _feed)
+check("an unresolved accepted organizer already placed on a row holds the question",
+      sync_chapters.retirement_candidates(_eligible, _feed, _u), ([], [_feed[1]]))
+_u[0]["placed"], _u[0]["inferred"] = [], ["Oslo"]
+check("a free-text city hint never decides it either way",
+      sync_chapters.retirement_candidates(_eligible, _feed, _u), ([_feed[1]], []))
+check("malformed qualifying data holds the affected city",
+      sync_chapters.retirement_candidates(_eligible, _feed, malformed=[{"city": "Oslo"}]),
+      ([], [_feed[1]]))
+check("a near-miss candidate row is held",
+      sync_chapters.retirement_candidates(_eligible, _feed,
+                                          near_misses=[{"candidates": [("Oslo", 3)]}]),
+      ([], [_feed[1]]))
+
+# Candidates are a human's queue, not drift: they never reach a write and never
+# hold the exit at 2, or every run would report drift that --write cannot clear.
+_code, _out = json_out_after([empty_state(retire=[_feed[1]])], [])
+check("a candidate-only report exits 0 and names the city as a finding",
+      (_code, [(f["kind"], f["subject"]) for f in _out["findings"]]),
+      (0, [("retirement candidate", "Oslo")]))
+_applied = []
+with _tempfile.TemporaryDirectory() as _d, \
+     mock.patch.object(sync_chapters, "compute", side_effect=[empty_state(retire=[_feed[1]])]), \
+     mock.patch.object(sync_chapters, "print_report", lambda s: None), \
+     mock.patch.object(sync_chapters, "gws_json", side_effect=lambda *a, **k: _applied.append(k)), \
+     mock.patch.object(sys, "argv", ["sync_chapters.py", "--write", "--json-out",
+                                     os.path.join(_d, "o.json")]), \
+     _ctx.redirect_stdout(_io.StringIO()):
+    _code = sync_chapters.main()
+check("--write with only candidates sends nothing to Sheets", (_code, _applied), (0, []))
+
+# The real read -> proposal path over an unsupported row: the proposal carries
+# no write for it at all, so nothing downstream can clear it.
+_intake = [["Status", "Full name", "City (Existing)", "City (New)",
+            "Run events before?", "Why organize / ties"],
+           ["Accepted", "Ada", "Boston", "", "", ""],
+           ["Prospect", "Bo", "Oslo", "", "", ""]]
+_grid = [HEADERS, list(ROW2), [""] * len(HEADERS)]
+_grid[2][HEADERS.index("City")] = "Oslo"
+_grid[2][HEADERS.index("Organizers")] = "Bo"
+with mock.patch.object(sync_chapters, "get_values", side_effect=lambda fid, _r:
+                       _intake if fid == sync_chapters.INTAKE_ID else _grid):
+    _computed = sync_chapters.compute()
+check("a prospect-only city is a candidate through the real intake parser",
+      [c["city"] for c in _computed.retire], ["Oslo"])
+check("...and the proposal holds no add or row write that touches it",
+      [x["row"] for x in _computed.adds + _computed.new_rows if x["row"] == 3], [])
+check("apply_changes has no removal parameter to pass candidates through",
+      "removals" in sync_chapters.apply_changes.__code__.co_varnames, False)
+
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)
