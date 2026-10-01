@@ -11,7 +11,9 @@ Push organizer decisions from the **AAIF Community Intake Ops** sheet
 **AAIF Community Chapters List** (id `18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg`,
 tab `Chapters & Teams`): every organizer whose Status is **`Accepted`** or
 **`Existing (from MLOps)`** must appear in their city row's **Organizers** column,
-and cities with no row yet get one appended. The intake sheet is only ever **read**;
+and cities with no row yet get one appended. Rows with no resolved qualifying
+organizer city are reported as retirement candidates and **never cleared**. The
+intake sheet is only ever **read**;
 all writes go to the chapters list. Idempotent — a second run right after a sync
 proposes zero changes.
 
@@ -21,6 +23,20 @@ near-miss city names, unresolved-city rows, and deduped duplicates. `--write` ap
 everything in **one** `values batchUpdate` — a partial failure cannot half-sync the sheet.
 
 ### Rules
+
+- **A row is never removed — it is deprecated or merged, by a human.** Every
+  live City (Status not `Merged`/`Deprecated`) is compared with resolved
+  qualifying intake cities; one with none is a *retirement candidate*, listed in
+  the report and as a finding. No write path consumes the list: retirement is
+  `Status=Deprecated`, or `Status=Merged` + `Merged Into`, set by hand, which
+  keeps the row and its Summary/Image/Ops Notes and stops it counting toward the
+  cap. Near-match candidates, malformed city/name rows, and unresolved
+  organizers already named on a chapter row *hold* the question instead. Free-text
+  city hints decide nothing. Candidates leave the exit code alone, or every run
+  would report drift that `--write` can never clear; they still appear on the
+  run page's Drift tab, because they are decisions waiting for a person. A filled
+  but unrecognised Status (`deprecated`, `Retired`) is named on the candidate
+  line, since only the exact spellings retire a row.
 
 - **Status filter is exact-string**: `Accepted` and `Existing (from MLOps)` only.
   (Matching a prefix like `Existing` once missed all 23 MLOps rows.)

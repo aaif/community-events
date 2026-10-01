@@ -4,7 +4,10 @@ AAIF Community Chapters List.
 
 Every intake organizer whose Status is "Accepted" or "Existing (from MLOps)"
 must appear in the Organizers column of their city's row on the chapters list;
-cities with no row yet get one appended. The intake sheet is only ever READ.
+cities with no row yet get one appended. A row whose city has no qualifying
+organizer is reported as a RETIREMENT CANDIDATE and never cleared: retiring a
+chapter is a human decision, recorded as Status=Deprecated, or Status=Merged
+plus Merged Into. The intake sheet is only ever READ.
 
 Usage:
   python3 sync_chapters.py            # report + proposed changes, writes nothing
@@ -737,6 +740,55 @@ def annotate_unresolved(unresolved, chapters):
         u["inferred"] = [c["city"] for c in chapters
                          if re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(fold(c["city"])), text)]
 
+def retirement_candidates(entries, chapters, unresolved=(), malformed=(), near_misses=()):
+    """(candidates, held): live rows whose city has no resolved qualifying organizer.
+
+    Report-only, and deliberately so: no write path consumes this. A chapter is
+    never removed from the feed — clearing a row also destroys its hand-written
+    Summary, Image and Ops Notes, and the first version of this check proposed
+    clearing 20 rows of which several were city-name mismatches rather than dead
+    chapters (a capital-city rename whose organizers still name the old city, a
+    shadow chapter with no roster by design). Retirement is recorded instead, by
+    a human, as Status=Deprecated or Status=Merged + Merged Into, which keeps the
+    row and stops it counting toward the cap.
+
+    Rows already retired are skipped. Free-text city hints never decide either
+    way; a row an unresolved or malformed qualifying organizer may belong to,
+    or a near-miss candidate, is HELD — its data needs fixing before the
+    question can be asked.
+    """
+    accepted = {fold_city(e["city"]) for e in entries}
+    blocked = {row for m in near_misses for _city, row in m["candidates"]}
+    unclear = set()
+    # A row is malformed because of its name OR its city, and a bad city value
+    # ('Oslo<b>' folds to 'oslo b') no longer equals the chapter's key. Hold any
+    # chapter that the folded value starts with, on a word boundary.
+    bad_cities = [fold_city(m["city"]) for m in malformed if m.get("city")]
+    for u in unresolved:
+        blocked.update(row for _city, row in u.get("placed", []))
+        city = resolve_city(u.get("g", ""), u.get("h", ""))
+        if city:
+            unclear.add(fold_city(city))
+    candidates, held = [], []
+    for c in chapters:
+        key = fold_city(c["city"])
+        if key in accepted or (c.get("status") or "").strip() in RETIRED_STATUSES:
+            continue
+        bad = any(b == key or b.startswith(key + " ") for b in bad_cities)
+        (held if c["row"] in blocked or key in unclear or bad else candidates).append(c)
+    return candidates, held
+
+def status_note(c):
+    """Why a row whose Status was filled in is still a candidate.
+
+    The dropdown is advisory, so `deprecated` or `Retired` can be typed, and
+    only the exact RETIRED_STATUSES spellings retire a row. Without this the
+    person who set it sees the row re-listed every run with no reason given.
+    """
+    st = (c.get("status") or "").strip()
+    return (" (Status %r is not %s)" % (st, " or ".join(RETIRED_STATUSES))
+            if st and st not in RETIRED_STATUSES else "")
+
 # ----------------------------------------------------------------------------
 # Report
 # ----------------------------------------------------------------------------
@@ -833,6 +885,18 @@ def print_report(st):
         for v in collisions:
             print("  %s" % ", ".join("%r (row %d)" % p for p in v))
 
+    if st.retire:
+        print("\nRetirement candidates — no qualifying organizer names this city "
+              "(NEVER cleared; a human decides):")
+        for c in st.retire:
+            print("  row %d: %s%s" % (c["row"], c["city"], status_note(c)))
+        print("  Check for a renamed or misfiled city first, then set Status=Deprecated, "
+              "or Status=Merged with %r = the chapter it folded into. "
+              "chapter_health.py ranks the evidence." % H_MERGED_INTO)
+    if st.retire_held:
+        print("\nRetirement question HELD — fix the ambiguous or incomplete organizer city first:")
+        for c in st.retire_held:
+            print("  row %d: %s" % (c["row"], c["city"]))
     if not adds and not new_rows:
         print("\nNo changes needed — the chapters list is in sync with the intake.")
 
@@ -861,6 +925,16 @@ def build_findings(report, st, held=()):
     report.measure("new rows", len(new_rows), "warn" if new_rows else "ok")
     report.measure("near-misses", len(near_misses), "warn" if near_misses else None)
     report.measure("unresolved", len(st.unresolved), "warn" if st.unresolved else None)
+    report.measure("retirement candidates", len(st.retire), "warn" if st.retire else None)
+    for c in st.retire:
+        report.find("retirement candidate", c["city"],
+                    "row %d: no qualifying organizer names this city%s" % (c["row"], status_note(c)),
+                    severity="warn", action="never cleared: check for a renamed city, then "
+                    "set Status=Deprecated, or Merged + %s" % H_MERGED_INTO)
+    for c in st.retire_held:
+        report.find("retirement held", c["city"],
+                    "row %d: incomplete or ambiguous organizer city data" % c["row"],
+                    severity="warn", action="fix the structured intake city and re-run")
     held_cities = {fold_city(h["city"]) for h in held}
     for a in adds:
         report.find("add", a["city"], "row %d: + %s" % (a["row"], "; ".join(map(redact_name, a["names"]))),
@@ -894,15 +968,18 @@ def build_findings(report, st, held=()):
 # takes the State itself, not *state), so adding a field can't silently rebind a
 # positional parameter the way it did when `layout` landed.
 State = namedtuple("State", "entries unresolved counts dupes chapters last_row "
-                            "adds new_rows near_misses layout malformed")
+                            "adds new_rows near_misses layout malformed retire retire_held",
+                   defaults=((), ()))
 
 def compute():
     entries, unresolved, counts, dupes, malformed = read_intake()
     chapters, last_row, layout = read_chapters()
     adds, new_rows, near_misses = build_proposal(entries, chapters, last_row)
     annotate_unresolved(unresolved, chapters)
+    retire, retire_held = retirement_candidates(entries, chapters, unresolved,
+                                                malformed, near_misses)
     return State(entries, unresolved, counts, dupes, chapters, last_row,
-                 adds, new_rows, near_misses, layout, malformed)
+                 adds, new_rows, near_misses, layout, malformed, retire, retire_held)
 
 def new_row_values(n, layout):
     """Full-width feed row for a brand-new city.

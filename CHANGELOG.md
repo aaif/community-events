@@ -7,6 +7,12 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
 ## [Unreleased]
 
 ### Fixed
+- **Chapter sync never clears a chapter row.** A live feed row with no
+  resolved qualifying organizer city is listed as a *retirement candidate*;
+  retiring it is a human `Status=Deprecated`, or `Status=Merged` + `Merged Into`.
+  Ambiguous or incomplete organizer city data holds the question instead.
+  Candidates are report-only: they leave the exit code alone and appear on the
+  run page as decisions waiting for a person.
 - **Two Drive cloners retried a write that may already have landed.**
   `create_chapter.py` and `create_series.py` sent `drive.files.create` and
   `drive.files.copy` at the default five attempts. A create that succeeded
