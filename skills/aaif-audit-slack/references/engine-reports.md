@@ -66,7 +66,7 @@ opposed to the chapter rooms (engine 1) and the plumbing (`#general`, `#random`,
 `#job-posts`). Touches no Drive file except to **read** the classification.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/audit_topics.py
+python3 <skill-root>/scripts/audit_topics.py
 ```
 
 Writes `slack-topics-audit.html`.
@@ -110,7 +110,7 @@ can prove "5 or more" but never "fewer than 5", and returns `None` there.
 Structural audit of channels and accounts. Touches no Drive file.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/audit_members.py
+python3 <skill-root>/scripts/audit_members.py
 ```
 
 Writes `slack-members-audit.html`.
@@ -142,7 +142,7 @@ message volume, distinct posters and join noise over a trailing window
 counts and poster ids only, in the same 0600 cache as everything else.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/audit_activity.py
+python3 <skill-root>/scripts/audit_activity.py
 ```
 
 Writes `slack-activity-audit.html`. Reuses the shared channel cache;

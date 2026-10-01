@@ -572,7 +572,7 @@ with mock.patch.object(sync.subprocess, "run",
     sync.guard_report_dir("/tmp/aaif-sync-elsewhere")
 check("a report dir outside the repo is never second-guessed", _outside, [])
 
-# --- each skill's SKILL.md names every test beside it --------------------------
+# --- each skill's loaded documentation names every test beside it --------------
 # It had drifted before: three tests existed that the list did not mention,
 # including the one for provision_channels.py, the most dangerous script here.
 # A list that is almost complete is worse than none — it reads as "all of them".
@@ -716,6 +716,12 @@ for _skill in ("aaif-sync", "aaif-sync-chapters", "aaif-sync-organizers",
         continue
     with open(_doc_path, encoding="utf-8") as _fh:
         _doc = _fh.read()
+    _workflow_path = os.path.join(_SKILLS, _skill, "WORKFLOW.md")
+    if os.path.exists(_workflow_path):
+        check("%s/SKILL.md links WORKFLOW.md" % _skill,
+              "(WORKFLOW.md)" in _doc, True)
+        with open(_workflow_path, encoding="utf-8") as _fh:
+            _doc += "\n" + _fh.read()
     for _sub in ("scripts", "migrations"):
         _d = os.path.join(_SKILLS, _skill, _sub)
         if not os.path.isdir(_d):
@@ -723,7 +729,7 @@ for _skill in ("aaif-sync", "aaif-sync-chapters", "aaif-sync-organizers",
         _missing = sorted(f for f in os.listdir(_d)
                           if f.startswith("test_") and f.endswith(".py")
                           and f not in _doc)
-        check("%s/SKILL.md names every test in %s/" % (_skill, _sub), _missing, [])
+        check("%s documentation names every test in %s/" % (_skill, _sub), _missing, [])
 
 # --- the run's Slack memo lives and dies with the run directory ---------------
 # It must sit inside the run dir (0700, gitignored, deleted with the reports), the

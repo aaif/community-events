@@ -1,10 +1,15 @@
 ---
 name: aaif-backup
 description: Take a versioned local backup of critical AAIF ops data — the Community Intake Ops sheet by default, or any Drive file / local file you name. Snapshots are immutable and timestamped so you keep a full history. Use when asked to back up / snapshot the intake data (or another file) before a risky edit.
-argument-hint: "[driveFileId | ./local/path]"
+compatibility: Requires Python 3 and local filesystem access; Drive backups also require authenticated gws and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[driveFileId | ./local/path]'
 ---
 
 # Backup AAIF Ops Data
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -33,16 +38,16 @@ Drive targets. Local-file backups need no auth.
 
 ```bash
 # default — back up the AAIF Community Intake Ops sheet (exported to .xlsx)
-python3 ${CLAUDE_SKILL_DIR}/scripts/backup.py
+python3 <skill-root>/scripts/backup.py
 
 # back up any Drive file by id (native Docs/Sheets/Slides -> .docx/.xlsx/.pptx)
-python3 ${CLAUDE_SKILL_DIR}/scripts/backup.py <driveFileId>
+python3 <skill-root>/scripts/backup.py <driveFileId>
 
 # back up a local file (copied verbatim)
-python3 ${CLAUDE_SKILL_DIR}/scripts/backup.py ./path/to/file.xlsx
+python3 <skill-root>/scripts/backup.py ./path/to/file.xlsx
 
 # write snapshots somewhere other than ./backups
-python3 ${CLAUDE_SKILL_DIR}/scripts/backup.py --dest /some/dir
+python3 <skill-root>/scripts/backup.py --dest /some/dir
 ```
 
 ## Where snapshots land
@@ -96,5 +101,5 @@ There is no automated restore — it is a deliberate, eyes-open step.
 ## Verify
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_backup.py
+python3 <skill-root>/scripts/test_backup.py
 ```

@@ -1,7 +1,9 @@
 ---
 name: aaif-recap-post
 description: Write the post-event LinkedIn recap for an AAIF event (posted within 48 hours, with photos). Use when asked to draft the recap, thank-you, or wrap-up post after an AAIF event.
-argument-hint: '[event title / paste tracker entry]'
+compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin checkout, Python 3, authenticated gws, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[event title / paste tracker entry]'
 ---
 
 # AAIF Post-Event Recap (LinkedIn)

@@ -1,10 +1,15 @@
 ---
 name: aaif-audit-slack
 description: Audit the community Slack workspace and report it as one HTML page — whether every chapter has its public and organizer channels and the right people in them, which subject-matter rooms have gone quiet or overlap, and what the headline member count is actually made of. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in an -organizers channel, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
-argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws, an AAIF Slack token, network access, and Chrome/Chromium for PDF rendering.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME]'
 ---
 
 # AAIF Slack Audit
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 Three engines over one workspace, same house rules — **everything is read-only**.
 
@@ -102,9 +107,9 @@ compose. Order is fixed; do not reorder.
 
 ```bash
 for s in organizers activity topics members; do
-  python3 ${CLAUDE_SKILL_DIR}/scripts/audit_$s.py
+  python3 <skill-root>/scripts/audit_$s.py
 done
-python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py   # -> slack-full-audit.html
+python3 <skill-root>/scripts/summarize_audits.py   # -> slack-full-audit.html
 rm -f slack-organizers-audit.html slack-topics-audit.html \
       slack-members-audit.html slack-activity-audit.html   # scaffolding, holds PII
 ```

@@ -40,7 +40,7 @@ repository — there is nothing to commit them to.
 ## The single-HTML deliverable (`summarize_audits.py`)
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/summarize_audits.py
+python3 <skill-root>/scripts/summarize_audits.py
 ```
 
 Writes `slack-full-audit.html`: a short index of anchor links, then four full

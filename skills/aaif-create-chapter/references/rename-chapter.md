@@ -22,10 +22,10 @@ chapters to folders on. The shape to look for: a feed row whose `Chapter Folder`
 link resolves to a folder with a different name.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/rename_chapter.py --from Scotland --to Edinburgh
-python3 ${CLAUDE_SKILL_DIR}/scripts/rename_chapter.py --from Scotland --to Edinburgh --write
+python3 <skill-root>/scripts/rename_chapter.py --from Scotland --to Edinburgh
+python3 <skill-root>/scripts/rename_chapter.py --from Scotland --to Edinburgh --write
 # a folder already renamed, contents not (a half-finished rename):
-python3 ${CLAUDE_SKILL_DIR}/scripts/rename_chapter.py --folder Madison \
+python3 <skill-root>/scripts/rename_chapter.py --folder Madison \
     --from "Madison, WI" --to Madison --slug-from madisonwi --slug-to madison --write
 ```
 

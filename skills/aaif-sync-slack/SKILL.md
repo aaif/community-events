@@ -1,10 +1,15 @@
 ---
 name: aaif-sync-slack
 description: Record where each chapter actually lives — its Drive folder and its public, organizer and country Slack channels — on the Chapters List, then create the rooms that plan names, add accepted organizers to them, and keep each country channel's chapter directory current. Reports and proposes by default; every Slack write needs explicit human approval. Use when asked to map chapters to Slack channels, create or rename a chapter channel, add organizers to their channel, post a country directory, or remove non-organizers from an organizer room.
-argument-hint: '[resources|provision|invite|directory|prune] [--write] [--i-have-approval]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws, an AAIF Slack token, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[resources|provision|invite|directory|prune] [--write] [--i-have-approval]'
 ---
 
 # The chapter resource map, and the Slack rooms it names
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 **Phases 5 and 6 of the estate sync.** `aaif-sync` runs the whole pipeline; use
 this skill when the request is specifically about Slack channels or the resource
@@ -72,21 +77,21 @@ check.
 ## Commands
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py                 # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py --only folder   # no Slack auth needed
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py --city Boston
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py --plan          # name channels to be created
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_resources.py --write
+python3 <skill-root>/scripts/sync_resources.py                 # report
+python3 <skill-root>/scripts/sync_resources.py --only folder   # no Slack auth needed
+python3 <skill-root>/scripts/sync_resources.py --city Boston
+python3 <skill-root>/scripts/sync_resources.py --plan          # name channels to be created
+python3 <skill-root>/scripts/sync_resources.py --write
 
-python3 ${CLAUDE_SKILL_DIR}/scripts/provision_channels.py             # report
-python3 ${CLAUDE_SKILL_DIR}/scripts/provision_channels.py --write --i-have-approval
+python3 <skill-root>/scripts/provision_channels.py             # report
+python3 <skill-root>/scripts/provision_channels.py --write --i-have-approval
 
-python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py              # who is missing
-python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py --city Berlin
-python3 ${CLAUDE_SKILL_DIR}/scripts/invite_organizers.py --write --i-have-approval
+python3 <skill-root>/scripts/invite_organizers.py              # who is missing
+python3 <skill-root>/scripts/invite_organizers.py --city Berlin
+python3 <skill-root>/scripts/invite_organizers.py --write --i-have-approval
 
-python3 ${CLAUDE_SKILL_DIR}/scripts/post_country_directory.py         # what would change
-python3 ${CLAUDE_SKILL_DIR}/scripts/prune_organizers.py               # the only remover
+python3 <skill-root>/scripts/post_country_directory.py         # what would change
+python3 <skill-root>/scripts/prune_organizers.py               # the only remover
 ```
 
 Prereq for every Slack step: a token with `channels:write`, `groups:write` and
@@ -143,11 +148,11 @@ history and the transcript both keep it.
       `aaif-audit-slack` reports the chapters as covered.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_resources.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_provision_channels.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_invite_organizers.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_post_country_directory.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_prune_organizers.py
+python3 <skill-root>/scripts/test_sync_resources.py
+python3 <skill-root>/scripts/test_provision_channels.py
+python3 <skill-root>/scripts/test_invite_organizers.py
+python3 <skill-root>/scripts/test_post_country_directory.py
+python3 <skill-root>/scripts/test_prune_organizers.py
 ```
 
 ## References — load on demand

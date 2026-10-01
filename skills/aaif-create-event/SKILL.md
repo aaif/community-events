@@ -1,10 +1,15 @@
 ---
 name: aaif-create-event
 description: Create a new event in an AAIF chapter or online series by cloning the example section in its Event Tracker.docx and stamping all phase task due-dates from the event date; can then create the live Luma event page from the entry (proposal shown first, created only on explicit user approval). Use when asked to add/schedule/set up a new event for a chapter or series, or to put an event on Luma.
-argument-hint: '<chapter|series> --title "..." --date "..."'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma creation also requires a calendar API key.
+metadata:
+  com.anthropic.claude-code.argument-hint: '<chapter|series> --title "..." --date "..."'
 ---
 
 # AAIF Create Event
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -59,20 +64,20 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
       them** (or any `tracker.docx` / `luma.md` / `banner.png` / `new.*`).
 - [ ] **2. Preview** the edit. `--dry-run` writes nothing, not even locally:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
+      python3 <skill-root>/scripts/create_event.py $WORK/tracker.docx \
         --title "Eval Night · Builder Series" \
         --date "Wed · August 12, 2026 · 18:00 — late" --dry-run
       ```
 - [ ] **3. Apply** it locally (deterministic; aborts if the title already exists):
       ```bash
       # in-person (chapter) tracker
-      python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
+      python3 <skill-root>/scripts/create_event.py $WORK/tracker.docx \
         --title "..." --date "..." \
         [--theme ...] [--venue ...] [--location ...] [--speakers ...] \
         [--luma ...] [--capacity ...] [--organizer ...]
 
       # online (series) tracker — --platform / --join, NOT --venue / --location
-      python3 ${CLAUDE_SKILL_DIR}/scripts/create_event.py $WORK/tracker.docx \
+      python3 <skill-root>/scripts/create_event.py $WORK/tracker.docx \
         --title "..." --date "..." [--platform "Zoom Webinar"] [--join "lu.ma/..."]
       ```
       Omitted fields keep the example's text for the organizer to fill later.
@@ -104,7 +109,7 @@ the URL in the tracker's `LUMA URL` field (or set the key up and re-run).
       for the user to check.
 - [ ] **2. Propose** — the default, sends nothing:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/luma_push.py $WORK/tracker.docx "Eval Night · Builder Series" \
+      python3 <skill-root>/scripts/luma_push.py $WORK/tracker.docx "Eval Night · Builder Series" \
         --timezone America/Los_Angeles --description-file $WORK/luma.md --cover $WORK/banner.png \
         --host "maya@example.com" --host "vol@example.com:check-in"
       ```
@@ -138,6 +143,6 @@ the URL in the tracker's `LUMA URL` field (or set the key up and re-run).
 ## Verify
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_event.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/test_luma_push.py
+python3 <skill-root>/scripts/test_create_event.py
+python3 <skill-root>/scripts/test_luma_push.py
 ```

@@ -1,7 +1,9 @@
 ---
 name: aaif-speaker-bio
 description: Write a speaker bio (a 60-80 word bio + a one-liner) for an AAIF in-person event speaker. Use when asked to draft/write a speaker bio for an AAIF event or chapter.
-argument-hint: '[speaker name / paste their tracker row]'
+compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin checkout, Python 3, authenticated gws, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[speaker name / paste their tracker row]'
 ---
 
 # AAIF Speaker Bio

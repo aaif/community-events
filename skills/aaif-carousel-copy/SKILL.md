@@ -1,7 +1,9 @@
 ---
 name: aaif-carousel-copy
 description: Write copy for a 6-slide LinkedIn carousel announcing an AAIF event. Use when asked to draft carousel slides/copy for an AAIF event (built from the LinkedIn Carousel template).
-argument-hint: '[event title / paste tracker entry]'
+compatibility: Writing works in skills-compatible agents; tracker lookup and deck export require the full plugin checkout, Python 3, authenticated gws, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[event title / paste tracker entry]'
 ---
 
 # AAIF LinkedIn Carousel Copy

@@ -29,13 +29,13 @@ folder with no sheet row is reported and skipped, never guessed at.
 
 ```bash
 # Plan (default) — per-chapter drift in pixels, writes nothing:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py
+python3 <skill-root>/scripts/backfill_map_dots.py
 
 # Apply:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py --write
+python3 <skill-root>/scripts/backfill_map_dots.py --write
 
 # One chapter, coordinates given rather than read from the sheet:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_map_dots.py \
+python3 <skill-root>/scripts/backfill_map_dots.py \
     --city Shanghai --lat 31.2304 --lon 121.4737 --write
 ```
 
@@ -94,17 +94,17 @@ re-uploaded and **re-running is a no-op**.
 
 ```bash
 # Plan (default) — list every template and its footer, writes nothing:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py
+python3 <skill-root>/scripts/backfill_host_footer.py
 
 # Apply across the estate:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py --write
+python3 <skill-root>/scripts/backfill_host_footer.py --write
 
 # One chapter (matches anywhere in the Drive path, case-insensitive):
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py \
+python3 <skill-root>/scripts/backfill_host_footer.py \
     --chapter "New York City" --write
 
 # Test the XML engine on a local file, no Drive at all:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_host_footer.py \
+python3 <skill-root>/scripts/backfill_host_footer.py \
     --rework-local ./Event-Hero-Square.pptx
 ```
 
@@ -157,17 +157,17 @@ it would change, which also means it does not exercise the repack — only
 
 ```bash
 # Plan (default) — show every template's roster, writes nothing:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py
+python3 <skill-root>/scripts/backfill_projects.py
 
 # Apply across the estate:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py --write
+python3 <skill-root>/scripts/backfill_projects.py --write
 
 # One chapter (matches anywhere in the Drive path, case-insensitive):
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py \
+python3 <skill-root>/scripts/backfill_projects.py \
     --chapter "New York City" --write
 
 # Test the XML engine on a local file, no Drive at all:
-python3 ${CLAUDE_SKILL_DIR}/scripts/backfill_projects.py \
+python3 <skill-root>/scripts/backfill_projects.py \
     --rewrite-local ./Slides.pptx
 ```
 

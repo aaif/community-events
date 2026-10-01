@@ -1,10 +1,15 @@
 ---
 name: aaif-sync-badges
 description: Sync AAIF chapter organizer badges (SVG + PNG) into each chapter's own Drive folder — generate missing badges for chapters that don't have them yet, and optionally regenerate all of them after a design change. Use when asked to add/sync/update/regenerate chapter organizer badges.
-argument-hint: '[--chapter <City Name>] [--regenerate] [--write]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; PNG rendering requires CairoSVG and Chrome/Chromium.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[--chapter <City Name>] [--regenerate] [--write]'
 ---
 
 # Sync AAIF Chapter Badges
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -70,16 +75,16 @@ one style's files never invokes the other style's renderer.
 
 ```bash
 # Plan (default) — nothing is created/uploaded, just reported:
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py
+python3 <skill-root>/scripts/sync_badges.py
 
 # Apply — create missing chapter subfolders and upload missing files:
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --write
+python3 <skill-root>/scripts/sync_badges.py --write
 
 # Regenerate every file (after a design change) and overwrite what's already there:
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --write --regenerate
+python3 <skill-root>/scripts/sync_badges.py --write --regenerate
 
 # One chapter only (Drive chapter-folder name, case-insensitive substring):
-python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py --chapter "Mexico City" --write
+python3 <skill-root>/scripts/sync_badges.py --chapter "Mexico City" --write
 ```
 
 ## What it does and doesn't touch
@@ -106,13 +111,13 @@ ids and revision history survive. Plan-only by default:
 
 ```bash
 # Plan — nothing is moved:
-python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_legacy_badges.py
+python3 <skill-root>/scripts/migrate_legacy_badges.py
 
 # Apply the moves:
-python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_legacy_badges.py --write
+python3 <skill-root>/scripts/migrate_legacy_badges.py --write
 
 # Also trash (Drive trash, recoverable) a legacy folder left empty by the move:
-python3 ${CLAUDE_SKILL_DIR}/scripts/migrate_legacy_badges.py --write --trash-empty
+python3 <skill-root>/scripts/migrate_legacy_badges.py --write --trash-empty
 ```
 
 `--trash-empty` is resilient per folder: one folder's trash failing (e.g. a
@@ -139,7 +144,7 @@ Plan, approve, write, verify. Nothing is created without `--write`.
 
 - [ ] **1. Plan** (the default) to see what is missing:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/sync_badges.py
+      python3 <skill-root>/scripts/sync_badges.py
       ```
       Read every `+ create folder` / `upload` / `overwrite` line before writing.
 - [ ] **2. Show the user the plan and get approval.**
@@ -149,10 +154,10 @@ Plan, approve, write, verify. Nothing is created without `--write`.
       inside the chapter's own `Badges/` subfolder.
 - [ ] **5. Unit tests**, after any edit to a generator:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/test_sync_badges.py
-      python3 ${CLAUDE_SKILL_DIR}/scripts/test_make_badges.py
-      python3 ${CLAUDE_SKILL_DIR}/scripts/test_make_agent_badge.py
-      python3 ${CLAUDE_SKILL_DIR}/scripts/test_migrate_legacy_badges.py
+      python3 <skill-root>/scripts/test_sync_badges.py
+      python3 <skill-root>/scripts/test_make_badges.py
+      python3 <skill-root>/scripts/test_make_agent_badge.py
+      python3 <skill-root>/scripts/test_migrate_legacy_badges.py
       ```
 
 ## Gotchas

@@ -52,9 +52,9 @@ Renames the intake status `New` → `Prospect` everywhere it is *stored*. Ran
 consistent, and the pattern for the next status rename.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_status_prospect.py             # report, writes nothing
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_status_prospect.py --city Boston
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_status_prospect.py --write     # apply, then verify
+python3 <skill-root>/migrations/migrate_status_prospect.py             # report, writes nothing
+python3 <skill-root>/migrations/migrate_status_prospect.py --city Boston
+python3 <skill-root>/migrations/migrate_status_prospect.py --write     # apply, then verify
 ```
 
 - **Phase A — the Intake Ops spreadsheet**: the Status dropdown, every Status
@@ -151,9 +151,9 @@ Adds the `Interested in` column to every chapter CRM and moves the role out of
 has not had this run**, so it goes first.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_interested_in.py             # report, writes nothing
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_interested_in.py --city Boston
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_interested_in.py --write     # apply, then verify
+python3 <skill-root>/migrations/migrate_interested_in.py             # report, writes nothing
+python3 <skill-root>/migrations/migrate_interested_in.py --city Boston
+python3 <skill-root>/migrations/migrate_interested_in.py --write     # apply, then verify
 ```
 
 Five parts, per workbook (templates included):
@@ -218,9 +218,9 @@ immediately before `Status`, so "what they asked for" and "how far the decision
 got" are read together. Run **after** the split migration.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_column_order.py             # report, writes nothing
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_column_order.py --city Boston
-python3 ${CLAUDE_SKILL_DIR}/migrations/migrate_column_order.py --write     # apply, then verify
+python3 <skill-root>/migrations/migrate_column_order.py             # report, writes nothing
+python3 <skill-root>/migrations/migrate_column_order.py --city Boston
+python3 <skill-root>/migrations/migrate_column_order.py --write     # apply, then verify
 ```
 
 ```

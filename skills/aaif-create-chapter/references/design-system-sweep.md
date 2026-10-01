@@ -47,15 +47,15 @@ silently useless as a rollback for exactly the files that needed two passes.
 
 ```bash
 # Audit: what is still off the design system? (exit 1 if anything is)
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --check
+python3 <skill-root>/scripts/restyle_design_system.py --check
 
 # Plan (default), then apply:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --write
+python3 <skill-root>/scripts/restyle_design_system.py
+python3 <skill-root>/scripts/restyle_design_system.py --write
 
 # One folder. Matched as a whole path SEGMENT, so "Templates" selects the
 # shared folder and not every chapter's "Event Templates (…)" subfolder:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+python3 <skill-root>/scripts/restyle_design_system.py \
     --chapter TemplateCity --write
 
 # ---- anything that needs generated art -------------------------------
@@ -68,24 +68,24 @@ python3 -c "import sys; sys.path.insert(0, 'lib'); \
     a.build('$ART'); a.build_logos('$ART')"
 
 # Give the two hero decks their background plates (idempotent):
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+python3 <skill-root>/scripts/restyle_design_system.py \
     --plates "$ART" --write
 
 # Retire the hand-made plate the decks were built with, replacing every
 # background this toolkit did not generate with the AAIF soft plate. Repairs
 # the text against the NEW plate in the same pass, which is why --fix-contrast
 # rides along:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+python3 <skill-root>/scripts/restyle_design_system.py \
     --retire-plates --fix-contrast --plates "$ART" --write
 
 # Audit TEXT LEGIBILITY: every run below WCAG AA against what is behind it.
 # Catches what a token check cannot — black-on-black is two correct tokens.
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py --contrast
+python3 <skill-root>/scripts/restyle_design_system.py --contrast
 
 # Repair it, by measurement — a slide is kept only when at least one run is
 # materially rescued and none crosses from passing to failing (or from readable
 # into the invisible band):
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+python3 <skill-root>/scripts/restyle_design_system.py \
     --fix-contrast --write
 
 # Give every chapter its own agent, the ten generic ones and the AAIF logos, in
@@ -93,17 +93,17 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
 # same estate walk the sweep uses. NOT done by create_chapter: cloning
 # TemplateCity would hand a new chapter TemplateCity's agent, not its own.
 python3 -c "import sys; sys.path.insert(0, 'lib'); \
-    sys.path.insert(0, '${CLAUDE_SKILL_DIR}/scripts'); \
+    sys.path.insert(0, '<skill-root>/scripts'); \
     import create_chapter as cc, restyle_design_system as rd; \
     from aaif_events import agent_art as a; \
     names=[c['name'] for k in cc.list_children(rd.COMMUNITY_ROOT) \
            if k['name']==rd.CHAPTERS_FOLDER \
            for c in cc.list_children(k['id']) if c['mimeType']==cc.FOLDER]; \
     a.build_agents('$ART', names)"
-python3 ${CLAUDE_SKILL_DIR}/scripts/upload_agents.py --art "$ART" --write
+python3 <skill-root>/scripts/upload_agents.py --art "$ART" --write
 
 # Run the engine on a local file, no Drive at all:
-python3 ${CLAUDE_SKILL_DIR}/scripts/restyle_design_system.py \
+python3 <skill-root>/scripts/restyle_design_system.py \
     --restyle-local ./Slides.pptx
 ```
 

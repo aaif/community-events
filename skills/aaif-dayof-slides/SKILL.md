@@ -1,7 +1,9 @@
 ---
 name: aaif-dayof-slides
 description: Turn an event's tracker entry into the slide text for the AAIF "Day of Event" deck. Use when asked to fill/write the day-of slides or event deck for an AAIF event.
-argument-hint: '[event title / paste tracker entry]'
+compatibility: Writing works in skills-compatible agents; tracker lookup and deck editing require the full plugin checkout, Python 3, authenticated gws, and network access.
+metadata:
+  com.anthropic.claude-code.argument-hint: '[event title / paste tracker entry]'
 ---
 
 # AAIF Day-of Slides (from the tracker)

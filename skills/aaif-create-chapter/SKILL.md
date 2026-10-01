@@ -1,10 +1,15 @@
 ---
 name: aaif-create-chapter
 description: Create a new AAIF city chapter in the "Chapters" Google Drive by cloning TemplateCity and rebranding all assets. Use when asked to add/launch/set up a new AAIF city, chapter, or location.
-argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>] [--write] [--resume] [--repair-existing]'
+compatibility: Requires the full plugin checkout, Python 3, authenticated gws with Google Drive access, and network access; optional previews require Chrome/Chromium.
+metadata:
+  com.anthropic.claude-code.argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>] [--write] [--resume] [--repair-existing]'
 ---
 
 # Create AAIF Chapter
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
@@ -104,7 +109,7 @@ Run these in order. Nothing is created without `--write`.
 - [ ] **1. Plan** — surfaces the slug, the Luma status, the resolved coordinates
       and any name collision. Writes nothing.
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York"
+      python3 <skill-root>/scripts/create_chapter.py --city "New York"
       ```
       The slug must match `^[a-z0-9-]+$`; anything else aborts before the
       luma.com URL is built. (`--dry-run` is accepted as a no-op alias.)
@@ -119,7 +124,7 @@ Run these in order. Nothing is created without `--write`.
       then downloads, rebrands and re-uploads each `.pptx`/`.docx`/`.xlsx` in
       place, and moves the slide-5 map dot.
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/create_chapter.py --city "New York" --write
+      python3 <skill-root>/scripts/create_chapter.py --city "New York" --write
       ```
 - [ ] **4. Verify** (below). A run is not finished until this passes.
 - [ ] **5. Hand off.** Report the new folder URL. A new chapter is not on the
@@ -170,7 +175,7 @@ template or the rebrand engine is broken. Fix that — don't resume.
 - [ ] If the Luma page wasn't live, the user has been reminded to create it.
 - [ ] Unit tests still pass after any engine edit:
       ```bash
-      python3 ${CLAUDE_SKILL_DIR}/scripts/test_create_chapter.py
+      python3 <skill-root>/scripts/test_create_chapter.py
       ```
 
 ## Gotchas

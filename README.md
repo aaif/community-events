@@ -4,10 +4,12 @@ Agent Skills for running **AAIF (Agentic AI Foundation)** in‑person and online
 events — from writing the LinkedIn announcement to spinning up a brand‑new city
 chapter or online event series.
 
-Packaged as a **Claude Code plugin** (and a one‑plugin marketplace) so any
-organizer can install the whole toolkit in two commands. The skills are plain
-[Agent Skills](https://code.claude.com/docs/en/skills) (`SKILL.md` files), so they
-also work in claude.ai and the Claude Agent SDK — see [Using in other tools](#using-in-other-tools).
+Packaged as a portable [Agent Plugin](https://agent-plugins.org) with plain
+[Agent Skills](https://agentskills.io) so the same checkout works across Claude
+Code, Codex, and Cursor. Claude's compatibility manifest and one-plugin
+marketplace remain under `.claude-plugin/`; the cross-client manifest is the
+root `plugin.json`. See [Using in other tools](#using-in-other-tools) and
+[PORTABILITY.md](PORTABILITY.md).
 
 ---
 
@@ -423,10 +425,17 @@ gws sheets spreadsheets get --params '{"spreadsheetId":"<your-sheet-id>"}'
 
 ## Using in other tools
 
-These skills are portable `SKILL.md` files, but not every tool consumes a Claude
-Code *plugin*:
+The repository root is a portable Agent Plugin. Clients discover the 23 skills
+from `skills/`; no `.codex-plugin` or `.cursor-plugin` compatibility manifest is
+needed.
 
 - **Claude Code** — install as the plugin above (native).
+- **Codex** — load or install the repository as an Agent Plugin. Codex reads the
+  root `plugin.json`; the Claude marketplace remains usable as a legacy local
+  marketplace source, but it is not the portable manifest.
+- **Cursor** — import/install the repository as an Agent Plugin. Cursor reads
+  the root `plugin.json` and discovers `skills/` directly; no `.cursor-plugin`
+  overlay is required because this repository contains only portable skills.
 - **claude.ai / Claude Agent SDK** — zip a skill folder (the dir containing
   `SKILL.md`) and upload it as a Skill. **Caveat:** skills whose scripts import
   the shared `lib/aaif_events` package do **not** work zipped standalone; they
@@ -467,12 +476,12 @@ Code *plugin*:
   and still work — the agent falls back to asking the user for the details,
   which is what it did before the script existed. The command is a shortcut a
   full checkout has and a zip does not, not a dependency.
-- **Cursor** — Cursor uses its own `.cursor/rules/*.mdc` format and does **not**
-  consume Claude Code plugins. You can copy a `SKILL.md`'s instructions into a
-  Cursor rule, but it won't run the bundled scripts the same way.
 
-The portable unit is the `SKILL.md`; the *plugin/marketplace* packaging is
-Claude‑Code‑specific.
+Client UI and invocation syntax differ, but the skill names and automatic
+activation descriptions are shared. Installation does not provide Python,
+`gws`, browser access, credentials, or permission to write external systems;
+the exact boundaries are documented in [PORTABILITY.md](PORTABILITY.md) and in
+each skill's `compatibility` field.
 
 ---
 
@@ -483,9 +492,11 @@ entry's `source` is `"./"`, so there's no extra `plugins/<name>/` nesting.
 
 ```
 meetups/
+├── plugin.json                      # portable Agent Plugins v1 manifest
 ├── .claude-plugin/
 │   ├── marketplace.json          # one-plugin marketplace ("aaif")
-│   └── plugin.json               # plugin manifest (aaif-events)
+│   └── plugin.json               # Claude Code compatibility manifest
+├── PORTABILITY.md                 # client capabilities + authorization gates
 ├── lib/
 │   └── aaif_events/              # shared stdlib-only modules + their tests
 ├── scripts/                      # repo tooling (e.g. the banner-drift check)
@@ -500,8 +511,9 @@ meetups/
 └── README.md
 ```
 
-Bundled scripts are referenced from `SKILL.md` via `${CLAUDE_SKILL_DIR}/scripts/…`
-so they resolve correctly once installed.
+Bundled resources use paths relative to their `SKILL.md`, following the Agent
+Skills specification. Command examples spell the resolved directory as
+`<skill-root>`; clients derive it from the loaded skill location.
 
 ---
 

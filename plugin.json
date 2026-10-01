@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "aaif-events",
+  "version": "0.6.0",
+  "description": "Skills for AAIF community event content, chapter operations, organizer workflows, Slack audits, and estate synchronization.",
+  "author": {
+    "name": "AAIF",
+    "url": "https://github.com/aaif"
+  },
+  "homepage": "https://github.com/aaif/community-events",
+  "repository": "https://github.com/aaif/community-events",
+  "license": "MIT",
+  "keywords": [
+    "aaif",
+    "events",
+    "community",
+    "google-workspace",
+    "luma",
+    "linkedin"
+  ]
+}

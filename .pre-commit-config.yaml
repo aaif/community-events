@@ -56,17 +56,32 @@ repos:
     hooks:
       - id: gitleaks
 
-  # --- SKILL.md frontmatter syntax (broken YAML => empty metadata at runtime) --
-  # Runs locally on commit and in CI; this hook — not `claude plugin validate`,
-  # which only checks the manifest schemas — is what catches skill frontmatter.
+  # --- Agent Skills and Agent Plugins portability ----------------------------
+  # The Claude validator checks only Claude's manifest. These local hooks also
+  # enforce the portable Agent Skills frontmatter and root Agent Plugins v1
+  # manifest, plus the absence of client-specific path/tool syntax in skills.
   - repo: local
     hooks:
       - id: check-skill-frontmatter
-        name: validate SKILL.md YAML frontmatter
+        name: validate Agent Skills frontmatter
         entry: python3 scripts/check_frontmatter.py
         language: python
         additional_dependencies: [pyyaml]
         files: 'SKILL\.md$'
+
+      - id: check-skill-portability
+        name: skill instructions use portable paths and capabilities
+        entry: python3 scripts/check_skill_portability.py
+        language: python
+        pass_filenames: false
+        files: '^skills/.*\.md$'
+
+      - id: check-plugin-manifests
+        name: portable and Claude plugin manifests agree
+        entry: python3 scripts/check_manifests.py
+        language: python
+        pass_filenames: false
+        files: '(^plugin\.json$|^\.claude-plugin/.*\.json$|^scripts/check_manifests\.py$)'
 
   # --- Tooling-rule banner must not drift between its SKILL.md copies ---------
   # The banner is duplicated on purpose (skills ship downstream without
