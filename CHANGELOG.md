@@ -12,7 +12,9 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
   whatever the person's Status and whether or not a city was extracted — it
   asks for a chapter decision, it does not grant one. Preview by default;
   `--write` installs the cell-scoped rule and reads it back. Formatting only:
-  no value changes and no chapter is created.
+  no value changes and no chapter is created. The preview also flags a rule
+  whose stored range stops short of the tab (Sheets fixes it at the row count
+  at install time), and `install-colors` never seats its rules above the flag.
 
 ### Fixed
 - **Chapter sync never clears a chapter row.** A live feed row with no

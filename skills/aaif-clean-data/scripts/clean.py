@@ -423,6 +423,12 @@ def color_rule_plan(cfs, err_formula):
         base = 0
     else:
         base = red - sum(1 for s in stale if s < red) + 1
+    # Never seat our rules above the chapter-review flag: whole-row violet would
+    # hide its red cell. It sits at the top, or just under a freshly added error
+    # rule, so step past it in the post-delete order.
+    kept = [cf for i, cf in enumerate(cfs) if i not in stale]
+    while base < len(kept) and is_chapter_flag(kept[base]):
+        base += 1
     return sorted(stale, reverse=True), base
 
 
@@ -1251,6 +1257,13 @@ def is_chapter_flag(rule):
         ranges[0].get("endColumnIndex") == col
 
 
+def reaches_grid_end(rule, row_count):
+    """Sheets stores an omitted endRowIndex as the tab's row count AT INSTALL,
+    so a rule stops covering rows Forms adds once the grid grows past it."""
+    end = rule["ranges"][0].get("endRowIndex")
+    return end is None or row_count is None or end >= row_count
+
+
 def chapter_flag_matches(actual, expected):
     """Sheets adds grid bounds/colorStyle and quantizes RGB on a round trip."""
     if not is_chapter_flag(actual) or formula_of(actual) != formula_of(expected):
@@ -1287,10 +1300,18 @@ def chapter_flags(write=False):
         cfs = sh.get("conditionalFormats", [])
         owned = [i for i, rule in enumerate(cfs) if is_chapter_flag(rule)]
         count = sum(is_other_city(r[existing - 1]) for r in rows)
-        current = owned == [0] and chapter_flag_matches(cfs[0], expected[sid])
-        state = "rule already installed" if current else (
-            f"rule would be installed (replacing {len(owned)})" if owned
-            else "rule would be installed")
+        row_count = sh["properties"].get("gridProperties", {}).get("rowCount")
+        matches = owned == [0] and chapter_flag_matches(cfs[0], expected[sid])
+        current = matches and reaches_grid_end(cfs[0], row_count)
+        if current:
+            state = "rule already installed"
+        elif matches:
+            state = (f"rule ends at row {cfs[0]['ranges'][0]['endRowIndex']} of "
+                     f"{row_count}; would be re-extended")
+        elif owned:
+            state = f"rule would be installed (replacing {len(owned)})"
+        else:
+            state = "rule would be installed"
         print(f"{tab}: {count} Other selection(s) in {colletter(existing)}; {state}.")
         if current:
             continue

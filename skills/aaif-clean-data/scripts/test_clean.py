@@ -1165,6 +1165,34 @@ class TestChapterFlags(unittest.TestCase):
         self.assertNotIn("would be installed", out.getvalue())
         self.assertEqual(out.getvalue().count("rule already installed"), 2)
 
+    def test_rule_that_stops_short_of_the_grid_is_re_extended(self):
+        self.run_flags(True)
+        for sh in self.book["sheets"]:
+            sh["conditionalFormats"][0]["ranges"][0]["endRowIndex"] = 546
+            sh["properties"]["gridProperties"] = {"rowCount": 646}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            clean.chapter_flags(False)
+        self.assertEqual(out.getvalue().count("ends at row 546 of 646"), 2)
+        self.run_flags(True)
+        self.assertEqual(len(self.calls), 6)
+        for sh in self.book["sheets"]:
+            self.assertEqual(len(sh["conditionalFormats"]), 1)
+            self.assertNotIn("endRowIndex", sh["conditionalFormats"][0]["ranges"][0])
+
+    def _flag(self):
+        return clean._color_rule(1, 0, 1, 2, clean.chapter_flag_formula(2), clean.BRIGHT_RED,
+                                 white=True)["addConditionalFormatRule"]["rule"]
+
+    def test_provenance_rules_stay_under_the_flag(self):
+        flag, err = self._flag(), _red_rule()
+        f = clean.formula_of(err)
+        self.assertFalse(clean.is_ours(flag, f))
+        for cfs in ([flag, err], [err, flag]):
+            self.assertEqual(clean.color_rule_plan(cfs, f), ([], 2))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(clean.color_rule_plan([flag], f), ([], 1))
+
     def test_colour_fallback_never_takes_the_chapter_flag_for_the_error_rule(self):
         flag = clean._color_rule(1, 0, 1, 2, clean.chapter_flag_formula(2),
                                  clean.BRIGHT_RED, white=True)["addConditionalFormatRule"]["rule"]
