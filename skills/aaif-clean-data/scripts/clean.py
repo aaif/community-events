@@ -1222,6 +1222,82 @@ def _city_rule(sid, index, col, rule):
     return _color_rule(sid, index, col - 1, col, formula_fn(col), bg)
 
 
+def chapter_flag_formula(city_col):
+    """A submitted Other city needs chapter review, regardless of Status."""
+    return f'=LEFT(TRIM(${colletter(city_col)}2),5)="Other"'
+
+
+def is_chapter_flag(rule):
+    """Only claim our cell-scoped red Other rule, not whole-row error rules."""
+    formula = formula_of(rule) or ""
+    match = re.fullmatch(r'=LEFT\(TRIM\(\$([A-Z]+)2\),5\)="Other"', formula)
+    if not match or not _is_red(rule):
+        return False
+    col = 0
+    for ch in match[1]:
+        col = col * 26 + ord(ch) - ord("A") + 1
+    ranges = rule.get("ranges", [])
+    return len(ranges) == 1 and ranges[0].get("startRowIndex") == 1 and \
+        ranges[0].get("startColumnIndex") == col - 1 and \
+        ranges[0].get("endColumnIndex") in (col, col + 1)
+
+
+def chapter_flag_matches(actual, expected):
+    """Sheets adds grid bounds/colorStyle and quantizes RGB on a round trip."""
+    if not is_chapter_flag(actual) or formula_of(actual) != formula_of(expected):
+        return False
+    keys = ("sheetId", "startRowIndex", "startColumnIndex", "endColumnIndex")
+    return all(actual["ranges"][0].get(k) == expected["ranges"][0].get(k)
+               for k in keys)
+
+
+def chapter_flags(write=False):
+    """Preview or install cell-only chapter-review flags, without editing data."""
+    book = gws(["sheets", "spreadsheets", "get", "--params",
+                json.dumps({"spreadsheetId": SHEET_ID}), "--format", "json"])
+    sheets = {s["properties"]["title"]: s for s in book.get("sheets", [])}
+    requests = []
+    expected = {}
+    for tab in (SOURCE, *ROLE_TABS):
+        if tab not in sheets:
+            sys.exit(f"ABORT: missing tab {tab!r}; nothing written.")
+        sh = sheets[tab]
+        sid = sh["properties"]["sheetId"]
+        if tab in ROLE_TABS and sid != ROLE_TABS[tab]:
+            sys.exit(f"ABORT: unexpected sheetId for {tab}; nothing written.")
+        hdr, rows = read_tab(tab)
+        if tab == SOURCE:
+            if hdr.count(H_CITY) != 1:
+                sys.exit("ABORT: source must have exactly one City header; nothing written.")
+            existing = new = hdr.index(H_CITY) + 1
+        else:
+            existing, new = find_city_cols(hdr, tab)
+        flag = _color_rule(sid, 0, existing - 1, existing,
+                           chapter_flag_formula(existing), BRIGHT_RED, white=True)
+        expected[sid] = flag["addConditionalFormatRule"]["rule"]
+        cfs = sh.get("conditionalFormats", [])
+        owned = [i for i, rule in enumerate(cfs) if is_chapter_flag(rule)]
+        count = sum(r[existing - 1].strip().startswith("Other") for r in rows)
+        print(f"{tab}: {count} Other selection(s); red city-cell review flag.")
+        if owned == [0] and chapter_flag_matches(cfs[0], expected[sid]):
+            continue
+        requests.extend({"deleteConditionalFormatRule": {"sheetId": sid, "index": i}}
+                        for i in reversed(owned))
+        requests.append(flag)
+    if not write:
+        print("Preview only; use chapter-flags --write to install. No values change.")
+        return
+    if requests:
+        gws(["sheets", "spreadsheets", "batchUpdate", "--params",
+             json.dumps({"spreadsheetId": SHEET_ID}), "--json",
+             json.dumps({"requests": requests}), "--format", "json"])
+    actual = _all_conditional_formats()
+    if any(not actual.get(sid) or not chapter_flag_matches(actual[sid][0], rule)
+           for sid, rule in expected.items()):
+        sys.exit("ABORT: chapter-review formatting verification failed.")
+    print("Verified red Other city-cell rules; intake values and chapters unchanged.")
+
+
 def install_colors():
     """Label the two city columns and (re)install violet/amber/green rules.
 
@@ -1286,6 +1362,8 @@ def main():
     ap_apply = sub.add_parser("apply"); ap_apply.add_argument("file")
     ap_cities = sub.add_parser("cities")
     ap_cities.add_argument("--write", action="store_true")
+    ap_chapter_flags = sub.add_parser("chapter-flags")
+    ap_chapter_flags.add_argument("--write", action="store_true")
     sub.add_parser("install-flags")
     sub.add_parser("install-colors")
     a = ap.parse_args()
@@ -1303,6 +1381,8 @@ def main():
         apply(a.file)
     elif a.cmd == "cities":
         cities(a.write)
+    elif a.cmd == "chapter-flags":
+        chapter_flags(a.write)
     elif a.cmd == "install-flags":
         install_flags()
     elif a.cmd == "install-colors":

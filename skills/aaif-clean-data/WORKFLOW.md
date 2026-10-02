@@ -157,8 +157,8 @@ by **header name**, never column letter.
    top-priority conditional rule that turns the whole row **bright red** whenever
    there's a genuine error — **missing/invalid email or a broken LinkedIn URL**. It
    auto-clears once fixed, and is distinct from the light-red "Denied" status.
-   `City="Other"` is deliberately **NOT** an error (it's a normalization to resolve,
-   surfaced by `scan`), so it never turns a row red. Already installed — re-run to
+   `City="Other"` does not make the entire row a data-error row. Instead, the
+   separate chapter-review rule below marks only its city cells red. Re-run to
    re-point the `Issues` formula after a column move. An existing red rule is not
    duplicated: its **range** is re-pointed in place (reported as `range re-pointed`)
    while its colour is left alone, since the red has been re-picked in the UI and
@@ -214,6 +214,23 @@ by **header name**, never column letter.
      header too, or a rule deleted at `$B2` would be reinstalled at `$A2`.
 
    `install-flags` now also runs this, so one command does the full setup.
+
+6. **Chapter-review flags** — distinguish a requested city from an approved chapter:
+   ```bash
+   python3 <skill-root>/scripts/clean.py chapter-flags         # preview only
+   python3 <skill-root>/scripts/clean.py chapter-flags --write # explicit approval
+   ```
+   A submitted `City` beginning with `Other` is red on `Form Responses`. On
+   Organizers, Hosts and Speakers, `City (Existing)` is red; the extracted-city
+   cell retains its existing color. The flag
+   is independent of Status and remains even when extraction supplies a city:
+   accepting a person and parsing their location do not approve a chapter.
+   The rule has priority over provenance colors, affects no other cells, and
+   leaves all values, formulas, unrelated formatting, and chapter rows alone.
+   Header lookup and a full preflight precede a single formatting batch; a
+   verification read checks the installed rules. Future submissions are covered.
+   To map a person to an approved chapter, explicitly edit source `City` on
+   user approval; automatic normalization must not overwrite their selection.
 
 ## Procedure
 

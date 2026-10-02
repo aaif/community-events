@@ -1063,5 +1063,88 @@ class TestMainJsonOut(unittest.TestCase):
         self.assertEqual(calls, ["guard"])
 
 
+class TestChapterFlags(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        self.book = {"sheets": [
+            {"properties": {"sheetId": sid, "title": tab}, "conditionalFormats": []}
+            for sid, tab in ((10, clean.SOURCE), (11, "Organizers"))]}
+        self.calls = []
+        def gws(args):
+            if "--json" not in args:
+                return self.book
+            requests = json.loads(args[args.index("--json") + 1])["requests"]
+            self.calls.extend(requests)
+            for req in requests:
+                kind, data = next(iter(req.items()))
+                sid = data["sheetId"] if kind.startswith("delete") else data["rule"]["ranges"][0]["sheetId"]
+                rules = next(s["conditionalFormats"] for s in self.book["sheets"]
+                             if s["properties"]["sheetId"] == sid)
+                if kind.startswith("delete"):
+                    rules.pop(data["index"])
+                else:
+                    rules.insert(data["index"], data["rule"])
+            return {}
+        for name, replacement in (("gws", gws), ("ROLE_TABS", {"Organizers": 11}),
+                                  ("read_tab", lambda tab: (["Name", "City"], [["Ada", "Other"]])
+                                   if tab == clean.SOURCE else
+                                   (["Status", "City (Existing)", "City (New)"],
+                                    [["Accepted", "Other", "Boston"]]))):
+            p = patch.object(clean, name, replacement)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_flags(self, write):
+        with contextlib.redirect_stdout(io.StringIO()):
+            clean.chapter_flags(write)
+
+    def test_preview_never_writes(self):
+        self.run_flags(False)
+        self.assertEqual(self.calls, [])
+
+    def test_other_is_red_even_when_accepted_and_extracted(self):
+        self.run_flags(True)
+        self.assertEqual(len(self.calls), 2)
+        for sh in self.book["sheets"]:
+            rule = sh["conditionalFormats"][0]
+            self.assertEqual(clean.formula_of(rule), '=LEFT(TRIM($B2),5)="Other"')
+            self.assertEqual(rule["booleanRule"]["format"]["backgroundColor"], clean.BRIGHT_RED)
+            rng = rule["ranges"][0]
+            self.assertEqual(rng["startColumnIndex"], 1)
+            self.assertEqual(rng["endColumnIndex"], 2)
+            self.assertNotIn("endRowIndex", rng)
+
+    def test_rerun_is_idempotent_and_preserves_other_rules(self):
+        unrelated = _red_rule()
+        self.book["sheets"][1]["conditionalFormats"] = [unrelated]
+        self.run_flags(True)
+        self.run_flags(True)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.book["sheets"][1]["conditionalFormats"][1], unrelated)
+
+    def test_invalid_later_tab_aborts_before_writes(self):
+        self.book["sheets"].pop()
+        with self.assertRaises(SystemExit):
+            self.run_flags(True)
+        self.assertEqual(self.calls, [])
+
+    def test_sheets_normalized_roundtrip_is_verified_without_rewriting(self):
+        self.run_flags(True)
+        for sh in self.book["sheets"]:
+            rule = sh["conditionalFormats"][0]
+            rule["ranges"][0]["endRowIndex"] = 1000
+            fmt = rule["booleanRule"]["format"]
+            fmt["backgroundColor"] = {"red": 232 / 255, "green": 66 / 255, "blue": 53 / 255}
+            fmt["backgroundColorStyle"] = {"rgbColor": fmt["backgroundColor"]}
+        self.run_flags(True)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_shifted_rules_recognised_but_whole_row_rule_not_owned(self):
+        rule = clean._color_rule(1, 0, 26, 28, clean.chapter_flag_formula(27), clean.BRIGHT_RED)
+        self.assertTrue(clean.is_chapter_flag(rule["addConditionalFormatRule"]["rule"]))
+        rule["addConditionalFormatRule"]["rule"]["ranges"][0]["startColumnIndex"] = 0
+        self.assertFalse(clean.is_chapter_flag(rule["addConditionalFormatRule"]["rule"]))
+
+
 if __name__ == "__main__":
     unittest.main()
