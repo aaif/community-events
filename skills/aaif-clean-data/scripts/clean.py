@@ -399,7 +399,10 @@ def color_rule_plan(cfs, err_formula):
         warn(f"the rule referencing {err_formula} at index {red} is not bright red; "
              f"treating it as the error rule anyway.")
     else:
-        red = next((i for i, cf in enumerate(cfs) if _is_red(cf)), None)
+        # The chapter-review flag is the same red, so a colour-only search
+        # would take it for the error rule and seat our rules below IT.
+        red = next((i for i, cf in enumerate(cfs)
+                    if _is_red(cf) and not is_chapter_flag(cf)), None)
         if red is not None:
             # Unconditional: err_formula being None means the Issues header was
             # deleted or renamed, which is the state MOST worth reporting, and it
@@ -1227,6 +1230,12 @@ def chapter_flag_formula(city_col):
     return f'=LEFT(TRIM(${colletter(city_col)}2),5)="Other"'
 
 
+def is_other_city(value):
+    """The Python twin of chapter_flag_formula. Sheets' `=` ignores case, so a
+    case-sensitive count would preview fewer rows than the rule paints."""
+    return value.strip()[:5].lower() == "other"
+
+
 def is_chapter_flag(rule):
     """Only claim our cell-scoped red Other rule, not whole-row error rules."""
     formula = formula_of(rule) or ""
@@ -1239,7 +1248,7 @@ def is_chapter_flag(rule):
     ranges = rule.get("ranges", [])
     return len(ranges) == 1 and ranges[0].get("startRowIndex") == 1 and \
         ranges[0].get("startColumnIndex") == col - 1 and \
-        ranges[0].get("endColumnIndex") in (col, col + 1)
+        ranges[0].get("endColumnIndex") == col
 
 
 def chapter_flag_matches(actual, expected):
@@ -1277,9 +1286,13 @@ def chapter_flags(write=False):
         expected[sid] = flag["addConditionalFormatRule"]["rule"]
         cfs = sh.get("conditionalFormats", [])
         owned = [i for i, rule in enumerate(cfs) if is_chapter_flag(rule)]
-        count = sum(r[existing - 1].strip().startswith("Other") for r in rows)
-        print(f"{tab}: {count} Other selection(s); red city-cell review flag.")
-        if owned == [0] and chapter_flag_matches(cfs[0], expected[sid]):
+        count = sum(is_other_city(r[existing - 1]) for r in rows)
+        current = owned == [0] and chapter_flag_matches(cfs[0], expected[sid])
+        state = "rule already installed" if current else (
+            f"rule would be installed (replacing {len(owned)})" if owned
+            else "rule would be installed")
+        print(f"{tab}: {count} Other selection(s) in {colletter(existing)}; {state}.")
+        if current:
             continue
         requests.extend({"deleteConditionalFormatRule": {"sheetId": sid, "index": i}}
                         for i in reversed(owned))

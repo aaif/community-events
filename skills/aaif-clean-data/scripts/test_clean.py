@@ -1140,10 +1140,37 @@ class TestChapterFlags(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
 
     def test_shifted_rules_recognised_but_whole_row_rule_not_owned(self):
-        rule = clean._color_rule(1, 0, 26, 28, clean.chapter_flag_formula(27), clean.BRIGHT_RED)
+        rule = clean._color_rule(1, 0, 26, 27, clean.chapter_flag_formula(27), clean.BRIGHT_RED)
         self.assertTrue(clean.is_chapter_flag(rule["addConditionalFormatRule"]["rule"]))
+        rule["addConditionalFormatRule"]["rule"]["ranges"][0]["endColumnIndex"] = 28
+        self.assertFalse(clean.is_chapter_flag(rule["addConditionalFormatRule"]["rule"]))
         rule["addConditionalFormatRule"]["rule"]["ranges"][0]["startColumnIndex"] = 0
         self.assertFalse(clean.is_chapter_flag(rule["addConditionalFormatRule"]["rule"]))
+
+    def test_count_matches_sheets_case_insensitive_compare(self):
+        for value in ("Other", " other - Ada City", "OTHER"):
+            self.assertTrue(clean.is_other_city(value), value)
+        for value in ("", "Boston", "Oth"):
+            self.assertFalse(clean.is_other_city(value), value)
+
+    def test_preview_says_whether_a_write_is_needed(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            clean.chapter_flags(False)
+        self.assertIn("rule would be installed", out.getvalue())
+        self.run_flags(True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            clean.chapter_flags(False)
+        self.assertNotIn("would be installed", out.getvalue())
+        self.assertEqual(out.getvalue().count("rule already installed"), 2)
+
+    def test_colour_fallback_never_takes_the_chapter_flag_for_the_error_rule(self):
+        flag = clean._color_rule(1, 0, 1, 2, clean.chapter_flag_formula(2),
+                                 clean.BRIGHT_RED, white=True)["addConditionalFormatRule"]["rule"]
+        with contextlib.redirect_stderr(io.StringIO()):
+            _, base = clean.color_rule_plan([flag, _red_rule()], None)
+        self.assertEqual(base, 2)
 
 
 if __name__ == "__main__":
