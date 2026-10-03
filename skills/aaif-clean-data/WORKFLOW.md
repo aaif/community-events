@@ -154,11 +154,12 @@ by **header name**, never column letter.
    python3 <skill-root>/scripts/clean.py install-flags
    ```
    Adds an `Issues` column (live `ARRAYFORMULA`) to each role tab plus a
-   top-priority conditional rule that turns the whole row **bright red** whenever
+   high-priority conditional rule (only the cell-scoped chapter-review flag,
+   in the same red, may sit above it) that turns the whole row **bright red** whenever
    there's a genuine error — **missing/invalid email or a broken LinkedIn URL**. It
    auto-clears once fixed, and is distinct from the light-red "Denied" status.
-   `City="Other"` is deliberately **NOT** an error (it's a normalization to resolve,
-   surfaced by `scan`), so it never turns a row red. Already installed — re-run to
+   `City="Other"` does not make the entire row a data-error row. Instead, the
+   separate chapter-review rule below marks only its city cells red. Re-run to
    re-point the `Issues` formula after a column move. An existing red rule is not
    duplicated: its **range** is re-pointed in place (reported as `range re-pointed`)
    while its colour is left alone, since the red has been re-picked in the UI and
@@ -172,7 +173,7 @@ by **header name**, never column letter.
    **Overwrites the two header cells** of the adjacent `City` / `Resolved City`
    pair the role-tab array formula emits, relabelling them **`City (Existing)`** /
    **`City (New)`**, and installs three rules just **under** the bright-red error
-   rule (so errors keep top priority): **violet** whole-row when
+   rule and the chapter-review flag (so errors and chapter reviews keep priority): **violet** whole-row when
    `Status = "Existing (from MLOps)"`, **amber** on `City (New)` when it has a
    value (a net-new resolved city), and **green** on `City (Existing)` when it
    holds a real city (non-empty, not "Other").
@@ -215,6 +216,28 @@ by **header name**, never column letter.
 
    `install-flags` now also runs this, so one command does the full setup.
 
+6. **Chapter-review flags** — distinguish a requested city from an approved chapter:
+   ```bash
+   python3 <skill-root>/scripts/clean.py chapter-flags         # preview only
+   python3 <skill-root>/scripts/clean.py chapter-flags --write # explicit approval
+   ```
+   A submitted `City` beginning with `Other` is red on `Form Responses`. On
+   Organizers, Hosts and Speakers, `City (Existing)` is red; the extracted-city
+   cell retains its existing color. The flag
+   is independent of Status and remains even when extraction supplies a city:
+   accepting a person and parsing their location do not approve a chapter.
+   The rule has priority over provenance colors, affects no other cells, and
+   leaves all values, formulas, unrelated formatting, and chapter rows alone.
+   Header lookup and a full preflight precede a single formatting batch; a
+   verification read checks the installed rules. Sheets stores the rule's range
+   ending at the tab's row count at install time, so rows Forms adds past that
+   are not covered. Re-run the preview after a batch of submissions: it reports
+   `rule ends at row N of M; would be re-extended`, and `--write` re-extends it.
+   The red clears only when source `City` no longer starts with `Other`. Mapping
+   a person to an approved chapter is the one exception to "never overwrite
+   `City`" below: an explicit `apply` edit the user approves row by row. `scan`,
+   `cities` and normalization never make it.
+
 ## Procedure
 
 Report first, resolve what you can yourself, then confirm and apply. Nothing
@@ -233,10 +256,12 @@ writes until step 4.
    its own. **Never write `Resolved City` itself**: it is an `ARRAYFORMULA` (see
    the Cities section above) and `apply` refuses it — a literal would `#REF!`
    the whole column. And **never overwrite the submitted `City` dropdown**
-   (shown as **`City (Existing)`**) — that's the non-destructive rule. `City
-   (New)` holds **only net-new cities** (rows where `City = "Other"`); existing
+   (shown as **`City (Existing)`**) — that's the non-destructive rule. (The only
+   exception is the user-approved chapter mapping in Chapter-review flags, step
+   6 above.) `City (New)` holds **only net-new cities** (rows where `City = "Other"`); existing
    form cities stay in `City (Existing)` and must **not** be copied across. A
-   row stops being flagged once `Extracted City` fills its `Resolved City`.
+   row stops being flagged by `scan` once `Extracted City` fills its `Resolved
+   City`; its red chapter-review cell stays until a chapter decision maps it.
    Don't guess with no signal.
 - [ ] **3. Confirm with the user** which fixes to apply. Mechanical fixes are safe to
    batch; city resolutions should be eyeballed since they're inferred.
