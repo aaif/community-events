@@ -541,6 +541,11 @@ ALIASES = {
     "bangalore": "Bengaluru", "bombay": "Mumbai", "calcutta": "Kolkata",
     "madras": "Chennai", "gurgaon": "Gurugram", "delhi": "Delhi NCR",
     "new delhi": "Delhi NCR", "ncr": "Delhi NCR",
+    # Country chapters (2026-10): the organizers pooled into one chapter that
+    # hosts in any city, so a city inside the country is the country's chapter.
+    # The CAPITALS rule lands on the capital first and this folds it from there.
+    "tokyo": "Japan",
+    "wellington": "New Zealand", "auckland": "New Zealand",
 }
 
 # Words that carry no city information, stripped before a segment is judged.

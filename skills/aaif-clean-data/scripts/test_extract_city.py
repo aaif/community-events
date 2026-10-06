@@ -12,7 +12,7 @@ from clean import (ALIASES, CAPITALS, extract_city, fold_city, is_placeholder,
 KNOWN = {fold_city(c): c for c in [
     "Bengaluru", "Chennai", "Delhi NCR", "Dubai", "Hyderabad", "Jaipur", "London",
     "Luxembourg", "Madison, WI", "Melbourne", "Mumbai", "New York", "Paris", "Pune",
-    "San Francisco", "Singapore", "Tokyo", "Toronto", "Vancouver", "Washington DC"]}
+    "San Francisco", "Singapore", "Japan", "New Zealand", "Toronto", "Vancouver", "Washington DC"]}
 
 fails = 0
 def check(label, got, want):
@@ -60,7 +60,11 @@ check("country only -> capital", city("Bulgaria"), "Sofia")
 check("country only -> capital -> alias -> the chapter",
       city("India"), "Delhi NCR")
 check("country only, cased", city("  NIGERIA "), "Abuja")
-check("country whose capital IS a chapter", city("Japan"), "Tokyo")
+check("a country chapter is its own name", city("Japan"), "Japan")
+check("a city inside a country chapter folds into it", city("Tokyo"), "Japan")
+check("a country chapter, capital", city("New Zealand"), "New Zealand")
+check("a second city in the country chapter", city("Auckland"), "New Zealand")
+check("a typed city with country", city("Wellington, New Zealand"), "New Zealand")
 check("the capital rule says so", extract_city("Bulgaria", KNOWN)[1],
       "only a country (Bulgaria) — using its capital")
 # A city alongside the country must never reach the capital rule.
