@@ -52,6 +52,12 @@ SYNC_STATUSES = ("Accepted", "Existing (from MLOps)")
 # slug rule (same exceptions as aaif-create-chapter).
 SLUG_OVERRIDES = {"denver": "colorado"}
 
+#: Folded city -> the country chapter that absorbed it (2026-10). The form's city
+#: dropdown still offers Tokyo, so a new applicant keeps arriving as "Tokyo"; the
+#: chapter row is Japan. Applied in resolve_city so the feed, the About docs and
+#: the CRMs all place them in the same chapter.
+CITY_FOLDS = {"tokyo": "Japan", "wellington": "New Zealand", "auckland": "New Zealand"}
+
 # Blank-on-new-row columns a human must fill before the row goes live on the site.
 EDITORIAL_COLUMNS = ("Country", "Generated Geolocation", "Summary", "Image")
 
@@ -241,7 +247,8 @@ def resolve_city(existing, new):
     here and another there would put an organizer on the chapters list under one
     city and into a different chapter's About doc.
     """
-    return new or (existing if existing and not fold(existing).startswith("other") else "")
+    city = new or (existing if existing and not fold(existing).startswith("other") else "")
+    return CITY_FOLDS.get(fold_city(city), city)
 
 def slugify(city):
     s = unicodedata.normalize("NFKD", city).encode("ascii", "ignore").decode()
