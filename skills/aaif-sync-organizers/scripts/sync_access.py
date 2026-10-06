@@ -68,6 +68,7 @@ from sync_crm import (CHAPTERS_PARENT, SYNC_STATUSES, TEMPLATE_FOLDER,
 # The flag and the helpers it governs come from ONE module on purpose: a helper
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
+from aaif_events.cities import chapter_for  # noqa: E402
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, set_redaction)  # noqa: E402
 from aaif_events import findings  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
@@ -609,7 +610,7 @@ def assert_all_accepted(grants):
             g_, h_ = (cell(row, i_g) if i_g is not None else ""), \
                      (cell(row, i_h) if i_h is not None else "")
             city = cell(row, i_ch) or h_ or (g_ if g_ and not g_.lower().startswith("other") else "")
-            ok.setdefault(e, set()).add(fold_city(city))
+            ok.setdefault(e, set()).add(fold_city(chapter_for(city)))
 
     # ...and the accepted row must name the chapter being granted. Without this
     # an accepted organizer for one city satisfies a grant on any other, so a

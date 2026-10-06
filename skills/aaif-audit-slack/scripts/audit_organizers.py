@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                 "..", "..", "aaif-sync-organizers", "scripts"))
 
 from aaif_events import gws as gwsmod  # noqa: E402
+from aaif_events.cities import chapter_for  # noqa: E402
 from aaif_events import sheets as _sheets  # noqa: E402
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
@@ -279,7 +280,7 @@ def read_intake():
             applicants.setdefault(e_any, {
                 "status": cell(row, idx["Status"]),
                 "name": cell(row, idx["Full name"]),
-                "city": cell(row, idx["Chapter"]) or cell(row, idx["City (New)"])})
+                "city": chapter_for(cell(row, idx["Chapter"]) or cell(row, idx["City (New)"]))})
     for row in rows[1:]:
         status = cell(row, idx["Status"])
         if status:
@@ -291,6 +292,7 @@ def read_intake():
         if not city:
             existing = cell(row, idx["City (Existing)"])
             city = "" if existing.startswith("Other") else existing
+        city = chapter_for(city)
         email = cell(row, idx["Email"]).lower()
         # Dedupe on email only when there IS one. Two accepted organizers in one
         # city who both have a blank Email cell are two people, not a duplicate

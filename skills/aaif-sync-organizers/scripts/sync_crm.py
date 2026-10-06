@@ -90,6 +90,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # The flag and the helpers it governs come from ONE module on purpose: a helper
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
+from aaif_events.cities import chapter_for  # noqa: E402
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, redacting,  # noqa: E402
                                 set_redaction)
 from aaif_events import findings  # noqa: E402
@@ -1083,7 +1084,7 @@ def read_role_tab(tab, interests, include_pipeline=False):
         chapter = cell(row, i_chapter)
         g = cell(row, i_g) if i_g is not None else ""
         h = cell(row, i_h) if i_h is not None else ""
-        city = chapter or resolve_city(g, h)
+        city = chapter_for(chapter or resolve_city(g, h))
         if not city:
             rejected.append({"row": rownum, "tab": tab, "name": name,
                              "why": "no chapter/city on the intake row"})

@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events import findings  # noqa: E402
+from aaif_events.cities import chapter_for  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events import gws as _gws_mod  # noqa: E402
 # cell/header_index/col_letter are re-exported: five sibling scripts import
@@ -51,12 +52,6 @@ SYNC_STATUSES = ("Accepted", "Existing (from MLOps)")
 # Folded city -> Luma slug, for cities whose page doesn't follow the default
 # slug rule (same exceptions as aaif-create-chapter).
 SLUG_OVERRIDES = {"denver": "colorado"}
-
-#: Folded city -> the country chapter that absorbed it (2026-10). The form's city
-#: dropdown still offers Tokyo, so a new applicant keeps arriving as "Tokyo"; the
-#: chapter row is Japan. Applied in resolve_city so the feed, the About docs and
-#: the CRMs all place them in the same chapter.
-CITY_FOLDS = {"tokyo": "Japan", "wellington": "New Zealand", "auckland": "New Zealand"}
 
 # Blank-on-new-row columns a human must fill before the row goes live on the site.
 EDITORIAL_COLUMNS = ("Country", "Generated Geolocation", "Summary", "Image")
@@ -248,7 +243,7 @@ def resolve_city(existing, new):
     city and into a different chapter's About doc.
     """
     city = new or (existing if existing and not fold(existing).startswith("other") else "")
-    return CITY_FOLDS.get(fold_city(city), city)
+    return chapter_for(city)
 
 def slugify(city):
     s = unicodedata.normalize("NFKD", city).encode("ascii", "ignore").decode()
