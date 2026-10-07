@@ -316,6 +316,12 @@ check("City (Existing) used when New is blank",
 check("an Other placeholder resolves to nothing",
       sync_chapters.resolve_city("Other (please specify)", ""), "")
 check("both blank -> unresolved", sync_chapters.resolve_city("", ""), "")
+# Country chapters: a city inside one resolves to it, from either column.
+check("Tokyo folds into Japan", sync_chapters.resolve_city("Tokyo", ""), "Japan")
+check("a net-new Auckland folds into New Zealand",
+      sync_chapters.resolve_city("Other", "Auckland"), "New Zealand")
+check("the country chapter resolves to itself",
+      sync_chapters.resolve_city("", "New Zealand"), "New Zealand")
 
 # --- report-mode exit codes: the contract nightly.py consumes ------------------
 # 0 = in sync, 2 = drift. Tested through main() with compute() mocked, because

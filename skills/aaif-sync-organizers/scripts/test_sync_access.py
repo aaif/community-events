@@ -522,6 +522,22 @@ check("an unrelated direct grant is still reported as stale",
       [e for _c, e, _r in p_["stale"]], ["someone.else@x.io"])
 
 
+# Absorbed cities: the role tab's Chapter formula still says Tokyo/Wellington,
+# while plan() builds the grant for the country chapter's folder. The gate must
+# fold the sheet side too, or it aborts a correct grant — and must not widen.
+FOLD_TAB = [ORG_HEADERS,
+            org_row("Accepted", "ada@x.io", "Tokyo"),
+            org_row("Accepted", "bo@x.io", "Wellington"),
+            org_row("Accepted", "cy@x.io", "", city="Auckland")]
+check("a Tokyo organizer passes for the Japan folder",
+      gate(FOLD_TAB, [grant("ada@x.io", "Japan")]), False)
+check("a Wellington organizer passes for the New Zealand folder",
+      gate(FOLD_TAB, [grant("bo@x.io", "New Zealand")]), False)
+check("an Auckland organizer (City Existing only) passes for New Zealand",
+      gate(FOLD_TAB, [grant("cy@x.io", "New Zealand")]), False)
+check("the fold does not widen the gate: a Tokyo organizer is refused elsewhere",
+      gate(FOLD_TAB, [grant("ada@x.io", "Boston")]), True)
+
 # ---------------------------------------------------------------------------
 # assert_all_accepted — a redirected target is checked twice over
 # ---------------------------------------------------------------------------
@@ -551,6 +567,9 @@ check("a redirected grant for the wrong chapter is still refused",
       gate_redirect(TAB, [dict(redirected("ada@x.io", "b@x.io"),
                                chapter="Berlin")],
                     {"ada@x.io": "b@x.io"}), True)
+check("a redirected grant on an absorbed city passes for the country chapter",
+      gate_redirect(FOLD_TAB, [dict(redirected("ada@x.io", "b@x.io"), chapter="Japan")],
+                    {"ada@x.io": "b@x.io"}), False)
 # The gate re-reads the column itself: trusting plan()'s attachment would mean
 # the acceptance is checked and then some other address is granted.
 check("a target the sheet no longer records is refused",

@@ -29,8 +29,9 @@ Idempotent — a second run right after a sync proposes zero changes.
 qualifying organizer is reported as a *retirement candidate*; retiring it is a
 human decision, recorded as `Status=Deprecated`, or `Status=Merged` plus
 `Merged Into` — the row and its editorial cells stay. Check for a renamed or
-misfiled city before deciding (the capital-city renames and shadow chapters
-look exactly like dead ones). Candidates never reach `--write` and leave the
+misfiled city before deciding (the capital-city renames, shadow chapters and
+a city folded into a country chapter — Tokyo into Japan — look exactly like dead
+ones). Candidates never reach `--write` and leave the
 exit code alone; they do appear on the run page's Drift tab, as decisions
 waiting for a person. Never infer eligibility from form free text.
 

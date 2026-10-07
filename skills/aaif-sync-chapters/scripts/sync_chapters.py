@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 # that reads a different module's flag is a helper this `--redact` does not
 # actually govern, which is how an address once reached a public CI log.
 from aaif_events import findings  # noqa: E402
+from aaif_events.cities import chapter_for  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events import gws as _gws_mod  # noqa: E402
 # cell/header_index/col_letter are re-exported: five sibling scripts import
@@ -236,12 +237,16 @@ def bad_public_text(kind, s):
 def resolve_city(existing, new):
     """Resolve an intake row's chapter city: `City (New)` wins if non-empty, else
     `City (Existing)` unless it's an "Other…" placeholder, else "" (needs a human).
+    The result is then folded into its country chapter by `chapter_for`
+    (Tokyo -> Japan), so a city that no longer has a row of its own resolves to
+    the one that absorbed it.
 
     Imported by sync_about.py rather than copied: a row that resolves to one city
     here and another there would put an organizer on the chapters list under one
     city and into a different chapter's About doc.
     """
-    return new or (existing if existing and not fold(existing).startswith("other") else "")
+    city = new or (existing if existing and not fold(existing).startswith("other") else "")
+    return chapter_for(city)
 
 def slugify(city):
     s = unicodedata.normalize("NFKD", city).encode("ascii", "ignore").decode()

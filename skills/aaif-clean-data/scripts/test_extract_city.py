@@ -5,14 +5,14 @@ Every case below is a real answer the public form received, or the shape of one.
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from clean import (ALIASES, CAPITALS, extract_city, fold_city, is_placeholder,
+from clean import (ALIASES, CAPITALS, COUNTRY_CHAPTER_FOLDS, extract_city, fold_city, is_placeholder,
                    _strip_country)
 
 # The chapters that exist, as extract_city() receives them.
 KNOWN = {fold_city(c): c for c in [
     "Bengaluru", "Chennai", "Delhi NCR", "Dubai", "Hyderabad", "Jaipur", "London",
     "Luxembourg", "Madison, WI", "Melbourne", "Mumbai", "New York", "Paris", "Pune",
-    "San Francisco", "Singapore", "Tokyo", "Toronto", "Vancouver", "Washington DC"]}
+    "San Francisco", "Singapore", "Japan", "New Zealand", "Toronto", "Vancouver", "Washington DC"]}
 
 fails = 0
 def check(label, got, want):
@@ -60,7 +60,13 @@ check("country only -> capital", city("Bulgaria"), "Sofia")
 check("country only -> capital -> alias -> the chapter",
       city("India"), "Delhi NCR")
 check("country only, cased", city("  NIGERIA "), "Abuja")
-check("country whose capital IS a chapter", city("Japan"), "Tokyo")
+check("country only -> capital, when the capital is not a chapter fold",
+      city("France"), "Paris")
+check("a country chapter is its own name", city("Japan"), "Japan")
+check("a city inside a country chapter folds into it", city("Tokyo"), "Japan")
+check("a country chapter, capital", city("New Zealand"), "New Zealand")
+check("a second city in the country chapter", city("Auckland"), "New Zealand")
+check("a typed city with country", city("Wellington, New Zealand"), "New Zealand")
 check("the capital rule says so", extract_city("Bulgaria", KNOWN)[1],
       "only a country (Bulgaria) — using its capital")
 # A city alongside the country must never reach the capital rule.
@@ -94,6 +100,30 @@ check("the long Other wording",
       is_placeholder("Other (PLEASE TELL US WHERE IN NEXT QUESTION)"), True)
 check("empty dropdown", is_placeholder(""), True)
 check("a real city is not a placeholder", is_placeholder("Bengaluru"), False)
+
+# --- a retired city's row stays on the Chapters List ---------------------------
+# Rows are never deleted (Status=Merged), so the list can still hold Tokyo and
+# Wellington beside Japan and New Zealand. The country-chapter folds must beat it.
+STALE = dict(KNOWN, **{fold_city(c): c for c in ["Tokyo", "Wellington"]})
+check("a retired Tokyo row does not win over the fold",
+      extract_city("Tokyo", STALE)[0], "Japan")
+check("a bare country does not land on its retired capital's row",
+      extract_city("New Zealand", STALE)[0], "New Zealand")
+check("a typed city with its country, retired row present",
+      extract_city("Wellington, New Zealand", STALE)[0], "New Zealand")
+
+# --- the lib table the sync engines read must agree with this skill's ---------
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "..", "lib"))
+try:
+    from aaif_events.cities import CITY_FOLDS
+except ImportError:
+    print("ok   (lib not importable here — fold parity check skipped)")
+else:
+    check("COUNTRY_CHAPTER_FOLDS matches aaif_events.cities.CITY_FOLDS",
+          COUNTRY_CHAPTER_FOLDS, CITY_FOLDS)
+    check("ALIASES carries every country-chapter fold",
+          {k: ALIASES.get(k) for k in CITY_FOLDS}, CITY_FOLDS)
 
 # --- fold_city parity with sync_chapters -------------------------------------
 # The two skills cannot import each other, so the duplication is asserted here:

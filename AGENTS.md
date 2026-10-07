@@ -101,7 +101,9 @@ in this repo:
   `sheets`, `redact`, `tracker`, `office`, `report_style`, `jsoncache`,
   `slides_export`, `findings` — the one shape every ops engine writes its
   measured counts and findings in, so the sync run's page needs no per-engine
-  knowledge). Skill scripts import these through a
+  knowledge — and `cities`, the one place a city that a country chapter absorbed
+  (Tokyo → Japan) is folded into it; every engine that reads a city off the
+  intake goes through it). Skill scripts import these through a
   `sys.path.insert(...parents[3] / "lib")` shim at the top of the file.
   **Cost:** a skill that imports `aaif_events` no longer works when zipped
   standalone for claude.ai — it only runs from a full checkout or plugin
