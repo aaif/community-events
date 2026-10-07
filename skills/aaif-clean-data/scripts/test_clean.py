@@ -1016,6 +1016,45 @@ class TestScanEndToEnd(unittest.TestCase):
         self.assertEqual(flags, [{"row": 2, "who": "Ada",
                                   "issue": "duplicate organizer application in rows [2, 3]"}])
 
+    def _scan_with_status(self, rows, statuses, other_tabs=None):
+        """Form Responses = rows; each role tab lists (Status, Timestamp, Email).
+        `statuses` is the Organizers tab; `other_tabs` (default: the same) is Hosts
+        and Speakers, so one submission can carry different verdicts per tab."""
+        role_hdr = ["Status", "Timestamp", "Email"]
+        rows_for = lambda sts: [[st, r[0], r[2]] for r, st in zip(rows, sts)]
+
+        def read(tab):
+            if tab == "Form Responses":
+                return self.HDR, rows
+            return role_hdr, rows_for(statuses if tab == "Organizers"
+                                      else (other_tabs or statuses))
+        with mock.patch.object(clean, "read_tab", read):
+            return clean.scan()
+
+    def test_a_decided_no_is_never_flagged(self):
+        rows = [["t1", "", "bad", "https://x.com/ada", "Other", self.ORG, ""],
+                ["t2", "", "bad2", "https://x.com/bo", "Other", self.ORG, ""]]
+        for status in ("Denied", "inactive", "Duplicate"):
+            _c, flags = self._scan_with_status(rows, [status, "Prospect"])
+            self.assertEqual({f["row"] for f in flags}, {3}, status)
+
+    def test_a_submission_still_live_on_another_tab_is_still_flagged(self):
+        """Denied as an organizer, still Prospect as a speaker: someone can fix it."""
+        rows = [["t1", "", "bad", "https://x.com/ada", "Other", self.ORG, ""]]
+        _c, flags = self._scan_with_status(rows, ["Denied"], other_tabs=["Prospect"])
+        self.assertEqual({f["row"] for f in flags}, {2})
+
+    def test_a_submission_decided_no_on_every_tab_is_not_flagged(self):
+        rows = [["t1", "", "bad", "https://x.com/ada", "Other", self.ORG, ""]]
+        _c, flags = self._scan_with_status(rows, ["Denied"], other_tabs=["Inactive"])
+        self.assertEqual(flags, [])
+
+    def test_a_duplicate_status_row_resolves_the_duplicate_flag(self):
+        rows = [["t1", "Ada", "a@x.com", "", "Boston", self.ORG, ""],
+                ["t2", "Ada", "a@x.com", "", "Boston", self.ORG, ""]]
+        _c, flags = self._scan_with_status(rows, ["Accepted", "Duplicate"])
+        self.assertEqual(flags, [])
+
     def test_a_header_without_the_role_column_aborts(self):
         hdr = [h for h in self.HDR if h != clean.H_BRAND]
         rows = [["t", "Ada", "a@x.com", "", "Boston", ""]]
@@ -1023,6 +1062,16 @@ class TestScanEndToEnd(unittest.TestCase):
             self._scan(hdr, rows)
         self.assertIn(clean.H_BRAND, str(e.exception))
         self.assertIn("ABORT", str(e.exception))
+
+
+class TestIssuesFormula(unittest.TestCase):
+    def test_status_wraps_the_formula_and_balances(self):
+        f = clean.issues_formula("C", "X", "A")
+        self.assertIn("^(denied|inactive|duplicate)$", f)
+        self.assertEqual(f.count("("), f.count(")"))
+
+    def test_without_a_status_column_the_formula_is_unchanged(self):
+        self.assertNotIn("REGEXMATCH", clean.issues_formula("C", "X"))
 
 
 class TestMainJsonOut(unittest.TestCase):
