@@ -1084,6 +1084,9 @@ def read_role_tab(tab, interests, include_pipeline=False):
         chapter = cell(row, i_chapter)
         g = cell(row, i_g) if i_g is not None else ""
         h = cell(row, i_h) if i_h is not None else ""
+        # Folded here too: the Chapter formula's output is NOT folded in the
+        # sheet, so a Tokyo organizer reads "Tokyo" off it even though the chapter
+        # is Japan. Without this they match no folder and get no CRM row or grant.
         city = chapter_for(chapter or resolve_city(g, h))
         if not city:
             rejected.append({"row": rownum, "tab": tab, "name": name,

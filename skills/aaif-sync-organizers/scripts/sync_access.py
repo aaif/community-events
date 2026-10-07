@@ -610,6 +610,8 @@ def assert_all_accepted(grants):
             g_, h_ = (cell(row, i_g) if i_g is not None else ""), \
                      (cell(row, i_h) if i_h is not None else "")
             city = cell(row, i_ch) or h_ or (g_ if g_ and not g_.lower().startswith("other") else "")
+            # plan() grants against the folded chapter (read_role_tab folds it),
+            # so this side must too or the gate aborts a correct Tokyo -> Japan grant.
             ok.setdefault(e, set()).add(fold_city(chapter_for(city)))
 
     # ...and the accepted row must name the chapter being granted. Without this

@@ -237,6 +237,9 @@ def bad_public_text(kind, s):
 def resolve_city(existing, new):
     """Resolve an intake row's chapter city: `City (New)` wins if non-empty, else
     `City (Existing)` unless it's an "Other…" placeholder, else "" (needs a human).
+    The result is then folded into its country chapter by `chapter_for`
+    (Tokyo -> Japan), so a city that no longer has a row of its own resolves to
+    the one that absorbed it.
 
     Imported by sync_about.py rather than copied: a row that resolves to one city
     here and another there would put an organizer on the chapters list under one

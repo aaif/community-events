@@ -49,9 +49,11 @@ are itemised in two classes, and both must be read before approving:
 
 - **Source of truth is the intake**, filtered to `Accepted` and
   `Existing (from MLOps)`, with the city resolved through `resolve_city()`
-  **imported from `sync_chapters.py`** — a row that resolved to one city on the
-  feed and another here would put an organizer on one city's website row and in a
-  different city's doc. Names are written in intake row order.
+  **imported from `sync_chapters.py`** and folded by `chapter_for()`
+  (`aaif_events/cities.py`) — a row that resolved to one city on the feed and
+  another here would put an organizer on one city's website row and in a
+  different city's doc. The engines that read the role tab's `Chapter` column
+  (`sync_crm`, `sync_access`, the Slack audit) apply `chapter_for()` themselves. Names are written in intake row order.
 - **A chapter with no accepted organizer gets the placeholder `[Organizer name]`**,
   not an empty section: a heading with nothing under it reads as a broken doc, and
   the block keeps a bullet to clone from when the chapter's first organizer lands.

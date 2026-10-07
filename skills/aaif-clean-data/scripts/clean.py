@@ -534,6 +534,17 @@ CAPITALS = {
 
 # Short forms and spellings people use that are not the chapter's own name. Kept
 # small and explicit — a fuzzy matcher here would silently move someone's city.
+#: Country chapters (2026-10): their organizers pooled into one chapter that
+#: hosts in any city, so a city inside the country IS the country's chapter.
+#: These beat the chapters list in _canonical — a retired Tokyo or Wellington
+#: row stays on the list (rows are never deleted), and would otherwise win.
+#: Kept in step with `aaif_events.cities.CITY_FOLDS`, which the sync engines
+#: read; this skill is zippable and cannot import it, so test_extract_city.py
+#: asserts the two agree.
+COUNTRY_CHAPTER_FOLDS = {
+    "tokyo": "Japan", "wellington": "New Zealand", "auckland": "New Zealand",
+}
+
 ALIASES = {
     "dc": "Washington DC", "washington d.c.": "Washington DC",
     "nyc": "New York", "ny": "New York", "new york city": "New York",
@@ -541,11 +552,7 @@ ALIASES = {
     "bangalore": "Bengaluru", "bombay": "Mumbai", "calcutta": "Kolkata",
     "madras": "Chennai", "gurgaon": "Gurugram", "delhi": "Delhi NCR",
     "new delhi": "Delhi NCR", "ncr": "Delhi NCR",
-    # Country chapters (2026-10): the organizers pooled into one chapter that
-    # hosts in any city, so a city inside the country is the country's chapter.
-    # The CAPITALS rule lands on the capital first and this folds it from there.
-    "tokyo": "Japan",
-    "wellington": "New Zealand", "auckland": "New Zealand",
+    **COUNTRY_CHAPTER_FOLDS,
 }
 
 # Words that carry no city information, stripped before a segment is judged.
@@ -597,10 +604,16 @@ def _clean_segment(s):
 
 
 def _canonical(text, known):
-    """Chapter name for `text`, via the chapters list then the alias table."""
+    """Chapter name for `text`: country-chapter folds, then the chapters list, then the alias table."""
     f = fold_city(text)
     if not f:
         return None
+    # Before the chapters list: see COUNTRY_CHAPTER_FOLDS. A typed city folds
+    # directly; a bare country goes country -> capital (CAPITALS) -> here, so
+    # both end on the same chapter.
+    if f in COUNTRY_CHAPTER_FOLDS:
+        a = COUNTRY_CHAPTER_FOLDS[f]
+        return known.get(fold_city(a), a)
     if f in known:
         return known[f]
     if f in ALIASES:

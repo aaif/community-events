@@ -280,6 +280,8 @@ def read_intake():
             applicants.setdefault(e_any, {
                 "status": cell(row, idx["Status"]),
                 "name": cell(row, idx["Full name"]),
+                # Folded like the accepted path below: a pending organizer is
+                # looked up under the chapter they will join, not their old city.
                 "city": chapter_for(cell(row, idx["Chapter"]) or cell(row, idx["City (New)"]))})
     for row in rows[1:]:
         status = cell(row, idx["Status"])
@@ -292,6 +294,8 @@ def read_intake():
         if not city:
             existing = cell(row, idx["City (Existing)"])
             city = "" if existing.startswith("Other") else existing
+        # The Chapter formula still says Tokyo/Wellington/Auckland; the chapter
+        # (and its rooms) is Japan / New Zealand. See aaif_events.cities.
         city = chapter_for(city)
         email = cell(row, idx["Email"]).lower()
         # Dedupe on email only when there IS one. Two accepted organizers in one

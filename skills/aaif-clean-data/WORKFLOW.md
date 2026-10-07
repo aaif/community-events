@@ -120,7 +120,11 @@ by **header name**, never column letter.
    3. **a chapter is named anywhere** — `I am in Paris, France and Toronto` →
       `Paris`; longest name wins so `Delhi` never beats `Delhi NCR`;
    4. **a country was all they gave** → its capital — `Bulgaria` → `Sofia`. **A
-      named city always wins**, so `UAE, Dubai` is never `Abu Dhabi`;
+      named city always wins**, so `UAE, Dubai` is never `Abu Dhabi`. Two
+      exceptions: a country that is itself a chapter stays as the country
+      (`Japan` → `Japan`), and a city inside a country chapter folds into it
+      (`Tokyo` → `Japan`, `Auckland` → `New Zealand`) — see
+      `COUNTRY_CHAPTER_FOLDS`;
    5. **otherwise the first city-like segment**, with a leading/trailing country
       stripped — `Noida India` → `Noida`, `India, Gurugram` → `Gurugram`.
 
@@ -128,14 +132,19 @@ by **header name**, never column letter.
    A typo is preserved, never guessed at (`Monterreyy Mexico` → `Monterreyy`) —
    the fuzzy match that would "fix" it is the one that silently moves someone.
    `ALIASES` maps the short forms people use (`DC`, `NYC`, `Bangalore`) onto the
-   chapter's own name; it is deliberately small and explicit.
+   chapter's own name; it is deliberately small and explicit. It also carries
+   `COUNTRY_CHAPTER_FOLDS`, which is policy, not spelling: they win over the
+   Chapters List, so a retired Tokyo row cannot reclaim the city. The sync
+   engines fold the same cities at read time from `aaif_events.cities`; the two
+   tables are asserted equal in `test_extract_city.py`, so change both together.
 
    ### Migration policy — an existing `Resolved City` always wins
    `Extracted City` is **seeded from the 122 hand-filled `Resolved City` values**
    rather than derived fresh. 23 of those rows have **empty** free text (the
    question didn't exist yet) and a human supplied the city from context, so
    deriving them would blank real organizers — Luxembourg, Tokyo, Vancouver, Pune
-   and Singapore among them. Extraction fills only what is blank, which makes
+   and Singapore among them. (A hand-filled `Tokyo` is not rewritten to `Japan`:
+   the sync engines fold it at read time, so no backfill is needed.) Extraction fills only what is blank, which makes
    switching `Resolved City` to a derived value **lossless by construction**.
 
    `--write` **refuses to run** while any row has a real `City` contradicted by a

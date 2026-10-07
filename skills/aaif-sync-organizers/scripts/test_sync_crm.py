@@ -404,6 +404,26 @@ try:
 finally:
     sync_crm.get_values = _saved_gv
 
+# Absorbed cities: the role tab's Chapter formula still says Tokyo/Auckland, so
+# this reader — the entry point for the CRM, Drive access, About and tracker
+# engines — must fold it, or one organizer lands in two chapters.
+_FOLD_GRID = [
+    ["Status", "Full name", "Email", "Chapter", "City (Existing)", "City (New)"],
+    ["Accepted", "Ada", "ada@x.io", "Tokyo", "", ""],
+    ["Accepted", "Bo", "bo@x.io", "Auckland", "", ""],
+    ["Accepted", "Cy", "cy@x.io", "", "", "Wellington"],
+    ["Accepted", "Di", "di@x.io", "Boston", "", ""],
+]
+sync_crm.get_values = lambda *_a, **_k: _FOLD_GRID
+try:
+    pp, _rr, _fb = sync_crm.read_role_tab("Organizers", {})
+    check("absorbed cities fold, from the Chapter column and from City (New)",
+          [(p["name"], p["city"]) for p in pp],
+          [("Ada", "Japan"), ("Bo", "New Zealand"), ("Cy", "New Zealand"),
+           ("Di", "Boston")])
+finally:
+    sync_crm.get_values = _saved_gv
+
 # The injection-safety property, enforced on the CRM path itself: read_role_tab
 # does NOT go through sync_chapters.read_intake, so it runs the same
 # bad_public_text check on the public-facing fields (name, city) — without it,

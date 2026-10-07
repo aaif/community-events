@@ -169,6 +169,30 @@ def test_city_precedence_chapter_beats_new_beats_existing():
           ["Assigned", "New", "Old", ""])
 
 
+def test_absorbed_cities_fold_into_their_country_chapter():
+    """Japan and New Zealand absorbed Tokyo, Wellington and Auckland. The role
+    tab's Chapter formula still says the old city, so this reader must fold it —
+    or those organizers match no chapter room."""
+    rows = [["Status", "Full name", "Email", "City (Existing)", "City (New)", "Chapter"],
+            ["Accepted", "A", "a@x.com", "", "", "Tokyo"],
+            ["Accepted", "B", "b@x.com", "", "Auckland", ""],
+            ["Accepted", "C", "c@x.com", "Wellington", "", ""],
+            ["Accepted", "D", "d@x.com", "", "", "Boston"]]
+    people, _, _ = _intake(rows)
+    check("accepted people fold from every source column",
+          [p["city"] for p in people], ["Japan", "New Zealand", "New Zealand", "Boston"])
+
+
+def test_applicants_map_folds_absorbed_cities_too():
+    """A pending organizer must look up under the chapter they will join."""
+    rows = [["Status", "Full name", "Email", "City (Existing)", "City (New)", "Chapter"],
+            ["Accepted", "Ada", "ada@x.io", "", "", "Boston"],
+            ["Prospect", "Pia", "pia@x.io", "", "", "Tokyo"]]
+    _, _, applicants = _intake(rows)
+    check("a pending applicant's city is the country chapter",
+          applicants["pia@x.io"]["city"], "Japan")
+
+
 def test_duplicate_rows_dedupe_on_email_but_blanks_stay_distinct():
     rows = [["Status", "Full name", "Email", "City (Existing)", "City (New)", "Chapter"],
             ["Accepted", "A", "a@x.com", "", "Boston", ""],
