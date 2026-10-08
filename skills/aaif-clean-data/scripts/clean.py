@@ -702,6 +702,37 @@ def idx(hdr, name):
     return hdr.index(name) if name in hdr else None
 
 
+# A decided "no" is not a data problem to chase: nobody will fix a Denied
+# applicant's LinkedIn. Status lives only on the role tabs, which are filtered
+# views of Form Responses, so a row is matched back by Timestamp + Email. Keep
+# in step with DECIDED_NO in aaif-audit-slack/scripts/audit_organizers.py.
+DECIDED_NO = ("denied", "inactive", "duplicate")
+
+
+def decided_no_keys():
+    """{(timestamp, email)} for every submission that is a decided no on EVERY
+    role tab listing it.
+
+    One submission can sit on several role tabs, each with its own Status (an
+    organizer application Denied while the same person's speaker application is
+    still Prospect). Only when all of them say no is there nobody left to fix
+    the row; one decided-no among live ones must not silence it.
+    """
+    all_no = {}
+    for tab in ROLE_TABS:
+        hdr, rows = read_tab(tab)
+        si, ti, ei = (idx(hdr, h) for h in (STATUS_HEADER, "Timestamp", H_EMAIL))
+        if None in (si, ti, ei):
+            # Can't see this tab's verdicts, so can't claim every tab said no.
+            print(f"  note: {tab} lacks Status/Timestamp/Email; no decided-no rows "
+                  f"are suppressed from the flags", file=sys.stderr)
+            return set()
+        for row in rows:
+            key = (row[ti].strip(), row[ei].strip().lower())
+            all_no[key] = all_no.get(key, True) and row[si].strip().lower() in DECIDED_NO
+    return {key for key, no in all_no.items() if no}
+
+
 def scan():
     hdr, rows = read_tab(SOURCE)
     ni, ei, li, ci = (idx(hdr, h) for h in (H_NAME, H_EMAIL, H_LINKEDIN, H_CITY))
@@ -715,6 +746,9 @@ def scan():
     ri = idx(hdr, "Resolved City")  # if filled, City="Other" is already resolved
     changes, flags = [], []
     seen_email = {}
+    declined = decided_no_keys()
+    ti = idx(hdr, "Timestamp")
+    suppressed = 0
     for rn, row in enumerate(rows, start=2):
         # ni/ei guaranteed non-None above, so row[ni]/row[ei] are safe.
         if not (row[ni] or row[ei] or "").strip():
@@ -736,6 +770,11 @@ def scan():
         link = (row[li] if li is not None else "").strip().lower()
         city = (row[ci] if ci is not None else "").strip()
         who = name or email or f"row {rn}"
+        # Still normalized above (harmless), but never flagged: a decided no
+        # has no one left to fix it, and a Duplicate row IS the resolved dup.
+        if ti is not None and (row[ti].strip(), email) in declined:
+            suppressed += 1
+            continue
         if not email:
             flags.append({"row": rn, "who": who, "issue": "missing email"})
         elif not EMAIL_RE.match(email):
@@ -757,6 +796,12 @@ def scan():
             seen_email.setdefault(email, []).append(
                 (rn, row[bi] if bi is not None else "", name))
     flags.extend(duplicate_organizers(seen_email))
+    if declined and not suppressed:
+        # The key is Timestamp as DISPLAYED on two tabs; if their formats ever
+        # differ, nothing matches and the feature would stop working silently.
+        print("  note: the role tabs list decided-no rows but none matched a Form "
+              "Responses row (Timestamp format differs between tabs?); nothing "
+              "was suppressed from the flags", file=sys.stderr)
     return changes, flags
 
 
@@ -1113,6 +1158,16 @@ def apply_changes(wanted):
 FLAG_HEADERS = ("Timestamp", "Email", "LinkedIn")
 
 
+def issues_formula(ts, concat, status=None):
+    """The live Issues ARRAYFORMULA. A row whose Status is a decided no reads
+    blank, so it never turns bright red (see DECIDED_NO)."""
+    issues = f'REGEXREPLACE({concat},"; $","")'
+    if status:
+        no = "|".join(DECIDED_NO)
+        issues = f'IF(REGEXMATCH(LOWER(TRIM(${status}2:${status})),"^({no})$"),"",{issues})'
+    return f'=ARRAYFORMULA(IF(${ts}2:${ts}="","",{issues}))'
+
+
 def install_flags():
     # Pre-flight: validate EVERY tab before writing to any of them (the same
     # contract install_colors has). Aborting mid-loop used to leave the first
@@ -1147,8 +1202,7 @@ def install_flags():
         if link:
             parts.append(f'IF(REGEXMATCH(LOWER(${link}2:${link}),"linkedin\\.com/"),"","bad LinkedIn; ")')
         concat = "&".join(parts) if parts else '""'
-        formula = (f'=ARRAYFORMULA(IF(${ts}2:${ts}="","",'
-                   f'REGEXREPLACE({concat},"; $","")))')
+        formula = issues_formula(ts, concat, L(STATUS_HEADER))
         # write header + formula
         gws(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
              json.dumps({"spreadsheetId": SHEET_ID}), "--json",
