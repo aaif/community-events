@@ -748,6 +748,7 @@ def scan():
     seen_email = {}
     declined = decided_no_keys()
     ti = idx(hdr, "Timestamp")
+    suppressed = 0
     for rn, row in enumerate(rows, start=2):
         # ni/ei guaranteed non-None above, so row[ni]/row[ei] are safe.
         if not (row[ni] or row[ei] or "").strip():
@@ -772,6 +773,7 @@ def scan():
         # Still normalized above (harmless), but never flagged: a decided no
         # has no one left to fix it, and a Duplicate row IS the resolved dup.
         if ti is not None and (row[ti].strip(), email) in declined:
+            suppressed += 1
             continue
         if not email:
             flags.append({"row": rn, "who": who, "issue": "missing email"})
@@ -794,6 +796,12 @@ def scan():
             seen_email.setdefault(email, []).append(
                 (rn, row[bi] if bi is not None else "", name))
     flags.extend(duplicate_organizers(seen_email))
+    if declined and not suppressed:
+        # The key is Timestamp as DISPLAYED on two tabs; if their formats ever
+        # differ, nothing matches and the feature would stop working silently.
+        print("  note: the role tabs list decided-no rows but none matched a Form "
+              "Responses row (Timestamp format differs between tabs?); nothing "
+              "was suppressed from the flags", file=sys.stderr)
     return changes, flags
 
 

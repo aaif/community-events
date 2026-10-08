@@ -1055,6 +1055,21 @@ class TestScanEndToEnd(unittest.TestCase):
         _c, flags = self._scan_with_status(rows, ["Accepted", "Duplicate"])
         self.assertEqual(flags, [])
 
+    def test_unmatched_decided_no_rows_say_so(self):
+        """Role tabs show the Timestamp in another format: nothing matches, and
+        the run must say the suppression did nothing rather than fail silently."""
+        rows = [["t1", "", "bad", "https://x.com/ada", "Other", self.ORG, ""]]
+
+        def read(tab):
+            if tab == "Form Responses":
+                return self.HDR, rows
+            return ["Status", "Timestamp", "Email"], [["Denied", "T1 other format", "bad"]]
+        err = io.StringIO()
+        with mock.patch.object(clean, "read_tab", read), contextlib.redirect_stderr(err):
+            _c, flags = clean.scan()
+        self.assertEqual({f["row"] for f in flags}, {2})
+        self.assertIn("nothing was suppressed", err.getvalue())
+
     def test_a_header_without_the_role_column_aborts(self):
         hdr = [h for h in self.HDR if h != clean.H_BRAND]
         rows = [["t", "Ada", "a@x.com", "", "Boston", ""]]
@@ -1062,6 +1077,20 @@ class TestScanEndToEnd(unittest.TestCase):
             self._scan(hdr, rows)
         self.assertIn(clean.H_BRAND, str(e.exception))
         self.assertIn("ABORT", str(e.exception))
+
+
+class TestDecidedNoListsAgree(unittest.TestCase):
+    def test_matches_the_organizer_audit(self):
+        """clean.py stays portable, so it cannot import the audit's list; this
+        keeps the two copies from drifting."""
+        import re
+        src = open(os.path.join(os.path.dirname(__file__), "..", "..",
+                                "aaif-audit-slack", "scripts",
+                                "audit_organizers.py")).read()
+        m = re.search(r"^DECIDED_NO = \((.*?)\)", src, re.M)
+        self.assertIsNotNone(m)
+        theirs = {w.lower() for w in re.findall(r'"([^"]+)"', m.group(1))}
+        self.assertEqual(theirs, set(clean.DECIDED_NO))
 
 
 class TestIssuesFormula(unittest.TestCase):
