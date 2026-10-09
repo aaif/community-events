@@ -882,27 +882,35 @@ class TestDuplicateOrganizers(unittest.TestCase):
     HOST = "I want to host/provide a venue"
 
     def test_speaker_plus_host_plus_organizer_is_one_person_three_forms(self):
-        seen = {"a@x.com": [(3, self.SPK, "Ada"), (4, self.HOST, "Ada"), (5, self.ORG, "Ada")]}
+        seen = {"a@x.com": [(3, False, "Ada"), (4, False, "Ada"), (5, True, "Ada")]}
         self.assertEqual(clean.duplicate_organizers(seen), [])
 
     def test_two_talk_proposals_are_two_rows_not_a_duplicate(self):
-        seen = {"a@x.com": [(3, self.SPK, "Ada"), (9, self.SPK, "Ada")]}
+        seen = {"a@x.com": [(3, False, "Ada"), (9, False, "Ada")]}
         self.assertEqual(clean.duplicate_organizers(seen), [])
 
     def test_two_organizer_applications_are_flagged_on_the_first(self):
-        seen = {"a@x.com": [(3, self.SPK, "Ada"), (5, self.ORG, "Ada"), (12, self.ORG, "")]}
+        seen = {"a@x.com": [(3, False, "Ada"), (5, True, "Ada"), (12, True, "")]}
         self.assertEqual(clean.duplicate_organizers(seen),
                          [{"row": 5, "who": "Ada",
                            "issue": "duplicate organizer application in rows [5, 12]"}])
 
     def test_a_nameless_duplicate_is_identified_by_its_address(self):
-        seen = {"a@x.com": [(5, self.ORG, ""), (12, self.ORG, "")]}
+        seen = {"a@x.com": [(5, True, ""), (12, True, "")]}
         self.assertEqual(clean.duplicate_organizers(seen)[0]["who"], "a@x.com")
 
     def test_the_role_test_matches_the_tab_formula(self):
         self.assertTrue(clean.is_organizer_brand("I want to be an Organizer"))
         self.assertFalse(clean.is_organizer_brand(self.SPK))
         self.assertFalse(clean.is_organizer_brand(""))
+
+    def test_either_the_old_answer_or_the_new_question_makes_an_organizer(self):
+        self.assertTrue(clean.is_organizer_row(self.ORG))           # before 2026-10-09
+        self.assertTrue(clean.is_organizer_row("", "Yes"))          # after
+        self.assertTrue(clean.is_organizer_row("", " yes "))
+        self.assertFalse(clean.is_organizer_row("", "No"))
+        self.assertFalse(clean.is_organizer_row(self.SPK, ""))
+        self.assertFalse(clean.is_organizer_row("", ""))
 
 
 class TestPrintScanCollapses(unittest.TestCase):
@@ -1001,7 +1009,8 @@ class TestScanEndToEnd(unittest.TestCase):
     ORG = "I want to be an organizer for my city"
     SPK = "I want to be a speaker"
     HDR = ["Timestamp", "Full name", "Email", "LinkedIn URL", "City",
-           "What brings you here?", "Resolved City"]
+           "What brings you here?", "Resolved City",
+           "Would you like to help organize local AAIF events?"]
 
     def _scan(self, hdr, rows):
         with mock.patch.object(clean, "read_tab", lambda tab: (hdr, rows)):
@@ -1016,20 +1025,51 @@ class TestScanEndToEnd(unittest.TestCase):
         self.assertEqual(flags, [{"row": 2, "who": "Ada",
                                   "issue": "duplicate organizer application in rows [2, 3]"}])
 
-    def _scan_with_status(self, rows, statuses, other_tabs=None):
+    def test_an_old_answer_and_a_new_yes_at_one_address_are_a_duplicate(self):
+        """After 2026-10-09 the routing column is blank and the per-role
+        question carries the answer; the API trims a row's trailing blanks, so
+        a new-style row can stop short of columns the header has."""
+        hdr = self.HDR
+        rows = [["t", "Ada", "a@x.com", "https://linkedin.com/in/ada", "Boston", self.ORG, ""],
+                ["t", "Ada", "a@x.com", "https://linkedin.com/in/ada", "Boston", "", "", "Yes"],
+                ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", "", "", "No"],
+                ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", self.SPK]]
+        _changes, flags = self._scan(hdr, rows)
+        self.assertEqual(flags, [{"row": 2, "who": "Ada",
+                                  "issue": "duplicate organizer application in rows [2, 3]"}])
+
+    def _scan_with_status(self, rows, statuses, other_tabs=None, per_tab=None):
         """Form Responses = rows; each role tab lists (Status, Timestamp, Email).
-        `statuses` is the Organizers tab; `other_tabs` (default: the same) is Hosts
-        and Speakers, so one submission can carry different verdicts per tab."""
+        `statuses` is the Organizers tab; `other_tabs` (default: the same) is every
+        other role tab, and `per_tab` overrides one tab by name, so one submission
+        can carry different verdicts per tab."""
         role_hdr = ["Status", "Timestamp", "Email"]
         rows_for = lambda sts: [[st, r[0], r[2]] for r, st in zip(rows, sts)]
 
         def read(tab):
             if tab == "Form Responses":
                 return self.HDR, rows
+            if per_tab and tab in per_tab:
+                return role_hdr, rows_for(per_tab[tab])
             return role_hdr, rows_for(statuses if tab == "Organizers"
                                       else (other_tabs or statuses))
         with mock.patch.object(clean, "read_tab", read):
             return clean.scan()
+
+    def test_a_submission_still_live_only_on_collaborators_is_still_flagged(self):
+        """Denied everywhere else, still Prospect as a collaborator."""
+        rows = [["t1", "", "bad", "https://x.com/ada", "Other", self.ORG, ""]]
+        _c, flags = self._scan_with_status(rows, ["Denied"], other_tabs=["Denied"],
+                                           per_tab={"Collaborators": ["Prospect"]})
+        self.assertEqual({f["row"] for f in flags}, {2})
+
+    def test_a_header_without_the_organize_question_aborts(self):
+        """A renamed form question renames its column; scanning on without it
+        would read every newer row as a non-organizer."""
+        hdr = [h for h in self.HDR if h != clean.H_ORGANIZER_GATE]
+        with self.assertRaises(SystemExit) as e:
+            self._scan(hdr, [["t", "Ada", "a@x.com", "", "Boston", "", ""]])
+        self.assertIn(clean.H_ORGANIZER_GATE, str(e.exception))
 
     def test_a_decided_no_is_never_flagged(self):
         rows = [["t1", "", "bad", "https://x.com/ada", "Other", self.ORG, ""],
@@ -1077,6 +1117,14 @@ class TestScanEndToEnd(unittest.TestCase):
             self._scan(hdr, rows)
         self.assertIn(clean.H_BRAND, str(e.exception))
         self.assertIn("ABORT", str(e.exception))
+
+
+class TestRoleTabs(unittest.TestCase):
+    def test_the_four_role_tabs_are_pinned(self):
+        """install-flags/install-colors pre-flight every one of these and abort
+        all of them on one bad name, so a typo here blocks every tab."""
+        self.assertEqual(list(clean.ROLE_TABS),
+                         ["Organizers", "Hosts", "Speakers", "Collaborators"])
 
 
 class TestDecidedNoListsAgree(unittest.TestCase):

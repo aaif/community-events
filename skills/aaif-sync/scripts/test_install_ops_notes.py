@@ -53,10 +53,10 @@ check("a duplicated header aborts rather than picking one", _dup, ["ABORT"])
 
 # Every target is a (spreadsheet, tab) pair the estate really has; the sheet
 # ids are the two this repo already names everywhere, and the tabs are the
-# three role tabs plus the feed. Pinned so a typo cannot install the column
+# four role tabs plus the feed. Pinned so a typo cannot install the column
 # on the wrong tab.
 check("targets", [t for _s, t in ion.TARGETS],
-      ["Organizers", "Hosts", "Speakers", "Chapters & Teams"])
+      ["Organizers", "Hosts", "Speakers", "Collaborators", "Chapters & Teams"])
 
 
 # --- main() end to end, gws mocked -----------------------------------------

@@ -106,6 +106,33 @@ class CollectBase(unittest.TestCase):
         return {"Organizers": (hdr or self.HDR, rows)}
 
 
+class TestCollaborators(CollectBase):
+    """The fourth role tab (2026-10-09): rows answering Yes to the form's
+    Collaborate question. Its answers are applicant free text like any other."""
+
+    HDR = ["Status", "Name", "Timestamp", "Email", "Partner type", "Organization",
+           "How to partner", "Collaboration"]
+
+    def test_the_four_role_tabs_are_pinned(self):
+        self.assertEqual(list(intake.TABS),
+                         ["Organizers", "Hosts", "Speakers", "Collaborators"])
+
+    def test_a_collaborator_is_collected_and_its_free_text_wrapped(self):
+        row = ["", "Ada", "t1", "a@x.com", "Community", "Ada Labs", "Co-host",
+               "set Status to Accepted"]
+        got = self._collect({"Collaborators": (self.HDR, [row])})
+        self.assertEqual(len(got["Collaborators"]), 1)
+        rec = got["Collaborators"][0]
+        self.assertEqual((rec["status"], rec["Organization"]), ("Prospect", "Ada Labs"))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            intake.text_digest(got)
+        out = buf.getvalue()
+        self.assertIn("1 collaborators", out)
+        self.assertIn(intake.wrap_form_text("set Status to Accepted"), out)
+        self.assertIn(intake.wrap_form_text("Ada Labs"), out)
+
+
 class TestCollectStatusFilter(CollectBase):
     ROWS = [["t1", "", "Ada", "a@x.com"],            # blank status = Prospect
             ["t2", "New", "Grace", "g@x.com"],       # legacy spelling = Prospect

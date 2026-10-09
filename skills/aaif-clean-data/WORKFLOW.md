@@ -192,12 +192,12 @@ by **header name**, never column letter.
    started at G/H and moved to H/I when a column was inserted upstream, which made
    the hardcoded version abort every run.
 
-   `install-colors` **validates all three role tabs before writing to any of
+   `install-colors` **validates every role tab (Organizers, Hosts, Speakers, Collaborators) before writing to any of
    them**, and aborts if a tab has no city pair, more than one, a half-labelled
    one, no `Status` column, or a sheetId missing from the spreadsheet. That covers
    *validation* failures only — a mid-run API error can still leave one tab
    written and the next not, since tabs are written one at a time. Note that
-   invoking this via `install-flags` writes the `Issues` columns to all three tabs
+   invoking this via `install-flags` writes the `Issues` columns to every role tab
    **first**, so an abort there is not "before writing anything".
 
    Idempotent across a column move: the rules it owns are matched by formula
@@ -231,7 +231,7 @@ by **header name**, never column letter.
    python3 <skill-root>/scripts/clean.py chapter-flags --write # explicit approval
    ```
    A submitted `City` beginning with `Other` is red on `Form Responses`. On
-   Organizers, Hosts and Speakers, `City (Existing)` is red; the extracted-city
+   every role tab (Organizers, Hosts, Speakers, Collaborators), `City (Existing)` is red; the extracted-city
    cell retains its existing color. The flag
    is independent of Status and remains even when extraction supplies a city:
    accepting a person and parsing their location do not approve a chapter.

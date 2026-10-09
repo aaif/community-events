@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pull the AAIF intake queue (Organizers / Hosts / Speakers) from the
+"""Pull the AAIF intake queue (Organizers / Hosts / Speakers / Collaborators) from the
 "AAIF Community Intake Ops" sheet and print the rows that need review.
 
 Reads everything by *header name* (never column letter), matching the sheet's
@@ -30,6 +30,9 @@ TABS = {
                    "Venue name", "Capacity", "Holds 30+?", "A/V available?", "Ops Notes"],
     "Speakers":   ["Name", "Email", "LinkedIn", "City (Existing)", "City (New)", "Headline",
                    "Talk title", "Ships in production?", "Past talks / portfolio", "Ops Notes"],
+    "Collaborators": ["Name", "Email", "LinkedIn", "City (Existing)", "City (New)",
+                      "Partner type", "Organization", "How to partner", "Collaboration",
+                      "Ops Notes"],
 }
 
 # Rows in these Status states are "awaiting review". A blank Status IS

@@ -24,7 +24,7 @@ people.
 
 | Resource | Id | Read / written |
 |---|---|---|
-| Intake Ops (`Organizers`, `Form Responses`, role tabs) | `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o` | **read only, always** |
+| Intake Ops (`Organizers`, `Form Responses`, role tabs) | `1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o` | **read only** — the engines never write it; the one-shot `migrate_intake_role_gates.py` rewrites five formula cells |
 | Chapters Drive folder | `1IQ1K7aVOKUUkxAcfLuNjdETEnmavvtjx` | written |
 
 **Run them in this order: about → access → crm.** Organizers first — they are the
@@ -167,7 +167,38 @@ python3 <skill-root>/migrations/test_migrate_status_prospect.py
 python3 <skill-root>/migrations/test_migrate_interested_in.py
 python3 <skill-root>/migrations/test_migrate_column_order.py
 python3 <skill-root>/migrations/test_migrate_role_tabs.py
+python3 <skill-root>/migrations/test_migrate_intake_role_gates.py
 ```
+
+## Intake role tabs read the per-role questions (`migrations/migrate_intake_role_gates.py`)
+
+On 2026-10-09 the intake form's single `What brings you here?` choice became
+one Yes/No question per role. The Intake Ops role tabs filter on that old
+answer, so every row filed since matches none of them. This rewrites one clause
+in four formulas (`Organizers`, `Hosts`, `Speakers`, and the `Organizers by
+City` summary) so a row is kept when the old answer **or** the role's question
+says so, and wraps those four plus `Collaborators` in a guard that shows
+`MISSING FORM COLUMN: <question>` if a question's column disappears. Intake
+Ops is otherwise read-only to this skill; these five cells are the exception,
+and only this script writes them.
+
+```bash
+python3 <skill-root>/migrations/migrate_intake_role_gates.py           # report
+python3 <skill-root>/migrations/migrate_intake_role_gates.py --write   # apply + verify
+```
+
+- **Keep the intake form closed until `--write` has verified.** Until then a new
+  submission reaches no role tab.
+- **Never rename a form question the formulas name.** A rename renames the
+  sheet column; the tab then shows the guard's `MISSING FORM COLUMN` message,
+  and `clean.py scan` and `sync_crm` stop, instead of applicants silently
+  disappearing. The titles live in `sync_crm.py` (`ORGANIZE_Q` and siblings).
+- `--write` verifies each role tab shows exactly as many rows as Form Responses
+  says it should, so a run that recovers nobody fails rather than reporting ok.
+- Idempotent: a formula carrying both edits is reported as done; a half-edited
+  one is refused.
+- The fourth role tab, `Collaborators`, gets only the guard (it already filters
+  on its question) and is in no sync: chapter CRMs have no collaborator role.
 
 ## Per-role CRM tabs (`migrations/migrate_role_tabs.py`)
 

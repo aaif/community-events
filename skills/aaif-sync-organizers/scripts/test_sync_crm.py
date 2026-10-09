@@ -449,6 +449,61 @@ try:
 finally:
     sync_crm.get_values = _saved_gv
 
+# The form's routing question became one Yes/No question per role on
+# 2026-10-09. Older rows keep their verbatim answer; newer ones leave it blank
+# and their interest is rebuilt from the Yes answers in the old wording. The API
+# trims trailing blanks, so a row can stop short of the right-most questions.
+_SURVEY_GRID = [
+    ["Timestamp", "Email", "What brings you here?", sync_crm.ORGANIZE_Q,
+     sync_crm.SPEAK_Q, sync_crm.VENUE_Q, sync_crm.COLLABORATE_Q],
+    ["t1", "Ada@X.io", "I want to be a speaker"],
+    ["t2", "bo@x.io", "", "Yes", "Yes", "No", "No"],
+    ["t3", "cy@x.io", "", "No", "No", "Yes", "No"],
+    ["t4", "di@x.io", "", "No", "No", "No", "No"],
+    ["t5", "ev@x.io", "", "No", "Yes"],
+    ["t6", "fa@x.io", "", " yes ", "", "", "Yes"],
+    ["t7", "go@x.io", "I want to offer a venue"],
+    ["t8", "go@x.io", "", "No", "Yes", "No", "No"],
+]
+sync_crm.get_values = lambda *_a, **_k: _SURVEY_GRID
+try:
+    got = sync_crm.read_survey_interests()
+    check("an old row keeps its verbatim answer", got.get("ada@x.io"), "I want to be a speaker")
+    check("a new row's Yes answers become the old wording, joined",
+          got.get("bo@x.io"),
+          "I want to be an organizer/volunteer for the local chapter · I want to be a speaker")
+    check("venue-only", got.get("cy@x.io"), "I want to offer a venue")
+    check("all No is no interest, not an empty string", "di@x.io" in got, False)
+    check("a trimmed row reads its blanks as No", got.get("ev@x.io"), "I want to be a speaker")
+    check("Yes is read trimmed and case-blind; Collaborate has its own wording",
+          got.get("fa@x.io"),
+          "I want to be an organizer/volunteer for the local chapter · I want to collaborate/partner")
+    check("an old row then a new row at one address: the last row wins",
+          got.get("go@x.io"), "I want to be a speaker")
+finally:
+    sync_crm.get_values = _saved_gv
+# A renamed question renames its column. Silently skipping it once meant half
+# an interest written into a CRM cell no later run corrects; now it aborts.
+_RENAMED_GRID = [r[:] for r in _SURVEY_GRID]
+_RENAMED_GRID[0] = [h if h != sync_crm.VENUE_Q else "Would you host us?" for h in _SURVEY_GRID[0]]
+sync_crm.get_values = lambda *_a, **_k: _RENAMED_GRID
+try:
+    try:
+        sync_crm.read_survey_interests()
+        check("a renamed question aborts the read", "no abort", "abort")
+    except SystemExit as e:
+        check("a renamed question aborts the read, naming it",
+              sync_crm.VENUE_Q in str(e), True)
+finally:
+    sync_crm.get_values = _saved_gv
+
+# One submission can apply for two roles, so the same person arrives on two
+# role tabs carrying the same interest pieces; the merged cell lists each once.
+check("join_pieces dedups the pieces, not the whole strings",
+      sync_crm.join_pieces(["Org · Spk · Boston", "Org · Spk · My talk"]),
+      "Org · Spk · Boston · My talk")
+check("join_pieces drops blanks", sync_crm.join_pieces(["", "Org", None]), "Org")
+
 
 # ---------------------------------------------------------------------------
 # Attendees: parsing both storage forms

@@ -492,6 +492,25 @@ DEFAULT_INTEREST = {
     "Hosts":      "I want to host a meetup (offer a venue)",
 }
 
+# On 2026-10-09 the form's single "What brings you here?" choice was replaced by
+# one Yes/No question per role, so one submission can apply for several. The old
+# column stays on Form Responses (blank from then on). A row filed since then has
+# its interest rebuilt from its Yes answers, in the wording the old choice last
+# had (the venue option had read "host a meetup" earlier; Collaborate was never
+# an option). These are the questions' EXACT titles: renaming a form question
+# renames its sheet column, so they must change together with the form.
+# migrations/migrate_intake_role_gates.py imports them from here.
+ORGANIZE_Q = "Would you like to help organize local AAIF events?"
+SPEAK_Q = "Would you like to speak at an AAIF event?"
+VENUE_Q = "Would you like to offer a venue for AAIF events?"
+COLLABORATE_Q = "Would you like to collaborate/partner with us?"
+GATE_INTEREST = (
+    (ORGANIZE_Q, "I want to be an organizer/volunteer for the local chapter"),
+    (SPEAK_Q, "I want to be a speaker"),
+    (VENUE_Q, "I want to offer a venue"),
+    (COLLABORATE_Q, "I want to collaborate/partner"),
+)
+
 # Free text goes into a *private* workbook as an inline string, which Excel and
 # Sheets both treat as literal text — a leading "=" can never become a formula,
 # so no RAW-vs-USER_ENTERED equivalent is needed here. Control characters are
@@ -551,6 +570,14 @@ def join_distinct(values, sep=" · "):
             seen.add(fold(v))
             out.append(v)
     return sep.join(out)
+
+
+def join_pieces(values, sep=" · "):
+    """join_distinct over each value's own `sep`-joined pieces. One submission
+    can now apply for several roles, so the same person arrives on two role
+    tabs carrying "organizer · speaker · <detail>" twice; deduping whole
+    strings would write both halves into the CRM cell."""
+    return join_distinct((piece for v in values for piece in (v or "").split(sep)), sep)
 
 
 # ----------------------------------------------------------------------------
@@ -969,7 +996,8 @@ def check_dropdowns(att):
 # Read the intake
 # ----------------------------------------------------------------------------
 def read_survey_interests():
-    """Folded email -> the person's verbatim "What brings you here?" answer.
+    """Folded email -> the person's verbatim "What brings you here?" answer, or
+    for a row filed since 2026-10-09 its Yes answers (see GATE_INTEREST).
 
     The role tabs are filtered views that drop the routing question, so the one
     column that is literally the person's stated interest has to come from
@@ -986,9 +1014,17 @@ def read_survey_interests():
         sys.exit("ABORT: 'Form Responses' came back empty.")
     i_email, i_what = header_index(rows[0], "Form Responses",
                                    "Email", "What brings you here?")
+    # Required, like the two above. Optional columns here once meant a renamed
+    # question quietly wrote half an interest into a CRM cell that no later run
+    # corrects; a rename must stop the run instead.
+    i_gates = header_index(rows[0], "Form Responses", *(h for h, _t in GATE_INTEREST))
+    gates = list(zip(i_gates, (text for _h, text in GATE_INTEREST)))
     out = {}
     for row in rows[1:]:
         e, what = fold_email(cell(row, i_email)), clean_text(cell(row, i_what))
+        if not what:
+            what = join_distinct(text for i, text in gates
+                                 if cell(row, i).strip().lower() == "yes")
         if e and what:
             out[e] = what
     return out
@@ -1248,7 +1284,7 @@ def merge_people(people, blocked=None):
             for field in ("linkedin", "company", "title"):
                 cur[field] = cur[field] or p[field]
             cur["expertise"] = join_distinct([cur["expertise"], p["expertise"]])
-            cur["interest"] = join_distinct([cur["interest"], p["interest"]])
+            cur["interest"] = join_pieces([cur["interest"], p["interest"]])
     return list(merged.values())
 
 
