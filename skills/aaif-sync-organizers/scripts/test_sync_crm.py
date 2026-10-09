@@ -449,6 +449,40 @@ try:
 finally:
     sync_crm.get_values = _saved_gv
 
+# The form's routing question became one Yes/No question per role on
+# 2026-10-09. Older rows keep their verbatim answer; newer ones leave it blank
+# and their interest is rebuilt from the Yes answers in the old wording. The API
+# trims trailing blanks, so a row can stop short of the right-most questions.
+_ORG_Q, _SPK_Q, _VEN_Q = (h for h, _t in sync_crm.GATE_INTEREST[:3])
+_SURVEY_GRID = [
+    ["Timestamp", "Email", "What brings you here?", _ORG_Q, _SPK_Q, _VEN_Q],
+    ["t1", "Ada@X.io", "I want to be a speaker"],
+    ["t2", "bo@x.io", "", "Yes", "Yes", "No"],
+    ["t3", "cy@x.io", "", "No", "No", "Yes"],
+    ["t4", "di@x.io", "", "No", "No", "No"],
+    ["t5", "ev@x.io", "", "No", "Yes"],
+]
+sync_crm.get_values = lambda *_a, **_k: _SURVEY_GRID
+try:
+    got = sync_crm.read_survey_interests()
+    check("an old row keeps its verbatim answer", got.get("ada@x.io"), "I want to be a speaker")
+    check("a new row's Yes answers become the old wording, joined",
+          got.get("bo@x.io"),
+          "I want to be an organizer/volunteer for the local chapter · I want to be a speaker")
+    check("venue-only", got.get("cy@x.io"), "I want to offer a venue")
+    check("all No is no interest, not an empty string", "di@x.io" in got, False)
+    check("a trimmed row reads its blanks as No", got.get("ev@x.io"), "I want to be a speaker")
+finally:
+    sync_crm.get_values = _saved_gv
+_PRE_GATE_GRID = [["Timestamp", "Email", "What brings you here?"],
+                  ["t1", "ada@x.io", "I want to offer a venue"]]
+sync_crm.get_values = lambda *_a, **_k: _PRE_GATE_GRID
+try:
+    check("a sheet from before the switch still reads (gates are optional)",
+          sync_crm.read_survey_interests(), {"ada@x.io": "I want to offer a venue"})
+finally:
+    sync_crm.get_values = _saved_gv
+
 
 # ---------------------------------------------------------------------------
 # Attendees: parsing both storage forms

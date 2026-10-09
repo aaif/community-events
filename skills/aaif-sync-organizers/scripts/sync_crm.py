@@ -492,6 +492,19 @@ DEFAULT_INTEREST = {
     "Hosts":      "I want to host a meetup (offer a venue)",
 }
 
+# On 2026-10-09 the form's single "What brings you here?" choice was replaced by
+# one Yes/No question per role, so one submission can apply for several. The old
+# column stays on Form Responses (blank from then on), and a newer row's interest
+# is rebuilt from its Yes answers, worded as the old choice was, so a chapter's
+# CRM reads the same whichever side of the switch a person applied on.
+GATE_INTEREST = (
+    ("Would you like to help organize local AAIF events?",
+     "I want to be an organizer/volunteer for the local chapter"),
+    ("Would you like to speak at an AAIF event?", "I want to be a speaker"),
+    ("Would you like to offer a venue for AAIF events?", "I want to offer a venue"),
+    ("Would you like to collaborate/partner with us?", "I want to collaborate/partner"),
+)
+
 # Free text goes into a *private* workbook as an inline string, which Excel and
 # Sheets both treat as literal text — a leading "=" can never become a formula,
 # so no RAW-vs-USER_ENTERED equivalent is needed here. Control characters are
@@ -969,7 +982,8 @@ def check_dropdowns(att):
 # Read the intake
 # ----------------------------------------------------------------------------
 def read_survey_interests():
-    """Folded email -> the person's verbatim "What brings you here?" answer.
+    """Folded email -> the person's verbatim "What brings you here?" answer, or
+    for a row filed after 2026-10-09 its Yes answers (see GATE_INTEREST).
 
     The role tabs are filtered views that drop the routing question, so the one
     column that is literally the person's stated interest has to come from
@@ -986,9 +1000,14 @@ def read_survey_interests():
         sys.exit("ABORT: 'Form Responses' came back empty.")
     i_email, i_what = header_index(rows[0], "Form Responses",
                                    "Email", "What brings you here?")
+    # Optional, unlike the two above: a sheet from before 2026-10-09 has none.
+    gates = [(rows[0].index(h), text) for h, text in GATE_INTEREST if h in rows[0]]
     out = {}
     for row in rows[1:]:
         e, what = fold_email(cell(row, i_email)), clean_text(cell(row, i_what))
+        if not what:
+            what = join_distinct(text for i, text in gates
+                                 if cell(row, i).strip().lower() == "yes")
         if e and what:
             out[e] = what
     return out

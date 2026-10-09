@@ -882,27 +882,35 @@ class TestDuplicateOrganizers(unittest.TestCase):
     HOST = "I want to host/provide a venue"
 
     def test_speaker_plus_host_plus_organizer_is_one_person_three_forms(self):
-        seen = {"a@x.com": [(3, self.SPK, "Ada"), (4, self.HOST, "Ada"), (5, self.ORG, "Ada")]}
+        seen = {"a@x.com": [(3, False, "Ada"), (4, False, "Ada"), (5, True, "Ada")]}
         self.assertEqual(clean.duplicate_organizers(seen), [])
 
     def test_two_talk_proposals_are_two_rows_not_a_duplicate(self):
-        seen = {"a@x.com": [(3, self.SPK, "Ada"), (9, self.SPK, "Ada")]}
+        seen = {"a@x.com": [(3, False, "Ada"), (9, False, "Ada")]}
         self.assertEqual(clean.duplicate_organizers(seen), [])
 
     def test_two_organizer_applications_are_flagged_on_the_first(self):
-        seen = {"a@x.com": [(3, self.SPK, "Ada"), (5, self.ORG, "Ada"), (12, self.ORG, "")]}
+        seen = {"a@x.com": [(3, False, "Ada"), (5, True, "Ada"), (12, True, "")]}
         self.assertEqual(clean.duplicate_organizers(seen),
                          [{"row": 5, "who": "Ada",
                            "issue": "duplicate organizer application in rows [5, 12]"}])
 
     def test_a_nameless_duplicate_is_identified_by_its_address(self):
-        seen = {"a@x.com": [(5, self.ORG, ""), (12, self.ORG, "")]}
+        seen = {"a@x.com": [(5, True, ""), (12, True, "")]}
         self.assertEqual(clean.duplicate_organizers(seen)[0]["who"], "a@x.com")
 
     def test_the_role_test_matches_the_tab_formula(self):
         self.assertTrue(clean.is_organizer_brand("I want to be an Organizer"))
         self.assertFalse(clean.is_organizer_brand(self.SPK))
         self.assertFalse(clean.is_organizer_brand(""))
+
+    def test_either_the_old_answer_or_the_new_question_makes_an_organizer(self):
+        self.assertTrue(clean.is_organizer_row(self.ORG))           # before 2026-10-09
+        self.assertTrue(clean.is_organizer_row("", "Yes"))          # after
+        self.assertTrue(clean.is_organizer_row("", " yes "))
+        self.assertFalse(clean.is_organizer_row("", "No"))
+        self.assertFalse(clean.is_organizer_row(self.SPK, ""))
+        self.assertFalse(clean.is_organizer_row("", ""))
 
 
 class TestPrintScanCollapses(unittest.TestCase):
@@ -1013,6 +1021,19 @@ class TestScanEndToEnd(unittest.TestCase):
                 ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", self.SPK, ""],
                 ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", self.ORG, ""]]
         _changes, flags = self._scan(self.HDR, rows)
+        self.assertEqual(flags, [{"row": 2, "who": "Ada",
+                                  "issue": "duplicate organizer application in rows [2, 3]"}])
+
+    def test_an_old_answer_and_a_new_yes_at_one_address_are_a_duplicate(self):
+        """After 2026-10-09 the routing column is blank and the per-role
+        question carries the answer; the API trims a row's trailing blanks, so
+        a new-style row can stop short of columns the header has."""
+        hdr = self.HDR + [clean.H_ORGANIZER_GATE]
+        rows = [["t", "Ada", "a@x.com", "https://linkedin.com/in/ada", "Boston", self.ORG, ""],
+                ["t", "Ada", "a@x.com", "https://linkedin.com/in/ada", "Boston", "", "", "Yes"],
+                ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", "", "", "No"],
+                ["t", "Bo", "b@x.com", "https://linkedin.com/in/bo", "Boston", self.SPK]]
+        _changes, flags = self._scan(hdr, rows)
         self.assertEqual(flags, [{"row": 2, "who": "Ada",
                                   "issue": "duplicate organizer application in rows [2, 3]"}])
 

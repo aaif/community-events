@@ -496,9 +496,16 @@ def norm_city(s):
 CHAPTERS_ID = "18_7aHD45-5NhlN6IZKW2QzswZlDHVb8nBSP7rl5-yWg"
 CHAPTERS_TAB = "Chapters & Teams"
 H_OTHER = "Don't see your city above? Enter it here."
-#: The role question. The role tabs filter Form Responses on it the same way
-#: (`SEARCH("organizer", brand)` in the Organizers tab's formula).
+#: The role question until 2026-10-09. Deleted from the form then, but its
+#: column (and every answer before that date) stays on Form Responses, so it
+#: is still how an older row says what it applied for.
 H_BRAND = "What brings you here?"
+#: Its replacement for organizers: one Yes/No question per role, so a single
+#: submission can apply for several. The role tabs keep a row when EITHER says
+#: organizer (`SEARCH("organizer", brand)` or `gate="Yes"` in the Organizers
+#: tab's formula, installed by aaif-sync-organizers'
+#: migrations/migrate_intake_role_gates.py).
+H_ORGANIZER_GATE = "Would you like to help organize local AAIF events?"
 H_EXTRACTED = "Extracted City"
 H_RESOLVED = "Resolved City"
 
@@ -702,6 +709,13 @@ def idx(hdr, name):
     return hdr.index(name) if name in hdr else None
 
 
+def cell(row, i):
+    """row[i], or "" when the column is absent (i is None) or the API trimmed
+    the row's trailing blanks short of it — which is routine for the per-role
+    questions, the right-most answers on the sheet."""
+    return row[i] if i is not None and i < len(row) else ""
+
+
 # A decided "no" is not a data problem to chase: nobody will fix a Denied
 # applicant's LinkedIn. Status lives only on the role tabs, which are filtered
 # views of Form Responses, so a row is matched back by Timestamp + Email. Keep
@@ -737,6 +751,7 @@ def scan():
     hdr, rows = read_tab(SOURCE)
     ni, ei, li, ci = (idx(hdr, h) for h in (H_NAME, H_EMAIL, H_LINKEDIN, H_CITY))
     bi = idx(hdr, H_BRAND)
+    gi = idx(hdr, H_ORGANIZER_GATE)  # absent on a sheet older than 2026-10-09
     # Reading by header name survives a reorder, not a *rename*: if a required
     # column is gone, fail loudly instead of reporting "nothing to fix".
     missing = [h for h, i in ((H_NAME, ni), (H_EMAIL, ei), (H_BRAND, bi)) if i is None]
@@ -794,7 +809,7 @@ def scan():
                           "issue": "city=Other (run `clean.py cities` to derive it)"})
         if email:
             seen_email.setdefault(email, []).append(
-                (rn, row[bi] if bi is not None else "", name))
+                (rn, is_organizer_row(cell(row, bi), cell(row, gi)), name))
     flags.extend(duplicate_organizers(seen_email))
     if declined and not suppressed:
         # The key is Timestamp as DISPLAYED on two tabs; if their formats ever
@@ -813,9 +828,15 @@ FINDINGS_FORMAT = 1
 
 
 def is_organizer_brand(brand):
-    """The role tabs' own test, mirrored: an organizer row is one whose answer
-    to `What brings you here?` mentions organizing."""
+    """An answer to the old `What brings you here?` that mentions organizing."""
     return "organizer" in (brand or "").lower()
+
+
+def is_organizer_row(brand, gate=""):
+    """The Organizers tab's own test, mirrored: the old routing answer mentions
+    organizing, OR the per-role question that replaced it says Yes. A row has
+    one or the other, depending on which side of 2026-10-09 it was filed."""
+    return is_organizer_brand(brand) or (gate or "").strip().lower() == "yes"
 
 
 def duplicate_organizers(seen_email):
@@ -826,11 +847,12 @@ def duplicate_organizers(seen_email):
     proposals are two rows — so a repeated address is not a duplicate. A
     second organizer application is: one row per organizer is the rule the
     CRM and the grants are keyed on. `seen_email` maps address -> [(row,
-    brand)] in sheet order; the flag sits on the first organizer row.
+    is_organizer, name)] in sheet order; the flag sits on the first organizer
+    row.
     """
     flags = []
     for email, rows in seen_email.items():
-        org = [(rn, name) for rn, brand, name in rows if is_organizer_brand(brand)]
+        org = [(rn, name) for rn, is_org, name in rows if is_org]
         if len(org) > 1:
             who = next((n for _rn, n in org if n), email)
             flags.append({"row": org[0][0], "who": who,

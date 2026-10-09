@@ -7,6 +7,15 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
 ## [Unreleased]
 
 ### Added
+- **The intake's per-role Yes/No questions reach triage.** On 2026-10-09 the
+  form's single `What brings you here?` choice became one Yes/No question per
+  role, so a submission can apply for several. Every row filed since would have
+  matched no role tab. `migrations/migrate_intake_role_gates.py` (report by
+  default, `--write` applies and verifies) makes the `Organizers`, `Hosts`,
+  `Speakers` and `Organizers by City` formulas keep a row when the old answer
+  OR the role's question says so; `clean.py scan` counts a Yes to the organize
+  question as an organizer application; and `sync_crm` writes a newer row's Yes
+  answers, in the old choice's wording, as its `What brings you here?`.
 - **`clean.py chapter-flags` marks `Other` cities for chapter review.** A
   submitted `Other` city cell turns red on Form Responses and every role tab,
   whatever the person's Status and whether or not a city was extracted — it

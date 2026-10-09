@@ -146,7 +146,7 @@ finish — one bad file must not abandon the rest.
 | `Company` | speakers `Affiliation`, hosts `Company` — organizers are not asked |
 | `Role / title` | speakers `Headline` — organizers and hosts are not asked |
 | `Technical expertise` | organizers `Technical expertise`, speakers `Areas of expertise`, hosts `Industry` |
-| `What brings you here?` | the survey answer **verbatim**, plus the role's detail (`Talk title` / `Venue name` / `Chapter / city wanted`) |
+| `What brings you here?` | the survey answer **verbatim** (or, for a row filed after 2026-10-09, its Yes answers in the old choice's wording), plus the role's detail (`Talk title` / `Venue name` / `Chapter / city wanted`) |
 
 #### `Status` and `Interested in` are two different questions
 
@@ -177,10 +177,23 @@ from when the Chapters folder was public-link; it is now 92 individual
 per-chapter organizer grants, and the audience for a chapter's CRM is that
 chapter's own organizers.)
 
-`What brings you here?` is the form's routing question, and the role tabs are
-filtered views that drop it — so it is read from `Form Responses` and joined back
-on email. When a row can't be joined, the form's own wording for that branch is
-used instead of inventing one.
+`What brings you here?` was the form's routing question until 2026-10-09, when
+it was replaced by one Yes/No question per role (organize, speak, offer a venue,
+collaborate), so one submission can apply for several. Its column stays on
+`Form Responses`, filled for every older row and blank for every newer one. The
+role tabs are filtered views that drop both, so the interest is read from
+`Form Responses` and joined back on email: the verbatim answer when there is
+one, otherwise the Yes answers worded as the old choices were (`GATE_INTEREST`).
+When a row can't be joined, the form's own wording for that branch is used
+instead of inventing one.
+
+The role tabs themselves keep a row when **either** the old answer names the
+role **or** that role's question says Yes. Those four formulas (`Organizers`,
+`Hosts`, `Speakers` and `Organizers by City`) live only in the sheet;
+`migrations/migrate_intake_role_gates.py` is what installed the Yes half.
+**Renaming a form question renames its column on the sheet**, and the formulas
+look the questions up by exact title — a renamed question shows as `#N/A` on the
+tab, deliberately, rather than quietly dropping its applicants.
 
 ### Rules
 
