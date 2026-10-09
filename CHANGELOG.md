@@ -13,9 +13,14 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
   matched no role tab. `migrations/migrate_intake_role_gates.py` (report by
   default, `--write` applies and verifies) makes the `Organizers`, `Hosts`,
   `Speakers` and `Organizers by City` formulas keep a row when the old answer
-  OR the role's question says so; `clean.py scan` counts a Yes to the organize
-  question as an organizer application; and `sync_crm` writes a newer row's Yes
-  answers, in the old choice's wording, as its `What brings you here?`.
+  OR the role's question says so, and wraps those plus `Collaborators` in a
+  guard: a renamed question shows `MISSING FORM COLUMN` instead of blanking the
+  tab. `--write` checks each tab against the row count Form Responses implies.
+  `clean.py scan` counts a Yes to the organize question as an organizer
+  application, and `sync_crm` writes a newer row's Yes answers, in the old
+  choice's last wording, as its `What brings you here?`. Both stop if a
+  question's column is missing, and `sync_crm` lists each piece of a two-tab
+  person's interest once.
 - **A `Collaborators` role tab on Intake Ops.** Rows that answer Yes to the
   form's Collaborate question had nowhere to land. The new tab (a copy of
   `Speakers` re-pointed at the collaborate answers) is now in `clean.py`'s role

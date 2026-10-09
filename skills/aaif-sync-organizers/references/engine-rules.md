@@ -146,7 +146,7 @@ finish — one bad file must not abandon the rest.
 | `Company` | speakers `Affiliation`, hosts `Company` — organizers are not asked |
 | `Role / title` | speakers `Headline` — organizers and hosts are not asked |
 | `Technical expertise` | organizers `Technical expertise`, speakers `Areas of expertise`, hosts `Industry` |
-| `What brings you here?` | the survey answer **verbatim** (or, for a row filed after 2026-10-09, its Yes answers in the old choice's wording), plus the role's detail (`Talk title` / `Venue name` / `Chapter / city wanted`) |
+| `What brings you here?` | the survey answer **verbatim** (or, for a row filed since 2026-10-09, its Yes answers in the old choice's wording), plus the role's detail (`Talk title` / `Venue name` / `Chapter / city wanted`) |
 
 #### `Status` and `Interested in` are two different questions
 
@@ -183,26 +183,37 @@ collaborate), so one submission can apply for several. Its column stays on
 `Form Responses`, filled for every older row and blank for every newer one. The
 role tabs are filtered views that drop both, so the interest is read from
 `Form Responses` and joined back on email: the verbatim answer when there is
-one, otherwise the Yes answers worded as the old choices were (`GATE_INTEREST`).
-When a row can't be joined, the form's own wording for that branch is used
-instead of inventing one.
+one, otherwise the Yes answers in the wording the old choice last had
+(`GATE_INTEREST`; Collaborate was never an old choice). A person on two role
+tabs is merged with each piece of that text listed once (`join_pieces`). When a
+row can't be joined, the form's own wording for that branch is used instead of
+inventing one.
 
-The role tabs themselves keep a row when **either** the old answer names the
-role **or** that role's question says Yes. Those four formulas (`Organizers`,
-`Hosts`, `Speakers` and `Organizers by City`) live only in the sheet;
-`migrations/migrate_intake_role_gates.py` is what installed the Yes half.
+The role tabs keep a row when **either** the old answer names the role **or**
+that role's question says Yes. Those formulas live only in the sheet, in
+`Organizers!C2`, `Hosts!C2`, `Speakers!C2`, `Organizers by City!A2` (a summary
+of accepted organizers, not a role tab) and `Collaborators!C2`;
+`migrations/migrate_intake_role_gates.py` installed the Yes half and a guard.
 
-A fourth role tab, **`Collaborators`**, lists rows whose Collaborate question is
-Yes (it was built as a copy of `Speakers`, so it carries the same Status
-dropdown, colours, `Chapter`, reviewer columns, `Issues` and `Ops Notes`). It
-is triaged and cleaned like the others but **not synced**: a chapter CRM has no
-collaborator role, so `sync_crm` and `sync_access` read only the three tabs
-above. One header trap: the marketing question's title is on `Form Responses`
-twice, and the FIRST is Collaborate's (the second is the venue section's), so
-`MATCH` picks the right one only while that order holds.
 **Renaming a form question renames its column on the sheet**, and the formulas
-look the questions up by exact title — a renamed question shows as `#N/A` on the
-tab, deliberately, rather than quietly dropping its applicants.
+look the questions up by exact title. Each formula is wrapped in a guard, so a
+renamed question shows `MISSING FORM COLUMN: <question>` in the tab's first
+cell (without it, the tabs' own `IFERROR(...,"")` blanked the whole tab,
+older rows included, with no error). `clean.py scan` and `sync_crm` also stop
+on a missing question rather than reading on without it. The question titles
+are defined once in `sync_crm.py` (`ORGANIZE_Q` and its siblings); `clean.py`
+carries its own copy of the organize question to stay zippable, and a test
+keeps the two equal.
+
+The fourth role tab, **`Collaborators`**, lists rows whose Collaborate question
+is Yes. It was built as a copy of `Speakers`, so it carries the same Status
+dropdown, colours, `Chapter`, reviewer columns, `Issues` and `Ops Notes`. It is
+triaged and cleaned like the others but **not synced**: a chapter CRM has no
+collaborator role, so `sync_crm` reads Organizers, Speakers and Hosts, and
+`sync_access` reads Organizers only. One header trap: the marketing question's
+title is on `Form Responses` twice, and `Collaborators!C2` takes the FIRST,
+which is Collaborate's (the second is the venue section's). The migration
+refuses to run if the first copy is no longer inside the Collaborate block.
 
 ### Rules
 

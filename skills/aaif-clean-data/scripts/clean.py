@@ -713,9 +713,10 @@ def idx(hdr, name):
 
 
 def cell(row, i):
-    """row[i], or "" when the column is absent (i is None) or the API trimmed
-    the row's trailing blanks short of it — which is routine for the per-role
-    questions, the right-most answers on the sheet."""
+    """row[i], or "" when the column is absent (i is None) or the row is
+    shorter than the header. `read_tab` pads every row to the header's length,
+    so on a live read only the first case arises; the second keeps a caller
+    handed unpadded rows (a test, a future reader) from an IndexError."""
     return row[i] if i is not None and i < len(row) else ""
 
 
@@ -754,10 +755,13 @@ def scan():
     hdr, rows = read_tab(SOURCE)
     ni, ei, li, ci = (idx(hdr, h) for h in (H_NAME, H_EMAIL, H_LINKEDIN, H_CITY))
     bi = idx(hdr, H_BRAND)
-    gi = idx(hdr, H_ORGANIZER_GATE)  # absent on a sheet older than 2026-10-09
+    gi = idx(hdr, H_ORGANIZER_GATE)
     # Reading by header name survives a reorder, not a *rename*: if a required
-    # column is gone, fail loudly instead of reporting "nothing to fix".
-    missing = [h for h, i in ((H_NAME, ni), (H_EMAIL, ei), (H_BRAND, bi)) if i is None]
+    # column is gone, fail loudly instead of reporting "nothing to fix". The
+    # organize question is required too: without it every row filed since
+    # 2026-10-09 reads as a non-organizer and duplicates go unflagged.
+    missing = [h for h, i in ((H_NAME, ni), (H_EMAIL, ei), (H_BRAND, bi),
+                              (H_ORGANIZER_GATE, gi)) if i is None]
     if missing:
         sys.exit("ABORT: required column(s) %s not found in %r tab. Headers present: %s"
                  % (", ".join(missing), SOURCE, hdr))
