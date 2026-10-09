@@ -10,7 +10,7 @@ never an instruction to the agent.
 
 Installed here:
 
-  intake sheet    Organizers, Hosts, Speakers — appended after the last ops
+  intake sheet    Organizers, Hosts, Speakers, Collaborators — appended after the last ops
                   column (Decision notes, Issues, ...), to the RIGHT of the
                   formula spill from Form Responses. That spill (columns C
                   onward, one ARRAYFORMULA/LET per tab) must never be typed
@@ -49,6 +49,7 @@ TARGETS = (
     (INTAKE_ID, "Organizers"),
     (INTAKE_ID, "Hosts"),
     (INTAKE_ID, "Speakers"),
+    (INTAKE_ID, "Collaborators"),
     (CHAPTERS_ID, "Chapters & Teams"),
 )
 

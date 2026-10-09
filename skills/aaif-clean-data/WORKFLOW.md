@@ -192,7 +192,7 @@ by **header name**, never column letter.
    started at G/H and moved to H/I when a column was inserted upstream, which made
    the hardcoded version abort every run.
 
-   `install-colors` **validates all three role tabs before writing to any of
+   `install-colors` **validates every role tab (Organizers, Hosts, Speakers, Collaborators) before writing to any of
    them**, and aborts if a tab has no city pair, more than one, a half-labelled
    one, no `Status` column, or a sheetId missing from the spreadsheet. That covers
    *validation* failures only — a mid-run API error can still leave one tab

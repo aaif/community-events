@@ -20,8 +20,9 @@ the old answer matches OR the role's new question says Yes:
     Organizers by City!A2  SEARCH("organizer")  +  organize question = "Yes"
 
 Rows from before the switch still match on the old column, which stays on the
-sheet; nothing else in the formulas changes. The Collaborate question has no
-role tab and gets none here — it never had one.
+sheet; nothing else in the formulas changes. The Collaborate question needs
+nothing here: its `Collaborators` tab was created on 2026-10-09 already
+filtering on the question alone (no older answer ever routed to it).
 
 No IFNA around the new MATCH, on purpose: a renamed question must break the tab
 LOUDLY (#N/A where the table was) rather than quietly drop everyone who answered

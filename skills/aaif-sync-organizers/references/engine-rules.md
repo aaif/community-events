@@ -191,6 +191,15 @@ The role tabs themselves keep a row when **either** the old answer names the
 role **or** that role's question says Yes. Those four formulas (`Organizers`,
 `Hosts`, `Speakers` and `Organizers by City`) live only in the sheet;
 `migrations/migrate_intake_role_gates.py` is what installed the Yes half.
+
+A fourth role tab, **`Collaborators`**, lists rows whose Collaborate question is
+Yes (it was built as a copy of `Speakers`, so it carries the same Status
+dropdown, colours, `Chapter`, reviewer columns, `Issues` and `Ops Notes`). It
+is triaged and cleaned like the others but **not synced**: a chapter CRM has no
+collaborator role, so `sync_crm` and `sync_access` read only the three tabs
+above. One header trap: the marketing question's title is on `Form Responses`
+twice, and the FIRST is Collaborate's (the second is the venue section's), so
+`MATCH` picks the right one only while that order holds.
 **Renaming a form question renames its column on the sheet**, and the formulas
 look the questions up by exact title — a renamed question shows as `#N/A` on the
 tab, deliberately, rather than quietly dropping its applicants.

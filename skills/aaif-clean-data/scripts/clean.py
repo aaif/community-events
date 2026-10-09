@@ -10,7 +10,7 @@ Subcommands:
                     writing to Form Responses and noting what changed per row in the
                     "Autofixes" column (created if missing).
     install-flags   Add/refresh the live "Issues" column + bright-red row rule on the
-                    role tabs (Organizers/Hosts/Speakers).
+                    role tabs (Organizers/Hosts/Speakers/Collaborators).
     install-colors  Label City (Existing)/City (New) + (re)install the violet/
                     amber/green provenance rules on the role tabs. Idempotent.
 
@@ -21,7 +21,10 @@ import argparse, json, os, re, subprocess, sys, tempfile, unicodedata
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 SOURCE = "Form Responses"
-ROLE_TABS = {"Organizers": 537599805, "Hosts": 1923799643, "Speakers": 1491913647}
+# Collaborators added 2026-10-09 with the form's per-role questions: it lists
+# rows whose "Would you like to collaborate/partner with us?" is Yes.
+ROLE_TABS = {"Organizers": 537599805, "Hosts": 1923799643, "Speakers": 1491913647,
+             "Collaborators": 456814694}
 BRIGHT_RED = {"red": 0.91, "green": 0.26, "blue": 0.21}
 
 # Common person fields live on these source headers.

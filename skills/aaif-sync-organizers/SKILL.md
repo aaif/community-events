@@ -191,6 +191,9 @@ python3 <skill-root>/migrations/migrate_intake_role_gates.py --write   # apply +
   sheet column; the tab then shows `#N/A` on purpose, instead of silently
   dropping that question's applicants.
 - Idempotent: a formula already reading its question is reported as done.
+- The fourth role tab, `Collaborators`, already filters on its question and is
+  not part of this script — nor of any sync: chapter CRMs have no collaborator
+  role.
 
 ## Per-role CRM tabs (`migrations/migrate_role_tabs.py`)
 
