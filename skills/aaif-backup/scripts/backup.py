@@ -10,7 +10,7 @@ Every run writes a NEW immutable file — nothing is ever overwritten:
     <dest>/<slug>/<UTC-timestamp>.<ext>
 so the folder is a full version history you can diff or restore from (two runs of the
 same target within one second get a `-1`, `-2`, … suffix so neither clobbers the other).
-<dest> defaults to ./backups (kept out of git); restore is manual (re-upload the
+<dest> defaults to backups/ in the toolkit's data folder (see data_dir); restore is manual (re-upload the
 snapshot via gws).
 
 Usage:
@@ -23,6 +23,38 @@ import argparse, datetime, json, os, re, shutil, subprocess, sys
 
 # The one irreplaceable source of intake data — the default backup target.
 INTAKE_OPS_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
+
+
+TOOLKIT = os.path.abspath(os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), "..", "..", ".."))
+
+#: Where an install writes reports and backups. A COPY of
+#: aaif_events.datadir.data_dir (this script stays free of `lib`), pinned to
+#: it by lib/aaif_events/tests/test_pinned_copies.py. A checkout writes at its
+#: own root; an installed plugin (Goose, Claude's per-version cache, any copy
+#: without .git) in a per-user folder that survives updates; never the
+#: operator's working folder.
+DATA_DIR_ENV = "AAIF_DATA_DIR"
+_PLUGIN_HOMES = (os.sep + os.path.join(".agents", "plugins") + os.sep,
+                 os.sep + os.path.join(".claude", "plugins") + os.sep)
+
+
+def data_dir(toolkit=None, environ=os.environ, platform=sys.platform):
+    toolkit = toolkit or TOOLKIT
+    override = os.path.expanduser(environ.get(DATA_DIR_ENV, "").strip())
+    if override and os.path.isabs(override):
+        return override
+    if override:
+        print("aaif: ignoring %s=%s — it must be an absolute path"
+              % (DATA_DIR_ENV, override), file=sys.stderr)
+    if (os.path.exists(os.path.join(toolkit, ".git"))
+            and not any(h in toolkit + os.sep for h in _PLUGIN_HOMES)):
+        return toolkit
+    home = os.path.expanduser("~")
+    if platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "AAIF")
+    return os.path.join(environ.get("XDG_DATA_HOME")
+                        or os.path.join(home, ".local", "share"), "aaif")
 
 # Google-native mime type -> (export mime type, file extension).
 EXPORT = {
@@ -42,6 +74,31 @@ BINARY_EXT = {
 }
 
 
+def gws_failure(what, stderr):
+    """One line for a failed gws call, ending in the next step. The operator
+    may be in Goose or Claude Desktop, not reading a terminal.
+
+    gws prefixes a "Using keyring backend" banner, and a multi-line error often
+    ends on a lone `}` or a context line, so the line kept is the last one that
+    states the error. Credential shapes are masked: this goes to a chat. A copy
+    in each self-contained skill (backup, clean-data, triage-intake), kept
+    identical by lib/aaif_events/tests/test_pinned_copies.py."""
+    lines = [ln.strip() for ln in (stderr or "").splitlines()
+             if any(c.isalnum() for c in ln) and "keyring backend" not in ln]
+    reason = next((ln for ln in reversed(lines) if _GWS_REASON.search(ln)),
+                  lines[-1] if lines else "no error text")
+    return ("%s failed: %s — if this is a sign-in or permission problem, run "
+            "aaif-check-setup (\"check my setup\")."
+            % (what, _GWS_SECRET.sub("<hidden>", reason)[:300]))
+
+
+#: A line that states why gws failed, as opposed to JSON punctuation.
+_GWS_REASON = re.compile(r"error|message|denied|not found|permission|scope|"
+                         r"credential|\b[45]\d\d\b", re.I)
+#: Anything shaped like a credential.
+_GWS_SECRET = re.compile(r"(xox[a-z]-[\w-]+|ya29\.[\w.-]+|[A-Za-z0-9_-]{40,})")
+
+
 def _scrubbed_env():
     """os.environ minus the Slack/Luma secrets. gws never needs them, and a child
     process inherits everything by default — so a crashing or chatty gws would
@@ -57,7 +114,7 @@ def gws_json(args):
     out = subprocess.run(["gws"] + args, capture_output=True, text=True,
                          env=_scrubbed_env())
     if out.returncode != 0:
-        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
+        sys.exit(gws_failure("gws " + " ".join(args[:3]), out.stderr))
     txt = out.stdout
     i = txt.find("{")
     if i < 0:
@@ -73,7 +130,7 @@ def gws_download(args, out_path):
     out = subprocess.run(["gws"] + args, capture_output=True, text=True,
                          env=_scrubbed_env())
     if out.returncode != 0:
-        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
+        sys.exit(gws_failure("gws " + " ".join(args[:3]), out.stderr))
     if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
         sys.exit(f"ABORT: backup wrote no data to {out_path} — the source may exceed "
                  f"the export limit or the transfer failed. Snapshot NOT trustworthy.")
@@ -206,7 +263,8 @@ def snapshot_path(dest_root, slug, ext):
         n += 1
     # Gate BEFORE makedirs: a refusal must not leave an empty slug folder behind.
     assert_snapshot_git_ignored(p)
-    os.makedirs(d, exist_ok=True)
+    os.makedirs(os.path.dirname(d), mode=0o700, exist_ok=True)   # the backups root
+    os.makedirs(d, mode=0o700, exist_ok=True)   # snapshots hold every applicant's name
     return p
 
 
@@ -253,8 +311,14 @@ def main():
     ap = argparse.ArgumentParser(description="Snapshot AAIF ops data to versioned files.")
     ap.add_argument("target", nargs="?",
                     help="Drive fileId or local path (default: Intake Ops sheet)")
-    ap.add_argument("--dest", default=os.path.join(os.getcwd(), "backups"),
-                    help="Root folder for snapshots (default: ./backups)")
+    # Not the cwd: from Goose or Claude Desktop the cwd is the operator's
+    # folder — often a synced Documents folder, outside any repo, so no guard
+    # would object there.
+    ap.add_argument("--dest", default=os.path.join(data_dir(), "backups"),
+                    help="Root folder for snapshots (default: backups/ in the "
+                         "toolkit's data folder — the repo root in a checkout, "
+                         "~/Library/Application Support/AAIF in an installed plugin on a "
+                         "Mac, ~/.local/share/aaif elsewhere)")
     a = ap.parse_args()
     dest_root = os.path.abspath(a.dest)
     assert_dest_git_safe(dest_root)   # before ANY fetch: fail in a second, not after a pull

@@ -39,7 +39,7 @@ skipped, since there is no column to move.
 
 House rules: the report is the default and writes nothing; --write applies,
 then re-downloads and re-reads every workbook and prints a Verified line.
-Pre-edit bytes are kept under <repo>/backups/ (gitignored). No member names or
+Pre-edit bytes are kept under <data folder>/backups/ (sync_crm.backup_root). No member names or
 emails on stdout — counts, chapter names and column names only.
 
 Exit codes: 0 nothing due (or a --write that applied and verified cleanly);

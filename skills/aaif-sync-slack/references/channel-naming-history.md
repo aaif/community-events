@@ -59,7 +59,8 @@ once the 2026-08-17 sweep's sheet cells were edited directly.
 A dead Slack token skips the three channel columns and still reports the folder
 column; the report says which half was skipped, so an empty channel section is
 never mistaken for "nothing to do". Set `AAIF_SLACK_READ_TOKEN` or
-`AAIF_SLACK_WRITE_TOKEN` (environment variable, or the repo-root `.env`) and
+`AAIF_SLACK_WRITE_TOKEN` (environment variable, the repo-root `.env`, or the
+keychain) and
 re-run for the rest — the Slack CLI credential expired for good in 2026-08 and
 is only the last-resort fallback.
 

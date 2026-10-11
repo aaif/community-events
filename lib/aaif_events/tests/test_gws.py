@@ -81,6 +81,27 @@ class TestRun:
             gws.run(["gws", "x"])
         assert len(calls) == 1
 
+    def test_a_sign_in_failure_names_the_next_step(self, calls):
+        calls.queue.append(FakeProc(1, stderr="error[api]: Request had "
+                                              "insufficient authentication scopes."))
+        with pytest.raises(gws.GwsError, match="check my setup"):
+            gws.run(["gws", "x"])
+
+    @pytest.mark.parametrize("stderr,hinted", [
+        ("HTTP 401 Unauthorized", True),
+        ("error[api]: status: 401", True),
+        ("error[api]: File not found: 1AbC401xyz", False),
+        ("Range Sheet1!A401:K401 exceeds grid limits", False),
+    ])
+    def test_401_counts_only_as_a_status(self, stderr, hinted):
+        assert bool(gws.sign_in_hint(stderr)) is hinted
+
+    def test_an_ordinary_failure_gets_no_sign_in_hint(self, calls):
+        calls.queue.append(FakeProc(1, stderr="does not have permission"))
+        with pytest.raises(gws.GwsError) as exc:
+            gws.run(["gws", "x"])
+        assert "check my setup" not in str(exc.value)
+
     def test_retries_are_bounded(self, calls):
         calls.queue += [FakeProc(1, stderr="timed out")] * 5
         with pytest.raises(gws.GwsError):

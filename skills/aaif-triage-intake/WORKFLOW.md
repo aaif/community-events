@@ -33,9 +33,8 @@ made. You work the queue by running this skill.
 > and every `Denied` / `Duplicate` call. If this queue looks quieter than you
 > remember, this is why — not that nothing is arriving.
 
-Prereq: the `gws` CLI must be installed and authenticated (see the user's
-`gws-cli-access` memory). See the user's `aaif-intake-ops-sheet` memory for the
-sheet's structure.
+Prereq: the `gws` CLI must be installed and authenticated (`aaif-check-setup`
+confirms it). The sheet's structure is read by header name in `intake.py`.
 
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google

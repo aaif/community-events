@@ -1,7 +1,7 @@
 ---
 name: aaif-sync-badges
 description: Sync AAIF chapter organizer badges (SVG + PNG) into each chapter's own Drive folder — generate missing badges for chapters that don't have them yet, and optionally regenerate all of them after a design change. Use when asked to add/sync/update/regenerate chapter organizer badges.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; PNG rendering requires CairoSVG and Chrome/Chromium.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access; PNG rendering requires CairoSVG and Chrome/Chromium.
 metadata:
   com.anthropic.claude-code.argument-hint: '[--chapter <City Name>] [--regenerate] [--write]'
 ---
@@ -64,8 +64,8 @@ organizer_badge_<slug>_agent_1000.png      /   (real AAIF design-system tokens
   skill scripts to avoid, for the same reason `restyle_design_system.py` does: the
   whole point of this variant is to be provably on-system.
 
-Prereqs: the `gws` CLI installed and authenticated (see the user's
-`gws-cli-access` memory); `cairosvg` importable for style 1
+Prereqs: the `gws` CLI installed and authenticated (`aaif-check-setup`
+confirms it); `cairosvg` importable for style 1
 (`python3 -m pip install cairosvg`); a Chrome/Chromium install for style 2. Both
 are imported lazily (only when actually rendering a PNG), so a plan-only run
 needs neither Drive write access nor either renderer, and a chapter only missing

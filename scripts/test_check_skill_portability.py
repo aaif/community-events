@@ -32,6 +32,50 @@ class TestSkillPortability(unittest.TestCase):
             self.assertTrue(any("CLAUDE_SKILL_DIR" in error
                                 for error in chk.check_skill(skill)))
 
+    def test_repo_root_path_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "portable"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "Run `python3 skills/other/scripts/run.py`.\n", encoding="utf-8"
+            )
+            self.assertTrue(any("repo-root" in error
+                                for error in chk.check_skill(skill)))
+
+    def test_more_repo_root_spellings_are_rejected(self):
+        for command in ("python3 ./skills/other/scripts/run.py",
+                        "PYTHONPATH=lib:other python3 x.py",
+                        "python skills/other/scripts/run.py"):
+            with tempfile.TemporaryDirectory() as tmp:
+                skill = Path(tmp) / "portable"
+                skill.mkdir()
+                (skill / "SKILL.md").write_text("Run `%s`.\n" % command, encoding="utf-8")
+                self.assertTrue(any("repo-root" in error
+                                    for error in chk.check_skill(skill)), command)
+
+    def test_repo_root_pythonpath_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "portable"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "Run `PYTHONPATH=lib python3 -c 'import aaif_events'`.\n",
+                encoding="utf-8")
+            self.assertTrue(any("repo-root" in error
+                                for error in chk.check_skill(skill)))
+
+    def test_sibling_skill_path_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "portable"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "Paths in this skill are relative to this skill directory. "
+                "Resolve `<skill-root>`\n\n"
+                "Run `python3 <skill-root>/../other/scripts/run.py` and "
+                "`PYTHONPATH=<skill-root>/../../lib python3 x.py`.\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(chk.check_skill(skill), [])
+
     def test_placeholder_must_be_defined_in_entrypoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             skill = Path(tmp) / "portable"

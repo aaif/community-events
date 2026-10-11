@@ -22,6 +22,28 @@ IRL = {"EVENT TITLE": "Eval Night · Builder Series",
 
 
 class TestAvailable(unittest.TestCase):
+    def setUp(self):
+        # Each test stubs `security` its own way; the per-process cache would
+        # otherwise answer with the previous test's result. And never read
+        # the developer's real .env.
+        luma.credentials.keychain.cache_clear()
+        self.addCleanup(luma.credentials.keychain.cache_clear)
+        p = mock.patch.object(luma, "DOTENV_PATH", "/nonexistent/.env")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_a_dotenv_key_is_found_as_check_setup_reports_it(self):
+        """aaif-check-setup reads .env; an engine that did not would be told a
+        key works and then not find it."""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as fh:
+            fh.write("LUMA_API_KEY=from-dotenv  # a comment\n")
+        self.addCleanup(lambda: __import__("os").remove(fh.name))
+        with mock.patch.dict("os.environ", {"LUMA_API_KEY": ""}), \
+                mock.patch.object(luma, "DOTENV_PATH", fh.name), \
+                mock.patch("subprocess.run", side_effect=AssertionError("keychain read")):
+            self.assertEqual(luma.api_key(), "from-dotenv")
+
     def test_env_key_means_connected(self):
         with mock.patch.dict("os.environ", {"LUMA_API_KEY": "secret"}):
             self.assertTrue(luma.available())

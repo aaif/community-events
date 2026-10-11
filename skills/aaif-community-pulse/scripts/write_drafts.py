@@ -36,7 +36,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from fetch_local_champs import CACHE_DIR_NAME, write_0600_text  # noqa: E402
+from fetch_local_champs import CACHE_DIR_NAME, cache_root, write_0600_text  # noqa: E402
 
 #: audience key -> (filename, what the draft is for). The filename carries the
 #: destination because these are pasted by hand, often days apart, and a file
@@ -79,7 +79,7 @@ def contact_details(text):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--outdir", default=CACHE_DIR_NAME,
+    ap.add_argument("--outdir", default=str(cache_root()),
                     help="where the drafts go (must be inside %s/)" % CACHE_DIR_NAME)
     args = ap.parse_args()
 
@@ -125,7 +125,8 @@ def main():
         write_0600_text(path, text.rstrip("\n") + "\n")
         print("wrote %s (%d words) — %s" % (path, len(text.split()), purpose),
               file=sys.stderr)
-    print("0600, gitignored. Paste them, then delete: rm -rf %s" % CACHE_DIR_NAME,
+    print("0600, kept out of git and out of the session folder. Paste them, "
+          "then delete: rm -rf %s" % cache_root(),
           file=sys.stderr)
 
 

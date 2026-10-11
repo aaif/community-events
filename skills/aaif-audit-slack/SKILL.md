@@ -1,7 +1,7 @@
 ---
 name: aaif-audit-slack
 description: Audit the community Slack workspace and report it as one HTML page — whether every chapter has its public and organizer channels and the right people in them, which subject-matter rooms have gone quiet or overlap, and what the headline member count is actually made of. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in an -organizers channel, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, an AAIF Slack token, network access, and Chrome/Chromium for PDF rendering.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, an AAIF Slack token, network access, and Chrome/Chromium for PDF rendering.
 metadata:
   com.anthropic.claude-code.argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME]'
 ---
@@ -67,11 +67,13 @@ shelling out to a converter yourself.
 
 ## Preflight
 
-- [ ] `gws` installed and authenticated (organizer engine only; see the user's
-      `gws-cli-access` memory).
+- [ ] `gws` installed and authenticated (organizer engine only; `aaif-check-setup`
+      confirms it).
 - [ ] A Slack token. The client resolves `AAIF_SLACK_READ_TOKEN`, then
       `AAIF_SLACK_WRITE_TOKEN` — each from the environment, then from the `.env`
-      at the **repo root** (not the working directory) — and only then falls back
+      at the **repo root** (not the working directory), then from the macOS
+      keychain (`aaif-slack-read-token` / `aaif-slack-write-token`, the route
+      for an installed plugin) — and only then falls back
       to `~/.slack/credentials.json`, where the Slack CLI credential sits
       **expired**. In practice the AAIF app token is the standing token for all
       four engines; the credentials file is a last resort, not the source.
@@ -109,10 +111,17 @@ compose. Order is fixed; do not reorder.
 for s in organizers activity topics members; do
   python3 <skill-root>/scripts/audit_$s.py
 done
-python3 <skill-root>/scripts/summarize_audits.py   # -> slack-full-audit.html
-rm -f slack-organizers-audit.html slack-topics-audit.html \
-      slack-members-audit.html slack-activity-audit.html   # scaffolding, holds PII
+python3 <skill-root>/scripts/summarize_audits.py   # -> $D/slack-full-audit.html
+D=$(PYTHONPATH=<skill-root>/../../lib python3 -m aaif_events.datadir)
+rm -f "$D"/slack-organizers-audit.html "$D"/slack-topics-audit.html \
+      "$D"/slack-members-audit.html "$D"/slack-activity-audit.html   # scaffolding, holds PII
 ```
+
+Every report and the cache land in the toolkit's data folder, `$D` above —
+the repo root in a checkout, `~/Library/Application Support/AAIF` in an
+installed plugin — never the session folder, which from Goose or Claude
+Desktop is the operator's own. A relative `--out`/`--cache` resolves there
+too. Give the user the full path of `slack-full-audit.html`.
 
 "Audit Slack" with no side named means **all of it** — the full sequence above.
 
@@ -126,7 +135,7 @@ user explicitly asks you not to.
 (~20 min on a 30k-member workspace) and `users.lookupByEmail` is ~1.5s per
 organizer. Run it in the background and do something else. Shared flags:
 `--refresh` (re-fetch instead of reusing cache), `--out NAME`, `--cache DIR`
-(default `.slack-audit-cache`). `--refresh` is rarely needed — see
+(default `$D/.slack-audit-cache`). `--refresh` is rarely needed — see
 `references/caches-and-composition.md`.
 
 `--planned-ok` on the organizer engine covers the **pre-provisioning** state:

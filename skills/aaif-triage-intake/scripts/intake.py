@@ -11,7 +11,7 @@ Usage:
     intake.py --all           # every row, regardless of status
     intake.py --status Prospect "In progress"   # custom status filter
 """
-import argparse, json, os, subprocess, sys, tempfile
+import argparse, json, os, re, subprocess, sys, tempfile
 
 SHEET_ID = "1cWkjCI5AGK9RX_fs23P5jRA4I2nixgnHuapvwHseZ5o"
 
@@ -141,6 +141,31 @@ def assert_git_ignored(path):
                  "sync-reports/<stamp>/triage.json) or outside the repository.")
 
 
+def gws_failure(what, stderr):
+    """One line for a failed gws call, ending in the next step. The operator
+    may be in Goose or Claude Desktop, not reading a terminal.
+
+    gws prefixes a "Using keyring backend" banner, and a multi-line error often
+    ends on a lone `}` or a context line, so the line kept is the last one that
+    states the error. Credential shapes are masked: this goes to a chat. A copy
+    in each self-contained skill (backup, clean-data, triage-intake), kept
+    identical by lib/aaif_events/tests/test_pinned_copies.py."""
+    lines = [ln.strip() for ln in (stderr or "").splitlines()
+             if any(c.isalnum() for c in ln) and "keyring backend" not in ln]
+    reason = next((ln for ln in reversed(lines) if _GWS_REASON.search(ln)),
+                  lines[-1] if lines else "no error text")
+    return ("%s failed: %s — if this is a sign-in or permission problem, run "
+            "aaif-check-setup (\"check my setup\")."
+            % (what, _GWS_SECRET.sub("<hidden>", reason)[:300]))
+
+
+#: A line that states why gws failed, as opposed to JSON punctuation.
+_GWS_REASON = re.compile(r"error|message|denied|not found|permission|scope|"
+                         r"credential|\b[45]\d\d\b", re.I)
+#: Anything shaped like a credential.
+_GWS_SECRET = re.compile(r"(xox[a-z]-[\w-]+|ya29\.[\w.-]+|[A-Za-z0-9_-]{40,})")
+
+
 def fetch(tab):
     """Return (headers, rows) for a tab; rows are padded to len(headers)."""
     # The range is the bare tab name — deliberately NOT a bounded window: a
@@ -155,7 +180,7 @@ def fetch(tab):
                           "--params", params, "--format", "json"],
                          capture_output=True, text=True, env=_scrubbed_env())
     if out.returncode != 0:
-        sys.exit(f"gws error reading {tab}: {out.stderr.strip()[:400]}")
+        sys.exit(gws_failure(f"Reading the {tab} tab", out.stderr))
     # gws prints a keyring banner line before the JSON; find the JSON start.
     txt = out.stdout
     start = txt.find("{")

@@ -1,7 +1,7 @@
 ---
 name: aaif-sync-organizers
 description: Push accepted and pipeline intake people into each chapter's own files — the Organizers list in its About doc, the people rows in its private Attendee CRM, and the per-chapter Drive grants that let its organizers open the folder — plus the Slack ID and Drive Email identity columns. Reports and proposes by default; writes only on explicit approval. Use when asked to sync organizers, update a chapter's About doc, add intake people to a chapter CRM, give an organizer access to their chapter folder, or fix someone whose Slack or Drive address does not match their intake row.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, network access, and an AAIF Slack token for identity reconciliation.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, network access, and an AAIF Slack token for identity reconciliation.
 metadata:
   com.anthropic.claude-code.argument-hint: '[about|crm|access] [--city <name>] [--write]'
 ---

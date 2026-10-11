@@ -470,8 +470,8 @@ def write_token(required=True):
     on a machine that has no write token at all; it just cannot say whether
     pinning is available, and says that instead of guessing.
 
-    Environment then the repo-root `.env` — the same two SOURCES, in the same
-    order, that `slackmod.load_token()` searches. Not the same resolution:
+    Environment, then the repo-root `.env`, then the keychain — the same
+    SOURCES, in the same order, that `slackmod.load_token()` searches. Not the same resolution:
     load_token sweeps BOTH token vars through the environment before touching
     `.env`, and prefers AAIF_SLACK_READ_TOKEN. So the two can land on different
     credentials, which is exactly why scope questions about a WRITE call must be
@@ -482,10 +482,7 @@ def write_token(required=True):
     line — which CLAUDE.md forbids precisely because shell history and terminal
     transcripts both keep it forever.
     """
-    token = os.environ.get(WRITE_TOKEN_ENV, "").strip()
-    if not token:
-        token = slackmod._dotenv_token(slackmod.DOTENV_PATH, WRITE_TOKEN_ENV) or ""
-        token = token.strip()
+    token, _ = slackmod.stored_token(WRITE_TOKEN_ENV)
     if not token:
         if not required:
             return None
@@ -497,13 +494,16 @@ def write_token(required=True):
             "groups:write,\n     chat:write, channels:join, "
             "channels:write.invites, groups:write.invites\n"
             "  3. Install to Workspace, copy the User OAuth Token (xoxp-...)\n"
-            "  4. put %s=xoxp-... in the gitignored repo-root .env\n"
+            "  4. store it in the keychain (a bare -w prompts for it):\n"
+            "       %s\n"
+            "     or put %s=xoxp-... in the gitignored repo-root .env\n"
             "     (NOT `export` on the command line — shell history and the\n"
             "     terminal transcript both keep it; see CLAUDE.md)\n\n"
             "Use a USER token, not a bot token: the creator of a channel joins "
             "it, and\na bot sitting in 128 chapter rooms is noise. Note the "
             "same applies to you —\nwhoever's token this is will be a member of "
-            "every channel it creates." % WRITE_TOKEN_ENV)
+            "every channel it creates." % (slackmod.keychain_hint(WRITE_TOKEN_ENV),
+                                    WRITE_TOKEN_ENV))
     return token
 
 
@@ -1082,18 +1082,17 @@ def main():
         rs.assert_git_ignored(a.json_out)
 
     # This estate's CLI credential expired for good in 2026-08 and cannot be
-    # re-scoped, so reads run on the same env token the writes use — it
-    # carries the read scopes (the audits run on it). load_token now resolves
-    # that token itself (environment, then ./.env, then the CLI credential)
-    # and its error names it first, so this manual env read is belt-and-braces
-    # rather than a correction — kept so the note below can warn about the
-    # expired CLI fallback before any network call is made.
-    token = os.environ.get(WRITE_TOKEN_ENV, "").strip()
+    # re-scoped, so reads run on the same token the writes use — it carries
+    # the read scopes (the audits run on it). Resolved like write_token()
+    # (environment, .env, keychain) so an installed plugin, which has only the
+    # keychain, is not told to set an environment variable it cannot.
+    token = write_token(required=False)
     if not token:
-        print("note: %s is not set — falling back to AAIF_SLACK_READ_TOKEN / the "
-              "repo-root .env / the Slack CLI credential (expired on this "
-              "estate). If auth fails, set %s in the environment or in the "
-              "repo-root .env." % (WRITE_TOKEN_ENV, WRITE_TOKEN_ENV), file=sys.stderr)
+        print("note: %s is not in the environment, .env or the keychain — "
+              "falling back to AAIF_SLACK_READ_TOKEN / the Slack CLI credential "
+              "(expired on this estate). If auth fails, store it: %s"
+              % (WRITE_TOKEN_ENV, slackmod.keychain_hint(WRITE_TOKEN_ENV)),
+              file=sys.stderr)
         token = slackmod.load_token()
     read_token = token
     api = slackmod.Slack(token=read_token)

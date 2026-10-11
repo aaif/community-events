@@ -27,6 +27,7 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
+from aaif_events import datadir  # noqa: E402
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import Slack, channels  # noqa: E402
@@ -716,9 +717,9 @@ def build_report(subjects, filed_out, unfiled, today, measured, act_meta,
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default="slack-topics-audit",
+    ap.add_argument("--out", default="slack-topics-audit", type=datadir.resolve,
                     help="output basename (default: slack-topics-audit)")
-    ap.add_argument("--cache", default=".slack-audit-cache",
+    ap.add_argument("--cache", default=".slack-audit-cache", type=datadir.resolve,
                     help="directory for raw API pulls")
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
     args = ap.parse_args()

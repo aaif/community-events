@@ -1,7 +1,7 @@
 ---
 name: aaif-update-event
 description: Apply a change to an existing AAIF event (chapter or series) — edit detail fields like speakers/venue/capacity, or move the date and recompute all task due-dates, then flag which marketing/banner assets are now stale (speaker, venue/location, platform/join-link, and date changes set flags); can also sync the change to the live Luma event page (diff shown first, pushed only on explicit user approval). Use when asked to update/change/edit an event's details or date.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma updates additionally require a calendar API key.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access; Luma updates additionally require a calendar API key.
 metadata:
   com.anthropic.claude-code.argument-hint: '<chapter|series> <event> [--set "LABEL=value"] [--date "..."]'
 ---
@@ -34,12 +34,12 @@ those skills — it does not regenerate them.
 
 **You (the agent) drive Google Drive via the `gws` CLI; the Python script only does the
 deterministic docx edit on a local file.** Prereq: `gws` installed and authenticated
-(`gws-cli-access`).
+(`aaif-check-setup` confirms it).
 
 
 ## Preflight
 
-- [ ] `gws` installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] `gws` installed and authenticated (`aaif-check-setup` confirms it).
 - [ ] Know which kind of tracker this is. **Chapter (in-person):** `EVENT TITLE`,
       `DATE & TIME`, `LOCATION / CITY`, `VENUE`, `THEME / SERIES`, `FORMAT(S)`,
       `SPEAKER(S)`, `LUMA URL`, `CAPACITY / RSVPS`, `ORGANIZER ON POINT`.
@@ -54,7 +54,7 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
       Luma steps can write `new.md` / `new.png` beside it:
       ```bash
       WORK=$(mktemp -d)
-      python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
+      python3 <skill-root>/../aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
       ```
       Never commit a `tracker.docx` / `luma.md` / `banner.png` / `new.*`.
 - [ ] **2. Preview** with `--dry-run`. It prints the field diff (old → new) and

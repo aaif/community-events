@@ -37,7 +37,7 @@ def main(argv=None):
     if "--unattended" not in argv:
         argv.append("--unattended")
     if not any(x == "--report-dir" or x.startswith("--report-dir=") for x in argv):
-        argv += ["--report-dir", os.path.join(sync.REPO, "nightly-reports")]
+        argv += ["--report-dir", os.path.join(sync.data_dir(), "nightly-reports")]
     return sync.main(argv)
 
 

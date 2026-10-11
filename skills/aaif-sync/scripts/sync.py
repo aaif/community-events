@@ -59,6 +59,35 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKILLS = os.path.abspath(os.path.join(HERE, "..", ".."))
 REPO = os.path.abspath(os.path.join(SKILLS, ".."))
 
+
+#: Where an install writes reports and backups. A COPY of
+#: aaif_events.datadir.data_dir (this script stays free of `lib`), pinned to
+#: it by lib/aaif_events/tests/test_pinned_copies.py. A checkout writes at its
+#: own root; an installed plugin (Goose, Claude's per-version cache, any copy
+#: without .git) in a per-user folder that survives updates; never the
+#: operator's working folder.
+DATA_DIR_ENV = "AAIF_DATA_DIR"
+_PLUGIN_HOMES = (os.sep + os.path.join(".agents", "plugins") + os.sep,
+                 os.sep + os.path.join(".claude", "plugins") + os.sep)
+
+
+def data_dir(toolkit=None, environ=os.environ, platform=sys.platform):
+    toolkit = toolkit or REPO
+    override = os.path.expanduser(environ.get(DATA_DIR_ENV, "").strip())
+    if override and os.path.isabs(override):
+        return override
+    if override:
+        print("aaif: ignoring %s=%s — it must be an absolute path"
+              % (DATA_DIR_ENV, override), file=sys.stderr)
+    if (os.path.exists(os.path.join(toolkit, ".git"))
+            and not any(h in toolkit + os.sep for h in _PLUGIN_HOMES)):
+        return toolkit
+    home = os.path.expanduser("~")
+    if platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "AAIF")
+    return os.path.join(environ.get("XDG_DATA_HOME")
+                        or os.path.join(home, ".local", "share"), "aaif")
+
 OPEN, REPORT_ONLY, APPROVAL, READ_ONLY, HUMAN = (
     "open", "report-only", "approval", "read-only", "human")
 
@@ -427,8 +456,14 @@ def run_step(step, log_path, write_mode, approved, unattended=False):
         # stderr merges in too: the engines print progress and gws retry notes
         # there, and a FAILED outcome is undiagnosable without it.
         try:
+            # cwd=data_dir(): the engines resolve their own defaults there
+            # already; this keeps anything still relative out of the session
+            # folder, which from Goose or Claude Desktop is the operator's own
+            # — often a synced Documents folder.
+            cwd = data_dir()
+            os.makedirs(cwd, mode=0o700, exist_ok=True)
             code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
-                                  env=env,
+                                  env=env, cwd=cwd,
                                   timeout=STEP_TIMEOUT_S).returncode
         except subprocess.TimeoutExpired:
             log.write("\nTIMEOUT: no exit after %d s — the runner killed it; "
@@ -613,6 +648,26 @@ def exit_code(by_name):
     return 2 if any(o in (WROTE, DRIFT, PARTIAL, SKIPPED) for o in results) else 0
 
 
+def enclosing_checkout(path):
+    """The git checkout containing `path` (which may not exist yet), or None.
+
+    Found by looking for `.git` upward, not by asking git: a folder outside
+    every checkout — an installed plugin's per-user data folder — must pass
+    without git, which an operator whose Python came from python.org may not
+    have. Whatever repo that is gets checked, not only this one: an
+    AAIF_DATA_DIR pointed into some other checkout is checked there. The same
+    rule as sync_crm.enclosing_checkout (this script stays lib-free)."""
+    d = os.path.abspath(path)
+    while not os.path.isdir(d) and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        if os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+
 def guard_report_dir(report_dir):
     """Refuse to write PII logs anywhere git would happily commit them.
 
@@ -624,15 +679,33 @@ def guard_report_dir(report_dir):
     protect. `nightly.py` carried this bug unnoticed for as long as the
     directory happened to already exist on the machine it ran on. Asking about
     `<path>/` matches the directory pattern whether or not anything is there.
+
+    Outside every checkout (an installed plugin's data folder, Claude's
+    `.git`-less plugin cache) nothing can commit the logs, so no git is asked.
+    Inside one, `check-ignore` in that checkout: 0 passes, 1 aborts, anything
+    else aborts quoting git — reading it as "safe" would disengage the guard.
     """
     probe = os.path.abspath(report_dir)
-    if probe.startswith(REPO + os.sep):
-        if subprocess.run(["git", "-C", REPO, "check-ignore", "-q",
-                           probe + os.sep]).returncode:
-            sys.exit("ABORT: %s is inside the repo but NOT gitignored — these "
-                     "logs hold names and emails and this repo is public. Add it "
-                     "to .gitignore (sync-reports/ already is) or point "
-                     "--report-dir elsewhere." % probe)
+    root = enclosing_checkout(probe)
+    if root is None:
+        return
+    try:
+        r = subprocess.run(["git", "-C", root, "check-ignore", "-q", probe + os.sep],
+                           capture_output=True, text=True,
+                           env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that %s is "
+                 "gitignored in %s; these logs hold names and emails." % (probe, root))
+    if r.returncode == 0:
+        return
+    if r.returncode == 1:
+        sys.exit("ABORT: %s is inside the checkout at %s but NOT gitignored — "
+                 "these logs hold names and emails and this repo is public. Add "
+                 "it to .gitignore (sync-reports/ already is) or point "
+                 "--report-dir elsewhere." % (probe, root))
+    sys.exit("ABORT: `git check-ignore` failed in %s (%s), so this cannot "
+             "verify that %s is gitignored; these logs hold names and "
+             "emails." % (root, (r.stderr or "").strip()[:200], probe))
 
 
 def build_parser():
@@ -657,7 +730,7 @@ def build_parser():
                     help="scheduled-job mode: runs %s only; the Slack "
                          "approval steps run read-only."
                          % "/".join(UNATTENDED_PHASES))
-    ap.add_argument("--report-dir", default=os.path.join(REPO, "sync-reports"),
+    ap.add_argument("--report-dir", default=os.path.join(data_dir(), "sync-reports"),
                     help="where the full (PII-carrying) logs land; must be "
                          "gitignored and must never be uploaded anywhere public")
     return ap
@@ -716,6 +789,9 @@ def main(argv=None):
         # "everything in sync" over zero steps is a lie a scheduler would believe.
         ap.error("nothing to run: that selection matches no step")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    # Absolute before anything uses it: the steps run with cwd=data_dir(), so a
+    # relative --report-dir would mean one folder here and another there.
+    a.report_dir = os.path.abspath(a.report_dir)
     guard_report_dir(a.report_dir)
     run_dir = fresh_run_dir(a.report_dir, stamp)
     keep_awake()

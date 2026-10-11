@@ -36,7 +36,7 @@ written — every CRM in the estate audited "clean" while full of Calibri and
 navy.
 
 It is read-only by default, and **archives every pre-change file** to
-`./backups/restyle-<UTC>/` before uploading it — `--write` refuses to start if
+`backups/restyle-<UTC>/` in the toolkit's data folder before uploading it — `--write` refuses to start if
 that directory cannot be created. A re-run over a conformant estate uploads
 nothing.
 

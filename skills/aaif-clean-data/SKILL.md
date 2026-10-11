@@ -43,8 +43,9 @@ writing is a separate action after the user reviews the exact fresh proposal.
   Accepted or the extracted city is filled. It is not chapter approval. Preview
   `chapter-flags`, then use `chapter-flags --write` after approval to mark those
   city cells red without changing any data or creating chapters.
-- `changes.json` contains real-person data. Keep it gitignored, never paste or
-  attach it, and delete it after the run.
+- `changes.json` contains real-person data. Write it in a `mktemp -d` folder,
+  never the session folder; never paste or attach it, and delete it after
+  the run.
 
 ## Workflow routing
 

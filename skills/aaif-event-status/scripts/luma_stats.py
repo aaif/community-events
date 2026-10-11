@@ -79,7 +79,7 @@ def main():
         # Not connected: the task digest still works; just no registration numbers.
         print("Luma is not connected (no API key) — skipping registration stats. "
               "Read the numbers off the event page manually, or set up the key "
-              "(see aaif-create-event's SKILL.md).")
+              "(say \"check my setup\" — aaif-check-setup gives the steps).")
         return
     # The direct paths get the same clean messages as the tracker loop — a bad
     # id/URL or a network failure must not surface as a raw traceback.

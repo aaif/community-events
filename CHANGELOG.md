@@ -7,6 +7,29 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
 ## [Unreleased]
 
 ### Added
+- **Runs from Goose and Claude Desktop, for an operator who is not technical.**
+  `README.md` is now written for that person: what to ask for, what stays
+  with a human, setup once with a helper, and what to do when something
+  fails. The engine detail, `gws` setup and the standalone-zip list moved to
+  `MAINTAINING.md` (`check_portable_skills.py` reads it there), together with
+  the helper's install steps for both clients.
+- **`aaif-check-setup`** — "check my setup" runs a read-only ✅/❌ check of
+  Python, the full plugin, `gws` and its Google sign-in, edit access to the
+  intake sheet, the Slack token, the Luma key and Chrome. Each ❌ comes with
+  the next step in plain words. Stdlib-only, so it still runs from a zip.
+- **Secrets from the macOS keychain, in one order.** `aaif_events.credentials`
+  looks a secret up in the environment, the repo-root `.env`, then the
+  keychain (`aaif-slack-read-token` / `aaif-slack-write-token` /
+  `luma-api-key`). Slack's write paths (`provision_channels`,
+  `invite_organizers`, `post_country_directory`) and the Luma key now go
+  through it, and Luma reads `.env` for the first time. Keychain lookups are
+  cached per run, since each can raise a macOS allow-access prompt.
+  `aaif-check-setup` keeps a lib-free copy of the order, and
+  `tests/test_pinned_copies.py` pins it, along with the `data_dir()` copies. An installed plugin gets no shell environment, and a
+  plugin update replaces its `.env`, so the keychain is the route that
+  reaches it. Hints lead with Keychain Access, not `security ... -w`, because
+  the assistant's shell has no keyboard to answer that prompt.
+
 - **The intake's per-role Yes/No questions reach triage.** On 2026-10-09 the
   form's single `What brings you here?` choice became one Yes/No question per
   role, so a submission can apply for several. Every row filed since would have
@@ -36,6 +59,60 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
   at install time), and `install-colors` never seats its rules above the flag.
 
 ### Fixed
+- **The content skills' tracker lookup failed outside a checkout.** Eleven
+  `SKILL.md` files ran `python3 skills/aaif-…/scripts/…`, a path that only
+  resolves from the repository root. An installed plugin runs from the
+  session's folder. They now use `<skill-root>/../aaif-…`. The two
+  `PYTHONPATH=lib` render commands failed the same way.
+  `check_skill_portability.py` rejects both forms. If the lookup fails anyway,
+  `fetch_tracker.py` prints one line instead of a traceback, and the eight
+  content skills now say what to do: suggest `aaif-check-setup` and ask for
+  the details.
+- **`aaif-sync` aborted on every run from Claude Desktop.** Claude's plugin
+  cache has no `.git`, `git check-ignore` exits 128 there, and the report-dir
+  guard read that as "not ignored". It now uses the same three-way split as
+  `sync_crm`: not a repository passes, and any other git failure still
+  aborts.
+- **Member data landed in the operator's own folder.** The Slack audit cache
+  (the whole member directory), the audit reports, the Pulse drafts and the
+  `aaif-backup` / restyle / rename snapshots all defaulted to the current
+  folder. From Goose or Claude Desktop that is the operator's own folder,
+  often a synced Documents folder outside any repo, so no guard objected.
+  They now go through `aaif_events.datadir`: the repo root in a checkout,
+  as before, and `~/Library/Application Support/AAIF` in an installed plugin.
+  That folder survives updates, which matters because Claude keeps one
+  install folder per plugin version. A relative `--out`/`--cache` resolves
+  there too, `sync.py` runs every step from there, and `sync.py` and
+  `backup.py` (lib-free) carry copies pinned to the library by tests.
+  `clean.py`'s `changes.json` moved into a `mktemp -d` folder. Every engine's
+  `--json-out` resolves a relative path there too, through `findings.add_flag`.
+- **The setup check agrees with the engines.** It now searches for Slack's
+  two tokens one source at a time, as `slack.load_token` does, so it tests the
+  token the engines will use. A locked keychain, or a Deny click, reads as
+  "the keychain would not hand it over" rather than "no key", so nobody is
+  sent to create a second item. Google errors are classified with the same
+  sign-in list `aaif_events.gws` uses. `tests/test_pinned_copies.py` pins all
+  of this. `credentials.stored()` returns the keychain failure too.
+- **Smaller fixes from self-review.** A relative `AAIF_DATA_DIR` is ignored with
+  a warning; `datadir.resolve` expands `~`. The gitignore guards in `sync.py`
+  and `sync_crm` check whichever checkout holds the path, and ask no git
+  outside every checkout. `fetch_tracker` removes a partial download. "401"
+  counts as a sign-in failure only as a word. Luma 5xx is not reported as a
+  bad key. Backup folders are created 0700. The self-contained `gws_failure`
+  helpers keep the line that states the error and mask credential shapes.
+- **A Google sign-in failure names its next step everywhere.** `aaif_events.gws`
+  adds a "check my setup" pointer to any `GwsError` whose output looks like a
+  sign-in problem, so every engine gets it rather than only the few scripts
+  that print their own.
+  Found by a sandbox run of the installed plugin from an empty folder with no
+  shell environment.
+- **A broken Google sign-in now says how to recover.** `gws` names its keychain
+  key after `$USER`, so a run with `USER` unset made a second `gws-cli` key and
+  every later run failed with "failed to decrypt token cache". Sign-out leaves
+  keys behind, and a login over the mismatch did not save. `aaif-check-setup`
+  detects the stray key and says to delete the `gws-cli` entries before signing
+  in again, and every Google ❌ now comes with the exact scoped sign-in command.
+  A bare `gws auth login` could leave Drive out. Seen 2026-10-09.
 - **Chapter sync never clears a chapter row.** A live feed row with no
   resolved qualifying organizer city is listed as a *retirement candidate*;
   retiring it is a human `Status=Deprecated`, or `Status=Merged` + `Merged Into`.

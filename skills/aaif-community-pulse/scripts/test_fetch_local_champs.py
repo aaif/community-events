@@ -90,21 +90,34 @@ check("resolve_names falls back to the id for an unknown user", names["U9"], "U9
 
 # --- write_0600: refuses a path outside .pulse-cache/ -----------------------
 with tempfile.TemporaryDirectory() as tmp:
+    # The data folder and the session folder are different places here, as in
+    # an installed plugin; in a checkout they coincide and would hide a
+    # regression back to the cwd.
+    session, data = os.path.join(tmp, "session"), os.path.join(tmp, "data")
+    os.makedirs(session)
     cwd = os.getcwd()
-    os.chdir(tmp)
+    os.chdir(session)
+    os.environ["AAIF_DATA_DIR"] = data
     try:
         try:
             flc.write_0600("../escape.json", {"x": 1})
             check("write_0600 refuses an outside path", "wrote", "ValueError")
         except ValueError:
             check("write_0600 refuses an outside path", "raised", "raised")
+        try:
+            flc.write_0600(os.path.join(".pulse-cache", "x.json"), {"x": 1})
+            check("write_0600 refuses a .pulse-cache in the session folder", "wrote", "ValueError")
+        except ValueError:
+            check("write_0600 refuses a .pulse-cache in the session folder", "raised", "raised")
 
         # --- write_0600: writes 0600 inside .pulse-cache/, dir is 0700 -----
-        target = os.path.join(".pulse-cache", "local-champs.json")
+        target = os.path.join(str(flc.cache_root()), "local-champs.json")
+        check("the cache is in the data folder",
+              os.path.dirname(target), os.path.realpath(os.path.join(data, ".pulse-cache")))
         flc.write_0600(target, {"messages": []})
         mode = stat.S_IMODE(os.stat(target).st_mode)
         check("write_0600 writes the file 0600", oct(mode), oct(0o600))
-        dir_mode = stat.S_IMODE(os.stat(".pulse-cache").st_mode)
+        dir_mode = stat.S_IMODE(os.stat(os.path.dirname(target)).st_mode)
         check("write_0600 sets the directory 0700", oct(dir_mode), oct(0o700))
         with open(target, encoding="utf-8") as fh:
             check("write_0600 writes valid JSON", json.load(fh), {"messages": []})
@@ -114,8 +127,10 @@ with tempfile.TemporaryDirectory() as tmp:
         flc.write_0600(target, {"messages": ["again"]})
         mode = stat.S_IMODE(os.stat(target).st_mode)
         check("write_0600 re-tightens an existing file to 0600", oct(mode), oct(0o600))
+        check("nothing landed in the session folder", os.listdir(session), [])
     finally:
         os.chdir(cwd)
+        del os.environ["AAIF_DATA_DIR"]
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

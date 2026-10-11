@@ -122,9 +122,9 @@ person, which no form answer can supply, so it stays hand-entered.
 **The report prints:** per chapter, the people it would add (`+`) or fill in (`~`) with
 the exact cell values, then near-miss cities, cities with no chapter folder, and a count
 of un-synced intake rows (`--verbose` lists them). A full run takes a few minutes.
-`--write` first saves each workbook's pre-edit bytes to `<repo>/backups/crm-before-<UTC stamp>/`
-(gitignored via `**/backups/*`, created `0700`; the engine aborts if this checkout does not
-ignore it). The temp working directory — downloads, re-reads, verify copies, all full of
+`--write` first saves each workbook's pre-edit bytes to `<data folder>/backups/crm-before-<UTC stamp>/` (the repo root in a checkout, `~/Library/Application Support/AAIF` in an installed plugin),
+created `0700`. Inside any checkout it must be gitignored (`**/backups/*` here) or the
+engine aborts; outside every checkout no git is asked. The temp working directory — downloads, re-reads, verify copies, all full of
 real people — is deleted on exit in **both** modes; only that backup set survives.
 **Retention is on you** — nothing prunes them, so delete the directory once the write is
 confirmed good. `--write` then compares a fresh download against the bytes the plan was

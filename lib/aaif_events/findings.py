@@ -50,6 +50,8 @@ import json
 import os
 import tempfile
 
+from . import datadir
+
 FORMAT = 1
 SEVERITIES = ("bad", "warn", "info")
 TONES = ("ok", "warn", "bad", None)
@@ -178,8 +180,13 @@ def named(names, show=3):
 
 def add_flag(parser):
     """The one argparse flag every engine adds: `--json-out PATH`."""
+    # type=datadir.resolve: a relative PATH lands in the toolkit's data folder,
+    # never the cwd — from Goose or Claude Desktop that is the operator's own,
+    # often synced, folder, and this file names people.
     parser.add_argument("--json-out", metavar="PATH", default=None,
+                        type=datadir.resolve,
                         help="also write the report's measured counts and findings "
-                             "as JSON to PATH (the sync runner passes this; the "
-                             "file names chapters and rows, so keep it private)")
+                             "as JSON to PATH, relative to the toolkit's data folder "
+                             "(the sync runner passes this; the file names chapters "
+                             "and rows, so keep it private)")
     return parser

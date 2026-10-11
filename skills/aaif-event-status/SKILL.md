@@ -1,7 +1,7 @@
 ---
 name: aaif-event-status
 description: Report task status for an AAIF chapter or online series — which event tasks are overdue or due soon, grouped by owner, read from the Event Tracker.docx — plus read-only Luma registration stats (going/waitlist/checked-in counts) for pushed events. Use when asked for the status / health / what's-due / RSVP numbers of a chapter or series' events.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma statistics additionally require a calendar API key.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access; Luma statistics additionally require a calendar API key.
 metadata:
   com.anthropic.claude-code.argument-hint: '<chapter|series> [event]'
 ---
@@ -34,11 +34,12 @@ ever written back — not to Drive, not to the tracker, not to any sheet.
 
 ## Preflight
 
-- [ ] `gws` installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] `gws` installed and authenticated (`aaif-check-setup` confirms it).
 - [ ] The chapter or series name **exactly as the Drive folder spells it** —
       `New York City`, not `NYC`. `aaif-sync-slack`' resource map holds the
       folder URL for every chapter on the Chapters List.
-- [ ] Working from a full checkout (these scripts import `lib/aaif_events`).
+- [ ] The whole toolkit installed (Goose, Claude Desktop or a checkout) — these
+      scripts use its shared `lib/`, which a single uploaded skill lacks.
 
 ## Steps
 
@@ -70,7 +71,8 @@ ever written back — not to Drive, not to the tracker, not to any sheet.
       not — the task digest still works and the user can read the numbers off the
       event page by hand.
 - [ ] **4. Delete the temp directory.** It holds organizer, speaker and venue
-      details. `fetch_tracker.py --print-cleanup` prints the `rm -rf` command.
+      details. Pass `--print-cleanup` on the fetch itself (alongside the chapter
+      name) and it prints the `rm -rf` command at the end.
 
 ## Feeding a content skill
 

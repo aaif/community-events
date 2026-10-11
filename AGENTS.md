@@ -3,9 +3,28 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code
 in this repository. `CLAUDE.md` is a symlink to it.
 
-`README.md` covers what each skill does and how to set up `gws`; `CONTRIBUTING.md`
-covers skill authoring; `DESIGN.md` covers how anything this repo renders for a
-human is styled. This file is what those three don't say.
+`README.md` is for the person *using* the toolkit, who is not technical and
+runs it from Goose or Claude Desktop. Keep it in plain words: what to ask for,
+what is safe, how to set up once. Engine detail, `gws` setup and the
+standalone-zip list belong in `MAINTAINING.md`. `CONTRIBUTING.md` covers skill
+authoring; `DESIGN.md` covers how anything this repo renders for a human is
+styled. This file is what those don't say.
+
+**An installed plugin is not a checkout.** Goose installs a git clone of this
+repo; Claude Desktop installs a copy without `.git`, one folder per version.
+Both run each script from wherever the session is, with no shell environment. So a `SKILL.md` command names its script by
+`<skill-root>`, never `skills/<name>/...` (`check_skill_portability.py`
+enforces this; eleven skills once broke it while working fine from the repo
+root). And a secret an engine needs is read from the environment, the
+repo-root `.env`, then the macOS keychain, because the keychain is the one
+route that reaches an installed plugin. `aaif-check-setup` is the operator's
+diagnosis for all of it. Nothing an engine writes defaults to the cwd, which
+from those apps is the operator's own, often synced, folder: it goes through
+`aaif_events.datadir` (with copies in the lib-free `sync.py` and
+`backup.py`), and a scratch file such as `changes.json` goes in `mktemp -d`.
+Every deliberate copy of a lib decision — those two, and `check_setup.py`'s
+secret lookup — is pinned to the library by `tests/test_pinned_copies.py`;
+a new copy goes on that list in the same commit.
 
 ## This repo is public — never commit PII
 
@@ -53,7 +72,7 @@ sheet, chapter CRMs). None of it belongs in git:
   environment variables (or `.env` / keychain) only.
 
 Google file/folder IDs in `scripts/*.py` are intentional and fine — they're AAIF's
-own resources, and the README says so.
+own resources, and `MAINTAINING.md` says so.
 
 ## Untrusted input
 
@@ -99,9 +118,12 @@ in this repo:
 
 - **`lib/aaif_events/`** — shared, stdlib-only modules (`slack`, `luma`, `gws`,
   `sheets`, `redact`, `tracker`, `office`, `report_style`, `jsoncache`,
-  `slides_export`, `findings` — the one shape every ops engine writes its
-  measured counts and findings in, so the sync run's page needs no per-engine
-  knowledge — and `cities`, the one place a city that a country chapter absorbed
+  `slides_export`, `datadir` — where an install writes reports, caches and
+  backups: the repo root in a checkout, a per-user folder in an installed
+  plugin, never the cwd — `credentials` — the one order a secret is looked
+  up in (environment, repo-root `.env`, keychain) — `findings` — the one
+  shape every ops engine writes its measured counts and findings in, so the
+  sync run's page needs no per-engine knowledge — and `cities`, the one place a city that a country chapter absorbed
   (Tokyo → Japan) is folded into it; every engine that reads a city off the
   intake goes through it). Skill scripts import these through a
   `sys.path.insert(...parents[3] / "lib")` shim at the top of the file.
@@ -113,7 +135,7 @@ in this repo:
   That duplication is deliberate; don't "fix" it by hoisting one into `lib`
   without deciding the skill can stop being portable.
   `scripts/check_portable_skills.py` makes that decision visible rather than
-  preventing it: the README names every lib-coupled skill, and the list has to
+  preventing it: `MAINTAINING.md` names every lib-coupled skill, and the list has to
   move in the same commit as the import.
 
   **Two duplications have been resolved the other way, because what they
@@ -130,13 +152,13 @@ in this repo:
   **The test for "already coupled" is the skill, not the script.** Two scripts
   kept a private `gws` wrapper behind a "so this script stays standalone"
   comment, and a third had a bare `subprocess.run` with no retries at all —
-  all three in skills a *sibling* script had already put on the README's
-  not-zippable list.
+  all three in skills a *sibling* script had already put on the
+  not-zippable list in `MAINTAINING.md`.
   The portability those copies were defending had been spent; what was left
   was the drift, and it was real (a five-entry retry table against the shared
   eleven, one script with no retries at all, and a copy whose exceptions
   printed the child's raw output where the shared one scrubs it). Before
-  writing a local helper to keep a skill portable, check the README's
+  writing a local helper to keep a skill portable, check `MAINTAINING.md`'s
   standalone-zip list, which `check_portable_skills.py` enforces: if the skill
   is on it, the copy buys nothing.
 

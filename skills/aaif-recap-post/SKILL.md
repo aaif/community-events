@@ -1,12 +1,15 @@
 ---
 name: aaif-recap-post
 description: Write the post-event LinkedIn recap for an AAIF event (posted within 48 hours, with photos). Use when asked to draft the recap, thank-you, or wrap-up post after an AAIF event.
-compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin checkout, Python 3, authenticated gws, and network access.
+compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access.
 metadata:
   com.anthropic.claude-code.argument-hint: '[event title / paste tracker entry]'
 ---
 
 # AAIF Post-Event Recap (LinkedIn)
+
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
 Posted within 48 hours with photos, while the conversation is still warm (~110
 words). **Thank the speaker and venue by name**, share **1-2 concrete takeaways**,
@@ -42,7 +45,7 @@ not promotional, **one emoji max**.
 > stop.** One command reads the event's tracker entry:
 >
 > ```bash
-> python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" \
+> python3 <skill-root>/../aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" \
 >     --event "<Event Title>"     # or --event next / --event latest
 > ```
 >
@@ -54,6 +57,12 @@ not promotional, **one emoji max**.
 > are deliberately **withheld** and only named — you never need them to write
 > copy, and the public-copy rule above forbids publishing them. Delete the temp
 > directory when done (`--print-cleanup` prints the command).
+>
+> If the command fails — a line starting `!` for a Google sign-in or Drive
+> problem, or "can't open file" / an import error when only this skill is
+> installed — say so in a sentence, suggest `aaif-check-setup`, and ask for
+> the details below instead. The draft does
+> not need the tracker; it only saves the user a paste.
 >
 > `aaif-create-event` and `aaif-update-event` know the same layout if the event
 > is being written in the same session. Ask the user only for what the tracker

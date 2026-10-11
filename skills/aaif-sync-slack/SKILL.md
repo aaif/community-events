@@ -1,7 +1,7 @@
 ---
 name: aaif-sync-slack
 description: Record where each chapter actually lives — its Drive folder and its public, organizer and country Slack channels — on the Chapters List, then create the rooms that plan names, add accepted organizers to them, and keep each country channel's chapter directory current. Reports and proposes by default; every Slack write needs explicit human approval. Use when asked to map chapters to Slack channels, create or rename a chapter channel, add organizers to their channel, post a country directory, or remove non-organizers from an organizer room.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, an AAIF Slack token, and network access.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, an AAIF Slack token, and network access.
 metadata:
   com.anthropic.claude-code.argument-hint: '[resources|provision|invite|directory|prune] [--write] [--i-have-approval]'
 ---
@@ -95,8 +95,10 @@ python3 <skill-root>/scripts/prune_organizers.py               # the only remove
 ```
 
 Prereq for every Slack step: a token with `channels:write`, `groups:write` and
-`chat:write` in `$AAIF_SLACK_WRITE_TOKEN`, resolved from the environment then
-the **repo-root `.env`**. **Never `export` it on the command line** — shell
+`chat:write` in `$AAIF_SLACK_WRITE_TOKEN`, resolved from the environment, the
+**repo-root `.env`**, then the macOS keychain item `aaif-slack-write-token` —
+the keychain is the route for an installed plugin, whose `.env` an update
+replaces. **Never `export` it on the command line** — shell
 history and the transcript both keep it.
 
 ## Gotchas

@@ -227,12 +227,34 @@ def run(cmd, retries=RETRIES, cwd=None):
         shown = _scrub((proc.stderr or "").strip())
         if not shown:
             shown = "(nothing on stderr; %d chars on stdout)" % len(proc.stdout or "")
-        raise GwsError("gws %s failed (%s): %s"
-                       % (verb(cmd), proc.returncode, shown))
+        raise GwsError("gws %s failed (%s): %s%s"
+                       % (verb(cmd), proc.returncode, shown, sign_in_hint(shown)))
     # Unreachable: the final iteration fails the `i < attempts - 1` guard and
     # raises above. Kept as a guard against a future edit to the loop, which is
     # the only way a caller could otherwise receive None.
     raise GwsError("gws exhausted %d attempt(s): %s" % (attempts, verb(cmd)))
+
+
+#: stderr shapes that mean the sign-in, not the request, is the problem.
+#: aaif-check-setup carries a copy, pinned by tests/test_pinned_copies.py.
+SIGN_IN_FAILURE = ("insufficient authentication scopes", "failed to decrypt",
+                   "invalid_grant", "unauthenticated", "no credentials",
+                   "run 'gws auth login'")
+#: 401 only as a word: a Drive file id or a range like A401 contains the digits.
+SIGN_IN_401 = re.compile(r"\b401\b")
+
+
+def sign_in_hint(stderr):
+    """A next step when `stderr` is a sign-in failure, else "".
+
+    Every engine raises through here, so this is the one place a failed
+    sign-in gets a next step instead of a bare API error — the operator may be
+    in Goose or Claude Desktop, not reading a traceback."""
+    text = (stderr or "").lower()
+    if any(shape in text for shape in SIGN_IN_FAILURE) or SIGN_IN_401.search(text):
+        return (" — a Google sign-in problem: run aaif-check-setup "
+                "(\"check my setup\") for the exact fix")
+    return ""
 
 
 def clean_stdout(out):

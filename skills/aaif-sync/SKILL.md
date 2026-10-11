@@ -1,7 +1,7 @@
 ---
 name: aaif-sync
 description: Run the whole AAIF estate sync in order — check the intake and the decision queue, then chapters onto the Chapters List with their Drive folders and Slack rooms, then organizers into About docs, CRMs, Drive access and organizer rooms, then every chapter's Luma page and event health, then the Slack topic rooms and workspace. Each phase measures before it proposes and proposes before it writes. Reports by default; writes only on explicit approval. Use when asked to sync the estate, run the sync, sync everything, do the chapter/organizer sync, or bring the sheets, Drive, Slack and Luma back in step.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, AAIF Slack and Luma credentials for their phases, network access, and Chrome/Chromium for reports.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, AAIF Slack and Luma credentials for their phases, network access, and Chrome/Chromium for reports.
 metadata:
   com.anthropic.claude-code.argument-hint: '[phase|step ...] [--write] [--i-have-approval]'
 ---

@@ -167,11 +167,13 @@ def collect():
     ACTION_* constants above.
     `skipped` = [(channel, why)] for Country Channels never posted to at all.
     """
-    token = os.environ.get("AAIF_SLACK_WRITE_TOKEN", "").strip()
+    token, _ = slackmod.stored_token(slackmod.ENV_TOKEN_VAR)
     if not token:
-        print("note: AAIF_SLACK_WRITE_TOKEN is not set — falling back to the "
-              "Slack CLI credential, which on this estate is expired. If auth "
-              "fails, export AAIF_SLACK_WRITE_TOKEN.", file=sys.stderr)
+        print("note: AAIF_SLACK_WRITE_TOKEN is not in the environment, .env or "
+              "the keychain — falling back to the read token or the Slack CLI "
+              "credential, which on this estate is expired. If auth fails, "
+              "store it with: %s" % slackmod.keychain_hint(slackmod.ENV_TOKEN_VAR),
+              file=sys.stderr)
     api = slackmod.Slack(token=token or None)
     # Before any collection, same as every other script here that reads
     # history — a missing scope must fail in the first second, not partway

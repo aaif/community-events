@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
 
@@ -157,6 +158,17 @@ def _mask(fields):
     return masked
 
 
+def _discard(workdir):
+    """Remove the temp dir and anything a failed download left in it. If even
+    that fails, say where it is — it may hold organizer and venue details — but
+    never let the cleanup error replace the one-line message being raised."""
+    try:
+        shutil.rmtree(workdir)
+    except OSError as e:
+        print("! could not remove %s (%s) — delete it by hand; it may hold "
+              "tracker details." % (workdir, e.strerror or e), file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Download a chapter or series Event Tracker.docx and, with "
@@ -181,8 +193,23 @@ def main():
     workdir = a.keep or tempfile.mkdtemp(prefix="aaif-tracker-")
     os.makedirs(workdir, mode=0o700, exist_ok=True)
 
-    folder_id, mode = find_folder(a.name)
-    path = download(find_tracker(folder_id), workdir)
+    try:
+        folder_id, mode = find_folder(a.name)
+        path = download(find_tracker(folder_id), workdir)
+    except (SystemExit, gws.GwsError, OSError) as e:
+        if not a.keep:
+            _discard(workdir)        # may hold a partial tracker: contact details
+        if isinstance(e, SystemExit):
+            raise                    # find_folder/find_tracker's own one-liner
+        # One line, not a traceback: the operator may be in Goose or Claude
+        # Desktop, and the content skills fall back to asking for the details.
+        # A sign-in failure already ends in gws's "check my setup" pointer.
+        why = str(e).strip().splitlines()[-1][:300] if str(e).strip() else type(e).__name__
+        if isinstance(e, FileNotFoundError) and os.path.basename(str(e.filename)) == "gws":
+            why = "the gws tool is not installed or not visible to this app" \
+                  " — run aaif-check-setup (\"check my setup\")"
+        raise SystemExit("! could not read the tracker from Google Drive (%s). "
+                         "Ask for the event details instead." % why)
     print("%s: %s" % (mode, a.name))
     print("tracker: %s" % path)
 
