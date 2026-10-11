@@ -21,7 +21,6 @@ import datetime as dt
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 import urllib.error
@@ -29,10 +28,12 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
-from aaif_events import tracker
+from aaif_events import credentials, tracker
 
 BASE = "https://public-api.luma.com"
 KEYCHAIN_SERVICE = "luma-api-key"
+#: The repo-root `.env`; tests point this elsewhere.
+DOTENV_PATH = credentials.DOTENV_PATH
 _TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 _IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".webp": "image/webp", ".gif": "image/gif"}
@@ -103,31 +104,22 @@ class NotAnEventUrl(LumaError):
 # Auth + transport
 # ---------------------------------------------------------------------------
 def api_key():
-    """LUMA_API_KEY env var, else the macOS keychain item `luma-api-key`."""
-    k = os.environ.get("LUMA_API_KEY", "").strip()
-    if k:
-        return k
-    try:
-        r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-                           capture_output=True, text=True)
-    except OSError:   # no `security` CLI (non-macOS) — no keychain to read
-        r = None
-    if r is not None and r.returncode == 0 and r.stdout.strip():
-        return r.stdout.strip()
-    hint = ""
-    if r is not None and r.returncode != 0:
-        err = (r.stderr or "").strip()
-        # item-not-found is the normal "no key stored" case; anything else
-        # (locked keychain, denied ACL) must not masquerade as "no key"
-        if err and "could not be found" not in err:
-            hint = "\nKeychain lookup failed (not just missing): %s" % err.splitlines()[-1]
+    """LUMA_API_KEY from the environment, the repo-root `.env`, or the macOS
+    keychain item `luma-api-key` — the order every engine uses
+    (aaif_events.credentials), so `aaif-check-setup` and this agree."""
+    key, _ = credentials.stored("LUMA_API_KEY", KEYCHAIN_SERVICE, DOTENV_PATH)
+    if key:
+        return key
+    _, failure = credentials.keychain(KEYCHAIN_SERVICE)
+    # item-not-found is the normal "no key stored" case; anything else
+    # (locked keychain, denied ACL) must not masquerade as "no key"
+    hint = "\nKeychain lookup failed (not just missing): %s" % failure if failure else ""
     raise LumaError(
         "No Luma API key found. Create one in the calendar's settings (Luma Plus, "
-        "keys are per-calendar), then either export LUMA_API_KEY or store it with:\n"
-        "  security add-generic-password -s %s -a aaif -w\n"
+        "keys are per-calendar), then store it: %s\n"
         "(a bare -w prompts for the key; never paste it into the command, where "
         "shell history and process listings keep it)%s"
-        % (KEYCHAIN_SERVICE, hint))
+        % (credentials.hint(KEYCHAIN_SERVICE), hint))
 
 
 def available():

@@ -81,6 +81,18 @@ class TestRun:
             gws.run(["gws", "x"])
         assert len(calls) == 1
 
+    def test_a_sign_in_failure_names_the_next_step(self, calls):
+        calls.queue.append(FakeProc(1, stderr="error[api]: Request had "
+                                              "insufficient authentication scopes."))
+        with pytest.raises(gws.GwsError, match="check my setup"):
+            gws.run(["gws", "x"])
+
+    def test_an_ordinary_failure_gets_no_sign_in_hint(self, calls):
+        calls.queue.append(FakeProc(1, stderr="does not have permission"))
+        with pytest.raises(gws.GwsError) as exc:
+            gws.run(["gws", "x"])
+        assert "check my setup" not in str(exc.value)
+
     def test_retries_are_bounded(self, calls):
         calls.queue += [FakeProc(1, stderr="timed out")] * 5
         with pytest.raises(gws.GwsError):

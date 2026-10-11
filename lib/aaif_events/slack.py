@@ -3,7 +3,11 @@
 Auth resolution, in order: `AAIF_SLACK_READ_TOKEN`, then
 `AAIF_SLACK_WRITE_TOKEN` — each from the environment, then from the `.env` at
 the repo root (never the cwd, so running a script from elsewhere cannot pick up
-a stranger's file) — then the Slack CLI's own credentials (`slack auth login`).
+a stranger's file), then from the macOS keychain (`aaif-slack-read-token` /
+`aaif-slack-write-token`) — then the Slack CLI's own credentials (`slack auth
+login`). The keychain is the route for an installed plugin: Goose and Claude
+Desktop launch scripts without the operator's shell environment, and a `.env`
+inside the plugin's install folder is replaced on every update.
 A read token is preferred because this client only ever reads; the write token
 is accepted because it is the one that exists today. The app tokens are the
 standing way the audits run — strictly more capable than the CLI credential,
@@ -57,6 +61,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import credentials
 from .jsoncache import RunMemo
 
 CRED_PATH = os.path.expanduser("~/.slack/credentials.json")
@@ -65,8 +70,10 @@ ENV_TOKEN_VAR = "AAIF_SLACK_WRITE_TOKEN"
 #: Preference order; the first one found anywhere wins.
 TOKEN_VARS = (READ_TOKEN_VAR, ENV_TOKEN_VAR)
 #: `.env` lives at the repo root, not wherever the process happens to run.
-DOTENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), ".env")
+DOTENV_PATH = credentials.DOTENV_PATH
+#: macOS keychain service for each token var: `aaif-slack-read-token`, etc.
+KEYCHAIN_SERVICES = {READ_TOKEN_VAR: "aaif-slack-read-token",
+                     ENV_TOKEN_VAR: "aaif-slack-write-token"}
 #: Secrets stripped from any child process environment — see scrubbed_env().
 #:
 #: `\w*_?` and not `\w*_`: the ten private copies this replaced all tested
@@ -239,49 +246,55 @@ def _find_token(obj):
 
 
 def _dotenv_token(env_path=DOTENV_PATH, key=ENV_TOKEN_VAR):
-    """`key` out of a KEY=VALUE `.env` file, or None.
+    """`key` out of a KEY=VALUE `.env` file, or None — see credentials.dotenv_value."""
+    return credentials.dotenv_value(env_path, key)
 
-    Deliberately not a dotenv loader: only this one key is read, nothing is
-    exported into the environment, and the value never appears in any output.
-    It does understand the shapes real .env files take, though: an optional
-    leading `export `, quoted values (kept verbatim, `#` and all), and — for
-    unquoted values only — a trailing ` # comment`, which would otherwise ride
-    into the token and make it invalid.
+
+def _keychain_token(var):
+    """`var`'s token from the macOS keychain, or None.
+
+    A failure other than "not stored" (locked keychain, denied ACL) is said on
+    stderr, because "not found" would send the operator to re-create a token
+    that exists.
     """
-    if not os.path.exists(env_path):
-        return None
-    with open(env_path, encoding="utf-8") as fh:
-        for line in fh:
-            name, sep, value = line.strip().partition("=")
-            name = name.strip()
-            if name.startswith("export "):
-                name = name[len("export "):].strip()
-            if not sep or name != key:
-                continue
-            value = value.strip()
-            if value[:1] in ("'", '"'):
-                close = value.find(value[0], 1)
-                # A quoted value keeps its content verbatim — a '#' inside the
-                # quotes is part of the token, not a comment.
-                value = value[1:close] if close > 0 else value[1:]
-            else:
-                # Strip an inline comment: a '#' only starts one when preceded
-                # by whitespace, so a bare `xoxb-a#b` stays intact.
-                if value.startswith("#"):
-                    value = ""
-                else:
-                    value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
-            if value:
-                return value
-    return None
+    service = KEYCHAIN_SERVICES[var]
+    token, failure = credentials.keychain(service)
+    if failure:
+        print("slack: keychain lookup for %s failed (not just missing): %s"
+              % (service, failure), file=sys.stderr)
+    return token
+
+
+def stored_token(var, env_path=DOTENV_PATH):
+    """One token var from the environment, the repo-root `.env`, or the keychain.
+
+    For a caller that needs *that* token — a write — rather than the best
+    available one, which is `load_token()`. Returns (token, source) or
+    (None, None); the source names where it came from, never the value.
+    """
+    token = os.environ.get(var, "").strip()
+    if token:
+        return token, "env:%s" % var
+    token = (_dotenv_token(env_path, var) or "").strip()
+    if token:
+        return token, ".env:%s" % env_path
+    token = _keychain_token(var)
+    if token:
+        return token, "keychain:%s" % KEYCHAIN_SERVICES[var]
+    return None, None
+
+
+def keychain_hint(var):
+    """How to store `var` in the keychain — see credentials.hint."""
+    return credentials.hint(KEYCHAIN_SERVICES[var])
 
 
 def load_token(*, path=CRED_PATH, env_path=DOTENV_PATH, log=None):
     """Return a Slack token, preferring the app token over the CLI credential.
 
     Resolution order: `AAIF_SLACK_READ_TOKEN`, then `AAIF_SLACK_WRITE_TOKEN`,
-    each looked up in the environment and then in the repo-root `.env`; then
-    the Slack CLI credentials at `path`. A read token is preferred because this
+    each looked up in the environment, then in the repo-root `.env`, then in
+    the macOS keychain; then the Slack CLI credentials at `path`. A read token is preferred because this
     client is read-only; the app tokens come first because they are strictly
     more capable than the CLI one, which has expired.
 
@@ -300,11 +313,19 @@ def load_token(*, path=CRED_PATH, env_path=DOTENV_PATH, log=None):
         if token:
             log(".env:%s" % env_path)
             return token
+    for var in TOKEN_VARS:
+        token = _keychain_token(var)
+        if token:
+            log("keychain:%s" % KEYCHAIN_SERVICES[var])
+            return token
     if not os.path.exists(path):
         raise SystemExit(
-            "No Slack token: neither %s nor %s is set (environment or %s) and "
-            "there are no Slack CLI credentials at %s — set the app token or run "
-            "`slack auth login`." % (READ_TOKEN_VAR, ENV_TOKEN_VAR, env_path, path))
+            "No Slack token: neither %s nor %s is set (environment, %s or the "
+            "keychain) and there are no Slack CLI credentials at %s. Store the "
+            "app token with:\n  %s\n(a bare -w prompts for it; never paste a "
+            "token into the command), or as a last resort run `slack auth "
+            "login`." % (READ_TOKEN_VAR, ENV_TOKEN_VAR, env_path,
+                                           path, keychain_hint(READ_TOKEN_VAR)))
     with open(path, encoding="utf-8") as fh:
         token = _find_token(json.load(fh))
     if not token:
@@ -449,8 +470,9 @@ class Slack:
             # and a "missing scopes" message that sends the operator hunting
             # through the app config for a problem that is really the token.
             raise SlackError("auth.test", body.get("error", "unknown"),
-                             "the token is not usable; set %s or %s (environment "
-                             "or the repo-root .env), or as a last resort run "
+                             "the token is not usable; set %s or %s (environment, "
+                             "the repo-root .env or the keychain), or as a last "
+                             "resort run "
                              "`slack auth login`" % (READ_TOKEN_VAR, ENV_TOKEN_VAR))
         raw = headers.get("x-oauth-scopes") or ""
         return {s.strip() for s in raw.split(",") if s.strip()}
@@ -467,8 +489,9 @@ class Slack:
             raise SystemExit(
                 "Token is missing the %s scope(s). The audit would report the "
                 "resulting failures as real findings, so it will not run.\n"
-                "Set %s or %s to a token that carries them (environment or the "
-                "repo-root .env at %s); `slack auth login` is the last resort."
+                "Set %s or %s to a token that carries them (environment, the "
+                "repo-root .env at %s, or the keychain); `slack auth login` is "
+                "the last resort."
                 % (", ".join(missing), READ_TOKEN_VAR, ENV_TOKEN_VAR, DOTENV_PATH))
         return have
 

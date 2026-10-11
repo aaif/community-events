@@ -105,3 +105,11 @@ def test_add_flag_is_the_documented_flag():
     ap = findings.add_flag(argparse.ArgumentParser())
     assert ap.parse_args([]).json_out is None
     assert ap.parse_args(["--json-out", "/x/y.json"]).json_out == "/x/y.json"
+
+
+def test_a_relative_json_out_lands_in_the_data_folder_not_the_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("AAIF_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.chdir(tmp_path)
+    ap = findings.add_flag(argparse.ArgumentParser())
+    assert ap.parse_args(["--json-out", "r/x.json"]).json_out == \
+        str(tmp_path / "data" / "r" / "x.json")

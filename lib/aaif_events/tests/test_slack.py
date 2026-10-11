@@ -13,6 +13,16 @@ import pytest
 from aaif_events import slack
 
 
+@pytest.fixture(autouse=True)
+def _no_keychain(monkeypatch):
+    """Never read the developer's real keychain; tests opt in with a stub. The
+    per-process keychain cache is cleared both ways so no stub leaks across."""
+    slack.credentials.keychain.cache_clear()
+    monkeypatch.setattr(slack, "_keychain_token", lambda var: None)
+    yield
+    slack.credentials.keychain.cache_clear()
+
+
 class FakeResponse:
     def __init__(self, payload, headers=None):
         self._body = json.dumps(payload).encode()
@@ -477,6 +487,95 @@ def test_load_token_with_nothing_anywhere_names_both_remedies(monkeypatch, tmp_p
     assert slack.READ_TOKEN_VAR in str(exc.value)
     assert slack.ENV_TOKEN_VAR in str(exc.value)
     assert "slack auth login" in str(exc.value)
+
+
+def test_load_token_falls_back_to_the_keychain_after_dotenv(monkeypatch, tmp_path):
+    """An installed plugin has no shell environment and no durable `.env`."""
+    _no_tokens(monkeypatch)
+    stored = {slack.ENV_TOKEN_VAR: "xoxp-keychain"}
+    monkeypatch.setattr(slack, "_keychain_token", stored.get)
+    sources = []
+    assert slack.load_token(path=str(tmp_path / "absent.json"),
+                            env_path=str(tmp_path / ".env"),
+                            log=sources.append) == "xoxp-keychain"
+    assert sources == ["keychain:aaif-slack-write-token"]
+
+
+def test_load_token_dotenv_beats_the_keychain(monkeypatch, tmp_path):
+    _no_tokens(monkeypatch)
+    monkeypatch.setattr(slack, "_keychain_token", lambda var: "xoxp-keychain")
+    env = tmp_path / ".env"
+    env.write_text("%s=xoxp-dotenv\n" % slack.ENV_TOKEN_VAR)
+    assert slack.load_token(path=str(tmp_path / "absent.json"), env_path=str(env),
+                            log=lambda s: None) == "xoxp-dotenv"
+
+
+def test_no_token_message_gives_the_prompting_keychain_command(monkeypatch, tmp_path):
+    _no_tokens(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        slack.load_token(path=str(tmp_path / "absent.json"), env_path=str(tmp_path / ".env"))
+    # A bare -w prompts; a token after it would land in shell history.
+    assert "add-generic-password -s aaif-slack-read-token -a aaif -w\n" in str(exc.value)
+    # ...and the no-terminal route first, for an operator inside Goose/Desktop.
+    assert "New Password Item, Keychain Item Name aaif-slack-read-token" in str(exc.value)
+
+
+def test_stored_token_reads_only_the_named_var(monkeypatch, tmp_path):
+    """A write must use the write token, never fall through to the read one."""
+    _no_tokens(monkeypatch)
+    monkeypatch.setenv(slack.READ_TOKEN_VAR, "xoxp-read")
+    stored = {slack.ENV_TOKEN_VAR: "xoxp-write"}
+    monkeypatch.setattr(slack, "_keychain_token", stored.get)
+    assert slack.stored_token(slack.ENV_TOKEN_VAR, str(tmp_path / ".env")) == (
+        "xoxp-write", "keychain:aaif-slack-write-token")
+    stored.clear()
+    assert slack.stored_token(slack.ENV_TOKEN_VAR, str(tmp_path / ".env")) == (None, None)
+
+
+@pytest.mark.parametrize("result,expected", [
+    (dict(returncode=0, stdout="xoxp-k\n", stderr=""), "xoxp-k"),
+    (dict(returncode=44, stdout="", stderr="security: The specified item could "
+          "not be found in the keychain."), None),
+])
+def test_keychain_token_reads_the_security_cli(monkeypatch, result, expected):
+    import subprocess
+    monkeypatch.undo()   # drop the autouse stub: this test is the real function
+    slack.credentials.keychain.cache_clear()
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, **result)
+    monkeypatch.setattr(slack.credentials.subprocess, "run", run)
+    assert slack._keychain_token(slack.READ_TOKEN_VAR) == expected
+    assert seen == [["security", "find-generic-password", "-s",
+                     "aaif-slack-read-token", "-w"]]
+
+
+def test_keychain_token_without_security_cli_is_none(monkeypatch):
+    monkeypatch.undo()
+    slack.credentials.keychain.cache_clear()
+
+    def run(argv, **kw):
+        raise FileNotFoundError("security")
+    monkeypatch.setattr(slack.credentials.subprocess, "run", run)
+    assert slack._keychain_token(slack.READ_TOKEN_VAR) is None
+
+
+def test_one_run_asks_the_keychain_once_per_item(monkeypatch):
+    """Each `security` call can raise its own macOS allow-access prompt."""
+    import subprocess
+    monkeypatch.undo()
+    slack.credentials.keychain.cache_clear()
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 44, "", "could not be found")
+    monkeypatch.setattr(slack.credentials.subprocess, "run", run)
+    slack._keychain_token(slack.ENV_TOKEN_VAR)
+    slack._keychain_token(slack.ENV_TOKEN_VAR)
+    assert len(calls) == 1
 
 
 def test_dotenv_token_takes_the_key_name(tmp_path):
