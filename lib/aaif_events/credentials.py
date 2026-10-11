@@ -22,8 +22,12 @@ DOTENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), ".env")
 
 
-def dotenv_value(env_path, key):
+def dotenv_value(key, env_path=DOTENV_PATH):
     """`key` out of a KEY=VALUE `.env` file, or None.
+
+    Key first, path second — the order of every secret helper here and of
+    check_setup's copy. Both are strings, so a swap would not raise; it would
+    read as "not in .env" and move on silently.
 
     Deliberately not a dotenv loader: only this one key is read, nothing is
     exported into the environment, and the value never appears in any output.
@@ -64,8 +68,10 @@ def dotenv_value(env_path, key):
 def keychain(service):
     """(value or None, failure or None) for a macOS keychain item.
 
-    Cached for the process: each `security` call can raise its own macOS
-    "allow access" prompt, and one run asks for the same item several times.
+    Cached for the process as a prompt saving, not a contract: each
+    `security` call can raise its own macOS "allow access" prompt, and one run
+    asks for the same item several times. `stored()` returns the failure, so
+    no caller needs a second call to learn it.
     No keychain (not macOS) and no stored item are both a plain miss. Any other
     failure — a locked keychain, a denied ACL — comes back as `failure`, so it
     is never reported as "no key" and sent off to re-create one that exists.
@@ -84,21 +90,25 @@ def keychain(service):
 
 
 def stored(var, service, env_path=DOTENV_PATH):
-    """(value, source) for `var` from the environment, `.env`, then the keychain.
+    """(value, source, failure) for `var` from the environment, `.env`, then
+    the keychain.
 
     `source` names where it came from (`env:VAR`, `.env:<path>`,
-    `keychain:<service>`), never the value; (None, None) when it is nowhere.
+    `keychain:<service>`), never the value. When it is nowhere, value and
+    source are None and `failure` says whether the keychain refused (locked,
+    denied) rather than simply holding no item — a caller must not report a
+    refusal as "no key".
     """
     value = os.environ.get(var, "").strip()
     if value:
-        return value, "env:%s" % var
-    value = (dotenv_value(env_path, var) or "").strip()
+        return value, "env:%s" % var, None
+    value = (dotenv_value(var, env_path) or "").strip()
     if value:
-        return value, ".env:%s" % env_path
-    value, _ = keychain(service)
+        return value, ".env:%s" % env_path, None
+    value, failure = keychain(service)
     if value:
-        return value, "keychain:%s" % service
-    return None, None
+        return value, "keychain:%s" % service, None
+    return None, None, failure
 
 
 def hint(service):

@@ -1117,9 +1117,11 @@ import shutil as _shutil  # noqa: E402
 _shutil.rmtree(_wd2)
 
 import subprocess  # noqa: E402
-_root = sync_crm.backup_root("crm-before-selftest")
+# In this checkout, with no AAIF_DATA_DIR, the data folder is the repo root.
+with mock.patch.dict(os.environ, {"AAIF_DATA_DIR": ""}):
+    _root = sync_crm.backup_root("crm-before-selftest")
 try:
-    check("backup_root lands under <repo>/backups/",
+    check("backup_root lands under <repo>/backups/ in a checkout",
           os.path.dirname(_root), os.path.join(sync_crm.REPO, "backups"))
     check("backup_root is gitignored (check-ignore on a child path)",
           subprocess.run(["git", "-C", sync_crm.REPO, "check-ignore", "-q",
@@ -1129,34 +1131,52 @@ finally:
     os.rmdir(_root)
 
 
-def _backup_root_with(results, raise_missing=False):
-    """backup_root with subprocess.run scripted; returns (exit message or None, created path)."""
-    calls = iter(results)
+def _backup_root_with(results, raise_missing=False, checkout="/repo"):
+    """backup_root with the enclosing checkout and subprocess.run scripted;
+    returns (exit message or None, created path, git argvs)."""
+    calls, argvs = iter(results), []
     def _fake_run(argv, **kw):
+        argvs.append(argv)
         if raise_missing:
             raise FileNotFoundError("git")
         rc, out, err = next(calls)
         return mock.Mock(returncode=rc, stdout=out, stderr=err)
     made = []
     with mock.patch.object(sync_crm.subprocess, "run", _fake_run), \
-         mock.patch.object(sync_crm.os, "makedirs", lambda p, **k: made.append(p)):
+         mock.patch.object(sync_crm, "enclosing_checkout", lambda p: checkout), \
+         mock.patch.object(sync_crm.os, "makedirs", lambda p, **k: made.append((p, k))):
         try:
-            return None, sync_crm.backup_root("crm-before-selftest")
+            return None, sync_crm.backup_root("crm-before-selftest"), argvs
         except SystemExit as e:
-            return str(e), None
+            return str(e), None, argvs
 
 
-_msg, _p = _backup_root_with([], raise_missing=True)
-check("git missing aborts explicitly", "git is not installed" in (_msg or ""), True)
-_msg, _p = _backup_root_with([(128, "", "fatal: not a git repository (or any parent)")])
-check("outside any repo is allowed (nothing to leak into)", (_msg, _p is not None), (None, True))
-_msg, _p = _backup_root_with([(128, "", "fatal: detected dubious ownership in repository at '/x'")])
+_msg, _p, _argv = _backup_root_with([], raise_missing=True)
+check("git missing inside a checkout aborts explicitly", "git is not installed" in (_msg or ""), True)
+_msg, _p, _argv = _backup_root_with([], checkout=None)
+check("outside every checkout is allowed without asking git",
+      (_msg, _p is not None, _argv), (None, True, []))
+_msg, _p, _argv = _backup_root_with([(128, "", "fatal: detected dubious ownership in repository at '/x'")])
 check("any other git failure aborts quoting git",
       ("cannot verify" in (_msg or ""), "dubious ownership" in (_msg or "")), (True, True))
-_msg, _p = _backup_root_with([(0, "/repo\n", ""), (1, "", "")])
+_msg, _p, _argv = _backup_root_with([(1, "", "")])
 check("a backup root git would pick up ABORTS", "not gitignored" in (_msg or ""), True)
-_msg, _p = _backup_root_with([(0, "/repo\n", ""), (0, "", "")])
-check("inside the repo and ignored is fine", (_msg, _p is not None), (None, True))
+_msg, _p, _argv = _backup_root_with([(0, "", "")])
+check("inside a checkout and ignored is fine", (_msg, _p is not None), (None, True))
+check("...and the checkout asked is the one holding the path, not REPO",
+      _argv and _argv[0][:3], ["git", "-C", "/repo"])
+
+# An installed plugin: AAIF_DATA_DIR outside every checkout lands there, 0700,
+# without git (a python.org Python may come without it).
+import tempfile as _tempfile  # noqa: E402
+with _tempfile.TemporaryDirectory() as _data, \
+        mock.patch.dict(os.environ, {"AAIF_DATA_DIR": _data}), \
+        mock.patch.object(sync_crm.subprocess, "run",
+                          side_effect=AssertionError("git asked outside a checkout")):
+    _root = sync_crm.backup_root("crm-before-selftest")
+    check("an installed plugin's backups land in its data folder",
+          os.path.dirname(_root), os.path.join(_data, "backups"))
+    check("...private to the operator", os.stat(_root).st_mode & 0o777, 0o700)
 
 
 # --- the CI default is a real boolean, and masking announces itself ------------

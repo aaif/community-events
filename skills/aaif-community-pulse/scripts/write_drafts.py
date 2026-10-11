@@ -125,7 +125,8 @@ def main():
         write_0600_text(path, text.rstrip("\n") + "\n")
         print("wrote %s (%d words) — %s" % (path, len(text.split()), purpose),
               file=sys.stderr)
-    print("0600, gitignored. Paste them, then delete: rm -rf %s" % cache_root(),
+    print("0600, kept out of git and out of the session folder. Paste them, "
+          "then delete: rm -rf %s" % cache_root(),
           file=sys.stderr)
 
 

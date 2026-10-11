@@ -190,5 +190,28 @@ class TestDriveIdDispatch(unittest.TestCase):
         self.assertIsNone(backup.DRIVE_ID_RE.match("intake.xlsx"))
 
 
+
+class TestDefaultDestination(unittest.TestCase):
+    def test_snapshots_go_to_the_data_folder_not_the_session_folder(self):
+        """The data folder and the cwd are apart here, as in an installed
+        plugin; a revert to os.getcwd() is the case no guard would catch."""
+        from unittest import mock
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp:
+            session = os.path.join(tmp, "session")
+            os.makedirs(session)
+            old = os.getcwd()
+            os.chdir(session)
+            try:
+                with mock.patch.dict(os.environ, {"AAIF_DATA_DIR": os.path.join(tmp, "data")}), \
+                        mock.patch.object(sys, "argv", ["backup.py", "./missing.xlsx"]), \
+                        mock.patch.object(backup, "assert_dest_git_safe",
+                                          lambda d: seen.append(d) or sys.exit(0)):
+                    with self.assertRaises(SystemExit):
+                        backup.main()
+            finally:
+                os.chdir(old)
+            self.assertEqual(seen, [os.path.join(tmp, "data", "backups")])
+
 if __name__ == "__main__":
     unittest.main()

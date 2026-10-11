@@ -14,8 +14,8 @@ BANNED = {
 }
 #: A command that names `skills/<name>/...` only runs from the repository root.
 #: An installed plugin (Goose, Claude Desktop, Codex) runs from wherever the
-#: user's session is, so the eight content skills' tracker lookup failed there
-#: while working in every checkout it was tested from.
+#: user's session is, so eleven skills' commands (the tracker lookup in ten of
+#: them) failed there while working in every checkout they were tested from.
 REPO_ROOT_PATH = re.compile(r"\bpython3? +(?:\./)?skills/|\bPYTHONPATH=(?:\./)?lib\b")
 PATH_NOTE = (
     "Paths in this skill are relative to this skill directory. Resolve `<skill-root>`"

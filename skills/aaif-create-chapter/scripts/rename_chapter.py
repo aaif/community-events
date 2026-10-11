@@ -342,7 +342,7 @@ def main():
             # uploaded the wrong bytes to the first file's id.
             local = os.path.join(scan, *[re.sub(r"[^\w.-]", "_", x)
                                          for x in relpath.split("/")])
-            os.makedirs(os.path.dirname(local), exist_ok=True)
+            os.makedirs(os.path.dirname(local), mode=0o700, exist_ok=True)
             gws_download(fid, local)
             with open(local, "rb") as fh:
                 raw = fh.read()
@@ -423,7 +423,7 @@ def main():
                 continue
             vp = os.path.join(scan, "verify", *[re.sub(r"[^\w.-]", "_", x)
                                                 for x in relpath.split("/")])
-            os.makedirs(os.path.dirname(vp), exist_ok=True)
+            os.makedirs(os.path.dirname(vp), mode=0o700, exist_ok=True)
             gws_download(fid, vp)
             with open(vp, "rb") as fh:
                 if parts_changed(fh.read(), tx, slug_tx):

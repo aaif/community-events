@@ -370,7 +370,7 @@ def _archive(entry, src, backup_dir):
         # exactly what happened to two files on the first estate run. The
         # earliest copy is the pristine one, so it is the one that is kept.
         return dst
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
     shutil.copy2(src, dst)
     return dst
 
@@ -659,7 +659,7 @@ def main():
     if args.write:
         # Fail before touching Drive, not after the first upload.
         try:
-            os.makedirs(backup_dir, exist_ok=True)
+            os.makedirs(backup_dir, mode=0o700, exist_ok=True)
         except OSError as e:
             print("ABORT: cannot create the archive at %s (%s). Nothing was "
                   "written." % (backup_dir, e))

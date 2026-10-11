@@ -110,6 +110,50 @@ class TestDriveQueries(unittest.TestCase):
                 fetch_tracker.main()
         self.assertFalse(os.path.exists(made[0]))
 
+    def test_a_partial_download_is_removed_and_the_message_survives(self):
+        def partial(file_id, workdir):
+            with open(os.path.join(workdir, "tracker.docx"), "wb") as fh:
+                fh.write(b"half")
+            raise fetch_tracker.gws.GwsError("gws drive files get failed (1): broken pipe")
+        fetch_tracker.gws.json_out = lambda *a, **kw: {"files": [{"id": "F1"}]}
+        made, spy = self._spy_mkdtemp()
+        with mock.patch.object(sys, "argv", ["fetch_tracker.py", "Boston"]), spy, \
+                mock.patch.object(fetch_tracker, "find_tracker", lambda fid: "T1"), \
+                mock.patch.object(fetch_tracker, "download", partial):
+            with self.assertRaises(SystemExit) as cm:
+                fetch_tracker.main()
+        self.assertIn("broken pipe", str(cm.exception))
+        self.assertFalse(os.path.exists(made[0]))
+
+    def test_gws_missing_points_at_the_setup_check_once(self):
+        def missing(*a, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "gws")
+        fetch_tracker.gws.json_out = missing
+        made, spy = self._spy_mkdtemp()
+        with mock.patch.object(sys, "argv", ["fetch_tracker.py", "Boston"]), spy:
+            with self.assertRaises(SystemExit) as cm:
+                fetch_tracker.main()
+        self.assertEqual(str(cm.exception).count("aaif-check-setup"), 1)
+
+    def test_another_oserror_does_not_blame_the_setup(self):
+        def denied(*a, **kw):
+            raise PermissionError(13, "Permission denied", "/tmp/x/tracker.docx")
+        fetch_tracker.gws.json_out = denied
+        made, spy = self._spy_mkdtemp()
+        with mock.patch.object(sys, "argv", ["fetch_tracker.py", "Boston"]), spy:
+            with self.assertRaises(SystemExit) as cm:
+                fetch_tracker.main()
+        self.assertNotIn("aaif-check-setup", str(cm.exception))
+
+    def test_keep_leaves_the_named_folder_alone(self):
+        fetch_tracker.gws.json_out = lambda *a, **kw: (_ for _ in ()).throw(
+            fetch_tracker.gws.GwsError("gws failed"))
+        with tempfile.TemporaryDirectory() as keep:
+            with mock.patch.object(sys, "argv", ["fetch_tracker.py", "Boston", "--keep", keep]):
+                with self.assertRaises(SystemExit):
+                    fetch_tracker.main()
+            self.assertTrue(os.path.isdir(keep))
+
     def test_missing_folder_names_the_fix(self):
         fake, _ = self._capture([])
         fetch_tracker.gws.json_out = fake

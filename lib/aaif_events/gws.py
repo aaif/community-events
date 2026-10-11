@@ -236,9 +236,12 @@ def run(cmd, retries=RETRIES, cwd=None):
 
 
 #: stderr shapes that mean the sign-in, not the request, is the problem.
+#: aaif-check-setup carries a copy, pinned by tests/test_pinned_copies.py.
 SIGN_IN_FAILURE = ("insufficient authentication scopes", "failed to decrypt",
                    "invalid_grant", "unauthenticated", "no credentials",
-                   "run 'gws auth login'", "401")
+                   "run 'gws auth login'")
+#: 401 only as a word: a Drive file id or a range like A401 contains the digits.
+SIGN_IN_401 = re.compile(r"\b401\b")
 
 
 def sign_in_hint(stderr):
@@ -248,7 +251,7 @@ def sign_in_hint(stderr):
     sign-in gets a next step instead of a bare API error — the operator may be
     in Goose or Claude Desktop, not reading a traceback."""
     text = (stderr or "").lower()
-    if any(shape in text for shape in SIGN_IN_FAILURE):
+    if any(shape in text for shape in SIGN_IN_FAILURE) or SIGN_IN_401.search(text):
         return (" — a Google sign-in problem: run aaif-check-setup "
                 "(\"check my setup\") for the exact fix")
     return ""

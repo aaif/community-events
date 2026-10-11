@@ -107,10 +107,9 @@ def api_key():
     """LUMA_API_KEY from the environment, the repo-root `.env`, or the macOS
     keychain item `luma-api-key` — the order every engine uses
     (aaif_events.credentials), so `aaif-check-setup` and this agree."""
-    key, _ = credentials.stored("LUMA_API_KEY", KEYCHAIN_SERVICE, DOTENV_PATH)
+    key, _, failure = credentials.stored("LUMA_API_KEY", KEYCHAIN_SERVICE, DOTENV_PATH)
     if key:
         return key
-    _, failure = credentials.keychain(KEYCHAIN_SERVICE)
     # item-not-found is the normal "no key stored" case; anything else
     # (locked keychain, denied ACL) must not masquerade as "no key"
     hint = "\nKeychain lookup failed (not just missing): %s" % failure if failure else ""

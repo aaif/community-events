@@ -1,10 +1,10 @@
 """Read-only Slack Web API client for the workspace audits.
 
-Auth resolution, in order: `AAIF_SLACK_READ_TOKEN`, then
-`AAIF_SLACK_WRITE_TOKEN` — each from the environment, then from the `.env` at
+Auth resolution, one source at a time — the environment, then the `.env` at
 the repo root (never the cwd, so running a script from elsewhere cannot pick up
-a stranger's file), then from the macOS keychain (`aaif-slack-read-token` /
-`aaif-slack-write-token`) — then the Slack CLI's own credentials (`slack auth
+a stranger's file), then the macOS keychain (`aaif-slack-read-token` /
+`aaif-slack-write-token`) — each searched for `AAIF_SLACK_READ_TOKEN` and then
+`AAIF_SLACK_WRITE_TOKEN`; then the Slack CLI's own credentials (`slack auth
 login`). The keychain is the route for an installed plugin: Goose and Claude
 Desktop launch scripts without the operator's shell environment, and a `.env`
 inside the plugin's install folder is replaced on every update.
@@ -247,7 +247,7 @@ def _find_token(obj):
 
 def _dotenv_token(env_path=DOTENV_PATH, key=ENV_TOKEN_VAR):
     """`key` out of a KEY=VALUE `.env` file, or None — see credentials.dotenv_value."""
-    return credentials.dotenv_value(env_path, key)
+    return credentials.dotenv_value(key, env_path)
 
 
 def _keychain_token(var):
@@ -259,29 +259,35 @@ def _keychain_token(var):
     """
     service = KEYCHAIN_SERVICES[var]
     token, failure = credentials.keychain(service)
-    if failure:
-        print("slack: keychain lookup for %s failed (not just missing): %s"
-              % (service, failure), file=sys.stderr)
+    _say_keychain_failure(service, failure)
     return token
 
 
-def stored_token(var, env_path=DOTENV_PATH):
+_SAID = set()
+
+
+def _say_keychain_failure(service, failure):
+    """Once per service per process: the lookup is cached, the warning is too."""
+    if failure and service not in _SAID:
+        _SAID.add(service)
+        print("slack: keychain lookup for %s failed (not just missing): %s"
+              % (service, failure), file=sys.stderr)
+
+
+def stored_token(var, env_path=None):
     """One token var from the environment, the repo-root `.env`, or the keychain.
 
     For a caller that needs *that* token — a write — rather than the best
     available one, which is `load_token()`. Returns (token, source) or
-    (None, None); the source names where it came from, never the value.
+    (None, None); the source names where it came from, never the value. The
+    order is credentials.stored's, which this calls.
     """
-    token = os.environ.get(var, "").strip()
-    if token:
-        return token, "env:%s" % var
-    token = (_dotenv_token(env_path, var) or "").strip()
-    if token:
-        return token, ".env:%s" % env_path
-    token = _keychain_token(var)
-    if token:
-        return token, "keychain:%s" % KEYCHAIN_SERVICES[var]
-    return None, None
+    # The default is read at call time, so a test (or a caller) that points
+    # DOTENV_PATH elsewhere is honoured.
+    token, source, failure = credentials.stored(var, KEYCHAIN_SERVICES[var],
+                                                env_path or DOTENV_PATH)
+    _say_keychain_failure(KEYCHAIN_SERVICES[var], failure)
+    return token, source
 
 
 def keychain_hint(var):
@@ -292,14 +298,17 @@ def keychain_hint(var):
 def load_token(*, path=CRED_PATH, env_path=DOTENV_PATH, log=None):
     """Return a Slack token, preferring the app token over the CLI credential.
 
-    Resolution order: `AAIF_SLACK_READ_TOKEN`, then `AAIF_SLACK_WRITE_TOKEN`,
-    each looked up in the environment, then in the repo-root `.env`, then in
-    the macOS keychain; then the Slack CLI credentials at `path`. A read token is preferred because this
+    Resolution order, one source at a time: the environment, the repo-root
+    `.env`, then the macOS keychain, each searched for `AAIF_SLACK_READ_TOKEN`
+    and then `AAIF_SLACK_WRITE_TOKEN`; then the Slack CLI credentials at
+    `path`. `aaif-check-setup` searches in this same order (pinned by
+    tests/test_pinned_copies.py). A read token is preferred because this
     client is read-only; the app tokens come first because they are strictly
     more capable than the CLI one, which has expired.
 
     Exactly one line goes to stderr naming where the token came from —
-    `env:AAIF_SLACK_READ_TOKEN`, `.env:<path>` or `slack-cli` — so an operator
+    `env:AAIF_SLACK_READ_TOKEN`, `.env:<path>`, `keychain:<service>` or
+    `slack-cli` — so an operator
     can tell which credential a run used without the value ever being shown.
     """
     log = log or (lambda src: print("slack: token from %s" % src, file=sys.stderr))
@@ -322,10 +331,11 @@ def load_token(*, path=CRED_PATH, env_path=DOTENV_PATH, log=None):
         raise SystemExit(
             "No Slack token: neither %s nor %s is set (environment, %s or the "
             "keychain) and there are no Slack CLI credentials at %s. Store the "
-            "app token with:\n  %s\n(a bare -w prompts for it; never paste a "
+            "app token (the write token runs both the audits and the write "
+            "steps) with:\n  %s\n(a bare -w prompts for it; never paste a "
             "token into the command), or as a last resort run `slack auth "
             "login`." % (READ_TOKEN_VAR, ENV_TOKEN_VAR, env_path,
-                                           path, keychain_hint(READ_TOKEN_VAR)))
+                                           path, keychain_hint(ENV_TOKEN_VAR)))
     with open(path, encoding="utf-8") as fh:
         token = _find_token(json.load(fh))
     if not token:

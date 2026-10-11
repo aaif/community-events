@@ -49,10 +49,18 @@ def user_data_dir(platform=sys.platform, environ=os.environ):
 
 
 def data_dir(toolkit=TOOLKIT, environ=os.environ, platform=sys.platform):
-    """The folder this install writes reports, caches and backups under."""
-    override = environ.get(ENV, "").strip()
+    """The folder this install writes reports, caches and backups under.
+
+    A relative `AAIF_DATA_DIR` is ignored, with a warning: it would resolve
+    against the cwd this module exists to avoid, and `sync.py` runs each step
+    with that folder as its cwd, so every step would resolve it again one
+    level deeper."""
+    override = os.path.expanduser(environ.get(ENV, "").strip())
+    if override and os.path.isabs(override):
+        return override
     if override:
-        return os.path.abspath(os.path.expanduser(override))
+        print("aaif: ignoring %s=%s — it must be an absolute path"
+              % (ENV, override), file=sys.stderr)
     if is_checkout(toolkit):
         return toolkit
     return user_data_dir(platform, environ)
@@ -64,7 +72,9 @@ def path(*parts):
 
 
 def resolve(p):
-    """An absolute `p` unchanged; a relative one under data_dir(), never the cwd."""
+    """An absolute `p` (after `~`) unchanged; a relative one under data_dir(),
+    never the cwd. An agent may pass `~/x` quoted, so the shell never expands it."""
+    p = os.path.expanduser(p)
     return p if os.path.isabs(p) else path(p)
 
 

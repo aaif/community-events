@@ -42,6 +42,17 @@ class TestSkillPortability(unittest.TestCase):
             self.assertTrue(any("repo-root" in error
                                 for error in chk.check_skill(skill)))
 
+    def test_more_repo_root_spellings_are_rejected(self):
+        for command in ("python3 ./skills/other/scripts/run.py",
+                        "PYTHONPATH=lib:other python3 x.py",
+                        "python skills/other/scripts/run.py"):
+            with tempfile.TemporaryDirectory() as tmp:
+                skill = Path(tmp) / "portable"
+                skill.mkdir()
+                (skill / "SKILL.md").write_text("Run `%s`.\n" % command, encoding="utf-8")
+                self.assertTrue(any("repo-root" in error
+                                    for error in chk.check_skill(skill)), command)
+
     def test_repo_root_pythonpath_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             skill = Path(tmp) / "portable"

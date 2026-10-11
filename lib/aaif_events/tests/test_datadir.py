@@ -50,3 +50,16 @@ def test_resolve_never_uses_the_cwd(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     assert datadir.resolve("report") == str(tmp_path / "data" / "report")
     assert datadir.resolve("/abs/report") == "/abs/report"
+
+
+def test_a_relative_override_is_ignored_not_resolved_against_the_cwd(tmp_path, capsys):
+    """sync.py runs each step with cwd = data_dir(); a relative override would
+    resolve again one level deeper in every step."""
+    root = _toolkit(tmp_path)
+    assert datadir.data_dir(root, environ={datadir.ENV: "aaif-data"}) == root
+    assert "must be an absolute path" in capsys.readouterr().err
+
+
+def test_resolve_expands_a_quoted_home(monkeypatch, tmp_path):
+    monkeypatch.setenv(datadir.ENV, str(tmp_path / "data"))
+    assert datadir.resolve("~/x.json") == os.path.expanduser("~/x.json")

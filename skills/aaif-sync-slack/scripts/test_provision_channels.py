@@ -522,6 +522,21 @@ check("main: a committable --json-out is refused before any work",
       (isinstance(_code, str) and "REFUSING TO RUN" in _code, os.path.exists(_probe), _calls),
       (True, False, []))
 
+# --- write_token: an installed plugin's keychain write token, never the read one
+# Goose and Claude Desktop pass no shell environment; the keychain is the one
+# route that reaches them. A write must use the write token even when a read
+# token is sitting in the environment.
+_kc = {"aaif-slack-write-token": "xoxp-w"}
+with _mock.patch.dict(os.environ, {"AAIF_SLACK_READ_TOKEN": "xoxp-r",
+                                   "AAIF_SLACK_WRITE_TOKEN": ""}), \
+        _mock.patch.object(prov.slackmod, "DOTENV_PATH", "/nonexistent/.env"), \
+        _mock.patch.object(prov.slackmod.credentials, "keychain",
+                           lambda service: (_kc.get(service), None)):
+    check("write_token finds a keychain-only write token", prov.write_token(), "xoxp-w")
+    _kc.clear()
+    check("...and with none stored, never falls back to the read token",
+          prov.write_token(required=False), None)
+
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))
     for f in FAILS:

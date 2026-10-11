@@ -87,6 +87,15 @@ class TestRun:
         with pytest.raises(gws.GwsError, match="check my setup"):
             gws.run(["gws", "x"])
 
+    @pytest.mark.parametrize("stderr,hinted", [
+        ("HTTP 401 Unauthorized", True),
+        ("error[api]: status: 401", True),
+        ("error[api]: File not found: 1AbC401xyz", False),
+        ("Range Sheet1!A401:K401 exceeds grid limits", False),
+    ])
+    def test_401_counts_only_as_a_status(self, stderr, hinted):
+        assert bool(gws.sign_in_hint(stderr)) is hinted
+
     def test_an_ordinary_failure_gets_no_sign_in_hint(self, calls):
         calls.queue.append(FakeProc(1, stderr="does not have permission"))
         with pytest.raises(gws.GwsError) as exc:

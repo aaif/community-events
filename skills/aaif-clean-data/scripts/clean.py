@@ -68,14 +68,28 @@ def _scrubbed_env():
 
 
 def gws_failure(what, stderr):
-    """One line for a failed gws call, ending in the next step. gws prefixes a
-    "Using keyring backend" banner; the useful part is its last line. The
-    operator may be in Goose or Claude Desktop, not reading a terminal."""
-    lines = [ln for ln in (stderr or "").splitlines()
-             if ln.strip() and "keyring backend" not in ln]
+    """One line for a failed gws call, ending in the next step. The operator
+    may be in Goose or Claude Desktop, not reading a terminal.
+
+    gws prefixes a "Using keyring backend" banner, and a multi-line error often
+    ends on a lone `}` or a context line, so the line kept is the last one that
+    states the error. Credential shapes are masked: this goes to a chat. A copy
+    in each self-contained skill (backup, clean-data, triage-intake), kept
+    identical by lib/aaif_events/tests/test_pinned_copies.py."""
+    lines = [ln.strip() for ln in (stderr or "").splitlines()
+             if any(c.isalnum() for c in ln) and "keyring backend" not in ln]
+    reason = next((ln for ln in reversed(lines) if _GWS_REASON.search(ln)),
+                  lines[-1] if lines else "no error text")
     return ("%s failed: %s — if this is a sign-in or permission problem, run "
             "aaif-check-setup (\"check my setup\")."
-            % (what, (lines[-1] if lines else "no error text")[:300]))
+            % (what, _GWS_SECRET.sub("<hidden>", reason)[:300]))
+
+
+#: A line that states why gws failed, as opposed to JSON punctuation.
+_GWS_REASON = re.compile(r"error|message|denied|not found|permission|scope|"
+                         r"credential|\b[45]\d\d\b", re.I)
+#: Anything shaped like a credential.
+_GWS_SECRET = re.compile(r"(xox[a-z]-[\w-]+|ya29\.[\w.-]+|[A-Za-z0-9_-]{40,})")
 
 
 def gws(args):

@@ -53,6 +53,15 @@ OK, NEEDED, OPTIONAL = "ok", "needed", "optional"
 MARK = {OK: "✅", NEEDED: "❌", OPTIONAL: "⚪"}
 #: Anything shaped like a credential, in case a tool echoes one in an error.
 _SECRET = re.compile(r"(xox[a-z]-[\w-]+|ya29\.[\w.-]+|[A-Za-z0-9_-]{32,})")
+#: gws output that means the sign-in, not the request, is the problem. A COPY
+#: of aaif_events.gws.SIGN_IN_FAILURE / SIGN_IN_401, pinned to it by
+#: lib/aaif_events/tests/test_pinned_copies.py: the engines and this diagnosis
+#: must agree on what a sign-in failure looks like. 401 only as a word — a file
+#: id or a range can contain those digits.
+SIGN_IN_FAILURE = ("insufficient authentication scopes", "failed to decrypt",
+                   "invalid_grant", "unauthenticated", "no credentials",
+                   "run 'gws auth login'")
+SIGN_IN_401 = re.compile(r"\b401\b")
 
 
 def keychain_steps(service, what):
@@ -72,14 +81,27 @@ def scrub(text, limit=160):
     return _SECRET.sub("<hidden>", lines[-1] if lines else "")[:limit]
 
 
+def is_sign_in_failure(text):
+    text = (text or "").lower()
+    return any(s in text for s in SIGN_IN_FAILURE) or bool(SIGN_IN_401.search(text))
+
+
 def keychain(service):
-    """A secret from the macOS keychain, or None (also None off macOS)."""
+    """(value or None, failure or None) for a macOS keychain item. A COPY of
+    aaif_events.credentials.keychain: a locked keychain or a Deny click is a
+    `failure`, never a plain miss, so it is not reported as "no key" and the
+    operator is not sent to create a second item under the same name."""
     try:
         r = subprocess.run(["security", "find-generic-password", "-s", service, "-w"],
                            capture_output=True, text=True)
     except OSError:
-        return None
-    return r.stdout.strip() or None if r.returncode == 0 else None
+        return None, None
+    if r.returncode == 0:
+        return (r.stdout.strip() or None), None
+    err = (r.stderr or "").strip()
+    if err and "could not be found" not in err:
+        return None, err.splitlines()[-1]
+    return None, None
 
 
 def dotenv(var, path=None):
@@ -111,17 +133,35 @@ def dotenv(var, path=None):
     return None
 
 
-def find_secret(var, service):
-    """(value, where) in the engines' order (aaif_events.credentials.stored):
-    the environment, the toolkit's .env, then the keychain. Each source is
-    read once — a second `security` call can mean a second macOS prompt."""
-    for read, where in ((lambda: os.environ.get(var, "").strip(), "the environment"),
-                        (lambda: dotenv(var), "the .env file"),
-                        (lambda: keychain(service), "the Mac keychain")):
-        value = read()
+def find_secrets(pairs):
+    """(value, where, failure) for the first of `pairs` ((var, service), ...)
+    found, searched one SOURCE at a time — the environment for every var, then
+    the toolkit's .env, then the keychain — exactly as the engines search
+    (aaif_events.credentials.stored for one var, slack.load_token for two).
+    Each source is read once: a second `security` call can mean a second
+    macOS prompt. `failure` is a keychain refusal when nothing was found."""
+    for var, _ in pairs:
+        value = os.environ.get(var, "").strip()
         if value:
-            return value, where
-    return None, None
+            return value, "the environment", None
+    for var, _ in pairs:
+        value = dotenv(var)
+        if value:
+            return value, "the .env file", None
+    failure = None
+    for _, service in pairs:
+        value, refused = keychain(service)
+        if value:
+            return value, "the Mac keychain", None
+        failure = failure or refused
+    return None, None, failure
+
+
+def keychain_refused(what, failure):
+    return NEEDED, "Your Mac keychain would not hand over the saved %s (%s)." % (
+        what, failure), ("Unlock the keychain (or, when macOS asks, click Always "
+                         "Allow), then check your setup again. Do not create a "
+                         "second item — the one you have is still there.")
 
 
 def check_python():
@@ -178,6 +218,14 @@ def stray_gws_key():
     return r.returncode == 0
 
 
+#: The Google lines a sign-in fixes; main() prints the sign-in command after them.
+SIGN_IN_UNREADABLE = "Your saved Google sign-in can no longer be read."
+SIGN_IN_NO_DRIVE = "Signed in to Google, but without permission to use Drive."
+SIGN_IN_NONE = "You are not signed in to Google through `gws`."
+SIGN_IN_WRONG_ACCOUNT = "Signed in, but this account cannot open the Community Intake sheet."
+SIGN_IN_LINES = (SIGN_IN_UNREADABLE, SIGN_IN_NO_DRIVE, SIGN_IN_NONE, SIGN_IN_WRONG_ACCOUNT)
+
+
 def check_google():
     path, on_path = find_gws()
     if not (path and on_path):
@@ -193,7 +241,7 @@ def check_google():
     if r.returncode != 0:
         why = scrub(r.stderr or r.stdout)          # for display only
         text = ((r.stderr or "") + (r.stdout or "")).lower()   # every test reads this
-        if "decrypt" in text:
+        if "failed to decrypt" in text:
             # Seen live 2026-10-09: gws names its keychain key after $USER, so a
             # run with USER unset minted a second `gws-cli` key under
             # `unknown-user` and re-encrypted the cache with it; every normal
@@ -201,21 +249,21 @@ def check_google():
             # does not remove keys, and a login over a mismatched key did not
             # stick. Every `gws-cli` key has to go first.
             stray = " A second, stray sign-in key is in the keychain." if stray_gws_key() else ""
-            return NEEDED, "Your saved Google sign-in can no longer be read." + stray, (
+            return NEEDED, SIGN_IN_UNREADABLE + stray, (
                 "Open Keychain Access, search for gws-cli and delete every entry "
                 "it finds. Then ask the assistant to sign you out of gws "
                 "(`gws auth logout`) and in again with the toolkit's "
                 "permissions; a browser opens — use your AAIF Google account.")
         if "insufficient authentication scopes" in text:
-            return NEEDED, "Signed in to Google, but without permission to use Drive.", (
+            return NEEDED, SIGN_IN_NO_DRIVE, (
                 "Ask the assistant to sign you in again with the toolkit's "
                 "permissions; a browser opens — allow everything it asks for.")
-        if any(w in text for w in ("auth", "credential", "token", "login", "401")):
-            return NEEDED, "You are not signed in to Google through `gws`.", (
+        if is_sign_in_failure(text):
+            return NEEDED, SIGN_IN_NONE, (
                 "Ask the assistant to sign you in with the toolkit's "
                 "permissions; a browser opens — use your AAIF Google account.")
         if any(w in text for w in ("404", "not found", "403")):
-            return NEEDED, "Signed in, but this account cannot open the Community Intake sheet.", (
+            return NEEDED, SIGN_IN_WRONG_ACCOUNT, (
                 "Sign in again with the Google account AAIF shared the "
                 "Chapters folder with, or ask an admin for access.")
         return NEEDED, "Google check failed: %s" % why, (
@@ -224,19 +272,21 @@ def check_google():
         can_edit = json.loads(r.stdout[r.stdout.index("{"):]).get(
             "capabilities", {}).get("canEdit")
     except ValueError:
-        can_edit = None
+        # Not a permissions finding: sending an admin to grant access that
+        # already exists would be the wrong fix.
+        return NEEDED, "Google answered, but its reply could not be read.", (
+            "Try again; if it repeats, send this line to your helper.")
     if can_edit:
         return OK, "Signed in to Google, and you can edit the Community Intake sheet.", None
     return NEEDED, "Signed in to Google, but you can only VIEW the Community Intake sheet.", (
-        "Ask an AAIF admin to make you an editor of the Chapters shared drive.")
+        "Ask an AAIF admin to make you an editor of the Community Intake Ops sheet.")
 
 
 def check_slack():
-    for var, service in SLACK_TOKENS:
-        token, where = find_secret(var, service)
-        if token:
-            break
-    else:
+    token, where, failure = find_secrets(SLACK_TOKENS)
+    if not token and failure:
+        return keychain_refused("Slack token", failure)
+    if not token:
         return OPTIONAL, "No Slack token — needed for \"run the sync\", the Slack audit and the community update; writing jobs don't need it.", (
             "Get the AAIF Slack app token from your helper. "
             + keychain_steps("aaif-slack-write-token", "token"))
@@ -256,7 +306,9 @@ def check_slack():
 
 
 def check_luma():
-    key, where = find_secret(LUMA_VAR, LUMA_KEYCHAIN)
+    key, where, failure = find_secrets(((LUMA_VAR, LUMA_KEYCHAIN),))
+    if not key and failure:
+        return keychain_refused("Luma key", failure)
     if not key:
         return OPTIONAL, "No Luma key — event pages will come back as copy to paste into Luma by hand.", (
             "To let the assistant publish to Luma, get the API key from the "
@@ -269,9 +321,14 @@ def check_luma():
         with urllib.request.urlopen(req, timeout=30):
             return OK, "Luma key in %s works." % where, None
     except urllib.error.HTTPError as e:
-        return NEEDED, "Luma key in %s was refused (HTTP %d)." % (where, e.code), (
-            "The key may have been rotated; get a fresh one from the Luma "
-            "calendar settings.")
+        if e.code in (401, 403):
+            return NEEDED, "Luma key in %s was refused (HTTP %d)." % (where, e.code), (
+                "The key may have been rotated; get a fresh one from the Luma "
+                "calendar settings.")
+        # A Luma outage or rate limit is not a bad key: do not send the
+        # operator to rotate one that works.
+        return NEEDED, "Luma key found in %s, but Luma is not answering right now (HTTP %d)." % (
+            where, e.code), "Try again in a few minutes."
     except (urllib.error.URLError, OSError) as e:
         return NEEDED, "Luma key found in %s, but Luma could not be reached (%s)." % (
             where, type(e).__name__), "Check the internet connection and try again."
@@ -297,7 +354,7 @@ def main():
         if fix and status != OK:
             print("   → %s" % fix)
     blocking = sum(status == NEEDED for status, _, _ in results)
-    if any(status == NEEDED and "Google" in line for status, line, _ in results):
+    if any(status == NEEDED and line.startswith(SIGN_IN_LINES) for status, line, _ in results):
         print("\n(For the assistant: the sign-in command is\n  %s\n)" % LOGIN)
     print()
     if blocking:

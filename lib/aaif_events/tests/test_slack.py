@@ -17,10 +17,13 @@ from aaif_events import slack
 def _no_keychain(monkeypatch):
     """Never read the developer's real keychain; tests opt in with a stub. The
     per-process keychain cache is cleared both ways so no stub leaks across."""
-    slack.credentials.keychain.cache_clear()
+    real = slack.credentials.keychain
+    real.cache_clear()
+    slack._SAID.clear()
     monkeypatch.setattr(slack, "_keychain_token", lambda var: None)
+    monkeypatch.setattr(slack.credentials, "keychain", lambda service: (None, None))
     yield
-    slack.credentials.keychain.cache_clear()
+    real.cache_clear()
 
 
 class FakeResponse:
@@ -515,21 +518,34 @@ def test_no_token_message_gives_the_prompting_keychain_command(monkeypatch, tmp_
     with pytest.raises(SystemExit) as exc:
         slack.load_token(path=str(tmp_path / "absent.json"), env_path=str(tmp_path / ".env"))
     # A bare -w prompts; a token after it would land in shell history.
-    assert "add-generic-password -s aaif-slack-read-token -a aaif -w\n" in str(exc.value)
+    # The write item: one token runs both the audits and the write steps.
+    assert "add-generic-password -s aaif-slack-write-token -a aaif -w\n" in str(exc.value)
     # ...and the no-terminal route first, for an operator inside Goose/Desktop.
-    assert "New Password Item, Keychain Item Name aaif-slack-read-token" in str(exc.value)
+    assert "New Password Item, Keychain Item Name aaif-slack-write-token" in str(exc.value)
 
 
 def test_stored_token_reads_only_the_named_var(monkeypatch, tmp_path):
     """A write must use the write token, never fall through to the read one."""
     _no_tokens(monkeypatch)
     monkeypatch.setenv(slack.READ_TOKEN_VAR, "xoxp-read")
-    stored = {slack.ENV_TOKEN_VAR: "xoxp-write"}
-    monkeypatch.setattr(slack, "_keychain_token", stored.get)
+    stored = {"aaif-slack-write-token": "xoxp-write"}
+    monkeypatch.setattr(slack.credentials, "keychain",
+                        lambda service: (stored.get(service), None))
     assert slack.stored_token(slack.ENV_TOKEN_VAR, str(tmp_path / ".env")) == (
         "xoxp-write", "keychain:aaif-slack-write-token")
     stored.clear()
     assert slack.stored_token(slack.ENV_TOKEN_VAR, str(tmp_path / ".env")) == (None, None)
+
+
+def test_a_refusing_keychain_is_said_once_not_read_as_missing(monkeypatch, tmp_path, capsys):
+    """A locked keychain is not "no token" — and is said once, not per call."""
+    _no_tokens(monkeypatch)
+    monkeypatch.setattr(slack.credentials, "keychain",
+                        lambda service: (None, "User interaction is not allowed."))
+    for _ in range(3):
+        assert slack.stored_token(slack.ENV_TOKEN_VAR, str(tmp_path / ".env")) == (None, None)
+    err = capsys.readouterr().err
+    assert err.count("failed (not just missing): User interaction is not allowed.") == 1
 
 
 @pytest.mark.parametrize("result,expected", [

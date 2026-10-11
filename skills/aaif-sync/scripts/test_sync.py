@@ -328,10 +328,12 @@ for _p, _s in sync.selected([], False):
     check("%s is in REDACTING iff its source takes --redact" % _s.name,
           _s.name in sync.REDACTING, "add_redact_flag(ap" in _src)
 
-# --- every step runs from the plugin root, not the session folder --------------
+# --- every step runs from the data folder, not the session folder -------------
 # From Goose or Claude Desktop the cwd is the operator's own folder, and the
 # Slack audits' relative `.slack-audit-cache` (the whole member directory)
-# would land there instead of under the repo's .gitignore.
+# would land there. In a checkout the data folder IS the repo root, so the data
+# folder is moved elsewhere here — otherwise a regression to cwd=REPO (an
+# installed plugin's per-version install folder) would pass.
 _cwds = []
 
 
@@ -341,9 +343,13 @@ def _cwd_run(cmd, stdout=None, stderr=None, **kw):
 
 
 with tempfile.TemporaryDirectory() as _td, \
+        mock.patch.dict(os.environ, {"AAIF_DATA_DIR": os.path.join(_td, "data")}), \
         mock.patch.object(sync.subprocess, "run", _cwd_run):
     sync.run_step(_by["coverage"], os.path.join(_td, "x.log"), False, False)
-check("a step runs with cwd in the data folder, not the session's", _cwds, [sync.data_dir()])
+    check("a step runs with cwd in the data folder, not the session's or the repo",
+          _cwds, [os.path.join(_td, "data")])
+    check("...which it creates private to the operator",
+          os.stat(os.path.join(_td, "data")).st_mode & 0o777, 0o700)
 
 
 # --- run_step's marker detection ----------------------------------------------
@@ -491,6 +497,32 @@ with mock.patch.object(sync, "main", lambda argv: _seen.setdefault("argv", argv)
 check("nightly always passes --unattended", "--unattended" in _seen["argv"], True)
 check("nightly keeps its own report dir",
       "nightly-reports" in " ".join(_seen["argv"]), True)
+with tempfile.TemporaryDirectory() as _td, \
+        mock.patch.dict(os.environ, {"AAIF_DATA_DIR": _td}), \
+        mock.patch.object(sync, "main", lambda argv: _seen.update(argv=argv) or 0):
+    nightly.main([])
+    _i = _seen["argv"].index("--report-dir")
+    check("...and it is in the data folder, not hard-wired to the repo",
+          _seen["argv"][_i + 1], os.path.join(_td, "nightly-reports"))
+
+# A relative --report-dir is made absolute before anything uses it: the steps
+# run with cwd = data folder, so a relative path would name two places.
+_guarded = []
+with tempfile.TemporaryDirectory() as _td:
+    _old = os.getcwd()
+    os.chdir(_td)
+    try:
+        with mock.patch.object(sync, "guard_report_dir",
+                               lambda d: _guarded.append(d) or sys.exit(0)):
+            try:
+                sync.main(["--report-dir", "rel", "chapters"])
+            except SystemExit:
+                pass
+    finally:
+        os.chdir(_old)
+    check("a relative --report-dir is absolute before the guard sees it",
+          bool(_guarded) and os.path.realpath(_guarded[0]) ==
+          os.path.realpath(os.path.join(_td, "rel")), True)
 
 # --- no state survives a run -----------------------------------------------------
 # The runner must keep nothing between runs but the data itself. Two properties:
@@ -589,18 +621,16 @@ with mock.patch.object(sync.subprocess, "run", _git(code=1)):
     except SystemExit as e:
         _aborted.append("NOT gitignored" in str(e))
 check("a committable report dir aborts the run", _aborted, [True])
-# Outside the repo there is nothing to commit to, so no check is made at all.
-_outside = []
-with mock.patch.object(sync.subprocess, "run", _git(code=1, calls=_outside)):
-    sync.guard_report_dir("/tmp/aaif-sync-elsewhere")
-check("a report dir outside the repo is never second-guessed", _outside, [])
-# A plugin install with no `.git` (Claude's plugin cache) has nothing to commit
-# to. check-ignore exits 128 there, which used to abort every sync from it.
-with mock.patch.object(sync.subprocess, "run", _git(
-        code=128, stderr="fatal: not a git repository (or any of the parent directories): .git")):
-    sync.guard_report_dir(os.path.join(sync.REPO, "sync-reports"))
-check("a plugin install without .git runs", True, True)
-# ...but any other git failure is not read as "safe".
+# Outside every checkout (an installed plugin's data folder, Claude's
+# `.git`-less plugin cache) nothing can commit the logs: git is never asked.
+_outside, _passed = [], []
+with tempfile.TemporaryDirectory() as _nogit, \
+        mock.patch.object(sync.subprocess, "run", _git(code=1, calls=_outside)):
+    sync.guard_report_dir(os.path.join(_nogit, "sync-reports"))
+    _passed.append(True)
+check("a report dir outside every checkout passes without asking git",
+      (_outside, _passed), ([], [True]))
+# ...but inside one, any unexpected git answer is not read as "safe".
 _broken = []
 with mock.patch.object(sync.subprocess, "run", _git(
         code=128, stderr="fatal: detected dubious ownership in repository")):
@@ -609,6 +639,15 @@ with mock.patch.object(sync.subprocess, "run", _git(
     except SystemExit as e:
         _broken.append("ABORT" in str(e))
 check("a broken git aborts rather than passing the guard", _broken, [True])
+# A checkout that is not this one is checked too (AAIF_DATA_DIR into another repo).
+with tempfile.TemporaryDirectory() as _other:
+    os.makedirs(os.path.join(_other, ".git"))
+    _asked = []
+    with mock.patch.object(sync.subprocess, "run", _git(code=0, calls=_asked)):
+        sync.guard_report_dir(os.path.join(_other, "data", "sync-reports"))
+    # The temp dir may be reached through a symlink (/var -> /private/var).
+    check("a report dir in another checkout is checked in that checkout",
+          bool(_asked) and os.path.realpath(_asked[0][2]) == os.path.realpath(_other), True)
 
 # --- each skill's loaded documentation names every test beside it --------------
 # It had drifted before: three tests existed that the list did not mention,

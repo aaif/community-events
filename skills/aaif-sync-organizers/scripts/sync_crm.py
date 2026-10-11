@@ -127,59 +127,64 @@ def mask_sets(sets):
             for k, v in sets.items()}
 
 
+def enclosing_checkout(path):
+    """The git checkout containing `path` (which may not exist yet), or None.
+
+    Found by looking for `.git` upward, not by asking git: a folder outside
+    every checkout — an installed plugin's per-user data folder — must pass
+    without git, which an operator whose Python came from python.org may not
+    have. Whatever repo that is gets checked, not only this one: an
+    AAIF_DATA_DIR pointed into some other checkout is checked there."""
+    d = os.path.abspath(path)
+    while not os.path.isdir(d) and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        if os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+
 def backup_root(kind):
-    """A fresh, gitignored directory for pre-edit workbook bytes.
+    """A fresh directory for pre-edit workbook bytes that git cannot pick up.
 
     `<data dir>/backups/<kind>-<UTC stamp>/` (aaif_events.datadir): the repo
-    root in a checkout, a per-user folder in an installed plugin. In a
-    checkout `**/backups/*` is gitignored, and
-    the guard below proves it for THIS checkout before anything lands there:
-    the copies hold every synced person's name and email, and this repo is
-    public. The data folder (not $TMPDIR) keeps the recovery copy where an
-    operator will find it and where a reboot does not sweep it.
+    root in a checkout, a per-user folder in an installed plugin. The copies
+    hold every synced person's name and email, and this repo is public. The
+    data folder (not $TMPDIR) keeps the recovery copy where an operator will
+    find it and where a reboot does not sweep it.
 
-    Three outcomes, ported from migrate_status_prospect.assert_git_safe. The
-    copy stays here because the guard is about THIS script's backup directory,
-    not because the two files are independent — migrations/ imports from here: git missing -> abort, since nothing can prove
-    the path is safe; REPO is not a git checkout (a plugin install, a zip) ->
-    allowed, with a printed note, because there is no repo to leak into; any
-    other git failure (dubious ownership, a corrupt .git) -> abort quoting
-    git, because mapping it to "safe" would disengage the PII guard.
+    Outside every checkout -> allowed, no git asked (nothing to commit it to).
+    Inside one -> `git check-ignore` in THAT checkout: ignored passes, not
+    ignored aborts, and any other git answer (dubious ownership, a corrupt
+    .git) or a missing git aborts quoting it, because mapping it to "safe"
+    would disengage the PII guard. migrations/ imports this.
     """
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     # The data folder, not the install folder: Claude keeps one folder per
     # plugin version, so a backup under it is orphaned by the next update.
     path = datadir.path("backups", "%s-%s" % (kind, stamp))
-    if not os.path.abspath(path).startswith(REPO + os.sep):
-        # An installed plugin's per-user folder: outside every checkout, so
-        # there is nothing to commit it to and nothing for git to answer.
-        os.makedirs(path, mode=0o700, exist_ok=True)
-        return path
-    try:
-        probe = subprocess.run(["git", "-C", REPO, "rev-parse", "--show-toplevel"],
+    root = enclosing_checkout(path)
+    if root is not None:
+        try:
+            r = subprocess.run(["git", "-C", root, "check-ignore", "-q",
+                                os.path.join(path, "probe")],
                                capture_output=True, text=True,
                                env={**os.environ, "LC_ALL": "C", "LANG": "C"})
-    except FileNotFoundError:
-        sys.exit("ABORT: git is not installed, so this cannot verify that %s is "
-                 "gitignored. The pre-edit copies hold every organizer's name "
-                 "and email." % path)
-    if probe.returncode != 0:
-        stderr = (probe.stderr or "").strip()
-        if "not a git repository" not in stderr.lower():
-            sys.exit("ABORT: `git rev-parse` failed in %s (exit %d: %s), so this "
-                     "cannot verify that %s is gitignored. The pre-edit copies "
-                     "hold every organizer's name and email."
-                     % (REPO, probe.returncode, stderr[:200], path))
-        print("note: %s is not a git checkout (plugin install?) — writing the "
-              "pre-edit copies under %s; nothing can commit them from here."
-              % (REPO, path), file=sys.stderr)
-    else:
-        r = subprocess.run(["git", "-C", REPO, "check-ignore", "-q",
-                            os.path.join(path, "probe")], capture_output=True)
+        except FileNotFoundError:
+            sys.exit("ABORT: git is not installed, so this cannot verify that %s "
+                     "is gitignored in %s. The pre-edit copies hold every "
+                     "organizer's name and email." % (path, root))
+        if r.returncode == 1:
+            sys.exit("ABORT: %s is not gitignored in %s — refusing to write "
+                     "member data there (is `**/backups/*` still in "
+                     ".gitignore?)." % (path, root))
         if r.returncode != 0:
-            sys.exit("ABORT: %s is not gitignored in this checkout — refusing to "
-                     "write member data there (is `**/backups/*` still in "
-                     ".gitignore?)." % path)
+            sys.exit("ABORT: `git check-ignore` failed in %s (exit %d: %s), so "
+                     "this cannot verify that %s is gitignored. The pre-edit "
+                     "copies hold every organizer's name and email."
+                     % (root, r.returncode, (r.stderr or "").strip()[:200], path))
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
 

@@ -32,11 +32,14 @@ def check(label, got, want):
         print("FAIL %s: got %r, want %r" % (label, got, want))
 
 
-def run(payload, cwd):
-    # The cache lives in the toolkit's data folder; point that at the temp dir.
-    env = dict(os.environ, AAIF_DATA_DIR=cwd)
+def run(payload, tmp):
+    """Run from <tmp>/session with the data folder at <tmp>/data: two places,
+    as in an installed plugin, so a write to the cwd cannot pass as correct."""
+    session = os.path.join(tmp, "session")
+    os.makedirs(session, exist_ok=True)
+    env = dict(os.environ, AAIF_DATA_DIR=os.path.join(tmp, "data"))
     return subprocess.run([sys.executable, SCRIPT], input=json.dumps(payload),
-                          capture_output=True, text=True, cwd=cwd, env=env)
+                          capture_output=True, text=True, cwd=session, env=env)
 
 
 # --- the contact-details guard, which is why this script exists --------------
@@ -82,12 +85,14 @@ def test_writes_one_file_per_audience_0600():
         check("exit 0", r.returncode, 0)
         for name in ("pulse-local-champs.txt", "pulse-general.txt",
                      "pulse-social.txt"):
-            path = os.path.join(tmp, ".pulse-cache", name)
+            path = os.path.join(tmp, "data", ".pulse-cache", name)
             check("wrote %s" % name, os.path.exists(path), True)
             check("%s is 0600" % name,
                   oct(os.stat(path).st_mode & 0o777), oct(0o600))
-        with open(os.path.join(tmp, ".pulse-cache", "pulse-general.txt")) as fh:
+        with open(os.path.join(tmp, "data", ".pulse-cache", "pulse-general.txt")) as fh:
             check("content round-trips", fh.read(), "member text\n")
+        check("nothing lands in the session folder",
+              os.listdir(os.path.join(tmp, "session")), [])
 
 
 def test_a_partial_set_is_allowed():
@@ -97,7 +102,7 @@ def test_a_partial_set_is_allowed():
         r = run({"social": "public"}, tmp)
         check("exit 0", r.returncode, 0)
         check("the untouched draft survives",
-              os.path.exists(os.path.join(tmp, ".pulse-cache", "pulse-general.txt")),
+              os.path.exists(os.path.join(tmp, "data", ".pulse-cache", "pulse-general.txt")),
               True)
 
 
@@ -109,7 +114,7 @@ def test_contact_details_refuse_the_whole_run():
         # The clean draft is refused too: a half-written set is how the
         # unchecked file gets pasted.
         check("nothing at all is written",
-              os.path.isdir(os.path.join(tmp, ".pulse-cache")), False)
+              os.path.isdir(os.path.join(tmp, "data", ".pulse-cache")), False)
 
 
 def test_unknown_audience_key_is_refused():

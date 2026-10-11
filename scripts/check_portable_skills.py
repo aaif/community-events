@@ -40,7 +40,8 @@ import os
 import re
 import sys
 
-README = "MAINTAINING.md"  # the README moved here when it became user-facing
+#: The maintainer docs (README.md is for the operator and lists no internals).
+DOC = "MAINTAINING.md"
 
 #: The paragraph naming the coupled skills, matched from its own sentence so
 #: that moving the section around the file does not break the check. Matched
@@ -97,14 +98,14 @@ def coupled_skills():
 def documented_skills(text=None):
     """Skills named in MAINTAINING.md's standalone-zip caveat."""
     if text is None:
-        with open(README, encoding="utf-8") as fh:
+        with open(DOC, encoding="utf-8") as fh:
             text = fh.read()
     m = MARKER_RE.search(text)
     i = m.start() if m else -1
     if i < 0:
         sys.exit("ABORT: %s no longer contains the standalone-zip caveat (%r). "
                  "If it moved, update MARKER here; if it went away, this check "
-                 "has nothing to compare against." % (README, MARKER))
+                 "has nothing to compare against." % (DOC, MARKER))
     # The caveat runs to the end of its paragraph.
     end = text.find("\n\n", i)
     return set(re.findall(r"`(aaif-[a-z-]+)`", text[i:end if end > 0 else len(text)]))
@@ -136,7 +137,7 @@ def main():
             print("  %s" % s)
         print("\nEither add them to the caveat in %s — giving up a skill's "
               "portability is a decision, so write it down — or drop the import."
-              % README)
+              % DOC)
     if stale:
         print("\nERROR: MAINTAINING.md lists these as coupled, but nothing in them "
               "imports `lib/aaif_events` any more:\n")

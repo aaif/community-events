@@ -41,9 +41,12 @@ _PLUGIN_HOMES = (os.sep + os.path.join(".agents", "plugins") + os.sep,
 
 def data_dir(toolkit=None, environ=os.environ, platform=sys.platform):
     toolkit = toolkit or TOOLKIT
-    override = environ.get(DATA_DIR_ENV, "").strip()
+    override = os.path.expanduser(environ.get(DATA_DIR_ENV, "").strip())
+    if override and os.path.isabs(override):
+        return override
     if override:
-        return os.path.abspath(os.path.expanduser(override))
+        print("aaif: ignoring %s=%s — it must be an absolute path"
+              % (DATA_DIR_ENV, override), file=sys.stderr)
     if (os.path.exists(os.path.join(toolkit, ".git"))
             and not any(h in toolkit + os.sep for h in _PLUGIN_HOMES)):
         return toolkit
@@ -72,14 +75,28 @@ BINARY_EXT = {
 
 
 def gws_failure(what, stderr):
-    """One line for a failed gws call, ending in the next step. gws prefixes a
-    "Using keyring backend" banner; the useful part is its last line. The
-    operator may be in Goose or Claude Desktop, not reading a terminal."""
-    lines = [ln for ln in (stderr or "").splitlines()
-             if ln.strip() and "keyring backend" not in ln]
+    """One line for a failed gws call, ending in the next step. The operator
+    may be in Goose or Claude Desktop, not reading a terminal.
+
+    gws prefixes a "Using keyring backend" banner, and a multi-line error often
+    ends on a lone `}` or a context line, so the line kept is the last one that
+    states the error. Credential shapes are masked: this goes to a chat. A copy
+    in each self-contained skill (backup, clean-data, triage-intake), kept
+    identical by lib/aaif_events/tests/test_pinned_copies.py."""
+    lines = [ln.strip() for ln in (stderr or "").splitlines()
+             if any(c.isalnum() for c in ln) and "keyring backend" not in ln]
+    reason = next((ln for ln in reversed(lines) if _GWS_REASON.search(ln)),
+                  lines[-1] if lines else "no error text")
     return ("%s failed: %s — if this is a sign-in or permission problem, run "
             "aaif-check-setup (\"check my setup\")."
-            % (what, (lines[-1] if lines else "no error text")[:300]))
+            % (what, _GWS_SECRET.sub("<hidden>", reason)[:300]))
+
+
+#: A line that states why gws failed, as opposed to JSON punctuation.
+_GWS_REASON = re.compile(r"error|message|denied|not found|permission|scope|"
+                         r"credential|\b[45]\d\d\b", re.I)
+#: Anything shaped like a credential.
+_GWS_SECRET = re.compile(r"(xox[a-z]-[\w-]+|ya29\.[\w.-]+|[A-Za-z0-9_-]{40,})")
 
 
 def _scrubbed_env():
@@ -246,7 +263,8 @@ def snapshot_path(dest_root, slug, ext):
         n += 1
     # Gate BEFORE makedirs: a refusal must not leave an empty slug folder behind.
     assert_snapshot_git_ignored(p)
-    os.makedirs(d, exist_ok=True)
+    os.makedirs(os.path.dirname(d), mode=0o700, exist_ok=True)   # the backups root
+    os.makedirs(d, mode=0o700, exist_ok=True)   # snapshots hold every applicant's name
     return p
 
 
@@ -299,7 +317,8 @@ def main():
     ap.add_argument("--dest", default=os.path.join(data_dir(), "backups"),
                     help="Root folder for snapshots (default: backups/ in the "
                          "toolkit's data folder — the repo root in a checkout, "
-                         "~/Library/Application Support/AAIF in an installed plugin)")
+                         "~/Library/Application Support/AAIF in an installed plugin on a "
+                         "Mac, ~/.local/share/aaif elsewhere)")
     a = ap.parse_args()
     dest_root = os.path.abspath(a.dest)
     assert_dest_git_safe(dest_root)   # before ANY fetch: fail in a second, not after a pull

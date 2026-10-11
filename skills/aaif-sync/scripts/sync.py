@@ -73,9 +73,12 @@ _PLUGIN_HOMES = (os.sep + os.path.join(".agents", "plugins") + os.sep,
 
 def data_dir(toolkit=None, environ=os.environ, platform=sys.platform):
     toolkit = toolkit or REPO
-    override = environ.get(DATA_DIR_ENV, "").strip()
+    override = os.path.expanduser(environ.get(DATA_DIR_ENV, "").strip())
+    if override and os.path.isabs(override):
+        return override
     if override:
-        return os.path.abspath(os.path.expanduser(override))
+        print("aaif: ignoring %s=%s — it must be an absolute path"
+              % (DATA_DIR_ENV, override), file=sys.stderr)
     if (os.path.exists(os.path.join(toolkit, ".git"))
             and not any(h in toolkit + os.sep for h in _PLUGIN_HOMES)):
         return toolkit
@@ -645,6 +648,26 @@ def exit_code(by_name):
     return 2 if any(o in (WROTE, DRIFT, PARTIAL, SKIPPED) for o in results) else 0
 
 
+def enclosing_checkout(path):
+    """The git checkout containing `path` (which may not exist yet), or None.
+
+    Found by looking for `.git` upward, not by asking git: a folder outside
+    every checkout — an installed plugin's per-user data folder — must pass
+    without git, which an operator whose Python came from python.org may not
+    have. Whatever repo that is gets checked, not only this one: an
+    AAIF_DATA_DIR pointed into some other checkout is checked there. The same
+    rule as sync_crm.enclosing_checkout (this script stays lib-free)."""
+    d = os.path.abspath(path)
+    while not os.path.isdir(d) and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        if os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+
 def guard_report_dir(report_dir):
     """Refuse to write PII logs anywhere git would happily commit them.
 
@@ -656,30 +679,33 @@ def guard_report_dir(report_dir):
     protect. `nightly.py` carried this bug unnoticed for as long as the
     directory happened to already exist on the machine it ran on. Asking about
     `<path>/` matches the directory pattern whether or not anything is there.
+
+    Outside every checkout (an installed plugin's data folder, Claude's
+    `.git`-less plugin cache) nothing can commit the logs, so no git is asked.
+    Inside one, `check-ignore` in that checkout: 0 passes, 1 aborts, anything
+    else aborts quoting git — reading it as "safe" would disengage the guard.
     """
     probe = os.path.abspath(report_dir)
-    if probe.startswith(REPO + os.sep):
-        # One check-ignore, read by exit code: 0 ignored, 1 NOT ignored, 128 a
-        # fatal git error. An installed plugin is often not a checkout —
-        # Claude's plugin cache copies the files without `.git` — and that
-        # 128 ("not a git repository") passes: nothing can commit the logs.
-        # Any OTHER failure still aborts, because reading it as "safe" would
-        # disengage the guard (the same split as sync_crm.backup_root).
-        r = subprocess.run(["git", "-C", REPO, "check-ignore", "-q", probe + os.sep],
+    root = enclosing_checkout(probe)
+    if root is None:
+        return
+    try:
+        r = subprocess.run(["git", "-C", root, "check-ignore", "-q", probe + os.sep],
                            capture_output=True, text=True,
                            env={**os.environ, "LC_ALL": "C", "LANG": "C"})
-        if r.returncode == 0:
-            return
-        if r.returncode == 1:
-            sys.exit("ABORT: %s is inside the repo but NOT gitignored — these "
-                     "logs hold names and emails and this repo is public. Add it "
-                     "to .gitignore (sync-reports/ already is) or point "
-                     "--report-dir elsewhere." % probe)
-        if "not a git repository" in (r.stderr or "").lower():
-            return
-        sys.exit("ABORT: `git check-ignore` failed in %s (%s), so this cannot "
-                 "verify that %s is gitignored; these logs hold names and "
-                 "emails." % (REPO, (r.stderr or "").strip()[:200], probe))
+    except FileNotFoundError:
+        sys.exit("ABORT: git is not installed, so this cannot verify that %s is "
+                 "gitignored in %s; these logs hold names and emails." % (probe, root))
+    if r.returncode == 0:
+        return
+    if r.returncode == 1:
+        sys.exit("ABORT: %s is inside the checkout at %s but NOT gitignored — "
+                 "these logs hold names and emails and this repo is public. Add "
+                 "it to .gitignore (sync-reports/ already is) or point "
+                 "--report-dir elsewhere." % (probe, root))
+    sys.exit("ABORT: `git check-ignore` failed in %s (%s), so this cannot "
+             "verify that %s is gitignored; these logs hold names and "
+             "emails." % (root, (r.stderr or "").strip()[:200], probe))
 
 
 def build_parser():
