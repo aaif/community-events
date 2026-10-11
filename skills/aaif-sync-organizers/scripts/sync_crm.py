@@ -93,7 +93,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from aaif_events.cities import chapter_for  # noqa: E402
 from aaif_events.redact import (add_redact_flag, redact_email, redact_name, redacting,  # noqa: E402
                                 set_redaction)
-from aaif_events import findings  # noqa: E402
+from aaif_events import datadir, findings  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 
 
@@ -128,13 +128,15 @@ def mask_sets(sets):
 
 
 def backup_root(kind):
-    """A fresh, gitignored, repo-local directory for pre-edit workbook bytes.
+    """A fresh, gitignored directory for pre-edit workbook bytes.
 
-    `<repo>/backups/<kind>-<UTC stamp>/` — `**/backups/*` is gitignored, and
+    `<data dir>/backups/<kind>-<UTC stamp>/` (aaif_events.datadir): the repo
+    root in a checkout, a per-user folder in an installed plugin. In a
+    checkout `**/backups/*` is gitignored, and
     the guard below proves it for THIS checkout before anything lands there:
     the copies hold every synced person's name and email, and this repo is
-    public. Living under the repo (not $TMPDIR) keeps the recovery copy where
-    an operator will find it and where a reboot does not sweep it.
+    public. The data folder (not $TMPDIR) keeps the recovery copy where an
+    operator will find it and where a reboot does not sweep it.
 
     Three outcomes, ported from migrate_status_prospect.assert_git_safe. The
     copy stays here because the guard is about THIS script's backup directory,
@@ -145,7 +147,14 @@ def backup_root(kind):
     git, because mapping it to "safe" would disengage the PII guard.
     """
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-    path = os.path.join(REPO, "backups", "%s-%s" % (kind, stamp))
+    # The data folder, not the install folder: Claude keeps one folder per
+    # plugin version, so a backup under it is orphaned by the next update.
+    path = datadir.path("backups", "%s-%s" % (kind, stamp))
+    if not os.path.abspath(path).startswith(REPO + os.sep):
+        # An installed plugin's per-user folder: outside every checkout, so
+        # there is nothing to commit it to and nothing for git to answer.
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        return path
     try:
         probe = subprocess.run(["git", "-C", REPO, "rev-parse", "--show-toplevel"],
                                capture_output=True, text=True,

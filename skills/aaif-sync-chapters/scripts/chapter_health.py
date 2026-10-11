@@ -77,7 +77,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "lib"))
 from sync_chapters import (CHAPTER_CAP, CHAPTERS_ID, H_MERGED_INTO,  # noqa: E402
                            NO_RESOURCE, cell, census_of, fold_city, get_values,
                            header_index, read_chapters, unknown_statuses)
-from aaif_events import findings, jsoncache  # noqa: E402
+from aaif_events import datadir, findings, jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.redact import (add_redact_flag, redact_name, redact_text,  # noqa: E402
                                 set_redaction)
@@ -92,7 +92,8 @@ ALIVE, QUIET, CANNOT_SAY = "alive", "quiet", "cannot-say"
 Act = collections.namedtuple("Act", "days unknown members archived")
 
 PAST_EVENTS_TAB = "Past Events"
-DEFAULT_CACHE = ".slack-audit-cache"
+#: The audits' shared cache, in the toolkit's data folder (see aaif_events.datadir).
+DEFAULT_CACHE = datadir.path(".slack-audit-cache")
 DEFAULT_WINDOW = 180
 
 #: Epoch -> date in UTC, matching every other epoch conversion in this estate
@@ -365,7 +366,7 @@ def main():
                          "chapters are reported as unknown." % DEFAULT_WINDOW)
     ap.add_argument("--untriaged", action="store_true",
                     help="only chapters whose Status cell is blank")
-    ap.add_argument("--cache", default=DEFAULT_CACHE,
+    ap.add_argument("--cache", default=DEFAULT_CACHE, type=datadir.resolve,
                     help="aaif-audit-slack cache dir (default %s)" % DEFAULT_CACHE)
     add_redact_flag(ap)
     findings.add_flag(ap)

@@ -328,6 +328,24 @@ for _p, _s in sync.selected([], False):
     check("%s is in REDACTING iff its source takes --redact" % _s.name,
           _s.name in sync.REDACTING, "add_redact_flag(ap" in _src)
 
+# --- every step runs from the plugin root, not the session folder --------------
+# From Goose or Claude Desktop the cwd is the operator's own folder, and the
+# Slack audits' relative `.slack-audit-cache` (the whole member directory)
+# would land there instead of under the repo's .gitignore.
+_cwds = []
+
+
+def _cwd_run(cmd, stdout=None, stderr=None, **kw):
+    _cwds.append(kw.get("cwd"))
+    return type("R", (), {"returncode": 0})()
+
+
+with tempfile.TemporaryDirectory() as _td, \
+        mock.patch.object(sync.subprocess, "run", _cwd_run):
+    sync.run_step(_by["coverage"], os.path.join(_td, "x.log"), False, False)
+check("a step runs with cwd in the data folder, not the session's", _cwds, [sync.data_dir()])
+
+
 # --- run_step's marker detection ----------------------------------------------
 def drive(log_text, write_mode, code=0, step="chapters", approved=False, findings={}):
     class _Res:
@@ -544,33 +562,53 @@ check("the composed audit is the last step of the pipeline",
 # trailing separator. Without it, the very first run on a fresh checkout aborts
 # — which is how this went unnoticed in nightly.py for as long as the directory
 # happened to already exist on the machine it ran on.
+def _git(code=0, stderr="", calls=None):
+    """A fake subprocess.run answering the guard's one check-ignore call."""
+    def run(cmd, **kw):
+        if calls is not None:
+            calls.append(cmd)
+        return type("R", (), {"returncode": code, "stderr": stderr})()
+    return run
+
+
 _probe = []
-with mock.patch.object(sync.subprocess, "run",
-                       lambda cmd, **kw: _probe.append(cmd) or
-                       type("R", (), {"returncode": 0})()):
+with mock.patch.object(sync.subprocess, "run", _git(calls=_probe)):
     sync.guard_report_dir(os.path.join(sync.REPO, "sync-reports"))
-check("the ignore probe carries a trailing separator",
-      _probe and _probe[0][-1].endswith(os.sep), True)
+check("the guard asks git once, with a trailing separator",
+      len(_probe) == 1 and "check-ignore" in _probe[0] and _probe[0][-1].endswith(os.sep),
+      True)
 check("...and the real .gitignore actually covers it",
       sync.subprocess.run(["git", "-C", sync.REPO, "check-ignore", "-q",
                            os.path.join(sync.REPO, "sync-reports") + os.sep],
                           capture_output=True).returncode, 0)
 # A dir git would happily commit must abort, not warn.
 _aborted = []
-with mock.patch.object(sync.subprocess, "run",
-                       lambda cmd, **kw: type("R", (), {"returncode": 1})()):
+with mock.patch.object(sync.subprocess, "run", _git(code=1)):
     try:
         sync.guard_report_dir(os.path.join(sync.REPO, "not-ignored"))
     except SystemExit as e:
-        _aborted.append("ABORT" in str(e))
+        _aborted.append("NOT gitignored" in str(e))
 check("a committable report dir aborts the run", _aborted, [True])
 # Outside the repo there is nothing to commit to, so no check is made at all.
 _outside = []
-with mock.patch.object(sync.subprocess, "run",
-                       lambda cmd, **kw: _outside.append(cmd) or
-                       type("R", (), {"returncode": 1})()):
+with mock.patch.object(sync.subprocess, "run", _git(code=1, calls=_outside)):
     sync.guard_report_dir("/tmp/aaif-sync-elsewhere")
 check("a report dir outside the repo is never second-guessed", _outside, [])
+# A plugin install with no `.git` (Claude's plugin cache) has nothing to commit
+# to. check-ignore exits 128 there, which used to abort every sync from it.
+with mock.patch.object(sync.subprocess, "run", _git(
+        code=128, stderr="fatal: not a git repository (or any of the parent directories): .git")):
+    sync.guard_report_dir(os.path.join(sync.REPO, "sync-reports"))
+check("a plugin install without .git runs", True, True)
+# ...but any other git failure is not read as "safe".
+_broken = []
+with mock.patch.object(sync.subprocess, "run", _git(
+        code=128, stderr="fatal: detected dubious ownership in repository")):
+    try:
+        sync.guard_report_dir(os.path.join(sync.REPO, "sync-reports"))
+    except SystemExit as e:
+        _broken.append("ABORT" in str(e))
+check("a broken git aborts rather than passing the guard", _broken, [True])
 
 # --- each skill's loaded documentation names every test beside it --------------
 # It had drifted before: three tests existed that the list did not mention,
@@ -825,6 +863,9 @@ with mock.patch.object(sync.subprocess, "Popen") as _popen, \
         mock.patch.object(sync.shutil, "which", lambda n: None):
     _real_keep_awake()
     check("a Mac without caffeinate runs anyway", _popen.called, False)
+
+# The data_dir copy is pinned to aaif_events.datadir by
+# lib/aaif_events/tests/test_pinned_copies.py, with the other deliberate copies.
 
 print()
 if FAILS:

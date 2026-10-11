@@ -30,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
+from aaif_events import datadir  # noqa: E402
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import Slack, channels, history_activity  # noqa: E402
@@ -229,8 +230,8 @@ owner belongs to. {len(truncated)} very busy channel(s) hit the scan cap and are
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default="slack-activity-audit")
-    ap.add_argument("--cache", default=".slack-audit-cache")
+    ap.add_argument("--out", default="slack-activity-audit", type=datadir.resolve)
+    ap.add_argument("--cache", default=".slack-audit-cache", type=datadir.resolve)
     ap.add_argument("--days", type=int, default=90,
                     help="trailing window for message counts (default 90)")
     ap.add_argument("--refresh", action="store_true",

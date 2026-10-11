@@ -7,7 +7,9 @@ contact-field withholding that keeps an address out of a post.
 """
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 "..", "..", "..", "lib")))
@@ -70,6 +72,43 @@ class TestDriveQueries(unittest.TestCase):
         fetch_tracker.gws.json_out = fake
         with self.assertRaises(SystemExit):
             fetch_tracker.find_folder("Boston")
+
+    def _spy_mkdtemp(self):
+        """Record each temp dir main() makes, so a test can check it is gone."""
+        made, real = [], tempfile.mkdtemp
+
+        def mkdtemp(**kw):
+            made.append(real(**kw))
+            return made[-1]
+        return made, mock.patch.object(fetch_tracker.tempfile, "mkdtemp", mkdtemp)
+
+    def test_a_drive_failure_is_one_line_and_leaves_no_temp_dir(self):
+        """Not a traceback: the content skills fall back to asking."""
+        def fail(*a, **kw):
+            raise fetch_tracker.gws.GwsError(
+                "gws drive files list failed\n403 insufficient authentication scopes"
+                + fetch_tracker.gws.sign_in_hint("insufficient authentication scopes"))
+        fetch_tracker.gws.json_out = fail
+        made, spy = self._spy_mkdtemp()
+        with mock.patch.object(sys, "argv", ["fetch_tracker.py", "Boston", "--event", "next"]), spy:
+            with self.assertRaises(SystemExit) as cm:
+                fetch_tracker.main()
+        msg = str(cm.exception)
+        self.assertIn("insufficient authentication scopes", msg)
+        self.assertIn("aaif-check-setup", msg)
+        self.assertEqual(msg.count("aaif-check-setup"), 1)
+        self.assertNotIn("\n", msg)
+        self.assertFalse(os.path.exists(made[0]))
+
+    def test_a_missing_tracker_leaves_no_temp_dir(self):
+        fetch_tracker.gws.json_out = lambda *a, **kw: {"files": [{"id": "F1"}]}
+        made, spy = self._spy_mkdtemp()
+        with mock.patch.object(sys, "argv", ["fetch_tracker.py", "Boston"]), \
+                mock.patch.object(fetch_tracker, "find_tracker",
+                                  lambda fid: sys.exit("! no Event Tracker.docx")), spy:
+            with self.assertRaises(SystemExit):
+                fetch_tracker.main()
+        self.assertFalse(os.path.exists(made[0]))
 
     def test_missing_folder_names_the_fix(self):
         fake, _ = self._capture([])

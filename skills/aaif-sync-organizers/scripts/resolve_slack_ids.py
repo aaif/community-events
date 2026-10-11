@@ -55,7 +55,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
-from aaif_events import findings, jsoncache  # noqa: E402
+from aaif_events import datadir, findings, jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import (Slack, SlackError, gmail_variants,  # noqa: E402
                                load_token, lookup_emails, users)
@@ -88,7 +88,8 @@ H_SLACK_EMAIL = "Slack Email"
 #: it is the key the invite and audit paths will later act on.
 SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9]{6,}$")
 
-CACHE_PATH = os.path.join(".slack-audit-cache", "users.json")
+#: The audits' shared cache, in the toolkit's data folder (see aaif_events.datadir).
+CACHE_PATH = datadir.path(".slack-audit-cache", "users.json")
 
 
 # ---------- gws ----------

@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                 "..", "..", "aaif-sync-organizers", "scripts"))
 
+from aaif_events import datadir  # noqa: E402
 from aaif_events import gws as gwsmod  # noqa: E402
 from aaif_events.cities import chapter_for  # noqa: E402
 from aaif_events import sheets as _sheets  # noqa: E402
@@ -1331,8 +1332,8 @@ def render(audit, orphans, dupes, today, overlay_failed=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default="slack-organizers-audit")
-    ap.add_argument("--cache", default=".slack-audit-cache")
+    ap.add_argument("--out", default="slack-organizers-audit", type=datadir.resolve)
+    ap.add_argument("--cache", default=".slack-audit-cache", type=datadir.resolve)
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
     ap.add_argument("--planned-ok", action="store_true",
                     help="pre-provisioning: treat sheet-named channels that do "

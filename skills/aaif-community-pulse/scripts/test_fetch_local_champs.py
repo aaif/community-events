@@ -92,6 +92,7 @@ check("resolve_names falls back to the id for an unknown user", names["U9"], "U9
 with tempfile.TemporaryDirectory() as tmp:
     cwd = os.getcwd()
     os.chdir(tmp)
+    os.environ["AAIF_DATA_DIR"] = tmp
     try:
         try:
             flc.write_0600("../escape.json", {"x": 1})
@@ -116,6 +117,7 @@ with tempfile.TemporaryDirectory() as tmp:
         check("write_0600 re-tightens an existing file to 0600", oct(mode), oct(0o600))
     finally:
         os.chdir(cwd)
+        del os.environ["AAIF_DATA_DIR"]
 
 if FAILS:
     print("\nFAIL (%d)" % len(FAILS))

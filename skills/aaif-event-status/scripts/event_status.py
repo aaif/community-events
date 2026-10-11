@@ -49,6 +49,9 @@ def main():
     ap.add_argument("docx", help="path to a tracker.docx already downloaded via gws")
     ap.add_argument("event", nargs="?", help="optional event title filter; default all")
     a = ap.parse_args()
+    if not os.path.isfile(a.docx):
+        sys.exit("! no tracker at %s — fetch it first with fetch_tracker.py "
+                 "(it prints the path)." % a.docx)
     root = office.read_document(a.docx)
     refs = tracker.list_events(root)
     if a.event:

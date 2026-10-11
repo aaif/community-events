@@ -141,6 +141,17 @@ def assert_git_ignored(path):
                  "sync-reports/<stamp>/triage.json) or outside the repository.")
 
 
+def gws_failure(what, stderr):
+    """One line for a failed gws call, ending in the next step. gws prefixes a
+    "Using keyring backend" banner; the useful part is its last line. The
+    operator may be in Goose or Claude Desktop, not reading a terminal."""
+    lines = [ln for ln in (stderr or "").splitlines()
+             if ln.strip() and "keyring backend" not in ln]
+    return ("%s failed: %s — if this is a sign-in or permission problem, run "
+            "aaif-check-setup (\"check my setup\")."
+            % (what, (lines[-1] if lines else "no error text")[:300]))
+
+
 def fetch(tab):
     """Return (headers, rows) for a tab; rows are padded to len(headers)."""
     # The range is the bare tab name — deliberately NOT a bounded window: a
@@ -155,7 +166,7 @@ def fetch(tab):
                           "--params", params, "--format", "json"],
                          capture_output=True, text=True, env=_scrubbed_env())
     if out.returncode != 0:
-        sys.exit(f"gws error reading {tab}: {out.stderr.strip()[:400]}")
+        sys.exit(gws_failure(f"Reading the {tab} tab", out.stderr))
     # gws prints a keyring banner line before the JSON; find the JSON start.
     txt = out.stdout
     start = txt.find("{")

@@ -67,11 +67,22 @@ def _scrubbed_env():
             and k != "LUMA_API_KEY"}
 
 
+def gws_failure(what, stderr):
+    """One line for a failed gws call, ending in the next step. gws prefixes a
+    "Using keyring backend" banner; the useful part is its last line. The
+    operator may be in Goose or Claude Desktop, not reading a terminal."""
+    lines = [ln for ln in (stderr or "").splitlines()
+             if ln.strip() and "keyring backend" not in ln]
+    return ("%s failed: %s — if this is a sign-in or permission problem, run "
+            "aaif-check-setup (\"check my setup\")."
+            % (what, (lines[-1] if lines else "no error text")[:300]))
+
+
 def gws(args):
     out = subprocess.run(["gws"] + args, capture_output=True, text=True,
                          env=_scrubbed_env())
     if out.returncode != 0:
-        sys.exit(f"gws error: {' '.join(args[:4])}...\n{out.stderr.strip()[:400]}")
+        sys.exit(gws_failure("gws " + " ".join(args[:3]), out.stderr))
     txt = out.stdout
     i = min((txt.index(c) for c in "{[" if c in txt), default=-1)
     return json.loads(txt[i:]) if i >= 0 else {}

@@ -33,8 +33,10 @@ def check(label, got, want):
 
 
 def run(payload, cwd):
+    # The cache lives in the toolkit's data folder; point that at the temp dir.
+    env = dict(os.environ, AAIF_DATA_DIR=cwd)
     return subprocess.run([sys.executable, SCRIPT], input=json.dumps(payload),
-                          capture_output=True, text=True, cwd=cwd)
+                          capture_output=True, text=True, cwd=cwd, env=env)
 
 
 # --- the contact-details guard, which is why this script exists --------------
@@ -129,7 +131,8 @@ def test_outdir_outside_the_cache_is_refused():
     with tempfile.TemporaryDirectory() as tmp:
         r = subprocess.run([sys.executable, SCRIPT, "--outdir", tmp],
                            input=json.dumps({"general": "x"}),
-                           capture_output=True, text=True, cwd=tmp)
+                           capture_output=True, text=True, cwd=tmp,
+                           env=dict(os.environ, AAIF_DATA_DIR=tmp))
         check("exit non-zero", r.returncode != 0, True)
         check("says where drafts may go", ".pulse-cache" in r.stderr, True)
 

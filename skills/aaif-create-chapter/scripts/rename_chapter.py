@@ -65,6 +65,7 @@ from create_chapter import (CHAPTERS_PARENT, _process_paragraphs,  # noqa: E402
 # publication. The flag and the helpers it governs come from ONE module on
 # purpose — a helper that reads a different module's flag is a helper this
 # `--redact` does not actually govern.
+from aaif_events import datadir  # noqa: E402
 from aaif_events.redact import add_redact_flag, redact_doc_text, set_redaction  # noqa: E402
 
 #: A Luma slug token, INCLUDING its hyphenated tail. Matched so the
@@ -309,7 +310,8 @@ def main():
               "the page itself has moved)")
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-    work = os.path.join("backups", "rename-%s" % stamp)
+    # The toolkit's data folder (aaif_events.datadir), never the session's.
+    work = datadir.path("backups", "rename-%s" % stamp)
     if a.write:
         os.makedirs(work, mode=0o700, exist_ok=True)
 

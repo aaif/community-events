@@ -181,8 +181,23 @@ def main():
     workdir = a.keep or tempfile.mkdtemp(prefix="aaif-tracker-")
     os.makedirs(workdir, mode=0o700, exist_ok=True)
 
-    folder_id, mode = find_folder(a.name)
-    path = download(find_tracker(folder_id), workdir)
+    try:
+        folder_id, mode = find_folder(a.name)
+        path = download(find_tracker(folder_id), workdir)
+    except (SystemExit, gws.GwsError, OSError) as e:
+        if not a.keep:
+            os.rmdir(workdir)        # still empty: nothing was downloaded
+        if isinstance(e, SystemExit):
+            raise                    # find_folder/find_tracker's own one-liner
+        # One line, not a traceback: the operator may be in Goose or Claude
+        # Desktop, and the content skills fall back to asking for the details.
+        # A sign-in failure already ends in gws's "check my setup" pointer;
+        # OSError is gws itself missing, which only the setup check explains.
+        why = str(e).strip().splitlines()[-1][:300] if str(e).strip() else type(e).__name__
+        if isinstance(e, OSError):
+            why += " — run aaif-check-setup (\"check my setup\")"
+        raise SystemExit("! could not read the tracker from Google Drive (%s). "
+                         "Ask for the event details instead." % why)
     print("%s: %s" % (mode, a.name))
     print("tracker: %s" % path)
 

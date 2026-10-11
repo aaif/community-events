@@ -27,6 +27,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "lib"))
 
+from aaif_events import datadir  # noqa: E402
 from aaif_events.slack import Slack, SlackError  # noqa: E402
 
 CHANNEL_NAME = "local-champs"
@@ -34,6 +35,15 @@ CHANNEL_NAME = "local-champs"
 #: into — real Slack names and message text belong nowhere else, and nothing
 #: else in this repo gitignores an arbitrary `--out` path.
 CACHE_DIR_NAME = ".pulse-cache"
+
+
+def cache_root():
+    """The one directory this skill may write: `<data dir>/.pulse-cache`.
+
+    The toolkit's data folder (aaif_events.datadir), never the cwd — from
+    Goose or Claude Desktop the cwd is the operator's own, often synced,
+    folder. `AAIF_DATA_DIR` moves it, for tests as for everything else."""
+    return pathlib.Path(datadir.path(CACHE_DIR_NAME)).resolve()
 
 
 def find_channel(api, name):
@@ -84,9 +94,9 @@ def write_0600_text(path, text):
     permissions and the same one-directory rule, not a looser path of its own.
     """
     resolved = pathlib.Path(path).resolve()
-    cache_root = (pathlib.Path.cwd() / CACHE_DIR_NAME).resolve()
-    if cache_root != resolved and cache_root not in resolved.parents:
-        raise ValueError("refusing to write outside %s/: %s" % (CACHE_DIR_NAME, resolved))
+    root = cache_root()
+    if root != resolved and root not in resolved.parents:
+        raise ValueError("refusing to write outside %s/: %s" % (root, resolved))
 
     dirpath = str(resolved.parent)
     os.makedirs(dirpath, mode=0o700, exist_ok=True)
@@ -110,7 +120,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--days", type=int, default=14,
                      help="how far back to read (default 14, matching the biweekly cadence)")
-    ap.add_argument("--out", default=os.path.join(CACHE_DIR_NAME, "local-champs.json"))
+    ap.add_argument("--out", default=os.path.join(str(cache_root()), "local-champs.json"))
     args = ap.parse_args()
 
     api = Slack()

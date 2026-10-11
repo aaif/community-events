@@ -19,6 +19,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "lib"))
 
+from aaif_events import datadir  # noqa: E402
 from aaif_events import jsoncache  # noqa: E402
 from aaif_events import report_style as rs  # noqa: E402
 from aaif_events.slack import Slack, channels, users  # noqa: E402
@@ -407,9 +408,9 @@ def assert_directory_complete(chans, directory, note=lambda *_: None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default="slack-members-audit",
+    ap.add_argument("--out", default="slack-members-audit", type=datadir.resolve,
                     help="output basename (default: slack-members-audit)")
-    ap.add_argument("--cache", default=".slack-audit-cache",
+    ap.add_argument("--cache", default=".slack-audit-cache", type=datadir.resolve,
                     help="directory for raw API pulls")
     ap.add_argument("--refresh", action="store_true", help="re-fetch even if cached")
     args = ap.parse_args()

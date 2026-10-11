@@ -28,7 +28,8 @@ them and exits non-zero if it did not: miss one and every chapter created after
 this migration is born off-brand again.
 
 **Nothing is written without an archive.** Every file whose bytes change is
-written to `./backups/restyle-<UTC>/<path>` *before* the upload, so there is a
+written to `backups/restyle-<UTC>/<path>` in the toolkit's data folder
+(aaif_events.datadir) *before* the upload, so there is a
 local rollback that does not depend on Drive's revision history. `--write`
 refuses to start if that directory cannot be created.
 
@@ -71,6 +72,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 from aaif_events import ooxml_style as ox    # noqa: E402  (after the path shim)
 from aaif_events import agent_art as aa      # noqa: E402
 from aaif_events import contrast as ctr      # noqa: E402
+from aaif_events import datadir             # noqa: E402
 
 COMMUNITY_ROOT = "1Z1M-xk0S16sksS1IBNm9OG6Ia22Yql6f"   # "Community Events"
 CHAPTERS_FOLDER = "Chapters"
@@ -326,7 +328,7 @@ def _archive_path(entry, backup_dir):
     Every path segment comes from a **Drive folder or file name**, which any
     organizer with editor access controls. Joining those onto a local directory
     unsanitised lets a folder renamed to `../../..` walk the archive out of
-    `./backups/` and drop attacker-supplied bytes anywhere the operator can
+    `backups/` and drop attacker-supplied bytes anywhere the operator can
     write. So each segment is sanitised, and the result is then checked to be
     inside `backup_dir` after resolution — belt and braces, because sanitising
     alone is the kind of thing a later edit quietly weakens.
@@ -629,7 +631,7 @@ def main():
     ap.add_argument("--restyle-local", metavar="FILE",
                     help="Restyle a local .pptx/.docx/.xlsx; no Drive access")
     ap.add_argument("--backup-dir", help="Where to archive pre-change files "
-                                         "(default: ./backups/restyle-<UTC>)")
+                                         "(default: backups/restyle-<UTC> in the toolkit's data folder)")
     ap.add_argument("--plates", metavar="DIR",
                     help="Also append the background plates in DIR to the hero "
                          "decks (build them with aaif_events.agent_art). "
@@ -651,8 +653,8 @@ def main():
         print("--check and --contrast are different audits; run one at a time.")
         return 2
 
-    backup_dir = args.backup_dir or os.path.join(
-        os.getcwd(), "backups", "restyle-%s"
+    backup_dir = args.backup_dir or datadir.path(
+        "backups", "restyle-%s"
         % datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     if args.write:
         # Fail before touching Drive, not after the first upload.
