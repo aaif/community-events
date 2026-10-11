@@ -68,7 +68,7 @@ cache holds real organizer names and message text from a semi-private channel.
 python3 <skill-root>/scripts/fetch_local_champs.py --days 14
 ```
 
-Writes `.pulse-cache/local-champs.json` in the toolkit's data folder (the repo root in a checkout, `~/Library/Application Support/AAIF` in an installed plugin — never the session folder) (git-ignored, 0600 — **never commit
+Writes `.pulse-cache/local-champs.json` in the toolkit's data folder (the repo root in a checkout, `~/Library/Application Support/AAIF` in an installed plugin — never the session folder; 0600 — **never commit
 it**, delete it once the draft is done). It needs the AAIF Slack app token,
 same as `aaif-audit-slack` — see that skill's prereqs / the user's
 `slack-app-token-runs-audits` memory if the token is missing or expired.
@@ -214,7 +214,7 @@ JSON
 ```
 
 Writes `.pulse-cache/pulse-local-champs.txt`, `pulse-general.txt` and
-`pulse-social.txt`, each 0600 in the gitignored cache. Keys are optional, so
+`pulse-social.txt`, each 0600 in the cache, out of git and out of the session folder. Keys are optional, so
 re-wording one post rewrites only its file. The script **refuses the whole run**
 — writing nothing — if any draft carries an email address or phone number;
 that is the house rule below, enforced rather than trusted, because these files

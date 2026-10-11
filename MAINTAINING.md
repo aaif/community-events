@@ -16,18 +16,23 @@ manifest is the root `plugin.json`. See [Using in other tools](#using-in-other-t
 
 ## Setting someone up (the README's "helper" steps)
 
-The README's *Set up once* section names four things a helper does. In order:
+The helper steps behind the README's *Set up once*, in order:
 
+0. **Goose only: install the plugin** with the command under [Goose](#goose).
+   Claude Desktop users add it themselves from the Code tab.
 1. **Install `gws`** — `brew install googleworkspace-cli` on a Mac. Open the
    assistant app *after* this, or its shell will not see the binary
    (`aaif-check-setup` says "installed but this app cannot see it").
 2. **Give `gws` an OAuth client** — see [Google Workspace access](#google-workspace-access-for-the-ops-skills)
-   below. After that, the operator can run `gws auth login` themselves from
-   the assistant; a browser opens and they sign in.
+   below. After that, the operator signs in from the assistant with the
+   scoped command under *OAuth scopes* (`aaif-check-setup` prints it); a
+   browser opens and they sign in. Never a bare `gws auth login`.
 3. **Hand over the Slack token and Luma key** by a channel that is not the
    assistant chat. They go in the macOS keychain (Keychain Access → File →
-   New Password Item) under `aaif-slack-write-token` (or
-   `aaif-slack-read-token`) and `luma-api-key`, account `aaif`. The scripts
+   New Password Item) under `aaif-slack-write-token` and `luma-api-key`,
+   account `aaif`. The write token runs both the audits and the write steps;
+   `aaif-slack-read-token` alone runs the audits but not provision, invite or
+   the directory posts. The scripts
    read the keychain after the environment and the repo-root `.env`; the
    keychain is the route that survives an installed plugin, because Goose and
    Claude Desktop do not pass a shell environment and a plugin update replaces
@@ -35,13 +40,17 @@ The README's *Set up once* section names four things a helper does. In order:
 4. **Run `aaif-check-setup` with them** ("check my setup") and clear every ❌.
 
 **Where an installed plugin writes.** Reports (`sync-reports/`), the Slack
-audit cache, the audit pages, Pulse drafts and every backup go through
-`aaif_events.datadir`. In a checkout that is the repo root, as it always was.
+audit cache, the audit pages, Pulse drafts, every engine's `--json-out`, and
+the backups from `aaif-backup`, `sync_crm` (and the migrations that use its
+`backup_root`), restyle and rename all go through `aaif_events.datadir`. The
+one exception is `migrate_status_prospect.py`, a finished one-off that stays
+lib-free and still writes under the repo. In a checkout that is the repo root, as it always was.
 In an installed plugin it is `~/Library/Application Support/AAIF` (XDG data
 home elsewhere), because Claude keeps one install folder per plugin version,
 so a backup kept there would be orphaned by the next update. `AAIF_DATA_DIR`
-overrides both. `PYTHONPATH=lib python3 -m aaif_events.datadir` prints the
-folder.
+overrides both and must be absolute (a relative value is ignored, with a
+warning). `PYTHONPATH=<toolkit>/lib python3 -m aaif_events.datadir` prints the
+folder, from anywhere.
 
 ### Goose
 
@@ -438,13 +447,14 @@ whether a human or an agent runs it.
 
 Install `gws` (a Google Workspace command‑line tool), then authenticate with one of:
 
-- **Interactive OAuth:** `gws auth login`
+- **Interactive OAuth:** `gws auth login --scopes …`, with the full command
+  under *OAuth scopes* below (never bare, never `-s`)
 - **Credentials file:** set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/path/to/oauth_credentials.json`
 - **Pre‑obtained token:** set `GOOGLE_WORKSPACE_CLI_TOKEN` — in `.env`
   (gitignored) or via `read -s GOOGLE_WORKSPACE_CLI_TOKEN && export GOOGLE_WORKSPACE_CLI_TOKEN`,
   never as an inline `export TOKEN=...` (shell history keeps it) and never as a
   script argument (argv shows in `ps` and logs)
-- **Client app:** set `GOOGLE_WORKSPACE_CLI_CLIENT_ID` and `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET`, then `gws auth login`
+- **Client app:** set `GOOGLE_WORKSPACE_CLI_CLIENT_ID` and `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET`, then the scoped `gws auth login --scopes …` below
 
 On your Google Cloud project, enable the **Sheets**, **Docs**, **Slides**,
 **Drive**, and **Forms** APIs.

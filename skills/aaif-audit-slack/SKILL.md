@@ -1,7 +1,7 @@
 ---
 name: aaif-audit-slack
 description: Audit the community Slack workspace and report it as one HTML page — whether every chapter has its public and organizer channels and the right people in them, which subject-matter rooms have gone quiet or overlap, and what the headline member count is actually made of. Use when asked about Slack coverage for chapters, whether organizers are in their channels, who is in an -organizers channel, workspace health, channel clutter, inactive channels or accounts, or the newcomer experience.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, an AAIF Slack token, network access, and Chrome/Chromium for PDF rendering.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, an AAIF Slack token, network access, and Chrome/Chromium for PDF rendering.
 metadata:
   com.anthropic.claude-code.argument-hint: '[organizers|topics|members|activity|all] [--refresh] [--out NAME]'
 ---

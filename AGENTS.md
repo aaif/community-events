@@ -10,9 +10,9 @@ standalone-zip list belong in `MAINTAINING.md`. `CONTRIBUTING.md` covers skill
 authoring; `DESIGN.md` covers how anything this repo renders for a human is
 styled. This file is what those don't say.
 
-**An installed plugin is not a checkout.** Goose and Claude Desktop install a
-git clone of this repo and run each script from wherever the session is, with
-no shell environment. So a `SKILL.md` command names its script by
+**An installed plugin is not a checkout.** Goose installs a git clone of this
+repo; Claude Desktop installs a copy without `.git`, one folder per version.
+Both run each script from wherever the session is, with no shell environment. So a `SKILL.md` command names its script by
 `<skill-root>`, never `skills/<name>/...` (`check_skill_portability.py`
 enforces this; eleven skills once broke it while working fine from the repo
 root). And a secret an engine needs is read from the environment, the

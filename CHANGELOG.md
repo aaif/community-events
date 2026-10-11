@@ -86,6 +86,20 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
   `backup.py` (lib-free) carry copies pinned to the library by tests.
   `clean.py`'s `changes.json` moved into a `mktemp -d` folder. Every engine's
   `--json-out` resolves a relative path there too, through `findings.add_flag`.
+- **The setup check agrees with the engines.** It now searches for Slack's
+  two tokens one source at a time, as `slack.load_token` does, so it tests the
+  token the engines will use. A locked keychain, or a Deny click, reads as
+  "the keychain would not hand it over" rather than "no key", so nobody is
+  sent to create a second item. Google errors are classified with the same
+  sign-in list `aaif_events.gws` uses. `tests/test_pinned_copies.py` pins all
+  of this. `credentials.stored()` returns the keychain failure too.
+- **Smaller fixes from self-review.** A relative `AAIF_DATA_DIR` is ignored with
+  a warning; `datadir.resolve` expands `~`. The gitignore guards in `sync.py`
+  and `sync_crm` check whichever checkout holds the path, and ask no git
+  outside every checkout. `fetch_tracker` removes a partial download. "401"
+  counts as a sign-in failure only as a word. Luma 5xx is not reported as a
+  bad key. Backup folders are created 0700. The self-contained `gws_failure`
+  helpers keep the line that states the error and mask credential shapes.
 - **A Google sign-in failure names its next step everywhere.** `aaif_events.gws`
   adds a "check my setup" pointer to any `GwsError` whose output looks like a
   sign-in problem, so every engine gets it rather than only the few scripts

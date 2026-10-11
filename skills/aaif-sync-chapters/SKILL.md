@@ -1,7 +1,7 @@
 ---
 name: aaif-sync-chapters
 description: Push accepted intake cities and organizer names onto the public Chapters List sheet — appending a row for a city that has none, merging organizer names into the row that exists — and audit every chapter row's Luma page. Reports and proposes by default; writes only on explicit approval. Use when asked to add a new city to the chapters sheet, update the chapters list, sync chapter rows, check the 100-chapter cap, or find chapters whose Luma link is dead.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws with Google Sheets access, and network access.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws with Google Sheets access, and network access.
 metadata:
   com.anthropic.claude-code.argument-hint: '[--audit-luma] [--write]'
 ---

@@ -1,7 +1,7 @@
 ---
 name: aaif-create-online-series
 description: Create a new AAIF online event series in the "Online" Google Drive folder by cloning TemplateSeries and rebranding all assets. Use when asked to add/launch/set up a new AAIF online series (reading group, paper club, webinar, online discussion) — not a city chapter.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws with Google Drive access, and network access.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws with Google Drive access, and network access.
 metadata:
   com.anthropic.claude-code.argument-hint: '<Series Name> [--slug <lumaslug>] [--write] [--resume] [--repair-existing]'
 ---

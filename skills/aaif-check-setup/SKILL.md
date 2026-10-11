@@ -64,6 +64,11 @@ at least one ❌ line.
 - **`gws` installed but not visible** — the app was opened before `gws` was
   installed. Quitting the app fully and reopening it is the fix; do not edit
   shell profiles on the person's behalf.
+- **The keychain would not hand over a saved token or key** — it is locked,
+  or someone clicked Deny. The item is still there: tell the person to unlock
+  the keychain or click Always Allow, then re-run the check. Never relay the
+  create-a-key steps for this case; a second item with the same name makes
+  later lookups ambiguous.
 - **A token or key is missing** — relay the script's Keychain Access steps.
   **Never ask the person to paste a token or key into the chat**, and never
   put one in a command: the chat transcript and the shell history both keep

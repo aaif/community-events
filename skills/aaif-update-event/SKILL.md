@@ -1,7 +1,7 @@
 ---
 name: aaif-update-event
 description: Apply a change to an existing AAIF event (chapter or series) — edit detail fields like speakers/venue/capacity, or move the date and recompute all task due-dates, then flag which marketing/banner assets are now stale (speaker, venue/location, platform/join-link, and date changes set flags); can also sync the change to the live Luma event page (diff shown first, pushed only on explicit user approval). Use when asked to update/change/edit an event's details or date.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma updates additionally require a calendar API key.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access; Luma updates additionally require a calendar API key.
 metadata:
   com.anthropic.claude-code.argument-hint: '<chapter|series> <event> [--set "LABEL=value"] [--date "..."]'
 ---

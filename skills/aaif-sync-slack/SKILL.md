@@ -1,7 +1,7 @@
 ---
 name: aaif-sync-slack
 description: Record where each chapter actually lives — its Drive folder and its public, organizer and country Slack channels — on the Chapters List, then create the rooms that plan names, add accepted organizers to them, and keep each country channel's chapter directory current. Reports and proposes by default; every Slack write needs explicit human approval. Use when asked to map chapters to Slack channels, create or rename a chapter channel, add organizers to their channel, post a country directory, or remove non-organizers from an organizer room.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, an AAIF Slack token, and network access.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, an AAIF Slack token, and network access.
 metadata:
   com.anthropic.claude-code.argument-hint: '[resources|provision|invite|directory|prune] [--write] [--i-have-approval]'
 ---

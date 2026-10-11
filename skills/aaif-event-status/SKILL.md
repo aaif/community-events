@@ -1,7 +1,7 @@
 ---
 name: aaif-event-status
 description: Report task status for an AAIF chapter or online series — which event tasks are overdue or due soon, grouped by owner, read from the Event Tracker.docx — plus read-only Luma registration stats (going/waitlist/checked-in counts) for pushed events. Use when asked for the status / health / what's-due / RSVP numbers of a chapter or series' events.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma statistics additionally require a calendar API key.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access; Luma statistics additionally require a calendar API key.
 metadata:
   com.anthropic.claude-code.argument-hint: '<chapter|series> [event]'
 ---

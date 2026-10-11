@@ -1,7 +1,7 @@
 ---
 name: aaif-create-chapter
 description: Create a new AAIF city chapter in the "Chapters" Google Drive by cloning TemplateCity and rebranding all assets. Use when asked to add/launch/set up a new AAIF city, chapter, or location.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws with Google Drive access, and network access; optional previews require Chrome/Chromium.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws with Google Drive access, and network access; optional previews require Chrome/Chromium.
 metadata:
   com.anthropic.claude-code.argument-hint: '<City Name> [--slug <lumaslug>] [--lat <deg> --lon <deg>] [--write] [--resume] [--repair-existing]'
 ---
@@ -100,7 +100,7 @@ repair dots on decks that already exist, `references/deck-backfills.md`.
       not "NYC").
 - [ ] The Luma slug confirmed. If they don't know, the default is fine — step 1
       reports whether the page is live.
-- [ ] Working from a full checkout (`create_chapter.py` imports `lib/aaif_events`).
+- [ ] The whole toolkit installed (Goose, Claude Desktop or a checkout) — `create_chapter.py` imports `lib/aaif_events`.
 
 ## Create a chapter
 

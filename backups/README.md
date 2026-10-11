@@ -4,6 +4,10 @@ Local, versioned snapshots written by the **`aaif-backup`** skill. Everything in
 folder **except this README is git-ignored** — the binary `.xlsx`/`.docx`/`.pptx`
 snapshots are deliberately kept out of the published plugin repo.
 
+This folder is used in a checkout only. In an installed plugin (Goose, Claude
+Desktop) the snapshots go to `~/Library/Application Support/AAIF/backups/` on
+a Mac, which survives plugin updates, and this folder stays empty.
+
 ## Layout
 
 ```

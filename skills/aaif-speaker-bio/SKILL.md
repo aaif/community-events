@@ -1,7 +1,7 @@
 ---
 name: aaif-speaker-bio
 description: Write a speaker bio (a 60-80 word bio + a one-liner) for an AAIF in-person event speaker. Use when asked to draft/write a speaker bio for an AAIF event or chapter.
-compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin checkout, Python 3, authenticated gws, and network access.
+compatibility: Works in skills-compatible agents. Optional tracker lookup requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access.
 metadata:
   com.anthropic.claude-code.argument-hint: '[speaker name / paste their tracker row]'
 ---
@@ -51,9 +51,10 @@ you ~90% there — edit before it ships.
 > copy, and the public-copy rule above forbids publishing them. Delete the temp
 > directory when done (`--print-cleanup` prints the command).
 >
-> If the command fails (it prints one line starting `!` — no Google sign-in,
-> a standalone skill without the full toolkit), say so in a sentence, suggest
-> `aaif-check-setup`, and ask for the details below instead. The draft does
+> If the command fails — a line starting `!` for a Google sign-in or Drive
+> problem, or "can't open file" / an import error when only this skill is
+> installed — say so in a sentence, suggest `aaif-check-setup`, and ask for
+> the details below instead. The draft does
 > not need the tracker; it only saves the user a paste.
 >
 > `aaif-create-event` and `aaif-update-event` know the same layout if the event

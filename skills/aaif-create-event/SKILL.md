@@ -1,7 +1,7 @@
 ---
 name: aaif-create-event
 description: Create a new event in an AAIF chapter or online series by cloning the example section in its Event Tracker.docx and stamping all phase task due-dates from the event date; can then create the live Luma event page from the entry (proposal shown first, created only on explicit user approval). Use when asked to add/schedule/set up a new event for a chapter or series, or to put an event on Luma.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; Luma creation also requires a calendar API key.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access; Luma creation also requires a calendar API key.
 metadata:
   com.anthropic.claude-code.argument-hint: '<chapter|series> --title "..." --date "..."'
 ---

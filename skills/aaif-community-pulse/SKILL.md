@@ -1,7 +1,7 @@
 ---
 name: aaif-community-pulse
 description: Write the "AAIF Community Organizer Update" (the Pulse) — the periodic Slack post to organizers recapping recent chapter events, community/foundation news, upcoming events from the Luma calendar, and admin/tooling changes. Use when asked to draft the Pulse, the organizer update, or the community update post.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, an AAIF Slack token, network and web-page access, and git.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, an AAIF Slack token, network and web-page access, and git.
 metadata:
   com.anthropic.claude-code.argument-hint: '[since date, e.g. "since Aug 25" — defaults to 14 days back]'
 ---

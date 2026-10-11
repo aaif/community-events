@@ -1,7 +1,7 @@
 ---
 name: aaif-sync-badges
 description: Sync AAIF chapter organizer badges (SVG + PNG) into each chapter's own Drive folder — generate missing badges for chapters that don't have them yet, and optionally regenerate all of them after a design change. Use when asked to add/sync/update/regenerate chapter organizer badges.
-compatibility: Requires the full plugin checkout, Python 3, authenticated gws, and network access; PNG rendering requires CairoSVG and Chrome/Chromium.
+compatibility: Requires the full plugin (installed or checked out), Python 3, authenticated gws, and network access; PNG rendering requires CairoSVG and Chrome/Chromium.
 metadata:
   com.anthropic.claude-code.argument-hint: '[--chapter <City Name>] [--regenerate] [--write]'
 ---

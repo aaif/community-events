@@ -1,7 +1,7 @@
 ---
 name: aaif-carousel-copy
 description: Write copy for a 6-slide LinkedIn carousel announcing an AAIF event. Use when asked to draft carousel slides/copy for an AAIF event (built from the LinkedIn Carousel template).
-compatibility: Writing works in skills-compatible agents; tracker lookup and deck export require the full plugin checkout, Python 3, authenticated gws, and network access.
+compatibility: Writing works in skills-compatible agents; tracker lookup and deck export require the full plugin (installed or checked out), Python 3, authenticated gws, and network access.
 metadata:
   com.anthropic.claude-code.argument-hint: '[event title / paste tracker entry]'
 ---
@@ -72,9 +72,10 @@ substitute fonts; when fidelity matters, render each slide to PNG via
 > copy, and the public-copy rule above forbids publishing them. Delete the temp
 > directory when done (`--print-cleanup` prints the command).
 >
-> If the command fails (it prints one line starting `!` — no Google sign-in,
-> a standalone skill without the full toolkit), say so in a sentence, suggest
-> `aaif-check-setup`, and ask for the details below instead. The draft does
+> If the command fails — a line starting `!` for a Google sign-in or Drive
+> problem, or "can't open file" / an import error when only this skill is
+> installed — say so in a sentence, suggest `aaif-check-setup`, and ask for
+> the details below instead. The draft does
 > not need the tracker; it only saves the user a paste.
 >
 > `aaif-create-event` and `aaif-update-event` know the same layout if the event
