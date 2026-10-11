@@ -129,7 +129,7 @@ that are otherwise invisible in normal output:
   unless the value really is invented.
 - **`check_portable_skills.py`** — a skill importing `lib/aaif_events` cannot be
   zipped standalone for claude.ai. Taking that on is allowed and sometimes
-  right; doing it without saying so is not, so the README's list of coupled
+  right; doing it without saying so is not, so `MAINTAINING.md`'s list of coupled
   skills has to move in the same commit as the import.
 
 Then run the tests. Ruff is pyflakes-only and does not resolve imports, so

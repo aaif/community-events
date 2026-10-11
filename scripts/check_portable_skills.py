@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a skill's coupling to `lib/aaif_events` disagrees with the README.
+"""Fail when a skill's coupling to `lib/aaif_events` disagrees with MAINTAINING.md.
 
 A skill whose scripts import the shared library only runs from a full checkout
 or a plugin install: zipped on its own for claude.ai, the zip has no `lib/`, and
@@ -13,7 +13,7 @@ where eight were coupled. Someone reading it would zip one of the other three
 and find out at runtime.
 
 This compares the two: the skills whose non-test scripts IMPORT `aaif_events`,
-against the skills the README names. Either list moving without the other is
+against the skills MAINTAINING.md names. Either list moving without the other is
 the failure. Adding an import is still allowed — it just has to be written down
 in the same commit.
 
@@ -40,10 +40,10 @@ import os
 import re
 import sys
 
-README = "README.md"
+README = "MAINTAINING.md"  # the README moved here when it became user-facing
 
 #: The paragraph naming the coupled skills, matched from its own sentence so
-#: that moving the section around the README does not break the check. Matched
+#: that moving the section around the file does not break the check. Matched
 #: across whitespace, because the phrase is prose and prose gets re-wrapped —
 #: a check that fails on a reflowed paragraph teaches people to delete it.
 MARKER = "do **not** work zipped standalone"
@@ -71,7 +71,7 @@ def imports_lib(source, path="<source>"):
                 return True
     # An AST pass sees `import` statements, and a dynamic import is not one.
     # `importlib.import_module("aaif_events.gws")` would read as portable and
-    # leave the README wrong — the same quiet drift this guard exists to catch,
+    # leave the list wrong — the same quiet drift this guard exists to catch,
     # one spelling further out. Nothing in the repo does it; rather than model
     # it, refuse it, so the question comes to a person.
     if "aaif_events" in source and ("importlib" in source or "__import__" in source):
@@ -95,7 +95,7 @@ def coupled_skills():
 
 
 def documented_skills(text=None):
-    """Skills named in the README's standalone-zip caveat."""
+    """Skills named in MAINTAINING.md's standalone-zip caveat."""
     if text is None:
         with open(README, encoding="utf-8") as fh:
             text = fh.read()
@@ -130,7 +130,7 @@ def main():
         return 0
 
     if undocumented:
-        print("ERROR: these skills import `lib/aaif_events` but the README does "
+        print("ERROR: these skills import `lib/aaif_events` but MAINTAINING.md does "
               "not list them as needing a full checkout:\n")
         for s in undocumented:
             print("  %s" % s)
@@ -138,7 +138,7 @@ def main():
               "portability is a decision, so write it down — or drop the import."
               % README)
     if stale:
-        print("\nERROR: the README lists these as coupled, but nothing in them "
+        print("\nERROR: MAINTAINING.md lists these as coupled, but nothing in them "
               "imports `lib/aaif_events` any more:\n")
         for s in stale:
             print("  %s" % s)
