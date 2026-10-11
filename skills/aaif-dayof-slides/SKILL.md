@@ -8,6 +8,9 @@ metadata:
 
 # AAIF Day-of Slides (from the tracker)
 
+Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
+from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
+
 > **Tooling rule — `gws` + Python only.** Every read, edit, and write of a Drive
 > file goes through the `gws` CLI, driven from Python. **Prefer native Google
 > formats**: edit `application/vnd.google-apps.*` files with the Docs/Sheets/
@@ -59,7 +62,7 @@ then the fields, slide for slide, then paste into the template.
 > stop.** One command reads the event's tracker entry:
 >
 > ```bash
-> python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" \
+> python3 <skill-root>/../aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" \
 >     --event "<Event Title>"     # or --event next / --event latest
 > ```
 >
@@ -71,6 +74,11 @@ then the fields, slide for slide, then paste into the template.
 > are deliberately **withheld** and only named — you never need them to write
 > copy, and the public-copy rule above forbids publishing them. Delete the temp
 > directory when done (`--print-cleanup` prints the command).
+>
+> If the command fails (it prints one line starting `!` — no Google sign-in,
+> a standalone skill without the full toolkit), say so in a sentence, suggest
+> `aaif-check-setup`, and ask for the details below instead. The draft does
+> not need the tracker; it only saves the user a paste.
 >
 > `aaif-create-event` and `aaif-update-event` know the same layout if the event
 > is being written in the same session. Ask the user only for what the tracker

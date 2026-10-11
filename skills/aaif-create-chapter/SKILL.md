@@ -33,8 +33,8 @@ the new city. Each chapter folder is the standard template: `Event Tracker.docx`
 design assets. (The old `SKILLS.md.docx` of paste-into-Claude prompts is retired —
 those prompts now live as the `aaif-*` content skills in this repo.)
 
-Prereq: the `gws` CLI must be installed and authenticated (see the user's
-`gws-cli-access` memory). All Drive calls go through it.
+Prereq: the `gws` CLI must be installed and authenticated (`aaif-check-setup`
+confirms it). All Drive calls go through it.
 
 ## What gets replaced (and what does NOT)
 
@@ -94,7 +94,7 @@ repair dots on decks that already exist, `references/deck-backfills.md`.
 
 ## Preflight
 
-- [ ] `gws` CLI installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] `gws` CLI installed and authenticated (`aaif-check-setup` confirms it).
       All Drive calls go through it.
 - [ ] The exact display name confirmed with the user, spaces and all ("New York",
       not "NYC").
@@ -167,9 +167,9 @@ template or the rebrand engine is broken. Fix that — don't resume.
       on the right city. The `Slides.pptx` line shows `+map dot` when it moved.
       To check against a render:
       ```bash
-      PYTHONPATH=lib python3 -c "
+      PYTHONPATH=<skill-root>/../../lib python3 -c "
       from aaif_events.slides_export import render_slide_png
-      render_slide_png('<Slides.pptx file id>', 'slide5.png', slide_index=4)
+      render_slide_png('<Slides.pptx file id>', '$(mktemp -d)/slide5.png', slide_index=4)
       "
       ```
 - [ ] If the Luma page wasn't live, the user has been reminded to create it.

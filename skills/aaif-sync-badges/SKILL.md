@@ -64,8 +64,8 @@ organizer_badge_<slug>_agent_1000.png      /   (real AAIF design-system tokens
   skill scripts to avoid, for the same reason `restyle_design_system.py` does: the
   whole point of this variant is to be provably on-system.
 
-Prereqs: the `gws` CLI installed and authenticated (see the user's
-`gws-cli-access` memory); `cairosvg` importable for style 1
+Prereqs: the `gws` CLI installed and authenticated (`aaif-check-setup`
+confirms it); `cairosvg` importable for style 1
 (`python3 -m pip install cairosvg`); a Chrome/Chromium install for style 2. Both
 are imported lazily (only when actually rendering a PNG), so a plan-only run
 needs neither Drive write access nor either renderer, and a chapter only missing

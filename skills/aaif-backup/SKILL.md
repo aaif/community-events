@@ -31,7 +31,7 @@ clean, a schema change, a column move). Every run writes a **new immutable file*
 nothing is ever overwritten — so the backup folder is a full version history you can
 diff or restore from.
 
-Prereq: the `gws` CLI must be installed and authenticated (`gws-cli-access` memory) for
+Prereq: the `gws` CLI must be installed and authenticated (`aaif-check-setup` confirms it) for
 Drive targets. Local-file backups need no auth.
 
 ## Usage (engine: `scripts/backup.py`)
@@ -46,7 +46,7 @@ python3 <skill-root>/scripts/backup.py <driveFileId>
 # back up a local file (copied verbatim)
 python3 <skill-root>/scripts/backup.py ./path/to/file.xlsx
 
-# write snapshots somewhere other than ./backups
+# write snapshots somewhere other than the data folder's backups/
 python3 <skill-root>/scripts/backup.py --dest /some/dir
 ```
 
@@ -57,8 +57,12 @@ python3 <skill-root>/scripts/backup.py --dest /some/dir
    e.g.  backups/aaif-community-intake-ops/2026-07-03T142530Z.xlsx
 ```
 
-- `<dest>` defaults to **`./backups`** (relative to where you run it — inside the
-  `meetups` repo when run from there). `backups/` is **git-ignored**, so the binary
+- `<dest>` defaults to **`backups/`** in the toolkit's data folder: the repo
+  root in a checkout, `~/Library/Application Support/AAIF` in an installed
+  plugin, which survives plugin updates (Claude keeps one install folder per
+  version). Never the session folder, which from Goose or Claude Desktop is
+  the operator's own, often synced, folder. The script prints the snapshot's
+  full path; tell the user. `backups/` is **git-ignored**, so the binary
   snapshots never enter the repo — and the script verifies that at run time: it
   **refuses to start** if the destination is committable (not git-ignored, or
   already holding tracked files) inside any repo. A `--dest` outside every repo

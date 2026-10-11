@@ -128,7 +128,8 @@ risk a duplicate. All five are listed in `OPTIONAL_SCOPES` and printed when
 absent.
 
 The write half resolves that token from the environment **then the repo-root
-`.env`** (2026-09-10), the same two sources in the same order as the read half —
+`.env`** (2026-09-10), then the macOS keychain (2026-10-09), the same sources in
+the same order as the read half —
 though not the same resolution: `load_token()` prefers `AAIF_SLACK_READ_TOKEN`,
 so the two can land on different credentials. Scope questions about a write call
 are therefore asked of the write token, never of the read client.

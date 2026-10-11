@@ -34,22 +34,24 @@ download whichever tracker the folder holds.
 
 **You (the agent) drive Google Drive via the `gws` CLI; the Python script only does the
 deterministic docx edit on a local file.** Prereq: `gws` installed and authenticated
-(`gws-cli-access`).
+(`aaif-check-setup` confirms it).
 
 
 ## Preflight
 
-- [ ] `gws` installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] `gws` installed and authenticated (`aaif-check-setup` confirms it).
 - [ ] The chapter or series name **exactly as the Drive folder spells it**.
 - [ ] Know which kind of tracker you are editing. A **chapter** tracker has
       `VENUE` / `LOCATION / CITY`; a **series** tracker has `PLATFORM` /
       `STREAM / JOIN LINK`. Passing a flag whose label does not exist in that
       tracker **aborts loudly** — it is never silently dropped.
 - [ ] For the Luma push: that calendar's API key in `LUMA_API_KEY` or keychain
-      item `luma-api-key`. Store it with
-      `security add-generic-password -s luma-api-key -a aaif -w` — **with no
-      value after `-w`**, so it prompts instead of landing in shell history.
-      Keys are per-calendar (Luma Plus).
+      item `luma-api-key`. The user stores it in **Keychain Access → File →
+      New Password Item** (Keychain Item Name `luma-api-key`, Account Name
+      `aaif`); `aaif-check-setup` walks them through it. Never ask for the key
+      in the chat, and never run `security add-generic-password ... -w` from
+      this session: it prompts on a keyboard the session does not have. Keys
+      are per-calendar (Luma Plus).
 
 ## Add the event to the tracker
 
@@ -58,7 +60,7 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
       write `luma.md` and `banner.png` beside it:
       ```bash
       WORK=$(mktemp -d)
-      python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
+      python3 <skill-root>/../aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
       ```
       These downloads hold organizer, speaker and venue details — **never commit
       them** (or any `tracker.docx` / `luma.md` / `banner.png` / `new.*`).
@@ -100,7 +102,7 @@ the URL in the tracker's `LUMA URL` field (or set the key up and re-run).
 - [ ] **1. Prepare the assets.** Write the page copy with `aaif-luma-description`
       into `$WORK/luma.md`, and export the banner for the cover:
       ```bash
-      PYTHONPATH=lib python3 -c "
+      PYTHONPATH=<skill-root>/../../lib python3 -c "
       from aaif_events.slides_export import render_slide_png
       render_slide_png('<Banner.pptx file id>', '$WORK/banner.png', slide_index=0)
       "

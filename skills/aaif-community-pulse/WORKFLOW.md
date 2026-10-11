@@ -60,7 +60,7 @@ cache holds real organizer names and message text from a semi-private channel.
 - [ ] **3.** Past and upcoming events, from Luma (available web-page capability)
 - [ ] **4.** What changed in this repo (`git log`)
 - [ ] **5.** Compose the three posts and write them out (`write_drafts.py`)
-- [ ] **6.** `rm -rf .pulse-cache`
+- [ ] **6.** Delete the cache (the command `write_drafts.py` prints, or step 6 below)
 
 ## 1. Gather organizer updates from `#local-champs`
 
@@ -68,7 +68,7 @@ cache holds real organizer names and message text from a semi-private channel.
 python3 <skill-root>/scripts/fetch_local_champs.py --days 14
 ```
 
-Writes `.pulse-cache/local-champs.json` (git-ignored, 0600 — **never commit
+Writes `.pulse-cache/local-champs.json` in the toolkit's data folder (the repo root in a checkout, `~/Library/Application Support/AAIF` in an installed plugin — never the session folder) (git-ignored, 0600 — **never commit
 it**, delete it once the draft is done). It needs the AAIF Slack app token,
 same as `aaif-audit-slack` — see that skill's prereqs / the user's
 `slack-app-token-runs-audits` memory if the token is missing or expired.
@@ -129,10 +129,13 @@ if the event page is thin, keep the line short rather than padding it.
 ## 4. What changed in this repo
 
 ```bash
-git log --since="2 weeks ago" --oneline
+git -C <skill-root>/../.. log --since="2 weeks ago" --oneline
 ```
 
-(swap the `--since` for the actual gap since the last Pulse if the user says
+The toolkit's own history, wherever the session runs from. A plugin install
+with no `.git` (Claude's plugin cache) answers "not a git repository": say so
+and read `<skill-root>/../../CHANGELOG.md` instead (its `Unreleased` section
+and the newest release). (Swap the `--since` for the actual gap since the last Pulse if the user says
 one). Read the commits/PRs behind anything organizer-facing — a renamed
 status, a new sync script, a security/tooling hardening pass, a Slack
 channel-naming sweep — and translate each into ONE plain-language sentence an
@@ -243,7 +246,8 @@ paste all three back into the conversation.
 ## 6. Clean up
 
 ```bash
-rm -rf .pulse-cache
+D=$(PYTHONPATH=<skill-root>/../../lib python3 -m aaif_events.datadir)
+rm -rf "$D/.pulse-cache"
 ```
 
 The cache holds real organizer names and message text from a semi-private

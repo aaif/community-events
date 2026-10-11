@@ -81,15 +81,19 @@ accepted — needs your decision") and leave the row as it is.
 
 ## Preflight
 
-- [ ] `gws` CLI installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] `gws` CLI installed and authenticated (`aaif-check-setup` confirms it).
 - [ ] For every step that reads Slack: `$AAIF_SLACK_WRITE_TOKEN` in the
-      repo-root `.env`. Without it the Slack gathers **FAIL** and `resources`
+      repo-root `.env` or, for an installed plugin, the macOS keychain item
+      `aaif-slack-write-token` (`aaif-check-setup` says which it found). Without it the Slack gathers **FAIL** and `resources`
       reports **PARTIAL**, and neither counts as a pass.
       **Never `export` it on the command line** — shell history and the session
       transcript both keep it.
-- [ ] Working from a full checkout (every engine imports `lib/aaif_events`).
-- [ ] `sync-reports/` is gitignored. The runner refuses to start otherwise: the
-      logs hold names and emails and this repo is public.
+- [ ] The whole toolkit installed — a checkout, Goose or Claude Desktop (every
+      engine imports `lib/aaif_events`).
+- [ ] Reports go to `sync-reports/` in the toolkit's data folder: the repo root
+      in a checkout, `~/Library/Application Support/AAIF` in an installed
+      plugin. In a checkout it must be gitignored — the runner refuses to start
+      otherwise: the logs hold names and emails and this repo is public.
 
 ## Run it
 
@@ -104,7 +108,8 @@ accepted — needs your decision") and leave the row as it is.
       expired Google session and a FAILED step.
       stdout is a per-step outcome table and **never names a person**. The full
       reports — which do carry names, emails and per-person diffs — land in
-      `sync-reports/<UTC stamp>/<step>.log`, `0600` inside a `0700` directory.
+      `<data folder>/sync-reports/<UTC stamp>/<step>.log`, `0600` inside a
+      `0700` directory.
       **The last line of stdout is the full path of `report.html`**: the
       state of the estate, per subject — what each engine measured (stat
       tiles) and what it found (a ranked finding table with the next step),
@@ -113,7 +118,8 @@ accepted — needs your decision") and leave the row as it is.
       (the shape in `lib/aaif_events/findings.py`) beside its log when the
       runner passes `--json-out`; the runner records the run in `run.json`;
       `render_report.py` draws the page from the three. A run can be drawn
-      again later: `python3 <skill-root>/scripts/render_report.py sync-reports/<stamp>/`.
+      again later: `python3 <skill-root>/scripts/render_report.py <run folder>`,
+      the folder `report.html` sits in.
       The audit gathers also leave their own pages there (`coverage.html`,
       `activity.html`, `topics.html`, `members.html`) and the `audit` step
       draws `audit.html` from the same caches, linked from the top of the run
@@ -133,7 +139,8 @@ accepted — needs your decision") and leave the row as it is.
       verifies a fresh run proposes zero changes.
 - [ ] **5. Handle the gates by hand** (below). A gated step is reported, never
       silently dropped, and makes the run exit `2`.
-- [ ] **6. Delete `sync-reports/` when done.** Nothing prunes it.
+- [ ] **6. Delete the run's folder when done** — the one `report.html` sits
+      in. Nothing prunes it.
 
 Exit codes are part of the contract: **`0`** in sync, **`2`** drift / writes
 applied / partial / a gate needs a human, **`1`** a step failed. A wrapper that

@@ -39,8 +39,8 @@ Online series live under **Online/**, NOT under Chapters/. Use a city chapter
 (aaif-create-chapter) for an in-person, city-based community; use this for a
 recurring online program with no venue.
 
-Prereq: the `gws` CLI must be installed and authenticated (see the user's
-`gws-cli-access` memory). All Drive calls go through it.
+Prereq: the `gws` CLI must be installed and authenticated (`aaif-check-setup`
+confirms it). All Drive calls go through it.
 
 ## What gets replaced (and what does NOT)
 
@@ -70,15 +70,15 @@ placeholder the organizer fills in).
 The online series' templates are swept by the same script as the chapters':
 
 ```bash
-python3 skills/aaif-create-chapter/scripts/restyle_design_system.py --check
-python3 skills/aaif-create-chapter/scripts/restyle_design_system.py --write
+python3 <skill-root>/../aaif-create-chapter/scripts/restyle_design_system.py --check
+python3 <skill-root>/../aaif-create-chapter/scripts/restyle_design_system.py --write
 ```
 
 It covers `Online/<Series>/` and its `Event Template` and `Banners (…)`
 subfolders, and asserts it reached **TemplateSeries** — the folder this skill
 clones — exiting non-zero if it did not. Read-only by default; every
-pre-change file is archived to `./backups/restyle-<UTC>/` before it is
-replaced. See `skills/aaif-create-chapter/SKILL.md` and `DESIGN.md` for the
+pre-change file is archived to `backups/restyle-<UTC>/` in the toolkit's data folder before it is
+replaced. See `../aaif-create-chapter/SKILL.md` and `DESIGN.md` for the
 rules it applies.
 
 ## Procedure

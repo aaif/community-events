@@ -10,7 +10,7 @@
 |---|---|
 | `--refresh` | Re-fetch from the API instead of reusing the cache |
 | `--out NAME` | Output basename |
-| `--cache DIR` | Where raw pulls are stored (default `.slack-audit-cache`) |
+| `--cache DIR` | Where raw pulls are stored (default `.slack-audit-cache` in the toolkit's data folder — `python3 -m aaif_events.datadir` prints it — never the cwd; a relative value resolves there too) |
 
 **Both engines cache their raw pulls**, and the first run of each is slow:
 `users.list` pages 200 at a time (~20 min on a 30k-member workspace) and

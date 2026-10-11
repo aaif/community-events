@@ -95,8 +95,10 @@ python3 <skill-root>/scripts/prune_organizers.py               # the only remove
 ```
 
 Prereq for every Slack step: a token with `channels:write`, `groups:write` and
-`chat:write` in `$AAIF_SLACK_WRITE_TOKEN`, resolved from the environment then
-the **repo-root `.env`**. **Never `export` it on the command line** — shell
+`chat:write` in `$AAIF_SLACK_WRITE_TOKEN`, resolved from the environment, the
+**repo-root `.env`**, then the macOS keychain item `aaif-slack-write-token` —
+the keychain is the route for an installed plugin, whose `.env` an update
+replaces. **Never `export` it on the command line** — shell
 history and the transcript both keep it.
 
 ## Gotchas

@@ -18,11 +18,11 @@ folder listing is the full version history, in chronological order.
 
 ```bash
 # default: the AAIF Community Intake Ops sheet
-python3 skills/aaif-backup/scripts/backup.py
+python3 <toolkit>/skills/aaif-backup/scripts/backup.py
 
 # any Drive file, or a local file
-python3 skills/aaif-backup/scripts/backup.py <driveFileId>
-python3 skills/aaif-backup/scripts/backup.py ./path/to/file.xlsx
+python3 <toolkit>/skills/aaif-backup/scripts/backup.py <driveFileId>
+python3 <toolkit>/skills/aaif-backup/scripts/backup.py ./path/to/file.xlsx
 ```
 
 ## Restore

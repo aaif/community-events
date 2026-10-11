@@ -34,12 +34,12 @@ those skills — it does not regenerate them.
 
 **You (the agent) drive Google Drive via the `gws` CLI; the Python script only does the
 deterministic docx edit on a local file.** Prereq: `gws` installed and authenticated
-(`gws-cli-access`).
+(`aaif-check-setup` confirms it).
 
 
 ## Preflight
 
-- [ ] `gws` installed and authenticated (see the user's `gws-cli-access` memory).
+- [ ] `gws` installed and authenticated (`aaif-check-setup` confirms it).
 - [ ] Know which kind of tracker this is. **Chapter (in-person):** `EVENT TITLE`,
       `DATE & TIME`, `LOCATION / CITY`, `VENUE`, `THEME / SERIES`, `FORMAT(S)`,
       `SPEAKER(S)`, `LUMA URL`, `CAPACITY / RSVPS`, `ORGANIZER ON POINT`.
@@ -54,7 +54,7 @@ deterministic docx edit on a local file.** Prereq: `gws` installed and authentic
       Luma steps can write `new.md` / `new.png` beside it:
       ```bash
       WORK=$(mktemp -d)
-      python3 skills/aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
+      python3 <skill-root>/../aaif-event-status/scripts/fetch_tracker.py "<Chapter or Series>" --keep "$WORK"
       ```
       Never commit a `tracker.docx` / `luma.md` / `banner.png` / `new.*`.
 - [ ] **2. Preview** with `--dry-run`. It prints the field diff (old → new) and

@@ -18,7 +18,7 @@ List, never reaches a CRM, and never earns a Drive grant — silently, as an
 absence rather than an error. Fix it here and the rest of the pipeline sees the
 person.
 
-Prereq: the `gws` CLI must be installed and authenticated (`gws-cli-access` memory).
+Prereq: the `gws` CLI must be installed and authenticated (`aaif-check-setup` confirms it).
 See `aaif-intake-ops-sheet` memory for the sheet's structure. All reads/writes go
 by **header name**, never column letter.
 
@@ -53,11 +53,15 @@ by **header name**, never column letter.
 
 2. **Apply (writes, on approval only)** — feed an approved change list:
    ```bash
-   python3 <skill-root>/scripts/clean.py apply changes.json
+   WORK=$(mktemp -d)        # write $WORK/changes.json here, never the session folder
+   python3 <skill-root>/scripts/clean.py apply "$WORK/changes.json"
+   rm -rf "$WORK"
    ```
    `changes.json` is `[{"row": <source row>, "header": "<column>", "value": "<new>"}]`.
-   It is gitignored (the repo is public) but still PII — names, emails, cities
-   of real applicants — so delete it after the run; never attach or paste it.
+   It holds names, emails and cities of real applicants, so it lives in a
+   private temp folder: from Goose or Claude Desktop the session folder is the
+   operator's own, often synced, and nothing there is gitignored. Delete it
+   after the run; never attach or paste it.
    Writes those cells in `Form Responses` and appends a note per row to the
    `Autofixes` column, formatted **`<phrase> -> <new value>`** (`;` joins phrases
    within one run, `|` joins runs). The value is carried so a second edit to the
@@ -274,7 +278,7 @@ writes until step 4.
    Don't guess with no signal.
 - [ ] **3. Confirm with the user** which fixes to apply. Mechanical fixes are safe to
    batch; city resolutions should be eyeballed since they're inferred.
-- [ ] **4. Build `changes.json`** (rows + header names + new values) and run `apply`.
+- [ ] **4. Build `$WORK/changes.json`** in a `mktemp -d` folder (rows + header names + new values), run `apply`, then delete the folder.
    Re-run `scan` to confirm the diff shrank and check the `Autofixes` column.
 - [ ] **5. Re-run `scan` to validate.** Mechanical fixes are idempotent, so a
       second scan after apply should show them gone. If any survived, read why
