@@ -141,9 +141,15 @@ def scrubbed_env(strict=False):
 #: posting a second one. It is a READ, so it does not weaken the guarantee this
 #: allowlist exists for — nothing here can post, invite, or archive, and
 #: `pins.add` lives in provision_channels' own write allowlist, not this one.
+#: `conversations.replies` and `search.messages` joined 2026-10-15 for
+#: audit_spam.py: sales pitches live in intro-thread replies, which history
+#: never returns, and search is the only read that reaches the token owner's
+#: DMs, where LinkedIn-rental offers land. Both are reads; audit_spam keeps the
+#: text in memory and prints it, never writes it.
 ALLOWED_METHODS = frozenset({
     "auth.test",
     "conversations.list", "conversations.members", "conversations.history",
+    "conversations.replies", "search.messages",
     "users.list", "users.info", "users.lookupByEmail",
     "pins.list",
 })

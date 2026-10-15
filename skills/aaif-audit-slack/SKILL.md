@@ -32,6 +32,10 @@ in the intake row (`aaif-clean-data`), a missing chapter row on the Chapters Lis
 |---|---|---|
 | Activity | `audit_activity.py` | last human message, message volume, distinct posters per channel — feeds the topics and member reports |
 
+| On demand | Script | Answers |
+|---|---|---|
+| Spam | `audit_spam.py` | who is pitching services, "partnerships" or LinkedIn-account rentals, or pasting one message across channels? Scans channels **and threads**, plus a search of the token owner's own DMs. Prints leads to the terminal only, writes nothing, and is not part of the sync. Read each lead before acting; deactivating is a human call in the admin panel |
+
 | Deliverable | Script | Produces |
 |---|---|---|
 | Where to focus | `summarize_audits.py` | **the single HTML report you hand over** — an index into four full-report sections (Chapters, Organizers, Topics, Members), with a TL;DR ranking what to fix as the closing section |
