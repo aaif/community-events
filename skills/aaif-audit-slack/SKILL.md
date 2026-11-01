@@ -11,7 +11,8 @@ metadata:
 Paths in this skill are relative to this skill directory. Resolve `<skill-root>`
 from the loaded `SKILL.md`; it is a placeholder, not an environment variable.
 
-Three engines over one workspace, same house rules — **everything is read-only**.
+Three engines over one workspace (plus one on-demand script), same house rules —
+**everything is read-only**.
 
 **This is phase 8 of the estate sync**, the independent check: `aaif-sync` runs
 the pipeline and finishes here, deliberately from a different code path than the
@@ -34,7 +35,7 @@ in the intake row (`aaif-clean-data`), a missing chapter row on the Chapters Lis
 
 | On demand | Script | Answers |
 |---|---|---|
-| Spam | `audit_spam.py` | who is pitching services, "partnerships" or LinkedIn-account rentals, or pasting one message across channels? Scans channels **and threads**, plus a search of the token owner's own DMs. Prints leads to the terminal only, writes nothing, and is not part of the sync. Read each lead before acting; deactivating is a human call in the admin panel |
+| Spam | `audit_spam.py` | who is pitching services, "partnerships" or LinkedIn-account rentals, or pasting one message across channels? Scans public channels **and their threads**, plus five fixed phrase searches over everything the token owner can see, their own DMs included (needs a user token with `search:read`; `--no-search` skips it). DMs between other people stay invisible. Prints leads to the terminal only, writes nothing, and is not part of the sync. Exits 2 when any `INCOMPLETE:` line printed, meaning the leads are partial. Read each lead before acting; deactivating is a human call in the admin panel |
 
 | Deliverable | Script | Produces |
 |---|---|---|
@@ -146,6 +147,16 @@ organizer. Run it in the background and do something else. Shared flags:
 the Chapters List names channels that `provision_channels.py` has not created
 yet, and without the flag every such name aborts the run. **Drop the flag once
 provisioning has run**, so the abort protects the map again.
+
+**The spam audit runs on its own**, never as part of the steps above:
+
+```bash
+python3 <skill-root>/scripts/audit_spam.py [--days 90] [--no-search]
+```
+
+It prints to the terminal and writes no file, so there is nothing to delete
+afterwards. Exit 2 means a channel, search query or name lookup failed; say so
+alongside the leads rather than reporting the run as clean.
 
 ## The ceiling — state this in any summary you write
 
