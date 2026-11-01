@@ -32,8 +32,9 @@ users:read.email, team:read` (as observed 2026-08-08; call `Slack.scopes()` for
 the live list rather than trusting this line). That is enough to enumerate
 channels, their membership, and the user directory. It is **not** enough to read
 messages: `conversations.history` and `search.messages` both return
-`missing_scope`, so nothing built on this module can measure whether a channel is
-*active* — only whether it exists, who is in it, and how it is described.
+`missing_scope` for it. Message reads need the Slack app token
+(`channels:history`, and a user token with `search:read` for search), which is
+what `history_activity` and the spam audit run on.
 
 Two traps worth knowing, both verified against the live workspace on 2026-08-08.
 The dates matter: the counts are one-shot observations and will drift, but the
@@ -141,9 +142,17 @@ def scrubbed_env(strict=False):
 #: posting a second one. It is a READ, so it does not weaken the guarantee this
 #: allowlist exists for — nothing here can post, invite, or archive, and
 #: `pins.add` lives in provision_channels' own write allowlist, not this one.
+#: `conversations.replies` and `search.messages` joined 2026-10-15 for
+#: audit_spam.py: sales pitches live in intro-thread replies, which history
+#: never returns, and search is the only allowed read that reaches the token
+#: owner's DMs, where LinkedIn-rental offers land. Both are reads, so the
+#: guarantee this allowlist makes (nothing can post, invite or archive) holds.
+#: It makes no promise about message *text*: neither method is memoised, but
+#: what a caller does with the text it reads is that caller's responsibility.
 ALLOWED_METHODS = frozenset({
     "auth.test",
     "conversations.list", "conversations.members", "conversations.history",
+    "conversations.replies", "search.messages",
     "users.list", "users.info", "users.lookupByEmail",
     "pins.list",
 })

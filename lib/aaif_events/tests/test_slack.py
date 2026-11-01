@@ -66,6 +66,15 @@ def test_refuses_any_method_outside_the_allowlist(monkeypatch):
         api.call("conversations.archive", channel="C1")
 
 
+def test_allowlist_holds_only_reads():
+    """Pin the allowlist to read verbs, so adding a write method to it fails
+    here rather than slipping through with the one refusal test above."""
+    reads = ("list", "info", "history", "replies", "members", "messages", "test",
+             "lookupByEmail")
+    writes = sorted(m for m in slack.ALLOWED_METHODS if not m.rsplit(".", 1)[-1].startswith(reads))
+    assert writes == []
+
+
 def test_call_returns_payload(monkeypatch):
     api, calls = client(monkeypatch, [{"ok": True, "team": "T"}])
     assert api.call("auth.test")["team"] == "T"
