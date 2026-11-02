@@ -1186,12 +1186,43 @@ def assert_rows_unchanged(adds, new_rows, layout, expected_cells=None):
                      "the proposal was being built. Nothing was written; re-run."
                      % (n["row"], at(n["row"])))
 
+def ensure_rows(last_needed):
+    """Grow the Chapters tab's grid so row `last_needed` exists.
+
+    A values write past the grid's last row is refused outright ("exceeds grid
+    limits"), and the feed tab is kept trimmed to its content, so the first new
+    city after a run that filled it failed every write in the batch. Reads the
+    live row count and appends exactly the shortfall, so a re-run after an
+    attempt that landed appends nothing. `appendDimension` is not replayable:
+    a retry after a success-that-looked-like-a-timeout would add the rows
+    twice, hence NO_RETRY.
+    """
+    meta = gws_json("sheets", "spreadsheets", "get",
+                    params={"spreadsheetId": CHAPTERS_ID,
+                            "fields": "sheets.properties(title,sheetId,gridProperties.rowCount)"})
+    props = next((x["properties"] for x in meta.get("sheets", [])
+                  if x["properties"]["title"] == CHAPTERS_TAB), None)
+    if props is None:
+        sys.exit("ABORT: no tab titled %r on the Chapters List." % CHAPTERS_TAB)
+    short = last_needed - props["gridProperties"]["rowCount"]
+    if short <= 0:
+        return 0
+    gws_json("sheets", "spreadsheets", "batchUpdate",
+             params={"spreadsheetId": CHAPTERS_ID},
+             body={"requests": [{"appendDimension": {"sheetId": props["sheetId"],
+                                                     "dimension": "ROWS", "length": short}}]},
+             retries=_gws_mod.NO_RETRY)
+    print("Grew %r by %d row(s) to fit the new chapter row(s)." % (CHAPTERS_TAB, short))
+    return short
+
 def apply_changes(adds, new_rows, layout, removals=(), expected_cells=None):
     """One batchUpdate. A removal's new_value already includes that row's add,
     so where both touch a row the removal's value is the one written."""
     cells = {a["row"]: a["new_value"] for a in adds}
     cells.update({r["row"]: r["new_value"] for r in removals})
     assert_rows_unchanged(list(adds) + list(removals), new_rows, layout, expected_cells)
+    if new_rows:
+        ensure_rows(max(n["row"] for n in new_rows))
     org_col = col_letter(layout["index"]["Organizers"])
     last_col = col_letter(len(layout["headers"]) - 1)
     data = [{"range": "'%s'!%s%d" % (CHAPTERS_TAB, org_col, row), "values": [[v]]}

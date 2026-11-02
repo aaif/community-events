@@ -253,7 +253,9 @@ check("a malformed row is never an unresolved/dupe entry", (_u, _d), ([], []))
 
 # --- apply_changes: exact ranges, column order, RAW (gws mocked, no network) -----
 CITY_COL = [["City"], ["Boston"]]        # row 2 = Boston, row 6 still empty
+_grown = []
 with mock.patch.object(sync_chapters, "gws_json") as gj, \
+     mock.patch.object(sync_chapters, "ensure_rows", side_effect=_grown.append), \
      mock.patch.object(sync_chapters, "get_values", return_value=CITY_COL):
     n = sync_chapters.apply_changes(
         [{"row": 2, "city": "Boston", "names": ["New Person"],
@@ -262,6 +264,34 @@ with mock.patch.object(sync_chapters, "gws_json") as gj, \
         LAYOUT)
     body = gj.call_args.kwargs["body"]
 check("apply_changes writes both changes", n, 2)
+check("apply_changes makes room for the last new row first", _grown, [6])
+
+# --- ensure_rows: grow the grid by exactly the shortfall, sent once -------------
+import contextlib as _ctx  # noqa: E402
+import io as _io  # noqa: E402
+def _meta(rows):
+    return {"sheets": [{"properties": {"title": "Other", "sheetId": 1,
+                                       "gridProperties": {"rowCount": 5}}},
+                       {"properties": {"title": sync_chapters.CHAPTERS_TAB, "sheetId": 7,
+                                       "gridProperties": {"rowCount": rows}}}]}
+_calls = []
+def _fake_gws(*a, **k):
+    _calls.append((a, k))
+    return _meta(99) if a[2] == "get" else {}
+with mock.patch.object(sync_chapters, "gws_json", side_effect=_fake_gws), \
+     _ctx.redirect_stdout(_io.StringIO()):
+    _n = sync_chapters.ensure_rows(101)
+_append = [k for a, k in _calls if a[2] == "batchUpdate"]
+check("ensure_rows appends exactly the shortfall on the Chapters tab",
+      (_n, _append[0]["body"]["requests"]),
+      (2, [{"appendDimension": {"sheetId": 7, "dimension": "ROWS", "length": 2}}]))
+check("...and sends appendDimension once, never retried",
+      _append[0]["retries"], sync_chapters._gws_mod.NO_RETRY)
+_calls.clear()
+with mock.patch.object(sync_chapters, "gws_json",
+                       side_effect=lambda *a, **k: _calls.append(a) or _meta(120)):
+    check("ensure_rows does nothing when the grid already fits",
+          (sync_chapters.ensure_rows(101), [c[2] for c in _calls]), (0, ["get"]))
 check("apply_changes uses RAW (no formula injection)", body["valueInputOption"], "RAW")
 # Ranges are derived from LAYOUT, not spelled out: the column letters moved once
 # already (the resource block was inserted after Country), and a hardcoded "I2"
