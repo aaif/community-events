@@ -538,3 +538,19 @@ def test_the_bar_is_not_printed():
     printed = rs.BASE_CSS.split("@media print{", 1)[1]
     hidden = re.search(r"([^{}]*)\{display:none\}", printed).group(1)
     assert ".sitenav" in hidden.split(",")
+
+
+def test_the_nav_script_is_separate_and_guarded(monkeypatch):
+    monkeypatch.setenv(rs.NAV_ENV, json.dumps({"pages": [["report.html", "R"], ["a.html", "A"]]}))
+    out = rs.page("t", "b", script="tabs();")
+    scripts = re.findall(r"<script>(.*?)</script>", out, re.S)
+    # the page's own script survives whole, in its own tag, after the nav's
+    assert scripts[-1] == "tabs();"
+    assert scripts[0].startswith("try{") and scripts[0].endswith("catch(e){}")
+
+
+def test_a_bare_table_header_sticks_below_the_bar():
+    # A header inside .tablewrap sticks to the wrapper and must not move;
+    # a bare table's header sticks to the viewport, under the bar.
+    assert ".sitenav ~ .wrap :not(.tablewrap) > table thead th{top:52px}" in rs.BASE_CSS
+    assert "--sitenav-h:52px" in rs.BASE_CSS

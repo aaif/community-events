@@ -863,6 +863,12 @@ check("a narrowed run lists only the pages it will draw",
       [h for h, _t in sync.run_pages(sync.selected(["chapters"], False))],
       ["report.html", "coverage.html"])
 _nav = {"label": "Sync · s", "pages": _all_pages}
+# Deliberate: every engine gets the WHOLE planned list, written or not, so the
+# bars match on every page. A step that fails before drawing leaves a dead link
+# on the pages drawn before it; report.html, drawn last, filters to what exists.
+with mock.patch.object(sync.os.path, "exists", return_value=False):
+    check("engine bars are the planned pages, not filtered by what exists yet",
+          sync.run_pages(sync.selected([], False)), _all_pages)
 check("step_env hands the bar to the engine as JSON",
       json.loads(sync.step_env("/r/s", run_writes=False, nav=_nav)[sync.NAV_ENV])["pages"][1],
       ["coverage.html", "Coverage"])

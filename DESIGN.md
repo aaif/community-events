@@ -278,7 +278,10 @@ starts looking different from the rest.
 in `AAIF_REPORT_NAV`, and `rs.page()` draws it as a sticky top bar, so the run
 page and the five audit pages link each other and the open page is underlined.
 `render_report.py` draws its own bar from `run.json`, keeping only the pages
-that were actually written. An audit run on its own gets no bar. The bar is
+that were actually written. The engine pages are drawn before later steps
+have run, so they carry the whole planned list: if a step fails before drawing
+its page, the pages drawn before it keep a dead link to it. That is deliberate,
+so every page's bar is the same. An audit run on its own gets no bar. The bar is
 hidden in print, so the PDFs are unchanged. Engines never build a nav of their
 own: the page list has one definition, `run_pages()` in `sync.py`.
 

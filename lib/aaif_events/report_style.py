@@ -242,21 +242,25 @@ code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
 /* The run's site bar: every page a sync run drew, one bar, the current page
    underlined like the findings tabs. Sticky and flat — a hairline, no shadow —
    and it scrolls sideways rather than wrapping on a narrow screen. */
-.sitenav{position:sticky; top:0; z-index:10; background:var(--ground);
-  border-bottom:1px solid var(--line-hard)}
-.sitenav-in{max-width:1120px; margin:0 auto; padding:0 28px; display:flex;
+.sitenav{--sitenav-h:52px; position:sticky; top:0; z-index:10; height:var(--sitenav-h);
+  background:var(--ground); border-bottom:1px solid var(--line-hard)}
+.sitenav-in{max-width:1120px; height:100%; margin:0 auto; padding:0 28px; display:flex;
   align-items:center; gap:2px; overflow-x:auto; white-space:nowrap}
 .sitenav .sn-label{font-family:var(--font-mono,ui-monospace,Menlo,monospace);
   font-size:12px; text-transform:uppercase; letter-spacing:var(--tr-eyebrow,.16em);
   color:var(--ink-faint); margin-right:18px}
-.sitenav a{border-bottom:2px solid transparent; color:var(--ink-soft);
-  padding:15px 12px 13px; font-size:.9rem}
+.sitenav a{display:flex; align-items:center; height:100%; padding:2px 12px 0;
+  border-bottom:2px solid transparent; color:var(--ink-soft); font-size:.9rem}
 .sitenav a:hover{background:var(--sunken); color:var(--ink-1)}
 .sitenav a[aria-current="page"]{color:var(--ink-1); border-bottom-color:var(--accent);
   font-weight:500}
 .sitenav a:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
-/* An in-page jump must not land under the sticky bar. */
+/* Nothing may land under the bar: an in-page jump, nor a table header that
+   sticks to the viewport. A table inside .tablewrap sticks to the wrapper,
+   which never scrolls vertically, so offsetting it would push its header
+   down; only a bare table's header is moved. 52px is .sitenav's height. */
 .sitenav ~ .wrap [id]{scroll-margin-top:64px}
+.sitenav ~ .wrap :not(.tablewrap) > table thead th{top:52px}
 /* Per-cell borders, not a 1px grid gap over a tinted container: a short final
    row would otherwise leave a slab of container colour where cells are missing. */
 .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:10px}
@@ -521,9 +525,11 @@ NAV_ENV = "AAIF_REPORT_NAV"
 _NAV_HREF = re.compile(r"[A-Za-z0-9_-]+\.html")
 #: Marks the open page when the page itself does not know its file name, which
 #: is every engine page: they are written to whatever `--out` says.
-_NAV_JS = ("(function(){var f=decodeURIComponent(location.pathname.split('/').pop());"
+#: Its own <script> tag and its own try: a throw here (a malformed path makes
+#: decodeURIComponent throw) must never stop the page's own script.
+_NAV_JS = ("try{var f=decodeURIComponent(location.pathname.split('/').pop());"
            "document.querySelectorAll('.sitenav a').forEach(function(a){"
-           "if(a.getAttribute('href')===f)a.setAttribute('aria-current','page');});})();")
+           "if(a.getAttribute('href')===f)a.setAttribute('aria-current','page');});}catch(e){}")
 
 
 def nav_from_env():
@@ -577,12 +583,11 @@ def page(title, body, extra_css="", script="", nav=None, nav_current=None):
         'Run scripts/extract_design_tokens.py and re-render.</footer>')
     nav = nav_from_env() if nav is None else nav
     bar = site_nav(nav["pages"], nav.get("label", ""), nav_current) if nav else ""
-    if bar and not nav_current:
-        script = _NAV_JS + script
+    nav_js = ("\n<script>%s</script>" % _NAV_JS) if bar and not nav_current else ""
     return ('<!doctype html>\n<meta charset="utf-8">\n'
-            '<title>%s</title>\n<style>%s%s</style>\n%s<div class="wrap">%s</div>%s\n'
+            '<title>%s</title>\n<style>%s%s</style>\n%s<div class="wrap">%s</div>%s%s\n'
             % (html.escape(str(title)),
-               font_css() + tokens + BASE_CSS, extra_css, bar, body + marker,
+               font_css() + tokens + BASE_CSS, extra_css, bar, body + marker, nav_js,
                ("\n<script>%s</script>" % script) if script else ""))
 
 
