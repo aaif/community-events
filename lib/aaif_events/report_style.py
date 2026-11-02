@@ -25,6 +25,7 @@ import errno
 import base64
 import functools
 import html
+import json
 import os
 import pathlib
 import re
@@ -238,6 +239,24 @@ code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
 .caveat{background:var(--warn-bg); border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);
   border-radius:0; padding:16px 20px; color:var(--ink-1); font-size:.9rem}
 .caveat strong{color:var(--warn)}
+/* The run's site bar: every page a sync run drew, one bar, the current page
+   underlined like the findings tabs. Sticky and flat — a hairline, no shadow —
+   and it scrolls sideways rather than wrapping on a narrow screen. */
+.sitenav{position:sticky; top:0; z-index:10; background:var(--ground);
+  border-bottom:1px solid var(--line-hard)}
+.sitenav-in{max-width:1120px; margin:0 auto; padding:0 28px; display:flex;
+  align-items:center; gap:2px; overflow-x:auto; white-space:nowrap}
+.sitenav .sn-label{font-family:var(--font-mono,ui-monospace,Menlo,monospace);
+  font-size:12px; text-transform:uppercase; letter-spacing:var(--tr-eyebrow,.16em);
+  color:var(--ink-faint); margin-right:18px}
+.sitenav a{border-bottom:2px solid transparent; color:var(--ink-soft);
+  padding:15px 12px 13px; font-size:.9rem}
+.sitenav a:hover{background:var(--sunken); color:var(--ink-1)}
+.sitenav a[aria-current="page"]{color:var(--ink-1); border-bottom-color:var(--accent);
+  font-weight:500}
+.sitenav a:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+/* An in-page jump must not land under the sticky bar. */
+.sitenav ~ .wrap [id]{scroll-margin-top:64px}
 /* Per-cell borders, not a 1px grid gap over a tinted container: a short final
    row would otherwise leave a slab of container colour where cells are missing. */
 .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:10px}
@@ -424,7 +443,7 @@ footer{color:var(--ink-faint); font-size:.8rem; border-top:1px solid var(--line-
   body{font-size:9.5pt; background:#fff}
   .wrap{max-width:none; padding:0; gap:22px}
   h1{font-size:22pt} h2{font-size:13pt} h3{font-size:10.5pt}
-  .controls,.findings-block .tabs{display:none}
+  .controls,.findings-block .tabs,.sitenav{display:none}
   .fpanel{display:block!important}
   .tablewrap{overflow:visible; border-radius:0}
   table{min-width:0; font-size:8pt}
@@ -494,8 +513,55 @@ def closing(line="Take your seat in what comes next.", meta="aaif.io"):
             % (html.escape(str(line)), html.escape(str(meta))))
 
 
-def page(title, body, extra_css="", script=""):
+#: The pages of one sync run, handed to every engine by the runner as JSON
+#: `{"label": str, "pages": [[href, label], ...]}`. Set only inside a run, so a
+#: standalone audit draws a single page with no bar.
+NAV_ENV = "AAIF_REPORT_NAV"
+#: A nav href is a sibling page and nothing else: no path, no scheme, no query.
+_NAV_HREF = re.compile(r"[A-Za-z0-9_-]+\.html")
+#: Marks the open page when the page itself does not know its file name, which
+#: is every engine page: they are written to whatever `--out` says.
+_NAV_JS = ("(function(){var f=decodeURIComponent(location.pathname.split('/').pop());"
+           "document.querySelectorAll('.sitenav a').forEach(function(a){"
+           "if(a.getAttribute('href')===f)a.setAttribute('aria-current','page');});})();")
+
+
+def nav_from_env():
+    """The run's nav from NAV_ENV, or None. A malformed value draws no bar
+    rather than failing a page that is otherwise complete."""
+    raw = os.environ.get(NAV_ENV)
+    if not raw:
+        return None
+    try:
+        doc = json.loads(raw)
+        return {"label": str(doc.get("label", "")),
+                "pages": [(str(h), str(t)) for h, t in doc.get("pages", [])]}
+    except (ValueError, TypeError, AttributeError):
+        print("report_style: ignoring a malformed %s" % NAV_ENV, file=sys.stderr)
+        return None
+
+
+def site_nav(pages, label="", current=None):
+    """The run's site bar. `pages` is [(href, label)]; an href that is not a
+    bare sibling `*.html` is dropped, so the bar can only ever link the run's
+    own pages. `current` marks one page server-side; otherwise _NAV_JS does it
+    in the browser."""
+    links = "".join(
+        '<a href="%s"%s>%s</a>' % (html.escape(h), ' aria-current="page"' if h == current else "",
+                                   html.escape(t))
+        for h, t in pages if _NAV_HREF.fullmatch(h))
+    if not links:
+        return ""
+    lab = ('<span class="sn-label">%s</span>' % html.escape(label)) if label else ""
+    return ('<nav class="sitenav" aria-label="Report pages"><div class="sitenav-in">%s%s'
+            '</div></nav>' % (lab, links))
+
+
+def page(title, body, extra_css="", script="", nav=None, nav_current=None):
     """Wrap a body fragment in a complete, self-contained HTML document.
+
+    `nav` is {"label", "pages"} for the run's site bar; left None, it comes
+    from NAV_ENV, which only the sync runner sets.
 
     The doctype and charset are not decoration: without a doctype Chrome renders
     the PDF in quirks mode, and without a declared charset it guesses the
@@ -509,10 +575,14 @@ def page(title, body, extra_css="", script=""):
         '<footer><b>Note:</b> the AAIF design tokens were not available when '
         'this document was rendered, so it is shown in fallback colours. '
         'Run scripts/extract_design_tokens.py and re-render.</footer>')
+    nav = nav_from_env() if nav is None else nav
+    bar = site_nav(nav["pages"], nav.get("label", ""), nav_current) if nav else ""
+    if bar and not nav_current:
+        script = _NAV_JS + script
     return ('<!doctype html>\n<meta charset="utf-8">\n'
-            '<title>%s</title>\n<style>%s%s</style>\n<div class="wrap">%s</div>%s\n'
+            '<title>%s</title>\n<style>%s%s</style>\n%s<div class="wrap">%s</div>%s\n'
             % (html.escape(str(title)),
-               font_css() + tokens + BASE_CSS, extra_css, body + marker,
+               font_css() + tokens + BASE_CSS, extra_css, bar, body + marker,
                ("\n<script>%s</script>" % script) if script else ""))
 
 

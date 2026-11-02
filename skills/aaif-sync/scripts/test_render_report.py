@@ -166,6 +166,24 @@ check("drift and synced findings switch between two tabs",
 check("the design system is embedded (tokens, not a fallback note)",
       "AAIF design tokens were not available" in page, False)
 
+# --- the site bar -------------------------------------------------------------
+_planned = dict(MANIFEST, pages=[["report.html", "Run summary"], ["coverage.html", "Coverage"],
+                                 ["topics.html", "Topics"]])
+check("the bar keeps only the pages that were written",
+      rr.site_pages(_planned, lambda h: h == "coverage.html"),
+      [("report.html", "Run summary"), ("coverage.html", "Coverage")])
+check("a run that drew no other page gets no bar", rr.site_pages(_planned, lambda h: False), [])
+_old = dict(MANIFEST, steps=[{"step": "audit", "html": "audit.html"}])
+check("a manifest from before `pages` gets a bar from the steps that drew one",
+      rr.site_pages(_old, lambda h: True), [("report.html", "Run summary"), ("audit.html", "Audit")])
+_nav_page = rr.render(MANIFEST, LOGS, DOCS, [("report.html", "Run summary"),
+                                            ("coverage.html", "Coverage")])
+check("the run page draws the bar with itself marked current, no script needed",
+      ('<a href="report.html" aria-current="page">Run summary</a>' in _nav_page,
+       'href="coverage.html">Coverage</a>' in _nav_page, "location.pathname" in _nav_page),
+      (True, True, False))
+check("without pages the run page draws no bar", "<nav" in rr.render(MANIFEST, LOGS, DOCS), False)
+
 print()
 if FAILS:
     print("FAILURES:\n" + "\n".join(FAILS))
