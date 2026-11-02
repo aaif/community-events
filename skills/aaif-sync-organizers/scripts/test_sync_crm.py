@@ -1262,8 +1262,8 @@ check("json-out: a kept row is a row number and the name in it",
       [("Boston", True, "info")])
 # Waiting cities reach the run page as a count, never as cities or names.
 _wd = sync_crm.build_findings("report", waiting=[
-    {"city": "Lyon", "people": [{"name": "Bo"}, {"name": "Cy"}]},
-    {"city": "Porto", "people": [{"name": "Di"}]}], **_kw).to_dict()
+    {"city": "Lyon", "people": [{"name": "Quill Waiting"}, {"name": "Rook Waiting"}]},
+    {"city": "Porto", "people": [{"name": "Sable Waiting"}]}], **_kw).to_dict()
 check("json-out: waiting cities are a count tile and one info finding",
       ([(m["label"], m["value"]) for m in _wd["measured"]][-1],
        [(f["subject"], f["detail"], f["severity"]) for f in _wd["findings"]
@@ -1271,8 +1271,11 @@ check("json-out: waiting cities are a count tile and one info finding",
       (("folderless cities awaiting an accepted organizer", 2),
        [("intake", "2 city/cities, 3 person/people with no chapter folder and no "
                    "accepted organizer", "info")]))
+# Only the waiting finding itself: other fixture findings name Boston, which
+# contains a short name and made the first version of this check fail.
+_wf = [f for f in _wd["findings"] if f["kind"] == "no accepted organizer yet"]
 check("...naming no city and no person",
-      any(x in _json.dumps(_wd["findings"]) for x in ("Lyon", "Porto", "Bo", "Di")), False)
+      any(x in _json.dumps(_wf) for x in ("Lyon", "Porto", "Waiting")), False)
 
 # A nameless row is still a finding about a row: the detail says which.
 _nn = sync_crm.build_findings("report", **dict(
