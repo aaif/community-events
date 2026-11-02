@@ -102,7 +102,12 @@ whole estate.
   override flag, so a false positive does not cost one confirmation — it blocks
   the city permanently. `San Diego` must never land in `San Francisco`.
 - **Merge, don't overwrite.** Names already in the `Organizers` cell but absent
-  from the intake are left alone — they are manual entries.
+  from the intake are left alone — they are manual or MLOps-era entries.
+- **The `Organizers` cell lists accepted organizers only** (2026-11-01,
+  user-decided). A name comes off when the intake holds that name, in that
+  city, with a Status that is set but not `Accepted`/`Existing (from MLOps)` —
+  and never with a qualifying one. Removal never blanks a cell: a chapter left
+  with nobody accepted is a retirement candidate for a human, not an edit.
 - **Never remove a chapter — deprecate it or merge it.** No path in this
   engine clears a row; retirement candidates are a report for a human, who sets
   `Status` (and `Merged Into`) by hand. 2026-10-01, user-decided, after a first

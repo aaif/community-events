@@ -919,6 +919,23 @@ check("near-miss on a shared discriminating token",
 check("generic tokens do not create a near-miss (San Diego / San Francisco)",
       sorted(o["city"] for o in orphans), ["Reykjavik", "San Diego", "TemplateCity"])
 
+# A city with no folder is only a "run aaif-create-chapter" item when an
+# organizer there is ACCEPTED. Pipeline hosts/speakers sync regardless of
+# status, so without this the list named cities nobody had been accepted in.
+_, _orph, _ = match_chapters(merge_people([
+    person("A", "a@x.io", "Reykjavik"),                                 # accepted organizer
+    person("B", "b@x.io", "Lyon", status="New"),                        # pipeline organizer
+    person("C", "c@x.io", "Lyon", tab="Speakers", status="New"),        # pipeline speaker
+    person("D", "d@x.io", "Porto", tab="Hosts", status="Accepted"),     # accepted host only
+    person("E", "e@x.io", "Quito", tab="Speakers", status="New"),       # pipeline speaker ...
+    person("E", "e@x.io", "Quito"),                                     # ... accepted as organizer
+]), FOLDERS)
+_act, _wait = sync_crm.split_orphans(_orph)
+check("orphans: only cities with an accepted organizer are actionable",
+      sorted(o["city"] for o in _act), ["Quito", "Reykjavik"])
+check("orphans: pipeline-only and host-only cities wait for triage",
+      sorted(o["city"] for o in _wait), ["Lyon", "Porto"])
+
 
 # ---------------------------------------------------------------------------
 # Write guards: the promises that are now structural rather than documented

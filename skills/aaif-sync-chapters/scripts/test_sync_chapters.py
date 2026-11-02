@@ -87,9 +87,34 @@ adds, new_rows, near = build_proposal(
      entry(3, "New Person", "Boston")],
     CHAPTERS, 5)
 check("merge appends only missing", adds,
-      [{"row": 2, "city": "Boston", "names": ["New Person"],
+      [{"row": 2, "city": "Boston", "names": ["New Person"], "removed": [],
         "new_value": "Wedge Antilles; New Person"}])
 check("merge creates no rows", (new_rows, near), ([], []))
+
+# --- the Organizers cell lists ACCEPTED organizers only -------------------------
+# A name the intake holds in that city with a non-qualifying Status (and never a
+# qualifying one) comes off. Names the intake has never seen stay: hand entries
+# and MLOps-era organizers carry no evidence either way.
+_two = [chap(2, "Boston", "Wedge Antilles; Biggs Darklighter; Han Solo")]
+adds, _, _ = build_proposal([entry(2, "Wedge Antilles", "Boston")], _two, 2,
+                            pending={("biggs darklighter", "boston")})
+check("a no-longer-accepted name is removed, unknown names kept",
+      [(a["names"], a["removed"], a["new_value"]) for a in adds],
+      [([], ["Biggs Darklighter"], "Wedge Antilles; Han Solo")])
+adds, _, _ = build_proposal([entry(2, "Wedge Antilles", "Boston")], _two, 2,
+                            pending={("wedge antilles", "boston")})
+check("a name that is ALSO accepted in that city is never removed", adds, [])
+adds, _, _ = build_proposal([], _two, 2, pending={("han solo", "oslo")})
+check("a pending row in ANOTHER city removes nothing here", adds, [])
+adds, _, _ = build_proposal([], [chap(2, "Boston", "Biggs Darklighter")], 2,
+                            pending={("biggs darklighter", "boston")})
+check("removal never blanks a cell — that is a retirement call", adds, [])
+adds, _, _ = build_proposal([entry(2, "Luke Skywalker", "Boston")],
+                            [chap(2, "Boston", "Biggs Darklighter")], 2,
+                            pending={("biggs darklighter", "boston")})
+check("...but a swap that leaves an accepted name is applied",
+      [(a["names"], a["removed"], a["new_value"]) for a in adds],
+      [(["Luke Skywalker"], ["Biggs Darklighter"], "Luke Skywalker")])
 
 # --- city match is case-insensitive; manual B entries are kept -----------------
 adds, _, _ = build_proposal([entry(2, "Ana Ruiz", "  boston ")], CHAPTERS, 5)

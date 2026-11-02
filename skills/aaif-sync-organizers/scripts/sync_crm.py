@@ -1641,6 +1641,32 @@ def match_chapters(people, folders):
     return by_folder, orphans, near_misses
 
 
+def has_accepted_organizer(group):
+    """Whether any merged person in `group` is an ACCEPTED ORGANIZER.
+
+    Reads the parallel `tabs`/`statuses` lists a merged person carries, so an
+    accepted host or speaker does not count: a chapter is founded on its
+    organizers, and only an accepted one makes a city worth creating.
+    """
+    return any(tab == "Organizers" and status in SYNC_STATUSES
+               for p in group for tab, status in zip(p["tabs"], p["statuses"]))
+
+
+def split_orphans(orphans):
+    """Split (actionable, waiting) by whether the city has an accepted organizer.
+
+    Pipeline hosts and speakers sync regardless of status, so a city with no
+    folder can be named by nobody but applicants still awaiting triage. Telling
+    an operator to "run aaif-create-chapter" for those cities is wrong: a
+    chapter is created when an organizer is accepted, never before. Only the
+    actionable list is named in the report; the rest is a count.
+    """
+    actionable, waiting = [], []
+    for o in orphans:
+        (actionable if has_accepted_organizer(o["people"]) else waiting).append(o)
+    return actionable, waiting
+
+
 # ----------------------------------------------------------------------------
 # Report + write
 # ----------------------------------------------------------------------------
@@ -1871,6 +1897,7 @@ def _run(args, workdir):
         # the scoped chapter; showing them under --city reads as this chapter's
         # problem. The full run reports them.
         orphans, near_misses = [], []
+    orphans, waiting = split_orphans(orphans)
 
     # counts[] tallies qualifying ROWS per tab, len(merged) is PEOPLE after the
     # cross-role email merge — say so, or "102 people (104 organizers)" reads
@@ -1981,6 +2008,11 @@ def _run(args, workdir):
                   % (o["city"], len(o["people"]),
                      ", ".join(redact_name(p["name"]) for p in o["people"][:4])
                      + (", …" if len(o["people"]) > 4 else "")))
+    if waiting:
+        print("\n%d other city/cities have applicants but no accepted organizer and "
+              "no chapter folder (%d person/people) — nothing to create until "
+              "triage accepts an organizer there."
+              % (len(waiting), sum(len(o["people"]) for o in waiting)))
     if keepers:
         print("\nAlready in a CRM and NOT touched (real-looking address — clear by hand "
               "if it's fixture data):")

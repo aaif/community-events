@@ -451,8 +451,13 @@ def print_luma_audit(sweep):
 # ----------------------------------------------------------------------------
 # Read the two sheets
 # ----------------------------------------------------------------------------
-def read_intake():
+def read_intake(pending=None):
     """Return (entries, unresolved, status_counts, dupes, malformed).
+
+    When `pending` is a set, it is filled with (fold(name), fold_city(city)) for
+    every row whose Status is set but NOT a sync status (New, Prospect,
+    Tentative, Denied, ...) and whose city resolves. build_proposal uses it to
+    take such a name back off a chapter's Organizers cell.
 
     entries    = [{row, name, city, status}]                        city resolved, deduped
     unresolved = [{row, name, status, g, h, events, why,
@@ -482,6 +487,11 @@ def read_intake():
     for rownum, row in enumerate(rows[1:], start=2):
         status = cell(row, i_status)
         if status not in SYNC_STATUSES:
+            if pending is not None and status:
+                p_name = cell(row, i_name)
+                p_city = resolve_city(cell(row, i_g), cell(row, i_h))
+                if p_name and p_city:
+                    pending.add((fold(p_name), fold_city(p_city)))
             continue
         counts[status] += 1
         name = cell(row, i_name)
@@ -679,13 +689,23 @@ def read_chapters():
 # ----------------------------------------------------------------------------
 # Diff
 # ----------------------------------------------------------------------------
+def change_text(a):
+    """' + added; - removed' for one Organizers-cell edit, names redacted."""
+    parts = []
+    if a["names"]:
+        parts.append(" + " + "; ".join(map(redact_name, a["names"])))
+    if a.get("removed"):
+        parts.append(" - " + "; ".join(map(redact_name, a["removed"]))
+                     + " (no longer accepted on the intake)")
+    return "".join(parts)
+
 def parse_organizers(raw):
     return [p.strip() for p in raw.split(";") if p.strip()]
 
-def build_proposal(entries, chapters, last_row):
+def build_proposal(entries, chapters, last_row, pending=frozenset()):
     """Return (adds, new_rows, near_misses).
 
-    adds       = [{row, city, names, new_value}]   merge into an Organizers cell
+    adds       = [{row, city, names, removed, new_value}]  edit an Organizers cell
     new_rows   = [{row, city, names, slug}]        append after last_row
     near_misses= [{city, names, candidates}]       no exact row; never written
     """
@@ -698,18 +718,12 @@ def build_proposal(entries, chapters, last_row):
     folded = [(c, fold_city(c["city"])) for c in chapters]
     chap_by_fold = {f: c for c, f in folded}
     adds, new_rows, near_misses = [], [], []
+    wanted = {}           # chapter row -> qualifying intake names for that city
     next_row = last_row + 1
     for fc, grp in by_city.items():
         chap = chap_by_fold.get(fc)
         if chap:
-            existing = parse_organizers(chap["organizers_raw"])
-            present = {fold(n) for n in existing}
-            # Merge, don't overwrite: keep every name already in Organizers
-            # (manual entries included), append only the intake names missing.
-            missing = [n for n in grp["names"] if fold(n) not in present]
-            if missing:
-                adds.append({"row": chap["row"], "city": chap["city"], "names": missing,
-                             "new_value": "; ".join(existing + missing)})
+            wanted.setdefault(chap["row"], []).extend(grp["names"])
             continue
         # Near-miss on substring OR a shared DISCRIMINATING token: 'New Delhi' vs
         # 'Delhi NCR' overlaps on neither substring test but is the same chapter.
@@ -732,6 +746,36 @@ def build_proposal(entries, chapters, last_row):
         new_rows.append({"row": next_row, "city": grp["city"], "names": grp["names"],
                          "slug": slug})
         next_row += 1
+
+    # The Organizers column lists ACCEPTED organizers only (user-decided
+    # 2026-11-01). A name comes off when the intake holds that name in that
+    # city with a non-qualifying Status and never with a qualifying one, e.g.
+    # someone moved back from Accepted to Tentative. Everything else stays:
+    # names the intake has never seen are hand entries or MLOps-era organizers,
+    # and this engine has no evidence about them.
+    qualified = {(fold(e["name"]), fold_city(e["city"])) for e in entries}
+    for chap in chapters:
+        existing = parse_organizers(chap["organizers_raw"])
+        cf = fold_city(chap["city"])
+        stale = {(fold(n), cf) for n in existing} & (set(pending) - qualified)
+        keep = [n for n in existing if (fold(n), cf) not in stale]
+        removed = [n for n in existing if (fold(n), cf) in stale]
+        if removed and not keep and not wanted.get(chap["row"]):
+            # Never blank a cell: a chapter left with nobody accepted is a
+            # retirement decision, and retirement_candidates already names it
+            # for a human. Emptying the cell here would make that call for them.
+            keep, removed = existing, []
+        # Merge, don't overwrite: keep every other name already in Organizers
+        # (manual entries included), append only the intake names missing.
+        present = {fold(n) for n in keep}
+        missing = []
+        for n in wanted.get(chap["row"], []):
+            if fold(n) not in present:
+                present.add(fold(n))
+                missing.append(n)
+        if missing or removed:
+            adds.append({"row": chap["row"], "city": chap["city"], "names": missing,
+                         "removed": removed, "new_value": "; ".join(keep + missing)})
     return adds, new_rows, near_misses
 
 def annotate_unresolved(unresolved, chapters):
@@ -819,7 +863,7 @@ def print_report(st):
     if adds:
         print("\nProposed adds to existing rows:")
         for a in adds:
-            print("  %s (row %d): + %s" % (a["city"], a["row"], "; ".join(map(redact_name, a["names"]))))
+            print("  %s (row %d):%s" % (a["city"], a["row"], change_text(a)))
             print("      %s%d -> %r" % (org_col, a["row"], redact_names_cell(a["new_value"])))
     if new_rows:
         print("\nProposed NEW city rows (appended after row %d):" % last_row)
@@ -942,7 +986,8 @@ def build_findings(report, st, held=()):
                     severity="warn", action="fix the structured intake city and re-run")
     held_cities = {fold_city(h["city"]) for h in held}
     for a in adds:
-        report.find("add", a["city"], "row %d: + %s" % (a["row"], "; ".join(map(redact_name, a["names"]))),
+        report.find("remove" if a.get("removed") and not a["names"] else "add", a["city"],
+                    "row %d:%s" % (a["row"], change_text(a)),
                     severity="warn", action="apply with --write")
     for n in new_rows:
         is_held = fold_city(n["city"]) in held_cities
@@ -977,9 +1022,10 @@ State = namedtuple("State", "entries unresolved counts dupes chapters last_row "
                    defaults=((), ()))
 
 def compute():
-    entries, unresolved, counts, dupes, malformed = read_intake()
+    pending = set()
+    entries, unresolved, counts, dupes, malformed = read_intake(pending)
     chapters, last_row, layout = read_chapters()
-    adds, new_rows, near_misses = build_proposal(entries, chapters, last_row)
+    adds, new_rows, near_misses = build_proposal(entries, chapters, last_row, pending)
     annotate_unresolved(unresolved, chapters)
     retire, retire_held = retirement_candidates(entries, chapters, unresolved,
                                                 malformed, near_misses)
@@ -1224,7 +1270,7 @@ def main():
     if after.adds or leftover_rows:
         print("VERIFY FAILED — still out of sync after write:")
         for x in after.adds:
-            print("  row %d %s: + %s" % (x["row"], x["city"], "; ".join(map(redact_name, x["names"]))))
+            print("  row %d %s:%s" % (x["row"], x["city"], change_text(x)))
         for x in leftover_rows:
             print("  new row %s: %s" % (x["city"], "; ".join(map(redact_name, x["names"]))))
         sys.exit(1)
