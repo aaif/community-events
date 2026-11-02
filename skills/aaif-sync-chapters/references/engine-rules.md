@@ -50,11 +50,16 @@ everything in **one** `values batchUpdate` — a partial failure cannot half-syn
   accent-insensitively); names already there but absent from intake are left alone
   (manual and MLOps-era entries live there). Written values keep original UTF-8 —
   an accented name stays accented.
-- **Accepted only**: a name the intake holds in that chapter's city under a set,
-  non-qualifying Status (New, Prospect, Tentative, Denied, ...) and under no
-  qualifying one is proposed for removal, shown as `- name (no longer accepted
-  on the intake)` beside the adds. A removal that would empty the cell is held:
-  that chapter is a retirement candidate, and retiring is a human's call.
+- **Accepted only — proposed, human-applied**: a name the intake holds in that
+  chapter's city under a set, non-qualifying Status (New, Prospect, Tentative,
+  Denied, ...) and under no qualifying Status anywhere is listed under "Listed
+  but NOT accepted", as `- name (intake row N: Status 'X'; no accepted row)`.
+  Plain `--write` never removes (the run exits `2` while one is pending);
+  `--write --apply-removals` does, after a human has checked each cited row —
+  the match is name + city only, and the intake is a public form. The cell is
+  re-read before the write and the run aborts if it changed. A removal that
+  would empty the cell is HELD as a retirement question, and retired rows are
+  never edited.
 - **Near-miss cities** are reported, not auto-matched — confirm the right row or
   fix the intake city, never create a near-duplicate row. A near-miss fires on a
   substring (intake `Delhi` vs row `Delhi NCR`) **or a shared discriminating word**

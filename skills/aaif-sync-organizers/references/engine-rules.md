@@ -123,7 +123,7 @@ person, which no form answer can supply, so it stays hand-entered.
 the exact cell values, then near-miss cities, cities with no chapter folder that have an
 **accepted organizer** (the ones to run `aaif-create-chapter` for), a count of folderless
 cities with applicants but no accepted organizer yet (nothing to create until triage
-accepts one), and a count of un-synced intake rows (`--verbose` lists them). A full run takes a few minutes.
+accepts one; AAIF ops people don't count as a city's organizer), and a count of un-synced intake rows (`--verbose` lists them). A full run takes a few minutes.
 `--write` first saves each workbook's pre-edit bytes to `<data folder>/backups/crm-before-<UTC stamp>/` (the repo root in a checkout, `~/Library/Application Support/AAIF` in an installed plugin),
 created `0700`. Inside any checkout it must be gitignored (`**/backups/*` here) or the
 engine aborts; outside every checkout no git is asked. The temp working directory — downloads, re-reads, verify copies, all full of

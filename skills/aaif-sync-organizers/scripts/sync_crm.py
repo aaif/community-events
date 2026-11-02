@@ -1646,9 +1646,12 @@ def has_accepted_organizer(group):
 
     Reads the parallel `tabs`/`statuses` lists a merged person carries, so an
     accepted host or speaker does not count: a chapter is founded on its
-    organizers, and only an accepted one makes a city worth creating.
+    organizers, and only an accepted one makes a city worth creating. AAIF ops
+    people are excluded, as in gate_pipeline_organizers: a chapter stands on
+    its own team.
     """
     return any(tab == "Organizers" and status in SYNC_STATUSES
+               and not is_aaif_ops(p["name"])
                for p in group for tab, status in zip(p["tabs"], p["statuses"]))
 
 
@@ -1747,7 +1750,8 @@ def write_workbooks(touched, workdir, backup_dir):
 
 def build_findings(mode, people, chapters, changes, held, rejected, skipped, orphans,
                    near_misses, keepers, no_dropdown, demoted, fallbacks,
-                   written=(), changed=(), failed=(), stale=(), verified=False):
+                   written=(), changed=(), failed=(), stale=(), verified=False,
+                   waiting=()):
     """_run()'s report as data, for `--json-out` (see aaif_events.findings).
 
     Pure — takes the lists _run already printed from, so the test can drive it
@@ -1821,6 +1825,16 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
     for o in orphans:
         r.find("no chapter folder", o["city"], who(o["people"]),
                "warn", "run aaif-create-chapter")
+    # A count only, never the cities or names: these are people still in
+    # triage, and nothing is to be created for them. The count still has to
+    # reach the run page, or a folderless city vanishes from it entirely.
+    n_waiting = sum(len(o["people"]) for o in waiting)
+    if waiting:
+        r.measure("folderless cities awaiting an accepted organizer", len(waiting), None)
+        r.find("no accepted organizer yet", "intake",
+               "%d city/cities, %d person/people with no chapter folder and no "
+               "accepted organizer" % (len(waiting), n_waiting),
+               "info", "nothing to create until triage accepts an organizer")
     for name, rows in keepers:
         for row in rows:
             r.find("real-looking row not touched", name,
@@ -2009,9 +2023,9 @@ def _run(args, workdir):
                      ", ".join(redact_name(p["name"]) for p in o["people"][:4])
                      + (", …" if len(o["people"]) > 4 else "")))
     if waiting:
-        print("\n%d other city/cities have applicants but no accepted organizer and "
-              "no chapter folder (%d person/people) — nothing to create until "
-              "triage accepts an organizer there."
+        print("\n%d other city/cities have hosts, speakers or applicants but no "
+              "accepted organizer and no chapter folder (%d person/people) — "
+              "nothing to create until triage accepts an organizer there."
               % (len(waiting), sum(len(o["people"]) for o in waiting)))
     if keepers:
         print("\nAlready in a CRM and NOT touched (real-looking address — clear by hand "
@@ -2056,7 +2070,7 @@ def _run(args, workdir):
         build_findings("write" if args.write else "report",
                        len(merged), len(by_folder), changes, held, rejected, skipped,
                        orphans, near_misses, keepers, no_dropdown, demoted, fallbacks,
-                       **after).write(args.json_out)
+                       waiting=waiting, **after).write(args.json_out)
 
     if not touched:
         # Never claim a clean sweep over chapters that were never opened: a

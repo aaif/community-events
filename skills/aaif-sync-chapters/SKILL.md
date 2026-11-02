@@ -104,10 +104,16 @@ whole estate.
 - **Merge, don't overwrite.** Names already in the `Organizers` cell but absent
   from the intake are left alone — they are manual or MLOps-era entries.
 - **The `Organizers` cell lists accepted organizers only** (2026-11-01,
-  user-decided). A name comes off when the intake holds that name, in that
-  city, with a Status that is set but not `Accepted`/`Existing (from MLOps)` —
-  and never with a qualifying one. Removal never blanks a cell: a chapter left
-  with nobody accepted is a retirement candidate for a human, not an edit.
+  user-decided), and a removal is **proposed, never applied by plain
+  `--write`**. A name is proposed when the intake holds it, in that city, under
+  a set Status that is not `Accepted`/`Existing (from MLOps)`, and holds the name
+  under no qualifying Status anywhere (unresolved and hand-typed `accepted` rows
+  included). The match is on name + city only and the form is public — a
+  stranger can apply under a listed organizer's name and be Denied — so each
+  line cites the intake row and Status for a human to check. Apply with
+  `sync_chapters.py --write --apply-removals`; the sync runner never passes it.
+  A removal that would empty the cell is HELD (a retirement decision), and
+  Merged/Deprecated rows are never edited.
 - **Never remove a chapter — deprecate it or merge it.** No path in this
   engine clears a row; retirement candidates are a report for a human, who sets
   `Status` (and `Merged Into`) by hand. 2026-10-01, user-decided, after a first

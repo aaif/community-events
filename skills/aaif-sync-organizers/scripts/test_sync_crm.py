@@ -929,12 +929,14 @@ _, _orph, _ = match_chapters(merge_people([
     person("D", "d@x.io", "Porto", tab="Hosts", status="Accepted"),     # accepted host only
     person("E", "e@x.io", "Quito", tab="Speakers", status="New"),       # pipeline speaker ...
     person("E", "e@x.io", "Quito"),                                     # ... accepted as organizer
+    person("G", "g@x.io", "Accra", status="Existing (from MLOps)"),     # MLOps-era counts
+    person("Rahul Parundekar", "ops@x.io", "Hilo"),                     # AAIF ops does not
 ]), FOLDERS)
 _act, _wait = sync_crm.split_orphans(_orph)
 check("orphans: only cities with an accepted organizer are actionable",
-      sorted(o["city"] for o in _act), ["Quito", "Reykjavik"])
-check("orphans: pipeline-only and host-only cities wait for triage",
-      sorted(o["city"] for o in _wait), ["Lyon", "Porto"])
+      sorted(o["city"] for o in _act), ["Accra", "Quito", "Reykjavik"])
+check("orphans: pipeline-only, host-only and ops-only cities wait for triage",
+      sorted(o["city"] for o in _wait), ["Hilo", "Lyon", "Porto"])
 
 
 # ---------------------------------------------------------------------------
@@ -1258,6 +1260,20 @@ check("json-out: a kept row is a row number and the name in it",
       [(c, d.startswith("row 2: ") and len(d) > len("row 2: "), s)
        for c, d, s in _byk["real-looking row not touched"]],
       [("Boston", True, "info")])
+# Waiting cities reach the run page as a count, never as cities or names.
+_wd = sync_crm.build_findings("report", waiting=[
+    {"city": "Lyon", "people": [{"name": "Bo"}, {"name": "Cy"}]},
+    {"city": "Porto", "people": [{"name": "Di"}]}], **_kw).to_dict()
+check("json-out: waiting cities are a count tile and one info finding",
+      ([(m["label"], m["value"]) for m in _wd["measured"]][-1],
+       [(f["subject"], f["detail"], f["severity"]) for f in _wd["findings"]
+        if f["kind"] == "no accepted organizer yet"]),
+      (("folderless cities awaiting an accepted organizer", 2),
+       [("intake", "2 city/cities, 3 person/people with no chapter folder and no "
+                   "accepted organizer", "info")]))
+check("...naming no city and no person",
+      any(x in _json.dumps(_wd["findings"]) for x in ("Lyon", "Porto", "Bo", "Di")), False)
+
 # A nameless row is still a finding about a row: the detail says which.
 _nn = sync_crm.build_findings("report", **dict(
     _kw, keepers=[("Boston", [{"row": 2, "name": "", "email": "gus@x.io"}])],

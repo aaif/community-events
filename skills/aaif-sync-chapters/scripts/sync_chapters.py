@@ -12,6 +12,9 @@ plus Merged Into. The intake sheet is only ever READ.
 Usage:
   python3 sync_chapters.py            # report + proposed changes, writes nothing
   python3 sync_chapters.py --write    # apply the proposal via one batchUpdate
+  python3 sync_chapters.py --write --apply-removals
+                                      # also take off names the intake says are
+                                      # NOT accepted, after checking each one
 
 The report shows: per-city name adds (existing rows), new rows with their
 appended row numbers and Luma slugs, unresolved-city rows needing a human,
@@ -48,6 +51,9 @@ CHAPTERS_TAB = "Chapters & Teams"
 
 # Exact dropdown strings — "Existing" alone would miss every MLOps row.
 SYNC_STATUSES = ("Accepted", "Existing (from MLOps)")
+# A hand-typed `accepted` is not a sync status (the filter stays exact), but it
+# must never read as evidence that someone is NOT accepted either.
+QUALIFYING_FOLDED = {s.casefold() for s in SYNC_STATUSES}
 
 # Folded city -> Luma slug, for cities whose page doesn't follow the default
 # slug rule (same exceptions as aaif-create-chapter).
@@ -451,13 +457,18 @@ def print_luma_audit(sweep):
 # ----------------------------------------------------------------------------
 # Read the two sheets
 # ----------------------------------------------------------------------------
-def read_intake(pending=None):
+def read_intake(pending=None, protected=None):
     """Return (entries, unresolved, status_counts, dupes, malformed).
 
-    When `pending` is a set, it is filled with (fold(name), fold_city(city)) for
-    every row whose Status is set but NOT a sync status (New, Prospect,
-    Tentative, Denied, ...) and whose city resolves. build_proposal uses it to
-    take such a name back off a chapter's Organizers cell.
+    Two optional collectors feed propose_removals, and stay out of the return
+    value so the five-tuple every caller unpacks is unchanged:
+      pending   = {(fold(name), fold_city(city)): [(row, status)]} for each row
+                  whose Status is set and NOT a sync status (New, Prospect,
+                  Tentative, Denied, ...) and whose city resolves.
+      protected = {fold(name)} for EVERY row whose Status is a sync status,
+                  compared case-insensitively, whether or not its city resolved
+                  or its text was malformed. An accepted person is never a
+                  removal, wherever the intake currently places them.
 
     entries    = [{row, name, city, status}]                        city resolved, deduped
     unresolved = [{row, name, status, g, h, events, why,
@@ -486,12 +497,15 @@ def read_intake(pending=None):
     seen = set()
     for rownum, row in enumerate(rows[1:], start=2):
         status = cell(row, i_status)
+        if protected is not None and status.casefold() in QUALIFYING_FOLDED:
+            protected.add(fold(cell(row, i_name)))
         if status not in SYNC_STATUSES:
-            if pending is not None and status:
+            if pending is not None and status and status.casefold() not in QUALIFYING_FOLDED:
                 p_name = cell(row, i_name)
                 p_city = resolve_city(cell(row, i_g), cell(row, i_h))
                 if p_name and p_city:
-                    pending.add((fold(p_name), fold_city(p_city)))
+                    pending.setdefault((fold(p_name), fold_city(p_city)), []).append(
+                        (rownum, status))
             continue
         counts[status] += 1
         name = cell(row, i_name)
@@ -689,23 +703,26 @@ def read_chapters():
 # ----------------------------------------------------------------------------
 # Diff
 # ----------------------------------------------------------------------------
-def change_text(a):
-    """' + added; - removed' for one Organizers-cell edit, names redacted."""
-    parts = []
-    if a["names"]:
-        parts.append(" + " + "; ".join(map(redact_name, a["names"])))
-    if a.get("removed"):
-        parts.append(" - " + "; ".join(map(redact_name, a["removed"]))
-                     + " (no longer accepted on the intake)")
-    return "".join(parts)
+def removal_text(r):
+    """' - Name (intake row N: Status 'X'; no accepted row)' per removed name.
+
+    States what was observed, not a conclusion: the match is on name and city
+    only, so the reader needs the intake row to judge whether it is the same
+    person.
+    """
+    return "; ".join(
+        "- %s (intake %s; no accepted row)" % (
+            redact_name(n),
+            ", ".join("row %d: Status %r" % rs_ for rs_ in why))
+        for n, why in zip(r["removed"], r["why"]))
 
 def parse_organizers(raw):
     return [p.strip() for p in raw.split(";") if p.strip()]
 
-def build_proposal(entries, chapters, last_row, pending=frozenset()):
+def build_proposal(entries, chapters, last_row):
     """Return (adds, new_rows, near_misses).
 
-    adds       = [{row, city, names, removed, new_value}]  edit an Organizers cell
+    adds       = [{row, city, names, new_value}]   merge into an Organizers cell
     new_rows   = [{row, city, names, slug}]        append after last_row
     near_misses= [{city, names, candidates}]       no exact row; never written
     """
@@ -718,12 +735,18 @@ def build_proposal(entries, chapters, last_row, pending=frozenset()):
     folded = [(c, fold_city(c["city"])) for c in chapters]
     chap_by_fold = {f: c for c, f in folded}
     adds, new_rows, near_misses = [], [], []
-    wanted = {}           # chapter row -> qualifying intake names for that city
     next_row = last_row + 1
     for fc, grp in by_city.items():
         chap = chap_by_fold.get(fc)
         if chap:
-            wanted.setdefault(chap["row"], []).extend(grp["names"])
+            existing = parse_organizers(chap["organizers_raw"])
+            present = {fold(n) for n in existing}
+            # Merge, don't overwrite: keep every name already in Organizers
+            # (manual entries included), append only the intake names missing.
+            missing = [n for n in grp["names"] if fold(n) not in present]
+            if missing:
+                adds.append({"row": chap["row"], "city": chap["city"], "names": missing,
+                             "new_value": "; ".join(existing + missing)})
             continue
         # Near-miss on substring OR a shared DISCRIMINATING token: 'New Delhi' vs
         # 'Delhi NCR' overlaps on neither substring test but is the same chapter.
@@ -746,37 +769,48 @@ def build_proposal(entries, chapters, last_row, pending=frozenset()):
         new_rows.append({"row": next_row, "city": grp["city"], "names": grp["names"],
                          "slug": slug})
         next_row += 1
-
-    # The Organizers column lists ACCEPTED organizers only (user-decided
-    # 2026-11-01). A name comes off when the intake holds that name in that
-    # city with a non-qualifying Status and never with a qualifying one, e.g.
-    # someone moved back from Accepted to Tentative. Everything else stays:
-    # names the intake has never seen are hand entries or MLOps-era organizers,
-    # and this engine has no evidence about them.
-    qualified = {(fold(e["name"]), fold_city(e["city"])) for e in entries}
-    for chap in chapters:
-        existing = parse_organizers(chap["organizers_raw"])
-        cf = fold_city(chap["city"])
-        stale = {(fold(n), cf) for n in existing} & (set(pending) - qualified)
-        keep = [n for n in existing if (fold(n), cf) not in stale]
-        removed = [n for n in existing if (fold(n), cf) in stale]
-        if removed and not keep and not wanted.get(chap["row"]):
-            # Never blank a cell: a chapter left with nobody accepted is a
-            # retirement decision, and retirement_candidates already names it
-            # for a human. Emptying the cell here would make that call for them.
-            keep, removed = existing, []
-        # Merge, don't overwrite: keep every other name already in Organizers
-        # (manual entries included), append only the intake names missing.
-        present = {fold(n) for n in keep}
-        missing = []
-        for n in wanted.get(chap["row"], []):
-            if fold(n) not in present:
-                present.add(fold(n))
-                missing.append(n)
-        if missing or removed:
-            adds.append({"row": chap["row"], "city": chap["city"], "names": missing,
-                         "removed": removed, "new_value": "; ".join(keep + missing)})
     return adds, new_rows, near_misses
+
+
+def propose_removals(adds, chapters, pending, protected):
+    """Return (removals, held): names on the list the intake says are NOT accepted.
+
+    The Organizers cell lists accepted organizers only (user-decided
+    2026-11-01). A name is proposed for removal when the intake holds that
+    name, in that chapter's city, under a set, non-qualifying Status, and holds
+    the name under no qualifying Status anywhere (`protected`). Names the intake
+    has never seen are hand or MLOps-era entries and are never touched.
+
+    The match is on name and city only — the cell carries no email — and the
+    intake is a public form, so a stranger can submit under a listed
+    organizer's name and be Denied. That is why a removal is a PROPOSAL: plain
+    --write never applies one; `--apply-removals` does, after a human has
+    read the intake rows each line cites.
+
+    removals = [{row, city, removed, why, new_value}]   new_value includes any add
+    held     = same shape: the removal would empty the cell, which is a
+               retirement question for a human (never applied, even with the flag)
+    Retired (Merged/Deprecated) rows are history and are skipped.
+    """
+    added = {a["row"]: a["new_value"] for a in adds}
+    removals, held = [], []
+    for chap in chapters:
+        if (chap.get("status") or "").strip() in RETIRED_STATUSES:
+            continue
+        cf = fold_city(chap["city"])
+        existing = parse_organizers(chap["organizers_raw"])
+        gone = [n for n in existing
+                if (fold(n), cf) in pending and fold(n) not in protected]
+        if not gone:
+            continue
+        gone_keys = {fold(n) for n in gone}
+        base = parse_organizers(added.get(chap["row"], chap["organizers_raw"]))
+        keep = [n for n in base if fold(n) not in gone_keys]
+        rec = {"row": chap["row"], "city": chap["city"], "removed": gone,
+               "why": [pending[(fold(n), cf)] for n in gone],
+               "new_value": "; ".join(keep)}
+        (removals if keep else held).append(rec)
+    return removals, held
 
 def annotate_unresolved(unresolved, chapters):
     """Mark unresolved rows already hand-placed on the chapters list, and infer
@@ -863,7 +897,7 @@ def print_report(st):
     if adds:
         print("\nProposed adds to existing rows:")
         for a in adds:
-            print("  %s (row %d):%s" % (a["city"], a["row"], change_text(a)))
+            print("  %s (row %d): + %s" % (a["city"], a["row"], "; ".join(map(redact_name, a["names"]))))
             print("      %s%d -> %r" % (org_col, a["row"], redact_names_cell(a["new_value"])))
     if new_rows:
         print("\nProposed NEW city rows (appended after row %d):" % last_row)
@@ -946,7 +980,19 @@ def print_report(st):
         print("\nRetirement question HELD — fix the ambiguous or incomplete organizer city first:")
         for c in st.retire_held:
             print("  row %d: %s" % (c["row"], c["city"]))
-    if not adds and not new_rows:
+    if st.removals:
+        print("\nListed but NOT accepted on the intake — proposed removals (matched by "
+              "name + city only: check each intake row, then apply with --write "
+              "--apply-removals; plain --write never removes):")
+        for r in st.removals:
+            print("  %s (row %d): %s" % (r["city"], r["row"], removal_text(r)))
+            print("      %s%d -> %r" % (org_col, r["row"], redact_names_cell(r["new_value"])))
+    if st.removals_held:
+        print("\nRemoval HELD — it would leave the cell empty, which is a retirement "
+              "decision (never applied; set Status by hand, or fix the intake row):")
+        for r in st.removals_held:
+            print("  %s (row %d): %s" % (r["city"], r["row"], removal_text(r)))
+    if not adds and not new_rows and not st.removals and not st.removals_held:
         print("\nNo changes needed — the chapters list is in sync with the intake.")
 
 
@@ -964,13 +1010,16 @@ def build_findings(report, st, held=()):
     adds, new_rows, near_misses = st.adds, st.new_rows, st.near_misses
     cities = len({fold_city(e["city"]) for e in st.entries})
     report.summary = ("%d qualifying organizers across %d cities; %d add(s), %d new "
-                      "row(s), %d near-miss(es); %d unresolved"
+                      "row(s), %d near-miss(es), %d proposed removal(s); %d unresolved"
                       % (len(st.entries), cities, len(adds), len(new_rows),
-                         len(near_misses), len(st.unresolved)))
+                         len(near_misses), len(st.removals) + len(st.removals_held),
+                         len(st.unresolved)))
     report.measure("qualifying organizers", len(st.entries))
     report.measure("cities", cities)
     report.measure("chapter rows", len(st.chapters))
     report.measure("adds", len(adds), "warn" if adds else "ok")
+    n_rm = sum(len(r["removed"]) for r in list(st.removals) + list(st.removals_held))
+    report.measure("listed but not accepted", n_rm, "warn" if n_rm else "ok")
     report.measure("new rows", len(new_rows), "warn" if new_rows else "ok")
     report.measure("near-misses", len(near_misses), "warn" if near_misses else None)
     report.measure("unresolved", len(st.unresolved), "warn" if st.unresolved else None)
@@ -986,9 +1035,16 @@ def build_findings(report, st, held=()):
                     severity="warn", action="fix the structured intake city and re-run")
     held_cities = {fold_city(h["city"]) for h in held}
     for a in adds:
-        report.find("remove" if a.get("removed") and not a["names"] else "add", a["city"],
-                    "row %d:%s" % (a["row"], change_text(a)),
+        report.find("add", a["city"], "row %d: + %s" % (a["row"], "; ".join(map(redact_name, a["names"]))),
                     severity="warn", action="apply with --write")
+    for r in st.removals:
+        report.find("listed but not accepted", r["city"],
+                    "row %d: %s" % (r["row"], removal_text(r)), severity="warn",
+                    action="check the intake rows, then --write --apply-removals")
+    for r in st.removals_held:
+        report.find("removal held", r["city"],
+                    "row %d: %s — would empty the cell" % (r["row"], removal_text(r)),
+                    severity="warn", action="a retirement decision: set Status by hand")
     for n in new_rows:
         is_held = fold_city(n["city"]) in held_cities
         luma = n.get("luma")
@@ -1018,19 +1074,22 @@ def build_findings(report, st, held=()):
 # takes the State itself, not *state), so adding a field can't silently rebind a
 # positional parameter the way it did when `layout` landed.
 State = namedtuple("State", "entries unresolved counts dupes chapters last_row "
-                            "adds new_rows near_misses layout malformed retire retire_held",
-                   defaults=((), ()))
+                            "adds new_rows near_misses layout malformed retire retire_held "
+                            "removals removals_held",
+                   defaults=((), (), (), ()))
 
 def compute():
-    pending = set()
-    entries, unresolved, counts, dupes, malformed = read_intake(pending)
+    pending, protected = {}, set()
+    entries, unresolved, counts, dupes, malformed = read_intake(pending, protected)
     chapters, last_row, layout = read_chapters()
-    adds, new_rows, near_misses = build_proposal(entries, chapters, last_row, pending)
+    adds, new_rows, near_misses = build_proposal(entries, chapters, last_row)
+    removals, removals_held = propose_removals(adds, chapters, pending, protected)
     annotate_unresolved(unresolved, chapters)
     retire, retire_held = retirement_candidates(entries, chapters, unresolved,
                                                 malformed, near_misses)
     return State(entries, unresolved, counts, dupes, chapters, last_row,
-                 adds, new_rows, near_misses, layout, malformed, retire, retire_held)
+                 adds, new_rows, near_misses, layout, malformed, retire, retire_held,
+                 removals, removals_held)
 
 def new_row_values(n, layout):
     """Full-width feed row for a brand-new city.
@@ -1092,7 +1151,7 @@ def partition_new_rows(new_rows, last_row, require_luma=False):
         n["row"] = last_row + 1 + i
     return write, held
 
-def assert_rows_unchanged(adds, new_rows, layout):
+def assert_rows_unchanged(adds, new_rows, layout, expected_cells=None):
     """Re-read the City column and confirm the proposal's row numbers still mean
     what they meant when it was computed.
 
@@ -1105,6 +1164,17 @@ def assert_rows_unchanged(adds, new_rows, layout):
     rows = get_values(CHAPTERS_ID, "'%s'!%s:%s" % (CHAPTERS_TAB, c, c))
     def at(r):
         return cell(rows[r - 1], 0) if 0 < r <= len(rows) else ""
+    # A whole Organizers cell is rewritten from the snapshot. A removal makes
+    # that more than an append, so a hand edit made to the cell since the read
+    # aborts the run instead of being silently overwritten.
+    if expected_cells:
+        o = col_letter(layout["index"]["Organizers"])
+        orgs = get_values(CHAPTERS_ID, "'%s'!%s:%s" % (CHAPTERS_TAB, o, o))
+        for r, want in sorted(expected_cells.items()):
+            got = cell(orgs[r - 1], 0) if 0 < r <= len(orgs) else ""
+            if got != want:
+                sys.exit("ABORT: the Organizers cell on row %d changed while the proposal "
+                         "was being built. Nothing was written; re-run." % r)
     for a in adds:
         if fold_city(at(a["row"])) != fold_city(a["city"]):
             sys.exit("ABORT: row %d now reads %r, expected %r — the sheet changed while "
@@ -1116,13 +1186,16 @@ def assert_rows_unchanged(adds, new_rows, layout):
                      "the proposal was being built. Nothing was written; re-run."
                      % (n["row"], at(n["row"])))
 
-def apply_changes(adds, new_rows, layout):
-    assert_rows_unchanged(adds, new_rows, layout)
+def apply_changes(adds, new_rows, layout, removals=(), expected_cells=None):
+    """One batchUpdate. A removal's new_value already includes that row's add,
+    so where both touch a row the removal's value is the one written."""
+    cells = {a["row"]: a["new_value"] for a in adds}
+    cells.update({r["row"]: r["new_value"] for r in removals})
+    assert_rows_unchanged(list(adds) + list(removals), new_rows, layout, expected_cells)
     org_col = col_letter(layout["index"]["Organizers"])
     last_col = col_letter(len(layout["headers"]) - 1)
-    data = [{"range": "'%s'!%s%d" % (CHAPTERS_TAB, org_col, a["row"]),
-             "values": [[a["new_value"]]]}
-            for a in adds]
+    data = [{"range": "'%s'!%s%d" % (CHAPTERS_TAB, org_col, row), "values": [[v]]}
+            for row, v in sorted(cells.items())]
     data += [{"range": "'%s'!A%d:%s%d" % (CHAPTERS_TAB, n["row"], last_col, n["row"]),
               "values": [new_row_values(n, layout)]}
              for n in new_rows]
@@ -1148,6 +1221,10 @@ def main():
     ap.add_argument("--audit-luma", action="store_true",
                     help="also check EVERY existing feed row's Chapter Luma Link "
                          "and report the dead ones (one request per row; slow)")
+    ap.add_argument("--apply-removals", action="store_true",
+                    help="with --write, also take off names the intake says are not "
+                         "accepted. Matched on name + city only, so read the report's "
+                         "intake rows first; the sync runner never passes this")
     add_redact_flag(ap, masks="names (first initial) and free-text answers")
     findings.add_flag(ap)
     a = ap.parse_args()
@@ -1180,15 +1257,22 @@ def main():
         print("NOTE: --allow-missing-luma is inert — writing without a live Luma "
               "page is the default now; see --require-luma.", file=sys.stderr)
     dead_luma = audit_luma(report) if a.audit_luma else 0
-    drift = bool(state.adds or state.new_rows)
+    if a.apply_removals and not a.write:
+        sys.exit("ABORT: --apply-removals only means something with --write.")
+    removals = list(state.removals) if a.apply_removals else []
+    # Proposed-but-not-applied removals, and held ones, are pending human work:
+    # a run that leaves them must not exit 0.
+    pending_removals = bool(state.removals_held or (state.removals and not removals))
+    drift = bool(state.adds or state.new_rows or removals)
     if not a.write:
+        drift = drift or bool(state.removals or state.removals_held)
         # Exit convention (shared by all five engines, consumed by nightly.py):
         # report mode exits 0 when in sync, 2 when it proposes changes. A dead
         # Luma link is drift too when it was asked about: the row is on the site
         # with a button that 404s, which is pending work whoever writes it.
         return done(2 if (drift or dead_luma) else 0)
     if not drift:
-        return done(0)
+        return done(2 if pending_removals else 0)
 
     # The cap's second enforcement point. create_chapter.py guards the Drive
     # folder; this guards the feed row. Checked here rather than in report mode
@@ -1224,18 +1308,21 @@ def main():
               "point at a 404): %s.\nCreate the page(s) and re-run, or drop "
               "--require-luma to write them anyway."
               % (len(held), ", ".join(n["city"] for n in held)))
-    if not state.adds and not to_write:
+    if not state.adds and not to_write and not removals:
         print("Nothing else to write — every proposed change is held back.")
         return done(2)
 
-    print("\nApplying %d cell update(s) + %d new row(s) in one batchUpdate..."
-          % (len(state.adds), len(to_write)))
+    print("\nApplying %d cell update(s) + %d removal(s) + %d new row(s) in one batchUpdate..."
+          % (len(state.adds), len(removals), len(to_write)))
     # The report above printed pre-partition row numbers; holding a row shifts
     # everything after it, so name the FINAL rows — an operator filling the
     # blank editorial cells must be pointed at the row the city actually got.
     for nr in to_write:
         print("  writing %s at row %d" % (nr["city"], nr["row"]))
-    n = apply_changes(state.adds, to_write, state.layout)
+    raw = {c["row"]: c["organizers_raw"] for c in state.chapters}
+    touched = {x["row"] for x in list(state.adds) + removals}
+    n = apply_changes(state.adds, to_write, state.layout, removals,
+                      {r: raw.get(r, "") for r in touched})
     print("Wrote %d range(s)." % n)
 
     print("\nRe-verifying...")
@@ -1267,10 +1354,14 @@ def main():
             still_held.append(x)
         else:
             leftover_rows.append(x)
-    if after.adds or leftover_rows:
+    # Removals were applied only when asked for; then none may remain.
+    leftover_removals = list(after.removals) if removals else []
+    if after.adds or leftover_rows or leftover_removals:
         print("VERIFY FAILED — still out of sync after write:")
+        for x in leftover_removals:
+            print("  row %d %s: %s" % (x["row"], x["city"], removal_text(x)))
         for x in after.adds:
-            print("  row %d %s:%s" % (x["row"], x["city"], change_text(x)))
+            print("  row %d %s: + %s" % (x["row"], x["city"], "; ".join(map(redact_name, x["names"]))))
         for x in leftover_rows:
             print("  new row %s: %s" % (x["city"], "; ".join(map(redact_name, x["names"]))))
         sys.exit(1)
@@ -1283,8 +1374,14 @@ def main():
               "(%d still pending)." % len(still_held))
         report.written = True
         return done(2)
-    print("Verified: a fresh run proposes zero changes.")
     report.written = True
+    if after.removals or after.removals_held:
+        # The write landed; what is left is the human-gated half.
+        print("Verified: every write landed. %d name(s) listed but not accepted "
+              "still need a human (see above; plain --write never removes)."
+              % sum(len(r["removed"]) for r in list(after.removals) + list(after.removals_held)))
+        return done(2)
+    print("Verified: a fresh run proposes zero changes.")
     # A --write run that was ALSO asked to audit must report what the audit
     # found. dead_luma used to be computed here and consumed only on the
     # report-mode branch, so `--write --audit-luma` printed dead links and then
