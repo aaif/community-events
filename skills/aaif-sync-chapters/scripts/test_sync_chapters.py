@@ -266,6 +266,10 @@ with mock.patch.object(sync_chapters, "gws_json") as gj, \
 check("apply_changes writes both changes", n, 2)
 check("apply_changes makes room for the last new row first", _grown, [6])
 
+# --- a rate-limited Luma check on a new row is "could not verify", not a crash --
+with mock.patch.object(sync_chapters, "url_status", return_value="throttled"):
+    check("luma_status folds a 429 into 'unknown'", sync_chapters.luma_status("x"), "unknown")
+
 # --- ensure_rows: grow the grid by exactly the shortfall, sent once -------------
 import contextlib as _ctx  # noqa: E402
 import io as _io  # noqa: E402

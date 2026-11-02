@@ -304,8 +304,14 @@ def url_status(url):
         return "unknown"
 
 def luma_status(slug):
-    """'live' / 'absent' / 'unknown' for the Luma page a new row would point at."""
-    return url_status("https://luma.com/aaif-" + slug)
+    """'live' / 'absent' / 'unknown' for the Luma page a new row would point at.
+
+    url_status also answers 'throttled' (HTTP 429), which only the paced
+    `--audit-luma` sweep acts on. For one page it means "could not verify", and
+    passing it through crashed print_report on a run made right after a sweep.
+    """
+    st = url_status("https://luma.com/aaif-" + slug)
+    return "unknown" if st == "throttled" else st
 
 class LumaAudit(namedtuple("LumaAudit", "checked dead unknown blank throttled_at")):
     """What one `--audit-luma` sweep measured.
