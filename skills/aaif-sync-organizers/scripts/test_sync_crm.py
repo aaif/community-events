@@ -919,6 +919,25 @@ check("near-miss on a shared discriminating token",
 check("generic tokens do not create a near-miss (San Diego / San Francisco)",
       sorted(o["city"] for o in orphans), ["Reykjavik", "San Diego", "TemplateCity"])
 
+# A city with no folder is only a "run aaif-create-chapter" item when an
+# organizer there is ACCEPTED. Pipeline hosts/speakers sync regardless of
+# status, so without this the list named cities nobody had been accepted in.
+_, _orph, _ = match_chapters(merge_people([
+    person("A", "a@x.io", "Reykjavik"),                                 # accepted organizer
+    person("B", "b@x.io", "Lyon", status="New"),                        # pipeline organizer
+    person("C", "c@x.io", "Lyon", tab="Speakers", status="New"),        # pipeline speaker
+    person("D", "d@x.io", "Porto", tab="Hosts", status="Accepted"),     # accepted host only
+    person("E", "e@x.io", "Quito", tab="Speakers", status="New"),       # pipeline speaker ...
+    person("E", "e@x.io", "Quito"),                                     # ... accepted as organizer
+    person("G", "g@x.io", "Accra", status="Existing (from MLOps)"),     # MLOps-era counts
+    person("Rahul Parundekar", "ops@x.io", "Hilo"),                     # AAIF ops does not
+]), FOLDERS)
+_act, _wait = sync_crm.split_orphans(_orph)
+check("orphans: only cities with an accepted organizer are actionable",
+      sorted(o["city"] for o in _act), ["Accra", "Quito", "Reykjavik"])
+check("orphans: pipeline-only, host-only and ops-only cities wait for triage",
+      sorted(o["city"] for o in _wait), ["Hilo", "Lyon", "Porto"])
+
 
 # ---------------------------------------------------------------------------
 # Write guards: the promises that are now structural rather than documented
@@ -1241,6 +1260,23 @@ check("json-out: a kept row is a row number and the name in it",
       [(c, d.startswith("row 2: ") and len(d) > len("row 2: "), s)
        for c, d, s in _byk["real-looking row not touched"]],
       [("Boston", True, "info")])
+# Waiting cities reach the run page as a count, never as cities or names.
+_wd = sync_crm.build_findings("report", waiting=[
+    {"city": "Lyon", "people": [{"name": "Quill Waiting"}, {"name": "Rook Waiting"}]},
+    {"city": "Porto", "people": [{"name": "Sable Waiting"}]}], **_kw).to_dict()
+check("json-out: waiting cities are a count tile and one info finding",
+      ([(m["label"], m["value"]) for m in _wd["measured"]][-1],
+       [(f["subject"], f["detail"], f["severity"]) for f in _wd["findings"]
+        if f["kind"] == "no accepted organizer yet"]),
+      (("folderless cities awaiting an accepted organizer", 2),
+       [("intake", "2 city/cities, 3 person/people with no chapter folder and no "
+                   "accepted organizer", "info")]))
+# Only the waiting finding itself: other fixture findings name Boston, which
+# contains a short name and made the first version of this check fail.
+_wf = [f for f in _wd["findings"] if f["kind"] == "no accepted organizer yet"]
+check("...naming no city and no person",
+      any(x in _json.dumps(_wf) for x in ("Lyon", "Porto", "Waiting")), False)
+
 # A nameless row is still a finding about a row: the detail says which.
 _nn = sync_crm.build_findings("report", **dict(
     _kw, keepers=[("Boston", [{"row": 2, "name": "", "email": "gus@x.io"}])],

@@ -91,6 +91,34 @@ check("merge appends only missing", adds,
         "new_value": "Wedge Antilles; New Person"}])
 check("merge creates no rows", (new_rows, near), ([], []))
 
+# --- the Organizers cell lists ACCEPTED organizers only -------------------------
+# propose_removals: a name the intake holds in that city under a set,
+# non-qualifying Status, and under no qualifying Status anywhere, is PROPOSED for
+# removal. Names the intake has never seen stay (hand / MLOps-era entries).
+from sync_chapters import propose_removals  # noqa: E402
+_P = {("biggs darklighter", "boston"): [(9, "Tentative")]}
+_two = [chap(2, "Boston", "Wedge Antilles; Biggs Darklighter; Han Solo")]
+_r, _h = propose_removals([], _two, _P, {"wedge antilles"})
+check("a not-accepted name is proposed, unknown names kept",
+      [(r["removed"], r["why"], r["new_value"]) for r in _r],
+      [(["Biggs Darklighter"], [[(9, "Tentative")]], "Wedge Antilles; Han Solo")])
+check("...and nothing is held", _h, [])
+check("a name protected by ANY accepted row is never proposed",
+      propose_removals([], _two, _P, {"biggs darklighter"}), ([], []))
+check("a pending row in ANOTHER city proposes nothing here",
+      propose_removals([], _two, {("han solo", "oslo"): [(3, "Denied")]}, set()), ([], []))
+_r, _h = propose_removals([], [chap(2, "Boston", "Biggs Darklighter")], _P, set())
+check("a removal that would empty the cell is HELD, never proposed",
+      (_r, [h["row"] for h in _h]), ([], [2]))
+_adds, _, _ = build_proposal([entry(2, "Luke Skywalker", "Boston")],
+                             [chap(2, "Boston", "Biggs Darklighter")], 2)
+_r, _h = propose_removals(_adds, [chap(2, "Boston", "Biggs Darklighter")], _P, {"luke skywalker"})
+check("a removal on a row with an add carries the add in its new value",
+      ([r["new_value"] for r in _r], _h), (["Luke Skywalker"], []))
+_retired = [dict(chap(2, "Boston", "Wedge Antilles; Biggs Darklighter"), status="Deprecated")]
+check("retired rows are history and are never edited",
+      propose_removals([], _retired, _P, set()), ([], []))
+
 # --- city match is case-insensitive; manual B entries are kept -----------------
 adds, _, _ = build_proposal([entry(2, "Ana Ruiz", "  boston ")], CHAPTERS, 5)
 check("city matched folded, existing name kept", adds[0]["new_value"],
@@ -225,7 +253,9 @@ check("a malformed row is never an unresolved/dupe entry", (_u, _d), ([], []))
 
 # --- apply_changes: exact ranges, column order, RAW (gws mocked, no network) -----
 CITY_COL = [["City"], ["Boston"]]        # row 2 = Boston, row 6 still empty
+_grown = []
 with mock.patch.object(sync_chapters, "gws_json") as gj, \
+     mock.patch.object(sync_chapters, "ensure_rows", side_effect=_grown.append), \
      mock.patch.object(sync_chapters, "get_values", return_value=CITY_COL):
     n = sync_chapters.apply_changes(
         [{"row": 2, "city": "Boston", "names": ["New Person"],
@@ -234,6 +264,38 @@ with mock.patch.object(sync_chapters, "gws_json") as gj, \
         LAYOUT)
     body = gj.call_args.kwargs["body"]
 check("apply_changes writes both changes", n, 2)
+check("apply_changes makes room for the last new row first", _grown, [6])
+
+# --- a rate-limited Luma check on a new row is "could not verify", not a crash --
+with mock.patch.object(sync_chapters, "url_status", return_value="throttled"):
+    check("luma_status folds a 429 into 'unknown'", sync_chapters.luma_status("x"), "unknown")
+
+# --- ensure_rows: grow the grid by exactly the shortfall, sent once -------------
+import contextlib as _ctx  # noqa: E402
+import io as _io  # noqa: E402
+def _meta(rows):
+    return {"sheets": [{"properties": {"title": "Other", "sheetId": 1,
+                                       "gridProperties": {"rowCount": 5}}},
+                       {"properties": {"title": sync_chapters.CHAPTERS_TAB, "sheetId": 7,
+                                       "gridProperties": {"rowCount": rows}}}]}
+_calls = []
+def _fake_gws(*a, **k):
+    _calls.append((a, k))
+    return _meta(99) if a[2] == "get" else {}
+with mock.patch.object(sync_chapters, "gws_json", side_effect=_fake_gws), \
+     _ctx.redirect_stdout(_io.StringIO()):
+    _n = sync_chapters.ensure_rows(101)
+_append = [k for a, k in _calls if a[2] == "batchUpdate"]
+check("ensure_rows appends exactly the shortfall on the Chapters tab",
+      (_n, _append[0]["body"]["requests"]),
+      (2, [{"appendDimension": {"sheetId": 7, "dimension": "ROWS", "length": 2}}]))
+check("...and sends appendDimension once, never retried",
+      _append[0]["retries"], sync_chapters._gws_mod.NO_RETRY)
+_calls.clear()
+with mock.patch.object(sync_chapters, "gws_json",
+                       side_effect=lambda *a, **k: _calls.append(a) or _meta(120)):
+    check("ensure_rows does nothing when the grid already fits",
+          (sync_chapters.ensure_rows(101), [c[2] for c in _calls]), (0, ["get"]))
 check("apply_changes uses RAW (no formula injection)", body["valueInputOption"], "RAW")
 # Ranges are derived from LAYOUT, not spelled out: the column letters moved once
 # already (the resource block was inserted after Country), and a hardcoded "I2"
@@ -389,8 +451,8 @@ check("chapters summary is the headline's counts, no names",
 check("chapters tiles are the report's counts, in order",
       [(m["label"], m["value"]) for m in _doc["measured"]],
       [("qualifying organizers", 2), ("cities", 2), ("chapter rows", 2), ("adds", 1),
-       ("new rows", 1), ("near-misses", 1), ("unresolved", 1),
-       ("retirement candidates", 0)])
+       ("listed but not accepted", 0), ("new rows", 1), ("near-misses", 1),
+       ("unresolved", 1), ("retirement candidates", 0)])
 _by_kind = {f["kind"]: f for f in _doc["findings"]}
 check("one finding per add / new row / near-miss / malformed row",
       sorted(_by_kind), ["add", "malformed text", "near-miss", "new row"])
@@ -830,6 +892,112 @@ check("the report lists candidates and held rows, with the Status note",
       ("row 3: Oslo (Status 'Retired' is not Merged or Deprecated)" in _printed,
        "row 4: Lima" in _printed, "NEVER cleared" in _printed),
       (True, True, True))
+
+# --- removals, end to end: collectors, compute() wiring, the --write gate -------
+_p, _prot = {}, set()
+with mock.patch.object(sync_chapters, "get_values", return_value=[INTAKE_HEADERS,
+        intake_row("Accepted", "Ada Lovelace", "Boston"),
+        intake_row("Tentative", "Biggs Darklighter", "Boston"),
+        intake_row("Denied", "Cy Ro", "Other (please specify)"),     # no city: not pending
+        intake_row("", "Dee Em", "Boston"),                          # blank Status: not pending
+        intake_row("accepted", "Eve Ok", "Boston"),                  # hand-typed: protects
+        intake_row("Accepted", "Fay Un", "Other (please specify)"),  # unresolved: still protects
+        intake_row("Denied", "Fay Un", "Boston")]):
+    _e, *_ = sync_chapters.read_intake(_p, _prot)
+check("pending holds only set, non-qualifying statuses with a resolved city",
+      sorted(_p), [("biggs darklighter", "boston"), ("fay un", "boston")])
+check("pending carries the intake row and Status for the report",
+      _p[("biggs darklighter", "boston")], [(3, "Tentative")])
+check("protected covers every qualifying row, unresolved and hand-typed included",
+      sorted(_prot), ["ada lovelace", "eve ok", "fay un"])
+check("pending rows never become entries", [e["name"] for e in _e], ["Ada Lovelace"])
+
+def _grid_with(city, orgs):
+    g = [HEADERS, list(ROW2)]
+    g[1][HEADERS.index("City")] = city
+    g[1][HEADERS.index("Organizers")] = orgs
+    return g
+_jp = _grid_with("Japan", "Han Solo; Biggs Darklighter")
+_jp_intake = [INTAKE_HEADERS, intake_row("Accepted", "Han Solo", "Japan"),
+              intake_row("Tentative", "Biggs Darklighter", "Tokyo")]
+with mock.patch.object(sync_chapters, "get_values", side_effect=lambda fid, _r:
+                       _jp_intake if fid == sync_chapters.INTAKE_ID else _jp):
+    _st = sync_chapters.compute()
+check("compute() wires removals through, across a country-chapter fold (Tokyo -> Japan)",
+      [(r["city"], r["removed"], r["new_value"]) for r in _st.removals],
+      [("Japan", ["Biggs Darklighter"], "Han Solo")])
+_jp_intake2 = [INTAKE_HEADERS, intake_row("Accepted", "Han Solo", "Japan"),
+               intake_row("Accepted", "Biggs Darklighter", "Tokyo"),
+               intake_row("Tentative", "Biggs Darklighter", "Japan")]
+with mock.patch.object(sync_chapters, "get_values", side_effect=lambda fid, _r:
+                       _jp_intake2 if fid == sync_chapters.INTAKE_ID else _jp):
+    _st2 = sync_chapters.compute()
+check("accepted as Tokyo protects the same person pending as Japan",
+      (_st2.removals, _st2.removals_held), ([], []))
+
+def _run_main(states, argv):
+    sent = []
+    with _tempfile.TemporaryDirectory() as d, \
+         mock.patch.object(sync_chapters, "compute", side_effect=list(states)), \
+         mock.patch.object(sync_chapters, "print_report", lambda s: None), \
+         mock.patch.object(sync_chapters, "assert_rows_unchanged"), \
+         mock.patch.object(sync_chapters, "gws_json",
+                           side_effect=lambda *a, **k: sent.append(k["body"])), \
+         mock.patch.object(sys, "argv", ["sync_chapters.py", "--json-out",
+                                         os.path.join(d, "o.json")] + argv), \
+         _ctx.redirect_stdout(_io.StringIO()) as out:
+        try:
+            code = sync_chapters.main()
+        except SystemExit as e:
+            code = e.code
+        doc = _json.load(open(os.path.join(d, "o.json"))) if os.path.exists(
+            os.path.join(d, "o.json")) else {}
+    return code, [d_["range"] for b in sent for d_ in b["data"]], \
+        [d_["values"] for b in sent for d_ in b["data"]], out.getvalue(), doc
+
+_code, _rng, _, _, _doc = _run_main([_st], [])
+check("report mode: a proposed removal is drift (exit 2) and a finding",
+      (_code, [f["kind"] for f in _doc["findings"]]), (2, ["listed but not accepted"]))
+_code, _rng, _, _, _ = _run_main([_st, _st], ["--write"])
+check("plain --write never removes, and exits 2 (a human still owes it)", (_code, _rng), (2, []))
+_code, _rng, _vals, _, _ = _run_main(
+    [_st, _st._replace(removals=[], chapters=[dict(_st.chapters[0], organizers_raw="Han Solo")])],
+    ["--write", "--apply-removals"])
+check("--write --apply-removals writes the pruned cell and verifies",
+      (_code, _vals), (0, [[["Han Solo"]]]))
+_code, _, _, _out, _ = _run_main([_st, _st], ["--write", "--apply-removals"])
+check("a removal that did not land fails the verify, naming it",
+      (_code, "VERIFY FAILED" in _out, "Status 'Tentative'" in _out), (1, True, True))
+check("--apply-removals without --write is refused",
+      _run_main([_st], ["--apply-removals"])[0] not in (0, 2), True)
+
+_held = _st._replace(removals=[], removals_held=[dict(_st.removals[0], new_value="")])
+_buf = _io.StringIO()
+with _ctx.redirect_stdout(_buf):
+    sync_chapters.print_report(_held)
+check("a held removal is printed, and the run does not claim to be in sync",
+      ("Removal HELD" in _buf.getvalue(), "No changes needed" in _buf.getvalue()),
+      (True, False))
+check("a held removal alone still exits 2 in report mode",
+      _run_main([_held], [])[0], 2)
+
+# The Organizers cell is rewritten whole, so a hand edit since the read aborts.
+with mock.patch.object(sync_chapters, "gws_json") as gj, \
+     mock.patch.object(sync_chapters, "get_values",
+                       side_effect=[[["City"], ["Japan"]],
+                                    [["Organizers"], ["Han Solo; Biggs Darklighter; Luke"]]]):
+    _stale = aborts(lambda: sync_chapters.apply_changes(
+        [], [], LAYOUT, _st.removals, {2: "Han Solo; Biggs Darklighter"}))
+check("a hand edit to the Organizers cell since the read aborts the write",
+      (_stale, gj.called), (True, False))
+
+_was = _redact.REDACT
+sync_chapters.set_redaction(True)
+try:
+    _txt = sync_chapters.removal_text(_st.removals[0])
+finally:
+    sync_chapters.set_redaction(_was)
+check("a removed name is masked under --redact", "Biggs Darklighter" in _txt, False)
 
 print()
 sys.exit("FAIL: %d test(s) failed" % fails if fails else None)

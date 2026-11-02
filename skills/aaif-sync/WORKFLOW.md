@@ -153,7 +153,7 @@ gate in one place so no caller can route around one.
 
 | Gate | Steps | What it means |
 |---|---|---|
-| **open** | `chapters`, `about`, `crm`, `resources` | `--write` passes through. |
+| **open** | `chapters`, `about`, `crm`, `resources` | `--write` passes through. One exception inside `chapters`: taking a name OFF the Chapters List is matched on name + city only, so it is proposed, never applied by the runner — run `sync_chapters.py --write --apply-removals` by hand after checking the intake rows `chapters.log` cites. |
 | **report-only** | `access` | **Never** receives `--write`, whatever the runner was told. Its grants hand standing Drive access to addresses typed into a public form, and Drive may email the person. Run `sync_access.py --write` by hand after reading `access.log`. |
 | **approval** | `provision`, `invite`, `directory` | Needs `--i-have-approval` too. These create rooms, add real people and post in shared channels. Under `--unattended` they run read-only, like `access`. |
 | **read-only** | every `gather` step | No write mode at all. `DRIFT` from one of these is a finding to fix at its source, not a proposal to apply. |
