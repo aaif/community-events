@@ -260,6 +260,7 @@ code.chan{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.82em;
    which never scrolls vertically, so offsetting it would push its header
    down; only a bare table's header is moved. 52px is .sitenav's height. */
 .sitenav ~ .wrap [id]{scroll-margin-top:64px}
+.sitenav ~ .wrap > table thead th,
 .sitenav ~ .wrap :not(.tablewrap) > table thead th{top:52px}
 /* Per-cell borders, not a 1px grid gap over a tinted container: a short final
    row would otherwise leave a slab of container colour where cells are missing. */

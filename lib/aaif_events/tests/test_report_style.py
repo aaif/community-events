@@ -552,5 +552,8 @@ def test_the_nav_script_is_separate_and_guarded(monkeypatch):
 def test_a_bare_table_header_sticks_below_the_bar():
     # A header inside .tablewrap sticks to the wrapper and must not move;
     # a bare table's header sticks to the viewport, under the bar.
-    assert ".sitenav ~ .wrap :not(.tablewrap) > table thead th{top:52px}" in rs.BASE_CSS
+    # both a table nested in a section and one sitting directly in .wrap
+    # (audit_topics writes those) — the first fix missed the second
+    assert (".sitenav ~ .wrap > table thead th,\n"
+            ".sitenav ~ .wrap :not(.tablewrap) > table thead th{top:52px}") in rs.BASE_CSS
     assert "--sitenav-h:52px" in rs.BASE_CSS
