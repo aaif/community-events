@@ -158,6 +158,16 @@ REDACTING = frozenset({
 #: this set against the scripts' own source, as it does for REDACTING.
 RENDERS_HTML = frozenset({"coverage", "activity", "topics", "members", "audit"})
 
+#: The run's site bar: report.html first, then each page a selected step draws,
+#: in pipeline order, under these labels. Keyed by RENDERS_HTML exactly (a test
+#: pins it), so a new page-drawing step cannot ship without a place in the bar.
+PAGE_LABEL = {"coverage": "Coverage", "activity": "Activity", "topics": "Topics",
+              "members": "Members", "audit": "Slack audit"}
+SUMMARY_PAGE = ("report.html", "Run summary")
+#: See aaif_events.report_style.NAV_ENV — spelled here, not imported, because
+#: the runner stays lib-free.
+NAV_ENV = "AAIF_REPORT_NAV"
+
 #: Steps that take `--json-out PATH` and write their report as data — measured
 #: counts and findings in the shape `aaif_events.findings` defines. The runner
 #: points each at `<run_dir>/<step>.json`; the page opens on those, and the
@@ -409,7 +419,14 @@ GWS_MEMO_ENV = "AAIF_GWS_RUN_MEMO"
 GWS_MEMO_FILE = "gws-memo.jsonl"
 
 
-def step_env(run_dir, run_writes):
+def run_pages(steps):
+    """[(href, label)] for every page this run will draw: the run page, then
+    the selected page-drawing steps in pipeline order."""
+    return [SUMMARY_PAGE] + [(s.name + ".html", PAGE_LABEL[s.name])
+                             for _p, s in steps if s.name in RENDERS_HTML]
+
+
+def step_env(run_dir, run_writes, nav=None):
     """The engine's environment: ours, plus the paths of this run's memos.
 
     Both sit in the run directory, so they inherit its 0700 and its
@@ -427,6 +444,11 @@ def step_env(run_dir, run_writes):
     """
     env = dict(os.environ)
     env.pop(GWS_MEMO_ENV, None)   # never inherited from whoever launched us
+    env.pop(NAV_ENV, None)
+    # The site bar: every page this run draws, so an engine's page links its
+    # siblings and the run page. Only a run sets it; a standalone audit has none.
+    if nav:
+        env[NAV_ENV] = json.dumps(nav, ensure_ascii=False)
     env[SLACK_MEMO_ENV] = os.path.join(run_dir, SLACK_MEMO_FILE)
     if not run_writes:
         env[GWS_MEMO_ENV] = os.path.join(run_dir, GWS_MEMO_FILE)
@@ -442,9 +464,9 @@ def drop_memos(run_dir):
             pass
 
 
-def run_step(step, log_path, write_mode, approved, unattended=False):
+def run_step(step, log_path, write_mode, approved, unattended=False, nav=None):
     run_dir = os.path.dirname(log_path)
-    env = step_env(run_dir, run_writes=write_mode)   # before gating narrows it
+    env = step_env(run_dir, run_writes=write_mode, nav=nav)   # before gating narrows it
     cmd, write_mode = step_cmd(step, write_mode, approved, unattended, run_dir)
     t0 = time.monotonic()
     # 0o600: the log holds names and emails; no other local user gets to read
@@ -805,6 +827,8 @@ def main(argv=None):
     # The memos go when the run does — including a run that crashes or is
     # interrupted, which never reaches the explicit call after the last step.
     atexit.register(drop_memos, run_dir)
+    pages = run_pages(steps)
+    nav = {"label": "Sync · %s" % stamp, "pages": pages}
     by_name, phase_shown, stage_shown = {}, None, None
     record = []   # what run.json carries: one entry per step, in run order
     for phase, step in steps:
@@ -825,7 +849,7 @@ def main(argv=None):
         _cmd, ran_write = step_cmd(step, a.write, a.approved, a.unattended)
         outcome, code, secs = run_step(
             step, os.path.join(run_dir, step.name + ".log"), a.write, a.approved,
-            a.unattended)
+            a.unattended, nav=nav)
         by_name[step.name] = outcome
         entry.update(outcome=outcome, exit=code, seconds=round(secs, 1),
                      ran_write=ran_write)
@@ -856,7 +880,7 @@ def main(argv=None):
     notes = summary_notes(by_name, a.write)
     for line in notes:
         print(line)
-    doc = write_manifest(run_dir, stamp, a, record, notes, exit_code(by_name))
+    doc = write_manifest(run_dir, stamp, a, record, notes, exit_code(by_name), pages)
     html, render_code = render(run_dir)
     # The manifest is the durable record; a page that was never drawn must be
     # visible there too, not only on a stdout line a scheduler discards.
@@ -901,7 +925,7 @@ def manifest_entry(phase, step, ran):
             "ran_write": False}
 
 
-def write_manifest(run_dir, stamp, a, record, notes, code):
+def write_manifest(run_dir, stamp, a, record, notes, code, pages=()):
     """run.json: everything the renderer needs and nothing a person is named in.
 
     Step names, outcomes, exit codes, durations, the log each step wrote, the
@@ -918,7 +942,8 @@ def write_manifest(run_dir, stamp, a, record, notes, code):
     doc = {"stamp": stamp, "mode": "write" if a.write else "report",
            "unattended": bool(a.unattended), "approved": bool(a.approved),
            "phases": list(a.phases) or None, "stages": a.stages,
-           "steps": steps, "notes": notes, "exit": code}
+           "steps": steps, "notes": notes, "exit": code,
+           "pages": [list(p) for p in pages]}
     dump_manifest(run_dir, doc)
     return doc
 

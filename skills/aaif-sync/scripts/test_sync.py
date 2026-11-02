@@ -848,6 +848,41 @@ with mock.patch.object(sync.subprocess, "run") as _run, \
     check("access — never written — still gets no read memo in a --write run",
           sync.GWS_MEMO_ENV in _run.call_args.kwargs["env"], False)
 
+# --- the site bar: every page a run draws, handed to every engine -------------
+from aaif_events import report_style as _rs  # noqa: E402
+check("the runner's nav variable is the one the page builder reads",
+      sync.NAV_ENV, _rs.NAV_ENV)
+check("every page-drawing step has a label in the bar",
+      set(sync.PAGE_LABEL), set(sync.RENDERS_HTML))
+_all_pages = sync.run_pages(sync.selected([], False))
+check("the bar opens on the run page, then the pages in pipeline order",
+      [h for h, _t in _all_pages],
+      ["report.html", "coverage.html", "activity.html", "topics.html",
+       "members.html", "audit.html"])
+check("a narrowed run lists only the pages it will draw",
+      [h for h, _t in sync.run_pages(sync.selected(["chapters"], False))],
+      ["report.html", "coverage.html"])
+_nav = {"label": "Sync · s", "pages": _all_pages}
+# Deliberate: every engine gets the WHOLE planned list, written or not, so the
+# bars match on every page. A step that fails before drawing leaves a dead link
+# on the pages drawn before it; report.html, drawn last, filters to what exists.
+with mock.patch.object(sync.os.path, "exists", return_value=False):
+    check("engine bars are the planned pages, not filtered by what exists yet",
+          sync.run_pages(sync.selected([], False)), _all_pages)
+check("step_env hands the bar to the engine as JSON",
+      json.loads(sync.step_env("/r/s", run_writes=False, nav=_nav)[sync.NAV_ENV])["pages"][1],
+      ["coverage.html", "Coverage"])
+with mock.patch.dict(os.environ, {sync.NAV_ENV: '{"pages": [["x.html", "X"]]}'}):
+    check("an inherited bar never leaks into a run that set none",
+          sync.NAV_ENV in sync.step_env("/r/s", run_writes=False), False)
+with mock.patch.object(sync.subprocess, "run") as _run, \
+        tempfile.TemporaryDirectory() as _td:
+    _run.return_value.returncode = 0
+    sync.run_step(sync.selected([], False)[0][1], os.path.join(_td, "x.log"), False, False,
+                  nav=_nav)
+    check("run_step spawns the engine with the bar in its env",
+          sync.NAV_ENV in _run.call_args.kwargs["env"], True)
+
 # --- the memos go when the run does --------------------------------------------
 # They hold whole intake tabs and Slack profiles; nothing reads them after the
 # last step, so a finished run must not leave them in sync-reports/.

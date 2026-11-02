@@ -347,9 +347,21 @@ def read_docs(run_dir, steps):
 
 # ---------------------------------------------------------------------------
 
-def render(manifest, logs, docs):
-    """The page, from a manifest dict, {log name: text} and {step: findings dict}.
-    Pure, for the test."""
+def site_pages(manifest, exists):
+    """[(href, label)] for the run's site bar: the runner's planned pages, kept
+    only where `exists(href)` says the file was written, so a step that failed
+    before drawing its page leaves no dead link here. A manifest from before
+    the runner recorded `pages` gets one built from the steps that drew one."""
+    planned = manifest.get("pages") or (
+        [[PAGE, "Run summary"]]
+        + [[s["html"], s["step"].capitalize()] for s in manifest["steps"] if s.get("html")])
+    pages = [(h, t) for h, t in planned if h == PAGE or exists(h)]
+    return pages if len(pages) > 1 else []
+
+
+def render(manifest, logs, docs, pages=()):
+    """The page, from a manifest dict, {log name: text}, {step: findings dict}
+    and the site bar's [(href, label)]. Pure, for the test."""
     steps = manifest["steps"]
     mode = manifest.get("mode", "report")
     if manifest.get("unattended"):
@@ -376,7 +388,9 @@ def render(manifest, logs, docs):
             + "".join(log_section(s, logs.get(s.get("log") or "", "")) for s in steps)
             + "</section>"
             + rs.closing(meta="aaif.io · sync-reports/%s" % e(stamp)))
-    return rs.page("AAIF estate sync %s" % stamp, body, script=FINDINGS_JS)
+    nav = {"label": "Sync · %s" % stamp, "pages": list(pages)} if pages else {}
+    return rs.page("AAIF estate sync %s" % stamp, body, script=FINDINGS_JS,
+                   nav=nav, nav_current=PAGE)
 
 
 def main(argv=None):
@@ -395,7 +409,8 @@ def main(argv=None):
     steps = manifest["steps"]
     logs = {s["log"]: read_log(run_dir, s["log"]) for s in steps if s.get("log")}
     docs = read_docs(run_dir, steps)
-    rs.write_private(out, render(manifest, logs, docs))
+    pages = site_pages(manifest, lambda h: os.path.exists(os.path.join(run_dir, h)))
+    rs.write_private(out, render(manifest, logs, docs, pages))
     print("wrote %s" % out)
     return 0
 

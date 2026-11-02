@@ -9,6 +9,7 @@ Both fail *silently* when broken — the guard simply stops refusing, and the
 escaping simply stops escaping — so neither is safe to leave un-pinned.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -475,3 +476,84 @@ def test_every_colour_in_the_css_is_a_design_system_value():
         if full.upper() not in tokens:
             stray.append("#" + h)
     assert not stray, "off-system colours in BASE_CSS: %s" % ", ".join(sorted(stray))
+
+
+# ------------------------------------------------------------- site nav ---
+# A sync run's pages share one bar. The hrefs come from the runner, but the bar
+# is drawn by the shared page builder, so it must only ever link a sibling page.
+
+def test_site_nav_links_only_bare_sibling_pages():
+    bar = rs.site_nav([("report.html", "Run"), ("../x.html", "up"),
+                       ("https://evil.example/a.html", "web"), ("javascript:x", "js"),
+                       ("a b.html", "space"), ("coverage.html", "Coverage")])
+    assert re.findall(r'href="([^"]*)"', bar) == ["report.html", "coverage.html"]
+
+
+def test_site_nav_escapes_labels_and_marks_the_current_page():
+    bar = rs.site_nav([("report.html", XSS), ("topics.html", "Topics")],
+                      label=XSS, current="topics.html")
+    assert "<img" not in bar
+    assert '<a href="topics.html" aria-current="page">Topics</a>' in bar
+
+
+def test_site_nav_with_nothing_safe_draws_nothing():
+    assert rs.site_nav([("../a.html", "x")]) == ""
+
+
+def test_page_draws_no_bar_outside_a_run(monkeypatch):
+    monkeypatch.delenv(rs.NAV_ENV, raising=False)
+    out = rs.page("t", "b")
+    assert "<nav" not in out and "location.pathname" not in out
+
+
+def test_page_takes_the_bar_from_the_runner_env(monkeypatch):
+    monkeypatch.setenv(rs.NAV_ENV, json.dumps(
+        {"label": "Sync · s", "pages": [["report.html", "Run summary"],
+                                        ["coverage.html", "Coverage"]]}))
+    out = rs.page("t", "<p>b</p>")
+    assert out.index('<nav class="sitenav"') < out.index('<div class="wrap">')
+    # the page cannot know its own file name, so the browser marks it
+    assert "aria-current','page'" in out
+
+
+def test_page_ignores_a_malformed_env(monkeypatch, capsys):
+    monkeypatch.setenv(rs.NAV_ENV, "{not json")
+    assert "<nav" not in rs.page("t", "b")
+    assert rs.NAV_ENV in capsys.readouterr().err
+
+
+def test_an_explicit_nav_wins_and_marks_current_without_script(monkeypatch):
+    monkeypatch.setenv(rs.NAV_ENV, json.dumps({"pages": [["x.html", "X"]]}))
+    out = rs.page("t", "b", nav={"label": "", "pages": [("report.html", "R"),
+                                                        ("audit.html", "A")]},
+                  nav_current="report.html")
+    assert 'href="x.html"' not in out
+    assert '<a href="report.html" aria-current="page">' in out
+    assert "<script>" not in out
+    # an explicit empty nav means "no bar", never "fall back to the env"
+    assert "<nav" not in rs.page("t", "b", nav={})
+
+
+def test_the_bar_is_not_printed():
+    printed = rs.BASE_CSS.split("@media print{", 1)[1]
+    hidden = re.search(r"([^{}]*)\{display:none\}", printed).group(1)
+    assert ".sitenav" in hidden.split(",")
+
+
+def test_the_nav_script_is_separate_and_guarded(monkeypatch):
+    monkeypatch.setenv(rs.NAV_ENV, json.dumps({"pages": [["report.html", "R"], ["a.html", "A"]]}))
+    out = rs.page("t", "b", script="tabs();")
+    scripts = re.findall(r"<script>(.*?)</script>", out, re.S)
+    # the page's own script survives whole, in its own tag, after the nav's
+    assert scripts[-1] == "tabs();"
+    assert scripts[0].startswith("try{") and scripts[0].endswith("catch(e){}")
+
+
+def test_a_bare_table_header_sticks_below_the_bar():
+    # A header inside .tablewrap sticks to the wrapper and must not move;
+    # a bare table's header sticks to the viewport, under the bar.
+    # both a table nested in a section and one sitting directly in .wrap
+    # (audit_topics writes those) — the first fix missed the second
+    assert (".sitenav ~ .wrap > table thead th,\n"
+            ".sitenav ~ .wrap :not(.tablewrap) > table thead th{top:52px}") in rs.BASE_CSS
+    assert "--sitenav-h:52px" in rs.BASE_CSS
