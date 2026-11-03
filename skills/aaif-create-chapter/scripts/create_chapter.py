@@ -802,6 +802,45 @@ def main():
             # survivor is a PII copy on disk, so say so rather than hide it.
             print("WARNING: could not remove temp dir %s — it holds downloaded "
                   "workbooks; delete it by hand." % ctx["tmp"], file=sys.stderr)
+    # The clone copied TemplateCity's Web Banner.png, an image that says "San
+    # Francisco" and that the text rebrand cannot reach. Re-render it from this
+    # chapter's own (rebranded) Square Logo deck — unless a fresh file still
+    # carries source tokens, in which case the deck may too, and the exit-1
+    # path below is the real problem. A banner failure is not a failed clone:
+    # it is "done, one follow-up", exit 2, with the command that finishes it.
+    import render_web_banner as rwb  # lazy: it imports this module
+    banner_failed = False
+    dirty_deck = [fn for fn, _t in ctx["existing_residuals"] if fn == rwb.DECK]
+    if ctx["residuals"]:
+        print("\n%s not rendered: fresh files still carry source tokens (below)."
+              % rwb.BANNER)
+    elif dirty_deck:
+        # Under --resume an existing deck still naming the template city is
+        # left alone on purpose; rendering it would only be refused.
+        banner_failed = True
+        print("%s not rendered: the existing %s still carries source tokens. After "
+              "--write --resume --repair-existing, run: %s"
+              % (rwb.BANNER, rwb.DECK, rwb.fallback_command(name, create=True)),
+              file=sys.stderr)
+    else:
+        r = rwb.sync_one(new_id, name, create=True)
+        if r.error is not None:
+            banner_failed = True
+            print("WARNING: %s was NOT re-rendered (%s) — it still shows the template "
+                  "city. Run: %s" % (rwb.BANNER, r.error,
+                                     rwb.fallback_command(name, create=True)),
+                  file=sys.stderr)
+        elif r.action == rwb.CURRENT:
+            print("%s already current." % rwb.BANNER)
+        elif r.action == rwb.RENDER:
+            print("Rendered %s from this chapter's %s." % (rwb.BANNER, rwb.DECK))
+        else:
+            # Anything else (ABSENT should be impossible with create=True) is
+            # not a render, and saying "Rendered" would hide it.
+            banner_failed = True
+            print("WARNING: %s: unexpected outcome %r, nothing rendered. Run: %s"
+                  % (rwb.BANNER, r.action, rwb.fallback_command(name, create=True)),
+                  file=sys.stderr)
     print("\nDone. New chapter folder id: %s" % new_id)
     print("https://drive.google.com/drive/folders/%s" % new_id)
     if status == "absent":
@@ -828,6 +867,8 @@ def main():
         print("%d existing file(s) still carry source tokens; re-run with --write "
               "--resume --repair-existing for design assets, fix CRM/Tracker by hand"
               % len(ctx["existing_residuals"]), file=sys.stderr)
+        sys.exit(2)
+    if banner_failed:
         sys.exit(2)
 
 if __name__ == "__main__":

@@ -439,17 +439,49 @@ def main():
             print("VERIFY FAILED — still carrying the old name, or not inspected:")
             for x in left:
                 print("   " + x)
+            import render_web_banner
+            print("%s was NOT re-rendered either. After fixing the files: %s"
+                  % (render_web_banner.BANNER, render_web_banner.fallback_command(a.new)))
             return 1
         print("Verified: no file name, and no text in any %s, still says %r%s."
               % ("/".join(OFFICE), a.old,
                  " (native Google files and member data were not inspected)"
                  if (native or skipped) else ""))
-        return 0
+        return rerender_banner(folder_id, a.new)
     finally:
         # Member data on disk, cleaned up. The report path used to leave every
         # chapter workbook in a predictable world-readable /tmp directory.
         if not a.write:
             shutil.rmtree(scan, ignore_errors=True)
+
+
+def rerender_banner(folder_id, new_name):
+    """Re-render Web Banner.png after a verified rename; returns the exit code.
+
+    The banner has the city drawn into the image, which no text pass reaches.
+    It is rendered from the Square Logo deck, and its stamp carries the
+    chapter name, so a new name re-renders it even when the deck itself did
+    not change. A folder with no banner is left without one, as in a sweep."""
+    import render_web_banner
+    r = render_web_banner.sync_one(folder_id, new_name, create=False)
+    if r.error is not None:
+        print("WARNING: %s still shows the old name (%s). Run: %s"
+              % (render_web_banner.BANNER, r.error,
+                 render_web_banner.fallback_command(new_name)), file=sys.stderr)
+        return 1
+    msg = {render_web_banner.RENDER: "%s rendered from the renamed %s."
+           % (render_web_banner.BANNER, render_web_banner.DECK),
+           render_web_banner.CURRENT: "%s already current." % render_web_banner.BANNER,
+           render_web_banner.ABSENT: "This chapter has no %s; none was added."
+           % render_web_banner.BANNER}.get(r.action)
+    if msg is None:
+        # The rename has landed; an outcome we do not know is not "done".
+        print("WARNING: %s: unexpected outcome %r, nothing rendered. Run: %s"
+              % (render_web_banner.BANNER, r.action,
+                 render_web_banner.fallback_command(new_name)), file=sys.stderr)
+        return 1
+    print(msg)
+    return 0
 
 
 if __name__ == "__main__":

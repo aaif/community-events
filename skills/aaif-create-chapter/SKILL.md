@@ -172,6 +172,10 @@ template or the rebrand engine is broken. Fix that — don't resume.
       render_slide_png('<Slides.pptx file id>', '$(mktemp -d)/slide5.png', slide_index=4)
       "
       ```
+- [ ] The run printed **`Rendered Web Banner.png`** (or `Web Banner.png already
+      current.` on a `--resume`). If it warned instead, the banner still says
+      the template city: run the command it names. If it said "not rendered:
+      fresh files still carry source tokens", fix the template first (above).
 - [ ] If the Luma page wasn't live, the user has been reminded to create it.
 - [ ] Unit tests still pass after any engine edit:
       ```bash
@@ -192,6 +196,32 @@ template or the rebrand engine is broken. Fix that — don't resume.
 - **A chapter is not born with its own agent art.** Cloning TemplateCity would
   hand it TemplateCity's agent. That is `upload_agents.py`'s job — see
   `references/design-system-sweep.md`.
+- **`Web Banner.png` is rendered, not cloned.** The city is drawn into the
+  image, so no text rebrand reaches it, and until 2026-11 every chapter cloned
+  from TemplateCity kept its "San Francisco" banner. `render_web_banner.py`
+  renders it from the fourth slide of the chapter's own
+  `Banners (…)/Square Logo.pptx` through Google's renderer.
+  - `create_chapter` calls it once no freshly cloned file carries source
+    tokens. Exit `2` if the banner failed, the same code as dirty existing files
+    under `--resume`; a dirty existing `Square Logo.pptx` is not rendered at all
+    until `--repair-existing` fixes it. `rename_chapter` calls it only after
+    the rename verifies (exit `1` if it failed).
+  - It refuses a slide that does not say exactly "AAIF Community Events" plus
+    the chapter's name (ignoring case, extra spaces and punctuation at the ends
+    of the city).
+  - It skips a banner stamped with the current deck and name, so a re-run is
+    cheap.
+  - A sweep leaves TemplateCity alone unless named with `--chapter`, and never
+    adds a banner to a folder that has none. `--chapter X --create` does, which
+    is what `create_chapter` prints when its render failed before the file
+    existed.
+  - Exit codes: `2` report-only with banners to render, `1` any failure, `0`
+    otherwise (folders with no banner are listed, not failed).
+  ```bash
+  python3 <skill-root>/scripts/render_web_banner.py            # report
+  python3 <skill-root>/scripts/render_web_banner.py --write
+  python3 <skill-root>/scripts/render_web_banner.py --chapter <City> --create --write
+  ```
 - **`create_chapter` writes no Chapters List row**, so its 100-chapter cap check
   is an early warning, not a guarantee: three runs at 99 live chapters each read
   99, each pass, and the next sync refuses all three rows together.

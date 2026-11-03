@@ -197,6 +197,117 @@ class TestRenderSlidePng(unittest.TestCase):
             self.assertEqual(out, "/tmp/out.png")
 
 
+class TestRenderGuards(unittest.TestCase):
+    """The page-text check, the slide count and strict cleanup."""
+
+    PAGE = {"objectId": "p4", "pageElements": [
+        {"shape": {"text": {"textElements": [{"textRun": {"content": "AAIF Community Events"}}]}}},
+        {"elementGroup": {"children": [
+            {"shape": {"text": {"textElements": [{"textRun": {"content": "Boston"}}]}}}]}}]}
+
+    def _run(self, slides, trash_fails=False, **kw):
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args == ("drive", "files", "copy"):
+                return {"id": "pres1"}
+            if args == ("slides", "presentations", "get"):
+                return {"slides": slides}
+            if args[-1] == "getThumbnail":
+                return {"contentUrl": "https://example.invalid/x.png"}
+            if args == ("drive", "files", "update"):
+                if trash_fails:
+                    raise RuntimeError("trash failed")
+                return {}
+            raise AssertionError(args)
+        with mock.patch.object(se, "_gws_json", side_effect=fake), \
+                mock.patch.object(se, "_download") as dl, \
+                mock.patch("sys.stderr"):
+            try:
+                return se.render_slide_png("file1", "/tmp/out.png", **kw), calls, dl
+            except RuntimeError as e:
+                return e, calls, dl
+
+    def test_check_text_sees_the_page_being_rendered_including_groups(self):
+        seen = []
+        out, calls, dl = self._run([{"objectId": "p1"}, self.PAGE], slide_index=1,
+                                   check_text=lambda t: seen.append(t))
+        self.assertEqual(out, "/tmp/out.png")
+        self.assertEqual(seen, ["AAIF Community Events Boston"])
+        thumb = [k for a, k in calls if a[-1] == "getThumbnail"][0]
+        self.assertEqual(thumb["params"]["pageObjectId"], "p4")
+
+    def test_a_refused_page_is_never_rendered_and_the_copy_is_trashed(self):
+        err, calls, dl = self._run([self.PAGE], check_text=lambda t: "wrong city")
+        self.assertIn("wrong city", str(err))
+        self.assertFalse(dl.called)
+        self.assertNotIn("getThumbnail", [a[-1] for a, _ in calls])
+        self.assertIn(("drive", "files", "update"), [a for a, _ in calls])
+
+    def test_a_short_deck_names_the_slide_and_the_count(self):
+        err, _c, _d = self._run([{"objectId": "p1"}], slide_index=3)
+        self.assertIn("has 1 slide(s); slide 4", str(err))
+
+    def test_strict_cleanup_raises_with_the_orphan_id(self):
+        err, _c, _d = self._run([self.PAGE], trash_fails=True, strict_cleanup=True)
+        self.assertIn("pres1", str(err))
+        self.assertIn("could not be trashed", str(err))
+
+    def test_default_cleanup_failure_still_returns(self):
+        out, _c, _d = self._run([self.PAGE], trash_fails=True)
+        self.assertEqual(out, "/tmp/out.png")
+
+    def test_strict_cleanup_names_the_orphan_when_the_render_also_failed(self):
+        err, _c, dl = self._run([self.PAGE], trash_fails=True, strict_cleanup=True,
+                                check_text=lambda t: "wrong city")
+        self.assertIn("wrong city", str(err))
+        self.assertIn("pres1", str(err))
+        self.assertIn("could not be trashed", str(err))
+        self.assertFalse(dl.called)
+
+    def test_a_boolean_check_text_is_a_type_error_not_a_pass(self):
+        with mock.patch.object(se, "_gws_json", side_effect=lambda *a, **k: (
+                {"id": "pres1"} if a == ("drive", "files", "copy")
+                else {"slides": [self.PAGE]} if a == ("slides", "presentations", "get")
+                else {})), mock.patch.object(se, "_download"):
+            with self.assertRaises(TypeError):
+                se.render_slide_png("file1", "/tmp/out.png", check_text=lambda t: False)
+
+    def test_the_fields_mask_asks_for_text_only_when_checking(self):
+        _o, calls, _d = self._run([self.PAGE], check_text=lambda t: None)
+        get = [k for a, k in calls if a == ("slides", "presentations", "get")][0]
+        self.assertIn("textRun/content", get["params"]["fields"])
+        self.assertIn("elementGroup", get["params"]["fields"])
+        _o, calls, _d = self._run([self.PAGE])
+        get = [k for a, k in calls if a == ("slides", "presentations", "get")][0]
+        self.assertEqual(get["params"]["fields"], "slides.objectId")
+
+    def test_slide_index_equal_to_the_count_is_refused(self):
+        err, _c, _d = self._run([{"objectId": "p1"}], slide_index=1)
+        self.assertIn("has 1 slide(s); slide 2", str(err))
+
+    def test_a_missing_thumbnail_url_says_so(self):
+        def fake(*args, **kwargs):
+            if args == ("drive", "files", "copy"):
+                return {"id": "pres1"}
+            if args == ("slides", "presentations", "get"):
+                return {"slides": [{"objectId": "p1"}]}
+            return {}
+        with mock.patch.object(se, "_gws_json", side_effect=fake), \
+                mock.patch.object(se, "_download") as dl:
+            with self.assertRaisesRegex(RuntimeError, "no thumbnail URL"):
+                se.render_slide_png("file1", "/tmp/out.png")
+        self.assertFalse(dl.called)
+
+    def test_a_word_split_across_runs_in_one_shape_is_read_whole(self):
+        page = {"pageElements": [{"shape": {"text": {"textElements": [
+            {"textRun": {"content": "AAIF Community Events\n"}},
+            {"textRun": {"content": "Amster"}}, {"textRun": {"content": "dam\n"}}]}}}]}
+        self.assertEqual(" ".join(se._page_text(page).split()),
+                         "AAIF Community Events Amsterdam")
+
+
 class TestDownload(unittest.TestCase):
     """_download must never leave a partial PNG behind, whatever failed."""
 
@@ -210,9 +321,9 @@ class TestDownload(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "x.png")
             with mock.patch("urllib.request.urlopen",
-                            return_value=self._resp(b"p" * 2000)) as uo:
+                            return_value=self._resp(se._PNG_MAGIC + b"p" * 2000)) as uo:
                 self.assertIsNone(se._download("https://example.invalid/x.png", out))
-            self.assertEqual(os.path.getsize(out), 2000)
+            self.assertEqual(os.path.getsize(out), 2008)
             self.assertEqual(uo.call_args.kwargs.get("timeout"), 30)
 
     def test_a_too_small_render_is_deleted_not_left_behind(self):
@@ -223,6 +334,17 @@ class TestDownload(unittest.TestCase):
                     se._download("https://example.invalid/x.png", out)
             self.assertIn("suspiciously small", str(cm.exception))
             self.assertFalse(os.path.exists(out))
+
+    def test_a_non_png_body_is_refused_and_deleted(self):
+        """An HTML interstitial is large enough to pass the size check."""
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.png")
+            with mock.patch("urllib.request.urlopen",
+                            return_value=self._resp(b"<html>" + b"x" * 2000)):
+                with self.assertRaises(RuntimeError) as cm:
+                    se._download("https://example.invalid/x.png", out)
+            self.assertIn("not a PNG", str(cm.exception))
+            self.assertEqual(os.listdir(d), [])
 
     def test_a_read_failure_deletes_the_partial_file(self):
         r = self._resp(b"")
