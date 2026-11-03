@@ -65,6 +65,18 @@ Also deliberate:
   run and a re-run would double-apply it.
 - **A mid-run upload failure says exactly what landed** — which files were
   uploaded, that no names were changed, and where the originals are.
+- **What the text pass cannot see, checked 2026-11-03.** The Japan and New
+  Zealand renames verified clean while four things still said the old city:
+  - **`Web Banner.png`** has the name drawn in. A successful `--write` now
+    re-renders it from the rewritten `Square Logo.pptx` (`render_web_banner.py`)
+    and exits `1` if that fails.
+  - **The `Badges/` set** is named and lettered with a *lowercase* slug and UPPER
+    SVG text, which the Title/UPPER name pass does not match. Regenerate it with
+    `aaif-sync-badges` (`--chapter <new>`), then trash the old-slug files.
+  - **Luma links** stay until you pass `--slug-from`/`--slug-to`. Both pages had
+    moved, so the links pointed to redirects.
+  - **The Chapters List `Summary`** prose ("AAIF Tokyo connects…") is website
+    copy, not a Drive file.
 - **The Chapters List row, the intake's city cells and Slack channels are NOT
   touched.** The first two are `aaif-sync-chapters`' surfaces and must be updated
   for the engines to keep matching the chapter to its folder; a channel rename

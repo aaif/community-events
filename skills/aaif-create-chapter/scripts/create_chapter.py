@@ -804,6 +804,19 @@ def main():
                   "workbooks; delete it by hand." % ctx["tmp"], file=sys.stderr)
     print("\nDone. New chapter folder id: %s" % new_id)
     print("https://drive.google.com/drive/folders/%s" % new_id)
+    # The clone copied TemplateCity's Web Banner.png, an image that says "San
+    # Francisco" and that the text rebrand cannot reach. Re-render it from this
+    # chapter's own (rebranded) Square Logo deck. A failure here is not a
+    # failed chapter: say so and name the command that finishes the job.
+    import render_web_banner  # lazy: it imports this module
+    err = render_web_banner.sync_one(new_id, name)
+    if err:
+        print("WARNING: %s was NOT re-rendered (%s) — it still shows the template "
+              "city. Run: render_web_banner.py --chapter %r --write"
+              % (render_web_banner.BANNER, err, name), file=sys.stderr)
+    else:
+        print("Rendered %s from this chapter's %s." % (render_web_banner.BANNER,
+                                                     render_web_banner.DECK))
     if status == "absent":
         print("REMINDER: create the Luma page at https://luma.com/aaif-%s (it is not live yet)." % slug)
     elif status == "unknown":

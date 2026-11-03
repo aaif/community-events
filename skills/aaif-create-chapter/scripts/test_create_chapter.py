@@ -11,7 +11,8 @@ import zipfile
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
-import create_chapter as cc  # noqa: E402
+import create_chapter as cc
+import render_web_banner  # noqa: E402
 from aaif_events import gws as gwsmod  # noqa: E402
 
 A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
@@ -722,7 +723,7 @@ class TestMainGuards(unittest.TestCase):
     """Argument checks in main(), the plan-by-default / tempdir contract of a
     --write run, and which invocations consult the 100-chapter cap."""
 
-    def run_main(self, argv, clone=None, cap_calls=None):
+    def run_main(self, argv, clone=None, cap_calls=None, banner=None):
         """Drive main() with every external call stubbed.
 
         `assert_under_cap` joined that list when the 100-chapter cap landed: it
@@ -739,8 +740,32 @@ class TestMainGuards(unittest.TestCase):
                     mock.patch.object(cc, "resolve_latlon", lambda *a: (1.0, 2.0)), \
                 mock.patch.object(cc._chapters, "assert_under_cap",
                                   lambda what="", **k: calls.append(what)), \
-                mock.patch.object(cc, "clone_and_rebrand", clone):
+                mock.patch.object(cc, "clone_and_rebrand", clone), \
+                mock.patch.object(render_web_banner, "sync_one",
+                                  banner or (lambda fid, name: None)):
             cc.main()
+
+    def test_a_write_re_renders_the_new_chapters_banner(self):
+        """The clone copies TemplateCity's Web Banner.png, which says "San
+        Francisco"; the text rebrand cannot reach an image."""
+        seen = []
+        with mock.patch("sys.stdout"):
+            self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
+                          banner=lambda fid, name: seen.append((fid, name)))
+        self.assertEqual(seen, [("new-id", "Zed")])
+
+    def test_a_failed_banner_render_warns_with_the_command(self):
+        import io
+        err = io.StringIO()
+        with mock.patch("sys.stdout"), mock.patch("sys.stderr", err):
+            self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
+                          banner=lambda fid, name: "slide 4 says the wrong city")
+        self.assertIn("NOT re-rendered", err.getvalue())
+        self.assertIn("render_web_banner.py --chapter 'Zed' --write", err.getvalue())
+
+    def test_a_plan_run_renders_no_banner(self):
+        self.run_main(["--city", "Zed"],
+                      banner=lambda *a: self.fail("plan must not render"))
 
     def test_plan_runs_never_consult_the_cap(self):
         """Seeing what a chapter WOULD look like is how someone decides which

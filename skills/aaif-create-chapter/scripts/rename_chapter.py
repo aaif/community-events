@@ -444,6 +444,18 @@ def main():
               % ("/".join(OFFICE), a.old,
                  " (native Google files and member data were not inspected)"
                  if (native or skipped) else ""))
+        # Web Banner.png has the city drawn into the image, which no text pass
+        # reaches. It is rendered from the Square Logo deck just rewritten, and
+        # the deck's checksum moved, so this re-renders it (or is a no-op).
+        import render_web_banner
+        err = render_web_banner.sync_one(folder_id, a.new)
+        if err:
+            print("WARNING: %s still shows the old name (%s). Run: "
+                  "render_web_banner.py --chapter %r --write"
+                  % (render_web_banner.BANNER, err, a.new))
+            return 1
+        print("%s rendered from the renamed %s." % (render_web_banner.BANNER,
+                                                  render_web_banner.DECK))
         return 0
     finally:
         # Member data on disk, cleaned up. The report path used to leave every

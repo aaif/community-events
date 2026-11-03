@@ -172,6 +172,8 @@ template or the rebrand engine is broken. Fix that — don't resume.
       render_slide_png('<Slides.pptx file id>', '$(mktemp -d)/slide5.png', slide_index=4)
       "
       ```
+- [ ] The run printed **`Rendered Web Banner.png`**. If it warned instead, the
+      banner still says the template city — run the command it names.
 - [ ] If the Luma page wasn't live, the user has been reminded to create it.
 - [ ] Unit tests still pass after any engine edit:
       ```bash
@@ -192,6 +194,17 @@ template or the rebrand engine is broken. Fix that — don't resume.
 - **A chapter is not born with its own agent art.** Cloning TemplateCity would
   hand it TemplateCity's agent. That is `upload_agents.py`'s job — see
   `references/design-system-sweep.md`.
+- **`Web Banner.png` is rendered, not cloned.** The city is drawn into the
+  image, so no text rebrand reaches it, and until 2026-11 every new chapter
+  kept TemplateCity's "San Francisco" banner. `render_web_banner.py` renders it
+  from slide 4 of the chapter's own `Banners (…)/Square Logo.pptx` through
+  Google's renderer. `create_chapter` and `rename_chapter` call it after a
+  write; it refuses a slide that does not name the chapter, and skips a banner
+  stamped with the deck's current checksum, so a full run is cheap:
+  ```bash
+  python3 <skill-root>/scripts/render_web_banner.py            # report
+  python3 <skill-root>/scripts/render_web_banner.py --write
+  ```
 - **`create_chapter` writes no Chapters List row**, so its 100-chapter cap check
   is an early warning, not a guarantee: three runs at 99 live chapters each read
   99, each pass, and the next sync refuses all three rows together.
