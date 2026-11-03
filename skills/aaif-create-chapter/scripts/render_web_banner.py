@@ -20,7 +20,8 @@ Guards:
     name.** Rendering a deck that names another city would publish the wrong
     name with a fresh timestamp on it. The check is exact, not a substring
     test, so "Portland, OR" does not pass for Portland and a slide still
-    carrying a leftover city fails. It runs twice: on the deck's own slide 4
+    carrying a leftover city fails. ("Exact" ignores only case, runs of
+    whitespace, and punctuation at either end of the city.) It runs twice: on the deck's own slide 4
     (resolved through `presentation.xml`'s slide order, not the `slideN.xml`
     part name) before anything is written, and again by the renderer on the
     page it is about to draw.
@@ -34,26 +35,30 @@ Guards:
     on a different `gws` client sees no stamps and re-renders everything once:
     slower, never wrong.
   * **A stray temp copy is a failure.** The renderer's throwaway Slides copy
-    lands beside the deck; if it cannot be trashed, that chapter FAILS and the
-    copy's id is printed.
+    lands beside the deck; if it cannot be trashed, that chapter FAILS and its
+    FAILED line names the copy's id, whether or not the render itself worked.
 
 A sweep skips TemplateCity (its deck says San Francisco by design, and a stray
 temp copy there would be cloned into every later chapter) unless it is named
 with `--chapter`, and never creates a banner in a folder that has none.
+`--chapter X --create` does, for the one case that needs it: a new chapter
+whose create-hook render failed before its banner file existed.
 
-Read-only by default. Exit codes: 0 all current/rendered, 2 report-only with
-banners to render, 1 any failure.
+Read-only by default. Exit codes: 0 otherwise (folders with no banner are
+listed, not failed), 2 report-only with banners to render, 1 any failure.
 
 Usage:
   python3 render_web_banner.py                      # report
   python3 render_web_banner.py --write
   python3 render_web_banner.py --chapter Aarhus --write
+  python3 render_web_banner.py --chapter Aarhus --create --write
 """
 import argparse
 import html
 import os
 import posixpath
 import re
+import shlex
 import sys
 import tempfile
 import zipfile
@@ -74,6 +79,9 @@ BANNERS_DIR = re.compile(r"^Banners\b")
 #: Events / <City>" square.
 SLIDE_INDEX = 3
 HEADLINE = "AAIF Community Events"
+#: The stamp records the deck and the name, not how it was drawn. Change
+#: SLIDE_INDEX or the render size and you must also rename this key (say to
+#: "aaifBannerDeck2"), or every banner stays "current" in the old rendering.
 STAMP = "aaifBannerDeck"
 PNG = "image/png"
 TEMPLATE = "TemplateCity"
@@ -87,10 +95,12 @@ CURRENT, RENDER, ABSENT = "current", "render", "absent"
 
 
 class Result(NamedTuple):
-    """One chapter's outcome. Exactly one of `action` / `error` is set."""
+    """One chapter's outcome. Exactly one of `action` / `error` is set;
+    callers treat any other shape as a failure."""
     name: str
-    #: CURRENT (stamp matched, nothing done), RENDER (would render / rendered),
-    #: or ABSENT (no banner, and not asked to create one).
+    #: CURRENT (stamp matched, nothing done), RENDER (rendered under
+    #: write=True, would render under write=False), or ABSENT (no banner, and
+    #: not asked to create one).
     action: Optional[str] = None
     error: Optional[str] = None
 
@@ -99,8 +109,16 @@ def _norm(s):
     return re.sub(r"\s+", " ", s).strip().casefold()
 
 
-def fallback_command(name):
-    return "python3 %s --chapter %r --write" % (SCRIPT, name)
+def _edges(s):
+    """Strip punctuation from both ends (the separator after the headline, a
+    display full stop after the city)."""
+    return re.sub(r"^[\W_]+|[\W_]+$", "", s)
+
+
+def fallback_command(name, create=False):
+    """The command that finishes a failed hook render, shell-quoted."""
+    return "python3 %s --chapter %s%s --write" % (
+        shlex.quote(SCRIPT), shlex.quote(name), " --create" if create else "")
 
 
 def expected_name(folder):
@@ -116,13 +134,14 @@ def name_mismatch(text, want):
 
     Exact rather than "contains": a slide saying "Portland, OR" must not pass
     for Portland, nor one still carrying the template city beside the new one.
-    Trailing punctuation is ignored (the decks' display style puts a full stop
-    after the city in some layouts)."""
+    Case and runs of whitespace are ignored, and so is punctuation at either
+    end of the city, on both sides of the comparison: a separator after the
+    headline, a display full stop after the city, or a name like "D.C."."""
     t, head = _norm(text), _norm(HEADLINE)
     if not t.startswith(head):
         return "slide %d does not start with %r (it says %r)" % (SLIDE_INDEX + 1, HEADLINE, text[:80])
-    rest = re.sub(r"^[\W_]+|[\W_]+$", "", t[len(head):])
-    if rest != _norm(want):
+    rest = _edges(t[len(head):])
+    if rest != _edges(_norm(want)):
         return ("slide %d says %r, expected %r — fix the deck, or map the folder in "
                 "DECK_NAME if the deck is right" % (SLIDE_INDEX + 1, rest, want))
     return None
@@ -148,13 +167,20 @@ def slide_part(z, index=SLIDE_INDEX):
     raise RuntimeError("slide %d's relationship %s is missing" % (index + 1, rids[index]))
 
 
+_RUN = re.compile(r"<a:t(?:\s[^>]*)?>([^<]*)</a:t>")
+_PARA = re.compile(r"<a:p(?:\s[^>]*)?>(.*?)</a:p>", re.S)
+
+
 def slide_text(pptx_path, index=SLIDE_INDEX):
-    """Every text run on the `index`-th slide (presentation order), unescaped
-    and joined by spaces."""
+    """The text of the `index`-th slide (presentation order), unescaped.
+
+    Runs within a paragraph are joined with nothing, since an edit can split
+    one word across runs ("Amster" + "dam"). Paragraphs are joined with a
+    space."""
     with zipfile.ZipFile(pptx_path) as z:
         xml = z.read(slide_part(z, index)).decode("utf-8", "replace")
-    return " ".join(html.unescape(r)
-                    for r in re.findall(r"<a:t(?:\s[^>]*)?>([^<]*)</a:t>", xml))
+    return " ".join("".join(html.unescape(r) for r in _RUN.findall(p))
+                    for p in _PARA.findall(xml))
 
 
 def chapters(include_template=False):
@@ -179,13 +205,17 @@ def sync_chapter(chapter_id, name, write, tmpdir, create=False):
     failure must not end the others.
 
     A banner is created in a folder that has none only when `create` is set
-    (the create hook). A sweep reports such a folder instead: the ones without
-    a banner predate the template that carries it (the Tatooine test chapter),
-    and a sweep has no business adding files to them."""
+    (the create hook, or `--create`). Otherwise such a folder is ABSENT, and
+    that is decided first, before the Banners folder or deck is looked up: the
+    folders without a banner predate the template that carries it (the
+    Tatooine test chapter), may lack the deck too, and are not failures."""
     created = None
     try:
         want = expected_name(name)
         kids = cc.list_children(chapter_id)
+        banner = _find(kids, lambda c: c["name"] == BANNER, BANNER)
+        if banner is None and not create:
+            return Result(name, ABSENT)
         bdir = _find(kids, lambda c: c["mimeType"] == cc.FOLDER
                      and BANNERS_DIR.match(c["name"]), "the Banners folder")
         if bdir is None:
@@ -202,9 +232,6 @@ def sync_chapter(chapter_id, name, write, tmpdir, create=False):
             return Result(name, error="%s has no checksum (not a stored .pptx?)" % DECK)
         stamp = stamp_value(md5, want)
 
-        banner = _find(kids, lambda c: c["name"] == BANNER, BANNER)
-        if banner is None and not create:
-            return Result(name, ABSENT)
         if banner is not None:
             props = cc.gws_json("drive", "files", "get", params={
                 "fileId": banner["id"], "supportsAllDrives": True,
@@ -253,10 +280,18 @@ def sync_chapter(chapter_id, name, write, tmpdir, create=False):
 
 
 def sync_one(chapter_id, name, create):
-    """Render one chapter's banner now (the create/rename hooks). Returns the
-    `Result`, so a caller can tell a real render from an already-current one."""
+    """Render one chapter's banner now (the create/rename hooks). Always
+    writes. Returns the `Result`, so a caller can tell a real render from an
+    already-current one."""
     with tempfile.TemporaryDirectory() as tmp:
         return sync_chapter(chapter_id, name, True, tmp, create=create)
+
+
+def _positive(v):
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
 
 
 def main(argv=None):
@@ -266,8 +301,12 @@ def main(argv=None):
                     help="render and upload (default: report only)")
     ap.add_argument("--chapter", help="only this chapter (exact name, case-insensitive; "
                     "the only way to include TemplateCity)")
-    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--create", action="store_true",
+                    help="with --chapter: create the banner if the folder has none")
+    ap.add_argument("--jobs", type=_positive, default=4)
     a = ap.parse_args(argv)
+    if a.create and not a.chapter:
+        ap.error("--create needs --chapter (a sweep never adds a banner)")
 
     todo = chapters(include_template=bool(a.chapter))
     if a.chapter:
@@ -280,7 +319,8 @@ def main(argv=None):
     pending, current, failed, absent = [], 0, [], []
     with tempfile.TemporaryDirectory() as tmp, \
             ThreadPoolExecutor(max_workers=a.jobs) as pool:
-        for r in pool.map(lambda t: sync_chapter(t[0], t[1], a.write, tmp), todo):
+        for r in pool.map(lambda t: sync_chapter(t[0], t[1], a.write, tmp,
+                                                 create=a.create), todo):
             if r.error is not None:
                 failed.append(r)
                 print("  FAILED    %-26s %s" % (r.name, r.error))

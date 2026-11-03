@@ -17,7 +17,10 @@ The properties pinned here are the ones that fail quietly:
   (e) **a chapter with no banner gets one created exactly once** (NO_RETRY),
       and only when asked; a sweep never adds one.
   (f) `main()`'s exit codes: 1 on any failure, 2 for report-only with work, 0
-      otherwise; ABSENT is not a failure, an unknown outcome is.
+      otherwise; ABSENT is not a failure, an unknown outcome is. `main()`
+      passes `write` through, so the default run stays read-only.
+  (g) a folder with no banner is ABSENT before anything else is looked up; a
+      missing Banners folder or deck under an existing banner is a failure.
 
 Nothing touches Drive: `create_chapter`'s Drive calls and the renderer are
 replaced with a fake folder tree.
@@ -40,10 +43,12 @@ from aaif_events import gws as gwsmod  # noqa: E402
 BANNERS = "Banners (Chapter Specific, Changed Rarely)"
 
 
-def _pptx(fourth_runs, order=(1, 2, 3, 4, 5), part_runs=None):
+def _pptx(fourth_runs, order=(1, 2, 3, 4, 5), part_runs=None, absolute=False):
     """Bytes of a minimal .pptx. `order` lists slide part numbers in
     presentation order; the part shown FOURTH gets `fourth_runs`, unless
-    `part_runs` maps part numbers to runs explicitly."""
+    `part_runs` maps part numbers to runs explicitly. Each entry is one
+    paragraph; a list entry is one paragraph split into several runs.
+    `absolute` writes package-absolute relationship targets."""
     if part_runs is None:
         part_runs = {order[3]: fourth_runs}
     buf = io.BytesIO()
@@ -51,14 +56,17 @@ def _pptx(fourth_runs, order=(1, 2, 3, 4, 5), part_runs=None):
         ids = "".join('<p:sldId id="%d" r:id="rId%d"/>' % (255 + n, n) for n in order)
         z.writestr("ppt/presentation.xml",
                    "<p:presentation><p:sldIdLst>%s</p:sldIdLst></p:presentation>" % ids)
-        rels = "".join('<Relationship Id="rId%d" Type="x/slide" Target="slides/slide%d.xml"/>'
-                       % (n, n) for n in order)
+        rels = "".join('<Relationship Id="rId%d" Type="x/slide" Target="%sslides/slide%d.xml"/>'
+                       % (n, "/ppt/" if absolute else "", n) for n in order)
         z.writestr("ppt/_rels/presentation.xml.rels", "<Relationships>%s</Relationships>" % rels)
         for n in order:
-            runs = part_runs.get(n, ["AAIF"])
-            body = "".join('<a:r><a:t xml:space="preserve">%s</a:t></a:r>' % r
-                           if i % 2 else "<a:r><a:t>%s</a:t></a:r>" % r
-                           for i, r in enumerate(runs))
+            paras = part_runs.get(n, ["AAIF"])
+            body = ""
+            for i, para in enumerate(paras):
+                runs = para if isinstance(para, list) else [para]
+                body += "<a:p><a:pPr/>%s</a:p>" % "".join(
+                    '<a:r><a:t xml:space="preserve">%s</a:t></a:r>' % r
+                    if i % 2 else "<a:r><a:t>%s</a:t></a:r>" % r for r in runs)
             z.writestr("ppt/slides/slide%d.xml" % n, "<p:sld>%s</p:sld>" % body)
     return buf.getvalue()
 
@@ -73,8 +81,11 @@ def _path(data):
 class FakeDrive:
     """One chapter folder, `boston`, with a Banners folder and a deck."""
 
-    def __init__(self, runs, stamp=None, banner=True, md5="m1", banners=1):
+    def __init__(self, runs, stamp=None, banner=True, md5="m1", banners=1,
+                 bdir=True, decks=1):
         self.deck = _pptx(runs)
+        self.bdir = bdir
+        self.decks = decks
         self.md5 = md5
         self.stamp = stamp
         self.banners = banners if banner else 0
@@ -85,12 +96,14 @@ class FakeDrive:
 
     def list_children(self, fid):
         if fid == "boston":
-            kids = [{"id": "bdir", "name": BANNERS, "mimeType": cc.FOLDER}]
+            kids = [{"id": "bdir", "name": BANNERS, "mimeType": cc.FOLDER}] if self.bdir else []
+            kids.append({"id": "other", "name": "Event Template", "mimeType": cc.FOLDER})
             kids += [{"id": "wb" if i == 0 else "wb%d" % i, "name": rwb.BANNER,
                       "mimeType": "image/png"} for i in range(self.banners)]
             return kids
         if fid == "bdir":
-            return [{"id": "deck", "name": rwb.DECK, "mimeType": "x"}]
+            return [{"id": "deck" if i == 0 else "deck%d" % i, "name": rwb.DECK,
+                     "mimeType": "x"} for i in range(self.decks)]
         return []
 
     def gws_json(self, *verb, params=None, body=None, retries=None):
@@ -166,6 +179,10 @@ class TestNameCheck(unittest.TestCase):
     def test_a_slide_without_the_headline_is_refused(self):
         self.assertIn("does not start", rwb.name_mismatch("Boston", "Boston"))
 
+    def test_punctuation_at_the_end_of_the_wanted_name_is_ignored_too(self):
+        self.assertIsNone(rwb.name_mismatch("AAIF Community Events Washington D.C.",
+                                            "Washington D.C."))
+
     def test_templatecity_expects_the_rebrand_source_city(self):
         self.assertEqual(rwb.expected_name("TemplateCity"), cc.SOURCE_NAME)
         self.assertEqual(rwb.expected_name("Boston"), "Boston")
@@ -189,6 +206,16 @@ class TestSlideText(unittest.TestCase):
         p = _path(_pptx(["AAIF Community Events", "Trinidad &amp; Tobago"]))
         self.addCleanup(os.remove, p)
         self.assertIsNone(rwb.name_mismatch(rwb.slide_text(p), "Trinidad & Tobago"))
+
+    def test_a_word_split_across_runs_is_read_whole(self):
+        p = _path(_pptx(["AAIF Community Events", ["Amster", "dam"]]))
+        self.addCleanup(os.remove, p)
+        self.assertEqual(rwb.slide_text(p), "AAIF Community Events Amsterdam")
+
+    def test_package_absolute_slide_targets_resolve(self):
+        p = _path(_pptx(["AAIF Community Events", "Boston"], absolute=True))
+        self.addCleanup(os.remove, p)
+        self.assertEqual(rwb.slide_text(p), "AAIF Community Events Boston")
 
     def test_a_short_deck_says_so(self):
         p = _path(_pptx(None, order=(1, 2), part_runs={}))
@@ -261,6 +288,24 @@ class TestSync(unittest.TestCase):
         self.assertIn("wb, wb1", r.error)
         self.assertEqual(fake.renders, [])
 
+    def test_no_banner_is_absent_even_without_a_banners_folder_or_deck(self):
+        for fake in (FakeDrive(self.OK, banner=False, bdir=False),
+                     FakeDrive(self.OK, banner=False, decks=0)):
+            self.assertEqual(run(fake), rwb.Result("Boston", rwb.ABSENT))
+
+    def test_a_banner_with_no_banners_folder_is_a_failure(self):
+        r = run(FakeDrive(self.OK, bdir=False))
+        self.assertEqual(r.error, "no Banners folder")
+
+    def test_a_banner_with_no_deck_is_a_failure(self):
+        r = run(FakeDrive(self.OK, decks=0))
+        self.assertIn("no Square Logo.pptx", r.error)
+
+    def test_duplicate_decks_are_refused(self):
+        fake = FakeDrive(self.OK, decks=2)
+        self.assertIn("deck, deck1", run(fake).error)
+        self.assertEqual(fake.renders, [])
+
     def test_a_sweep_never_creates_a_missing_banner(self):
         fake = FakeDrive(self.OK, banner=False)
         self.assertEqual(run(fake).action, rwb.ABSENT)
@@ -278,6 +323,37 @@ class TestSync(unittest.TestCase):
         self.assertEqual(len(creates), 1)
         self.assertIs(creates[0][2], gwsmod.NO_RETRY)
         self.assertEqual(creates[0][3]["parents"], ["boston"])
+        self.assertEqual(fake.stamp, rwb.stamp_value("m1", "Boston"))
+
+    def test_the_create_reaches_gws_once_even_when_it_looks_like_a_timeout(self):
+        """Driven to a counted subprocess, not a recorded kwarg (AGENTS.md)."""
+        fake = FakeDrive(self.OK, banner=False)
+        fake_json = fake.gws_json
+
+        def json_through_real_create(*verb, **kw):
+            if verb[-1] == "create":
+                return gwsmod.json_out(*verb, **kw)
+            return fake_json(*verb, **kw)
+        fake.gws_json = json_through_real_create
+        with mock.patch("subprocess.run", return_value=mock.Mock(
+                returncode=1, stdout="", stderr="503 timed out")) as sp, \
+                mock.patch("time.sleep"):
+            r = run(fake, create=True)
+        self.assertIsNotNone(r.error)
+        self.assertEqual(sp.call_count, 1)
+        self.assertNotIn("upload", fake.verbs())
+
+    def test_sync_one_writes_and_creates(self):
+        fake = FakeDrive(self.OK, banner=False)
+        with mock.patch.object(cc, "list_children", fake.list_children), \
+                mock.patch.object(cc, "gws_json", fake.gws_json), \
+                mock.patch.object(cc, "gws_download", fake.download), \
+                mock.patch.object(cc, "gws_upload", fake.upload), \
+                mock.patch.object(rwb.slides_export, "render_slide_png", fake.render):
+            r = rwb.sync_one("boston", "Boston", create=True)
+        self.assertEqual(r, rwb.Result("Boston", rwb.RENDER))
+        self.assertEqual(fake.renders, ["deck"])
+        self.assertIn("upload", fake.verbs())
         self.assertEqual(fake.stamp, rwb.stamp_value("m1", "Boston"))
 
     def test_a_create_then_failed_upload_names_the_empty_file(self):
@@ -299,12 +375,14 @@ class TestMain(unittest.TestCase):
 
     def _main(self, results, argv=()):
         seen = []
+        self.writes = []
 
         def fake_list(parent):
             return [{"id": i, "name": n, "mimeType": cc.FOLDER} for i, n in self.CHAPTERS]
 
         def fake_sync(cid, name, write, tmp, create=False):
             seen.append((name, create))
+            self.writes.append(write)
             return results.get(name, rwb.Result(name, rwb.CURRENT))
         with mock.patch.object(cc, "list_children", fake_list), \
                 mock.patch.object(rwb, "sync_chapter", fake_sync), \
@@ -338,6 +416,30 @@ class TestMain(unittest.TestCase):
         code, _s, out = self._main({"Boston": rwb.Result("Boston")})
         self.assertEqual(code, 1)
         self.assertIn("unknown outcome", out)
+
+    def test_report_mode_passes_write_false_and_write_passes_true(self):
+        self._main({})
+        self.assertEqual(self.writes, [False, False])
+        self._main({}, ["--write"])
+        self.assertEqual(self.writes, [True, True])
+
+    def test_create_is_passed_through_and_needs_a_chapter(self):
+        _c, seen, _ = self._main({}, ["--chapter", "Boston", "--create"])
+        self.assertEqual(seen, [("Boston", True)])
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            self._main({}, ["--create"])
+
+    def test_jobs_must_be_positive(self):
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            self._main({}, ["--jobs", "0"])
+
+    def test_the_fallback_command_is_shell_quoted(self):
+        cmd = rwb.fallback_command("Ada's \"Town\"", create=True)
+        import shlex
+        argv = shlex.split(cmd)
+        self.assertEqual(argv[argv.index("--chapter") + 1], "Ada's \"Town\"")
+        self.assertIn("--create", argv)
+        self.assertNotIn("--create", rwb.fallback_command("Boston"))
 
     def test_no_match_exits_1(self):
         code, _s, _o = self._main({}, ["--chapter", "Atlantis"])

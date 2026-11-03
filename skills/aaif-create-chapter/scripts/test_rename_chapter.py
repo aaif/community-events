@@ -250,13 +250,53 @@ check("...a render exits 0", code, 0)
 code, _s, err, out = _rerender(_rwb.Result("Edinburgh", error="slide 4 says Scotland"))
 check("a failed banner render exits 1", code, 1)
 check("...with the command on stderr",
-      "--chapter 'Edinburgh' --write" in err and "slide 4 says Scotland" in err, True)
+      "--chapter Edinburgh --write" in err and "slide 4 says Scotland" in err, True)
 code, _s, err, out = _rerender(_rwb.Result("Edinburgh", _rwb.CURRENT))
 check("an already-current banner exits 0 and does not claim a render",
       (code, "already current" in out, "rendered" in out), (0, True, False))
 code, _s, err, out = _rerender(_rwb.Result("Edinburgh", _rwb.ABSENT))
 check("a folder with no banner exits 0 and says none was added",
       (code, "none was added" in out), (0, True))
+code, _s, err, out = _rerender(_rwb.Result("Edinburgh"))
+check("an unknown outcome exits 1 with a warning, not a traceback",
+      (code, "unexpected outcome" in err), (1, True))
+
+
+# --- main() wires the hook: only after a verified --write ---------------------
+def _main(argv, verify_names):
+    """Drive rename_chapter.main() over a fake folder holding one non-Office
+    file. `verify_names` is what the re-read walk sees after the rename."""
+    import tempfile as _tf
+    walks = [[("Scotland Notes.txt", "f1", "Scotland Notes.txt", False)],
+             [(n, "f1", n, False) for n in verify_names]]
+    banner, out = [], _io.StringIO()
+
+    def fake_sync(fid, name, create):
+        banner.append((fid, name, create))
+        return _rwb.Result(name, _rwb.RENDER)
+    with _tf.TemporaryDirectory() as tmp, \
+            _mock.patch.object(sys, "argv", ["x"] + argv), \
+            _mock.patch.object(rc, "find_folder", lambda name: "folder-1"), \
+            _mock.patch.object(rc, "walk", lambda fid: iter(walks.pop(0))), \
+            _mock.patch.object(rc, "rename_file", lambda fid, new: None), \
+            _mock.patch.object(rc.datadir, "path", lambda *p: os.path.join(tmp, *p)), \
+            _mock.patch.object(_rwb, "sync_one", fake_sync), \
+            _mock.patch("sys.stdout", out), _mock.patch("sys.stderr", _io.StringIO()):
+        code = rc.main()
+    return code, banner, out.getvalue()
+
+
+code, banner, out = _main(["--from", "Scotland", "--to", "Edinburgh", "--write"],
+                          ["Edinburgh Notes.txt"])
+check("a verified write re-renders the banner under the NEW name, never creating",
+      (code, banner), (0, [("folder-1", "Edinburgh", False)]))
+code, banner, out = _main(["--from", "Scotland", "--to", "Edinburgh", "--write"],
+                          ["Scotland Notes.txt"])
+check("a failed verify skips the banner and prints the command to run after",
+      (code, banner, "render_web_banner.py --chapter Edinburgh --write" in out),
+      (1, [], True))
+code, banner, out = _main(["--from", "Scotland", "--to", "Edinburgh"], [])
+check("a report run never renders", (code, banner), (2, []))
 
 print()
 print("FAILED %d check(s)" % len(FAILS) if FAILS else

@@ -71,13 +71,16 @@ Also deliberate:
     re-renders it from `Square Logo.pptx` (`render_web_banner.py`) and exits
     `1` if that fails. A failed verify skips it and prints the command to run
     after the fix. A folder with no banner is not given one.
-  - **The `Badges/` set** is named and lettered with a *lowercase* slug and UPPER
-    SVG text, which the Title/UPPER name pass does not match. Regenerate it with
-    `aaif-sync-badges` (`--chapter <new>`), then trash the old-slug files.
+  - **The `Badges/` set** has file names in a *lowercase* slug, which the
+    Title/UPPER name pass does not match, and its SVG/PNG contents are never
+    opened (only `.docx`/`.pptx`/`.xlsx` are rewritten). Regenerate it with
+    `aaif-sync-badges` (`--chapter <new>`, a case-insensitive substring match,
+    so check it picked only the one chapter), then trash the old-slug files.
   - **Luma links** stay until you pass `--slug-from`/`--slug-to`. Both pages had
     moved, so the links pointed to redirects.
-  - **The Chapters List `Summary`** prose ("AAIF Tokyo connects…") is website
-    copy, not a Drive file.
+  - **The Chapters List `Summary`** cell ("AAIF Tokyo connects…") is on the
+    feed sheet, outside the chapter folder. Edit it there with the rest of the
+    row (next bullet).
 - **The Chapters List row, the intake's city cells and Slack channels are NOT
   touched.** The first two are `aaif-sync-chapters`' surfaces and must be updated
   for the engines to keep matching the chapter to its folder; a channel rename

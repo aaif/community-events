@@ -743,7 +743,7 @@ class TestMainGuards(unittest.TestCase):
                 mock.patch.object(cc, "clone_and_rebrand", clone), \
                 mock.patch.object(render_web_banner, "sync_one",
                                   banner or (lambda fid, name, create:
-                                             render_web_banner.Result(name, "render"))):
+                                             render_web_banner.Result(name, render_web_banner.RENDER))):
             cc.main()
 
     def test_a_write_re_renders_the_new_chapters_banner(self):
@@ -753,7 +753,7 @@ class TestMainGuards(unittest.TestCase):
 
         def banner(fid, name, create):
             seen.append((fid, name, create))
-            return render_web_banner.Result(name, "render")
+            return render_web_banner.Result(name, render_web_banner.RENDER)
         with mock.patch("sys.stdout"):
             self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
                           banner=banner)
@@ -771,7 +771,7 @@ class TestMainGuards(unittest.TestCase):
                               name, error="slide 4 says the wrong city"))
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("NOT re-rendered", err.getvalue())
-        self.assertIn("render_web_banner.py --chapter 'Zed' --write", err.getvalue())
+        self.assertIn("render_web_banner.py --chapter Zed --create --write", err.getvalue())
 
     def test_an_already_current_banner_does_not_claim_a_render(self):
         import io
@@ -779,7 +779,7 @@ class TestMainGuards(unittest.TestCase):
         with mock.patch("sys.stdout", out):
             self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
                           banner=lambda fid, name, create: render_web_banner.Result(
-                              name, "current"))
+                              name, render_web_banner.CURRENT))
         self.assertIn("already current", out.getvalue())
         self.assertNotIn("Rendered", out.getvalue())
 
@@ -788,13 +788,42 @@ class TestMainGuards(unittest.TestCase):
         def dirty_clone(_tpl, _parent, _name, ctx, existing_id=None):
             ctx["residuals"].append(("Square Logo.pptx", ["San Francisco"]))
             return "new-id"
-        with mock.patch("sys.stdout"), self.assertRaises(SystemExit):
+        with mock.patch("sys.stdout"), self.assertRaises(SystemExit) as cm:
             self.run_main(["--city", "Zed", "--write"], clone=dirty_clone,
-                          banner=lambda *a: self.fail("must not render a dirty deck"))
+                          banner=lambda *a, **k: self.fail("must not render a dirty deck"))
+        # The residuals exit (a message, i.e. 1), not the banner's 2.
+        self.assertIsInstance(cm.exception.code, str)
+
+    def test_a_dirty_existing_deck_under_resume_is_not_rendered(self):
+        """It is left dirty on purpose; the advice must come after the repair."""
+        import io
+
+        def resumed(_tpl, _parent, _name, ctx, existing_id=None):
+            ctx["existing_residuals"].append(("Square Logo.pptx", ["San Francisco"]))
+            return "new-id"
+        err = io.StringIO()
+        with mock.patch("sys.stdout"), mock.patch("sys.stderr", err), \
+                self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--write"], clone=resumed,
+                          banner=lambda *a, **k: self.fail("must not render a dirty deck"))
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--repair-existing, run:", err.getvalue())
+
+    def test_an_unexpected_outcome_is_not_reported_as_a_render(self):
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err), \
+                self.assertRaises(SystemExit) as cm:
+            self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
+                          banner=lambda fid, name, create: render_web_banner.Result(
+                              name, render_web_banner.ABSENT))
+        self.assertEqual(cm.exception.code, 2)
+        self.assertNotIn("Rendered", out.getvalue())
+        self.assertIn("unexpected outcome", err.getvalue())
 
     def test_a_plan_run_renders_no_banner(self):
         self.run_main(["--city", "Zed"],
-                      banner=lambda *a: self.fail("plan must not render"))
+                      banner=lambda *a, **k: self.fail("plan must not render"))
 
     def test_plan_runs_never_consult_the_cap(self):
         """Seeing what a chapter WOULD look like is how someone decides which

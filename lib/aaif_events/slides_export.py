@@ -30,16 +30,19 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 def _page_text(page):
-    """Every text run on a Slides API page, top-level shapes and groups, joined
-    by spaces."""
+    """The text of a Slides API page: text in shapes, recursing into groups
+    (tables are not read). Runs within a shape are joined with nothing, since
+    one word can be split across runs and each paragraph's last run already
+    ends in a newline. Shapes are joined with a space."""
     out = []
 
     def walk(elements):
         for el in elements or ():
-            for text_el in ((el.get("shape") or {}).get("text") or {}).get("textElements", ()):
-                run = (text_el.get("textRun") or {}).get("content")
-                if run:
-                    out.append(run)
+            shape_text = "".join(
+                (text_el.get("textRun") or {}).get("content") or ""
+                for text_el in ((el.get("shape") or {}).get("text") or {}).get("textElements", ()))
+            if shape_text:
+                out.append(shape_text)
             walk((el.get("elementGroup") or {}).get("children"))
     walk(page.get("pageElements"))
     return " ".join(out)
@@ -77,15 +80,20 @@ def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000
     thumbnails only work on native Slides files, not stored .pptx blobs) and
     trashes it afterward — the source file is never modified.
 
-    `check_text(text) -> error or None` is run on the text of the page that is
-    about to be rendered, the same page object, so a caller can refuse a slide
-    without trusting that `slideN.xml` numbering follows presentation order.
-    `strict_cleanup` turns a failure to trash the throwaway copy into an
-    exception (naming its id) instead of a stderr warning, for callers that
-    report per-file success: a stray copy beside TemplateCity's decks is
+    `check_text(text) -> error string or None` is run on the text of the page
+    that is about to be rendered, the same page object, so a caller can refuse
+    a slide without trusting that `slideN.xml` numbering follows presentation
+    order. It is a refusal, not a predicate: anything but None or a str raises
+    TypeError, so a `lambda t: want in t` cannot pass every wrong slide.
+
+    A failure to trash the throwaway copy is always printed to stderr.
+    `strict_cleanup` also makes it part of the raised error (naming the copy's
+    id), whether the render succeeded or failed on its own, for callers that
+    report per-file results: a stray copy beside TemplateCity's decks is
     cloned into every later chapter."""
     presentation_id = None
     cleanup_error = None
+    body_error = None
     try:
         # NO_RETRY: a `files.copy` that succeeded server-side but answered like
         # a timeout would, on a retry, make a SECOND throwaway copy — and the
@@ -109,6 +117,9 @@ def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000
         page_object_id = slides[slide_index]["objectId"]
         if check_text:
             err = check_text(_page_text(slides[slide_index]))
+            if err is not None and not isinstance(err, str):
+                raise TypeError("check_text must return an error string or None, got %r"
+                                % (err,))
             if err:
                 raise RuntimeError(err)
 
@@ -119,6 +130,9 @@ def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000
         if not thumb.get("contentUrl"):
             raise RuntimeError("no thumbnail URL for slide %d of %s" % (slide_index + 1, file_id))
         _download(thumb["contentUrl"], out_path)
+    except Exception as e:
+        body_error = e
+        raise
     finally:
         # The throwaway copy has no `parents` set, so it lands in the SAME
         # folder as the source file - not an out-of-sight scratch location.
@@ -137,6 +151,13 @@ def render_slide_png(file_id, out_path, slide_index=0, thumbnail_size="WIDTH2000
                 print("WARNING: could not trash temp Slides copy %s: %s" % (presentation_id, e),
                       file=sys.stderr)
                 cleanup_error = e
+                if strict_cleanup and body_error is not None:
+                    # Replaces the in-flight error on purpose, carrying it, so
+                    # the stray id reaches the caller's failure line.
+                    raise RuntimeError(
+                        "%s; ALSO the temp Slides copy %s beside the source could not "
+                        "be trashed (%s); trash it by hand"
+                        % (body_error, presentation_id, e)) from body_error
     if cleanup_error is not None and strict_cleanup:
         raise RuntimeError("rendered, but the temp Slides copy %s beside the source "
                            "could not be trashed (%s); trash it by hand"

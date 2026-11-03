@@ -258,6 +258,55 @@ class TestRenderGuards(unittest.TestCase):
         out, _c, _d = self._run([self.PAGE], trash_fails=True)
         self.assertEqual(out, "/tmp/out.png")
 
+    def test_strict_cleanup_names_the_orphan_when_the_render_also_failed(self):
+        err, _c, dl = self._run([self.PAGE], trash_fails=True, strict_cleanup=True,
+                                check_text=lambda t: "wrong city")
+        self.assertIn("wrong city", str(err))
+        self.assertIn("pres1", str(err))
+        self.assertIn("could not be trashed", str(err))
+        self.assertFalse(dl.called)
+
+    def test_a_boolean_check_text_is_a_type_error_not_a_pass(self):
+        with mock.patch.object(se, "_gws_json", side_effect=lambda *a, **k: (
+                {"id": "pres1"} if a == ("drive", "files", "copy")
+                else {"slides": [self.PAGE]} if a == ("slides", "presentations", "get")
+                else {})), mock.patch.object(se, "_download"):
+            with self.assertRaises(TypeError):
+                se.render_slide_png("file1", "/tmp/out.png", check_text=lambda t: False)
+
+    def test_the_fields_mask_asks_for_text_only_when_checking(self):
+        _o, calls, _d = self._run([self.PAGE], check_text=lambda t: None)
+        get = [k for a, k in calls if a == ("slides", "presentations", "get")][0]
+        self.assertIn("textRun/content", get["params"]["fields"])
+        self.assertIn("elementGroup", get["params"]["fields"])
+        _o, calls, _d = self._run([self.PAGE])
+        get = [k for a, k in calls if a == ("slides", "presentations", "get")][0]
+        self.assertEqual(get["params"]["fields"], "slides.objectId")
+
+    def test_slide_index_equal_to_the_count_is_refused(self):
+        err, _c, _d = self._run([{"objectId": "p1"}], slide_index=1)
+        self.assertIn("has 1 slide(s); slide 2", str(err))
+
+    def test_a_missing_thumbnail_url_says_so(self):
+        def fake(*args, **kwargs):
+            if args == ("drive", "files", "copy"):
+                return {"id": "pres1"}
+            if args == ("slides", "presentations", "get"):
+                return {"slides": [{"objectId": "p1"}]}
+            return {}
+        with mock.patch.object(se, "_gws_json", side_effect=fake), \
+                mock.patch.object(se, "_download") as dl:
+            with self.assertRaisesRegex(RuntimeError, "no thumbnail URL"):
+                se.render_slide_png("file1", "/tmp/out.png")
+        self.assertFalse(dl.called)
+
+    def test_a_word_split_across_runs_in_one_shape_is_read_whole(self):
+        page = {"pageElements": [{"shape": {"text": {"textElements": [
+            {"textRun": {"content": "AAIF Community Events\n"}},
+            {"textRun": {"content": "Amster"}}, {"textRun": {"content": "dam\n"}}]}}}]}
+        self.assertEqual(" ".join(se._page_text(page).split()),
+                         "AAIF Community Events Amsterdam")
+
 
 class TestDownload(unittest.TestCase):
     """_download must never leave a partial PNG behind, whatever failed."""

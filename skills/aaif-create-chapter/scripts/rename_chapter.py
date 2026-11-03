@@ -469,11 +469,18 @@ def rerender_banner(folder_id, new_name):
               % (render_web_banner.BANNER, r.error,
                  render_web_banner.fallback_command(new_name)), file=sys.stderr)
         return 1
-    print({render_web_banner.RENDER: "%s rendered from the renamed %s."
+    msg = {render_web_banner.RENDER: "%s rendered from the renamed %s."
            % (render_web_banner.BANNER, render_web_banner.DECK),
            render_web_banner.CURRENT: "%s already current." % render_web_banner.BANNER,
            render_web_banner.ABSENT: "This chapter has no %s; none was added."
-           % render_web_banner.BANNER}[r.action])
+           % render_web_banner.BANNER}.get(r.action)
+    if msg is None:
+        # The rename has landed; an outcome we do not know is not "done".
+        print("WARNING: %s: unexpected outcome %r, nothing rendered. Run: %s"
+              % (render_web_banner.BANNER, r.action,
+                 render_web_banner.fallback_command(new_name)), file=sys.stderr)
+        return 1
+    print(msg)
     return 0
 
 
