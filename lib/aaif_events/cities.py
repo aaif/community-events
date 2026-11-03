@@ -1,8 +1,10 @@
 """Which chapter a city belongs to, for the chapters that absorbed other cities.
 
 Japan and New Zealand are country chapters (2026-10): their organizers pooled
-and host in any city. The form's city dropdown still offers Tokyo, so an
-applicant keeps arriving under a city that has no chapter row.
+and host in any city. The form's city dropdown has offered Japan and New
+Zealand instead of Tokyo and Wellington since 2026-11, but the fold stays:
+older rows still carry the old cities, and an applicant who picks "Other" and
+types "Tokyo" or "Auckland" still arrives under a city with no chapter row.
 
 Every engine that reads a city off an intake row goes through `chapter_for` —
 directly, or via `sync_chapters.resolve_city`, which calls it — because a fold
