@@ -225,6 +225,39 @@ try:
 finally:
     _redact.REDACT = False
 
+# --- the banner hook after a verified rename --------------------------------
+import io as _io                      # noqa: E402
+from unittest import mock as _mock    # noqa: E402
+import render_web_banner as _rwb      # noqa: E402
+
+
+def _rerender(result):
+    seen, err, out = [], _io.StringIO(), _io.StringIO()
+
+    def fake(fid, name, create):
+        seen.append((fid, name, create))
+        return result
+    with _mock.patch.object(_rwb, "sync_one", fake), \
+            _mock.patch("sys.stderr", err), _mock.patch("sys.stdout", out):
+        code = rc.rerender_banner("folder-1", "Edinburgh")
+    return code, seen, err.getvalue(), out.getvalue()
+
+
+code, seen, err, out = _rerender(_rwb.Result("Edinburgh", _rwb.RENDER))
+check("banner hook gets the NEW name and never creates a banner",
+      seen, [("folder-1", "Edinburgh", False)])
+check("...a render exits 0", code, 0)
+code, _s, err, out = _rerender(_rwb.Result("Edinburgh", error="slide 4 says Scotland"))
+check("a failed banner render exits 1", code, 1)
+check("...with the command on stderr",
+      "--chapter 'Edinburgh' --write" in err and "slide 4 says Scotland" in err, True)
+code, _s, err, out = _rerender(_rwb.Result("Edinburgh", _rwb.CURRENT))
+check("an already-current banner exits 0 and does not claim a render",
+      (code, "already current" in out, "rendered" in out), (0, True, False))
+code, _s, err, out = _rerender(_rwb.Result("Edinburgh", _rwb.ABSENT))
+check("a folder with no banner exits 0 and says none was added",
+      (code, "none was added" in out), (0, True))
+
 print()
 print("FAILED %d check(s)" % len(FAILS) if FAILS else
       "rename_chapter: all checks passed.")

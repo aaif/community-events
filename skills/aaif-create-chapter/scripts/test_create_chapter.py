@@ -11,7 +11,7 @@ import zipfile
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
-import create_chapter as cc
+import create_chapter as cc  # noqa: E402
 import render_web_banner  # noqa: E402
 from aaif_events import gws as gwsmod  # noqa: E402
 
@@ -742,26 +742,55 @@ class TestMainGuards(unittest.TestCase):
                                   lambda what="", **k: calls.append(what)), \
                 mock.patch.object(cc, "clone_and_rebrand", clone), \
                 mock.patch.object(render_web_banner, "sync_one",
-                                  banner or (lambda fid, name: None)):
+                                  banner or (lambda fid, name, create:
+                                             render_web_banner.Result(name, "render"))):
             cc.main()
 
     def test_a_write_re_renders_the_new_chapters_banner(self):
         """The clone copies TemplateCity's Web Banner.png, which says "San
         Francisco"; the text rebrand cannot reach an image."""
         seen = []
+
+        def banner(fid, name, create):
+            seen.append((fid, name, create))
+            return render_web_banner.Result(name, "render")
         with mock.patch("sys.stdout"):
             self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
-                          banner=lambda fid, name: seen.append((fid, name)))
-        self.assertEqual(seen, [("new-id", "Zed")])
+                          banner=banner)
+        self.assertEqual(seen, [("new-id", "Zed", True)])
 
-    def test_a_failed_banner_render_warns_with_the_command(self):
+    def test_a_failed_banner_render_warns_and_exits_2(self):
+        """Done with one follow-up, like the existing-residuals path: a wrapper
+        checking the exit code must not read a San Francisco banner as success."""
         import io
         err = io.StringIO()
-        with mock.patch("sys.stdout"), mock.patch("sys.stderr", err):
+        with mock.patch("sys.stdout"), mock.patch("sys.stderr", err), \
+                self.assertRaises(SystemExit) as cm:
             self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
-                          banner=lambda fid, name: "slide 4 says the wrong city")
+                          banner=lambda fid, name, create: render_web_banner.Result(
+                              name, error="slide 4 says the wrong city"))
+        self.assertEqual(cm.exception.code, 2)
         self.assertIn("NOT re-rendered", err.getvalue())
         self.assertIn("render_web_banner.py --chapter 'Zed' --write", err.getvalue())
+
+    def test_an_already_current_banner_does_not_claim_a_render(self):
+        import io
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.run_main(["--city", "Zed", "--write"], clone=lambda *a, **k: "new-id",
+                          banner=lambda fid, name, create: render_web_banner.Result(
+                              name, "current"))
+        self.assertIn("already current", out.getvalue())
+        self.assertNotIn("Rendered", out.getvalue())
+
+    def test_dirty_fresh_files_skip_the_banner(self):
+        """A deck still carrying source tokens could be rendered as-is."""
+        def dirty_clone(_tpl, _parent, _name, ctx, existing_id=None):
+            ctx["residuals"].append(("Square Logo.pptx", ["San Francisco"]))
+            return "new-id"
+        with mock.patch("sys.stdout"), self.assertRaises(SystemExit):
+            self.run_main(["--city", "Zed", "--write"], clone=dirty_clone,
+                          banner=lambda *a: self.fail("must not render a dirty deck"))
 
     def test_a_plan_run_renders_no_banner(self):
         self.run_main(["--city", "Zed"],

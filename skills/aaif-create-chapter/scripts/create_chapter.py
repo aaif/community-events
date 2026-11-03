@@ -802,21 +802,32 @@ def main():
             # survivor is a PII copy on disk, so say so rather than hide it.
             print("WARNING: could not remove temp dir %s — it holds downloaded "
                   "workbooks; delete it by hand." % ctx["tmp"], file=sys.stderr)
-    print("\nDone. New chapter folder id: %s" % new_id)
-    print("https://drive.google.com/drive/folders/%s" % new_id)
     # The clone copied TemplateCity's Web Banner.png, an image that says "San
     # Francisco" and that the text rebrand cannot reach. Re-render it from this
-    # chapter's own (rebranded) Square Logo deck. A failure here is not a
-    # failed chapter: say so and name the command that finishes the job.
+    # chapter's own (rebranded) Square Logo deck — unless a fresh file still
+    # carries source tokens, in which case the deck may too, and the exit-1
+    # path below is the real problem. A banner failure is not a failed clone:
+    # it is "done, one follow-up", exit 2, with the command that finishes it.
     import render_web_banner  # lazy: it imports this module
-    err = render_web_banner.sync_one(new_id, name)
-    if err:
-        print("WARNING: %s was NOT re-rendered (%s) — it still shows the template "
-              "city. Run: render_web_banner.py --chapter %r --write"
-              % (render_web_banner.BANNER, err, name), file=sys.stderr)
+    banner_failed = False
+    if ctx["residuals"]:
+        print("\n%s not rendered: fresh files still carry source tokens (below)."
+              % render_web_banner.BANNER)
     else:
-        print("Rendered %s from this chapter's %s." % (render_web_banner.BANNER,
-                                                     render_web_banner.DECK))
+        r = render_web_banner.sync_one(new_id, name, create=True)
+        if r.error is not None:
+            banner_failed = True
+            print("WARNING: %s was NOT re-rendered (%s) — it still shows the template "
+                  "city. Run: %s" % (render_web_banner.BANNER, r.error,
+                                     render_web_banner.fallback_command(name)),
+                  file=sys.stderr)
+        elif r.action == render_web_banner.CURRENT:
+            print("%s already current." % render_web_banner.BANNER)
+        else:
+            print("Rendered %s from this chapter's %s." % (render_web_banner.BANNER,
+                                                         render_web_banner.DECK))
+    print("\nDone. New chapter folder id: %s" % new_id)
+    print("https://drive.google.com/drive/folders/%s" % new_id)
     if status == "absent":
         print("REMINDER: create the Luma page at https://luma.com/aaif-%s (it is not live yet)." % slug)
     elif status == "unknown":
@@ -841,6 +852,8 @@ def main():
         print("%d existing file(s) still carry source tokens; re-run with --write "
               "--resume --repair-existing for design assets, fix CRM/Tracker by hand"
               % len(ctx["existing_residuals"]), file=sys.stderr)
+        sys.exit(2)
+    if banner_failed:
         sys.exit(2)
 
 if __name__ == "__main__":

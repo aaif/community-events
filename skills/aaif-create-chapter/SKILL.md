@@ -195,12 +195,20 @@ template or the rebrand engine is broken. Fix that — don't resume.
   hand it TemplateCity's agent. That is `upload_agents.py`'s job — see
   `references/design-system-sweep.md`.
 - **`Web Banner.png` is rendered, not cloned.** The city is drawn into the
-  image, so no text rebrand reaches it, and until 2026-11 every new chapter
-  kept TemplateCity's "San Francisco" banner. `render_web_banner.py` renders it
-  from slide 4 of the chapter's own `Banners (…)/Square Logo.pptx` through
-  Google's renderer. `create_chapter` and `rename_chapter` call it after a
-  write; it refuses a slide that does not name the chapter, and skips a banner
-  stamped with the deck's current checksum, so a full run is cheap:
+  image, so no text rebrand reaches it, and until 2026-11 every chapter cloned
+  from TemplateCity kept its "San Francisco" banner. `render_web_banner.py`
+  renders it from the fourth slide of the chapter's own
+  `Banners (…)/Square Logo.pptx` through Google's renderer.
+  - `create_chapter` calls it after a clean write (exit `2` if the banner
+    failed). `rename_chapter` calls it only after the rename verifies (exit `1`
+    if it failed).
+  - It refuses a slide that does not say exactly "AAIF Community Events" plus
+    the chapter's name.
+  - It skips a banner stamped with the current deck and name, so a re-run is
+    cheap.
+  - A sweep leaves TemplateCity alone unless named with `--chapter`, and never
+    adds a banner to a folder that has none.
+  - Exit codes: `2` report-only with banners to render, `1` any failure.
   ```bash
   python3 <skill-root>/scripts/render_web_banner.py            # report
   python3 <skill-root>/scripts/render_web_banner.py --write

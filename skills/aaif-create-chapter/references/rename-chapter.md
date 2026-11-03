@@ -67,9 +67,10 @@ Also deliberate:
   uploaded, that no names were changed, and where the originals are.
 - **What the text pass cannot see, checked 2026-11-03.** The Japan and New
   Zealand renames verified clean while four things still said the old city:
-  - **`Web Banner.png`** has the name drawn in. A successful `--write` now
-    re-renders it from the rewritten `Square Logo.pptx` (`render_web_banner.py`)
-    and exits `1` if that fails.
+  - **`Web Banner.png`** has the name drawn in. A `--write` that verifies now
+    re-renders it from `Square Logo.pptx` (`render_web_banner.py`) and exits
+    `1` if that fails. A failed verify skips it and prints the command to run
+    after the fix. A folder with no banner is not given one.
   - **The `Badges/` set** is named and lettered with a *lowercase* slug and UPPER
     SVG text, which the Title/UPPER name pass does not match. Regenerate it with
     `aaif-sync-badges` (`--chapter <new>`), then trash the old-slug files.
