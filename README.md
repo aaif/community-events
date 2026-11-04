@@ -98,9 +98,15 @@ message about a sign-in, token, key or missing tool.
 
 ## Set up once
 
-Ask whoever handed you this toolkit to sit with you for this part. Plan on
-about 30 minutes. You do step 1 yourself. Your helper does parts of steps 2
-and 3, and each step says which parts.
+AAIF's Google connection, Slack app and Luma key already exist, so you only
+connect to them. This takes about 20 minutes and you don't need to be technical.
+If nobody at your organization has set the toolkit up yet, start with
+[first-time setup](MAINTAINING.md#first-time-setup).
+
+To write posts, bios, invites and recaps, you only need steps 1 and 2.
+
+Some steps use **Terminal**. Press ⌘-Space and type "Terminal" to open it. To
+run a line, copy it, paste it into Terminal and press Return.
 
 ### 1. Install the assistant
 
@@ -114,9 +120,12 @@ Pick **one**:
 
 ### 2. Add the AAIF toolkit
 
-**In Goose:** your helper runs a single install command for you (it's in
-[MAINTAINING.md](MAINTAINING.md#goose)). After that, quit Goose and open it
-again. The toolkit updates itself from then on.
+**In Goose:** run this in Terminal, then quit Goose and open it again. The
+toolkit updates itself from then on.
+
+```bash
+/Applications/Goose.app/Contents/Resources/bin/goose plugin install --auto-update https://github.com/aaif/community-events.git
+```
 
 **In Claude Desktop:**
 
@@ -127,27 +136,63 @@ again. The toolkit updates itself from then on.
    click **Sync**.
 4. Under **Discover**, find **aaif-events** and click **Add**.
 
-### 3. Connect Google, Slack and Luma (with your helper)
+### 3. Ask AAIF for your access
 
-1. **Google.** Your helper installs a small tool called `gws` and prepares
-   it. Then quit and reopen your assistant, and ask it to *"check my setup
-   and sign me in to Google"*. A browser window opens. Sign in with your AAIF
-   Google account and allow everything it asks for.
-2. **Slack and Luma keys.** Your helper gives you each key privately, *not*
-   in the assistant chat. To store a key:
-   1. Open **Keychain Access**. Press ⌘-Space and type "Keychain Access".
-   2. Choose **File → New Password Item**.
-   3. Fill in:
+Only AAIF can give you these, and you only ask once. Send this to an AAIF admin,
+outside the assistant chat:
 
-      | Keychain Item Name | Account Name | Password |
-      |---|---|---|
-      | `aaif-slack-write-token` | `aaif` | the Slack token |
-      | `luma-api-key` | `aaif` | the Luma key |
+> I'm setting up the AAIF toolkit. My Google address is ___. Please send me the
+> Google connection file, the Slack token and the Luma key privately, and give
+> me edit access to the Chapters folder and the Community Intake Ops sheet.
 
-   4. Click **Add**. The first time a job uses the key, your Mac asks whether
-      to allow it. Click **Always Allow**.
+Leave out Slack or Luma if you won't use them. You need the Slack token to run
+the sync, the Slack audit or the community update. Without a Luma key, the
+toolkit gives you event-page text to paste into Luma by hand.
 
-### 4. Check it
+### 4. Connect Google
+
+The toolkit reaches Google Drive through a small tool called `gws`. It's made
+by a third party, not by Google or AAIF.
+
+1. Install it by running this in Terminal:
+
+   ```bash
+   brew install googleworkspace-cli
+   ```
+
+   If Terminal says `command not found: brew`, go to [brew.sh](https://brew.sh),
+   paste the line on that page into Terminal, and follow the "Next steps" it
+   prints at the end. Then run the line above again.
+2. Save the Google connection file to your **Downloads** folder, then move it
+   into place by running this in Terminal:
+
+   ```bash
+   mkdir -p ~/.config/gws && mv ~/Downloads/client_secret*.json ~/.config/gws/client_secret.json
+   ```
+
+3. Quit your assistant completely (⌘-Q), open it again, and ask it to *"check
+   my setup and sign me in to Google"*. A browser window opens. Sign in with
+   your AAIF Google account and allow everything it asks for. If Google warns
+   that the app isn't verified, click **Advanced**, then continue.
+
+### 5. Save your Slack and Luma keys
+
+Save each key in your Mac's Keychain, *not* in the assistant chat, because the
+chat keeps everything you type.
+
+1. Open **Keychain Access**. Press ⌘-Space and type "Keychain Access".
+2. Choose **File → New Password Item**.
+3. Fill in:
+
+   | Keychain Item Name | Account Name | Password |
+   |---|---|---|
+   | `aaif-slack-write-token` | `aaif` | the Slack token |
+   | `luma-api-key` | `aaif` | the Luma key |
+
+4. Click **Add**. The first time a job uses the key, your Mac asks whether
+   to allow it. Click **Always Allow**.
+
+### 6. Check it
 
 Ask your assistant to **"check my setup"**. Each ❌ line comes with what to do
 next. You're done when every line is ✅ or ⚪. A ⚪ line is optional and only
@@ -170,8 +215,12 @@ the Slack line needs to be ✅.
 4. **The assistant seems to be guessing or doing it differently each time:**
    name the job, e.g. *"use the aaif-recap-post skill"*. Typing `/` in
    Claude Desktop lists every skill.
-5. **Still stuck:** copy the last message the assistant showed you (it never
-   includes your keys) and send it to your helper.
+5. **Google says "Access blocked" when you sign in:** ask an AAIF admin to add
+   your address as a test user.
+6. **Google asks you to sign in again about once a week:** that can be normal
+   for AAIF's connection. Say *"sign me in to Google again"*.
+7. **Still stuck:** copy the last message the assistant showed you (it never
+   includes your keys) and send it to an AAIF admin.
 
 ---
 

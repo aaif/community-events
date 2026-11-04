@@ -5,8 +5,9 @@ in this repository. `CLAUDE.md` is a symlink to it.
 
 `README.md` is for the person *using* the toolkit, who is not technical and
 runs it from Goose or Claude Desktop. Keep it in plain words: what to ask for,
-what is safe, how to set up once. Engine detail, `gws` setup and the
-standalone-zip list belong in `MAINTAINING.md`. `CONTRIBUTING.md` covers skill
+what is safe, how to set up once using what AAIF already has. Engine detail,
+first-time setup (creating the Google client, Slack app and Luma key), adding
+the next person and the standalone-zip list belong in `MAINTAINING.md`. `CONTRIBUTING.md` covers skill
 authoring; `DESIGN.md` covers how anything this repo renders for a human is
 styled. This file is what those don't say.
 

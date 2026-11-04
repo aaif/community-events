@@ -195,12 +195,13 @@ def check_gws():
     path, on_path = find_gws()
     if not path:
         return NEEDED, "The `gws` Google Workspace tool is not installed.", (
-            "Ask your helper to install it (on a Mac: `brew install "
-            "googleworkspace-cli`), then restart this app.")
+            "On a Mac, run `brew install googleworkspace-cli` in Terminal, then "
+            "quit this app and open it again. Step 4 of the README's 'Set up "
+            "once' section has the details.")
     if not on_path:
         return NEEDED, "`gws` is installed but this app cannot see it.", (
             "Quit this app completely and open it again. If that does not fix "
-            "it, ask your helper to add %s to the app's PATH."
+            "it, ask an AAIF admin to add %s to the app's PATH."
             % os.path.dirname(path))
     return OK, "The `gws` Google Workspace tool is installed.", None
 
@@ -223,7 +224,23 @@ SIGN_IN_UNREADABLE = "Your saved Google sign-in can no longer be read."
 SIGN_IN_NO_DRIVE = "Signed in to Google, but without permission to use Drive."
 SIGN_IN_NONE = "You are not signed in to Google through `gws`."
 SIGN_IN_WRONG_ACCOUNT = "Signed in, but this account cannot open the Community Intake sheet."
+#: Not on SIGN_IN_LINES: the sign-in command cannot work until this is fixed.
+NO_CLIENT = "`gws` has no Google connection file yet, so you cannot sign in."
 SIGN_IN_LINES = (SIGN_IN_UNREADABLE, SIGN_IN_NO_DRIVE, SIGN_IN_NONE, SIGN_IN_WRONG_ACCOUNT)
+
+
+def has_oauth_client():
+    """True when `gws auth login` has an OAuth client to sign in with: a client
+    file or the client env vars, the routes gws names in its own "No OAuth
+    client configured" error, or a credentials file. Asks only whether they
+    exist; never reads them."""
+    if os.environ.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE") or (
+            os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_ID")
+            and os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET")):
+        return True
+    config = os.environ.get("GOOGLE_WORKSPACE_CLI_CONFIG_DIR") or os.path.expanduser(
+        "~/.config/gws")
+    return os.path.exists(os.path.join(config, "client_secret.json"))
 
 
 def check_google():
@@ -241,6 +258,14 @@ def check_google():
     if r.returncode != 0:
         why = scrub(r.stderr or r.stdout)          # for display only
         text = ((r.stderr or "") + (r.stdout or "")).lower()   # every test reads this
+        # Seen 2026-11-03: with no client and no sign-in, a Drive call answers
+        # "insufficient authentication scopes", which reads as a sign-in that
+        # lacks Drive. Sending someone to sign in would only fail again.
+        if (is_sign_in_failure(text) and "failed to decrypt" not in text
+                and not has_oauth_client()):
+            return NEEDED, NO_CLIENT, (
+                "Ask an AAIF admin for the Google connection file, then follow "
+                "step 4 of the README's 'Set up once' section.")
         if "failed to decrypt" in text:
             # Seen live 2026-10-09: gws names its keychain key after $USER, so a
             # run with USER unset minted a second `gws-cli` key under
@@ -267,7 +292,7 @@ def check_google():
                 "Sign in again with the Google account AAIF shared the "
                 "Chapters folder with, or ask an admin for access.")
         return NEEDED, "Google check failed: %s" % why, (
-            "Try again; if it repeats, send this line to your helper.")
+            "Try again; if it repeats, send this line to an AAIF admin.")
     try:
         can_edit = json.loads(r.stdout[r.stdout.index("{"):]).get(
             "capabilities", {}).get("canEdit")
@@ -275,7 +300,7 @@ def check_google():
         # Not a permissions finding: sending an admin to grant access that
         # already exists would be the wrong fix.
         return NEEDED, "Google answered, but its reply could not be read.", (
-            "Try again; if it repeats, send this line to your helper.")
+            "Try again; if it repeats, send this line to an AAIF admin.")
     if can_edit:
         return OK, "Signed in to Google, and you can edit the Community Intake sheet.", None
     return NEEDED, "Signed in to Google, but you can only VIEW the Community Intake sheet.", (
@@ -288,7 +313,7 @@ def check_slack():
         return keychain_refused("Slack token", failure)
     if not token:
         return OPTIONAL, "No Slack token — needed for \"run the sync\", the Slack audit and the community update; writing jobs don't need it.", (
-            "Get the AAIF Slack app token from your helper. "
+            "Get the AAIF Slack token from an AAIF admin. "
             + keychain_steps("aaif-slack-write-token", "token"))
     req = urllib.request.Request("https://slack.com/api/auth.test", data=b"",
                                  headers={"Authorization": "Bearer " + token})
@@ -302,7 +327,7 @@ def check_slack():
         return OK, "Slack token in %s works (workspace: %s)." % (
             where, body.get("team", "?")), None
     return NEEDED, "Slack token in %s was refused (%s)." % (where, body.get("error")), (
-        "The token has expired or been revoked; ask your helper for a new one.")
+        "The token has expired or been revoked; ask an AAIF admin for a new one.")
 
 
 def check_luma():
@@ -311,8 +336,8 @@ def check_luma():
         return keychain_refused("Luma key", failure)
     if not key:
         return OPTIONAL, "No Luma key — event pages will come back as copy to paste into Luma by hand.", (
-            "To let the assistant publish to Luma, get the API key from the "
-            "AAIF Luma calendar's settings. "
+            "To let the assistant publish to Luma, get the Luma key from an "
+            "AAIF admin. "
             + keychain_steps("luma-api-key", "API key"))
     req = urllib.request.Request("https://public-api.luma.com/v1/calendars/get",
                                  headers={"x-luma-api-key": key,
@@ -323,8 +348,8 @@ def check_luma():
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return NEEDED, "Luma key in %s was refused (HTTP %d)." % (where, e.code), (
-                "The key may have been rotated; get a fresh one from the Luma "
-                "calendar settings.")
+                "The key may have been replaced; get the current one from an "
+                "AAIF admin.")
         # A Luma outage or rate limit is not a bad key: do not send the
         # operator to rotate one that works.
         return NEEDED, "Luma key found in %s, but Luma is not answering right now (HTTP %d)." % (

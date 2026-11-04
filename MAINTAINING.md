@@ -2,8 +2,8 @@
 
 [README.md](README.md) is for the person who *uses* the toolkit, written for
 someone who is not technical. This file is for whoever keeps it running: how it
-is built, what each engine does, how Google access is wired, and the one-time
-setup the README hands off to "your helper".
+is built, what each engine does, how Google access is wired, and the setup that
+happens once per organization, before anyone can follow the README.
 
 Packaged as a portable [Agent Plugin](https://agent-plugins.org) with plain
 [Agent Skills](https://agentskills.io) so the same checkout works across Goose,
@@ -14,30 +14,118 @@ manifest is the root `plugin.json`. See [Using in other tools](#using-in-other-t
 
 ---
 
-## Setting someone up (the README's "helper" steps)
+## First-time setup
 
-The helper steps behind the README's *Set up once*, in order:
+Do this once per organization. It creates the three things every later operator
+reuses: a Google connection file, a Slack token and a Luma key. Keep them in a
+password manager, then follow the README's *Set up once* for yourself.
 
-0. **Goose only: install the plugin** with the command under [Goose](#goose).
-   Claude Desktop users add it themselves from the Code tab.
-1. **Install `gws`** — `brew install googleworkspace-cli` on a Mac. Open the
-   assistant app *after* this, or its shell will not see the binary
-   (`aaif-check-setup` says "installed but this app cannot see it").
-2. **Give `gws` an OAuth client** — see [Google Workspace access](#google-workspace-access-for-the-ops-skills)
-   below. After that, the operator signs in from the assistant with the
-   scoped command under *OAuth scopes* (`aaif-check-setup` prints it); a
-   browser opens and they sign in. Never a bare `gws auth login`.
-3. **Hand over the Slack token and Luma key** by a channel that is not the
-   assistant chat. They go in the macOS keychain (Keychain Access → File →
-   New Password Item) under `aaif-slack-write-token` and `luma-api-key`,
-   account `aaif`. The write token runs both the audits and the write steps;
-   `aaif-slack-read-token` alone runs the audits but not provision, invite or
-   the directory posts. The scripts
-   read the keychain after the environment and the repo-root `.env`; the
-   keychain is the route that survives an installed plugin, because Goose and
-   Claude Desktop do not pass a shell environment and a plugin update replaces
-   its install folder.
-4. **Run `aaif-check-setup` with them** ("check my setup") and clear every ❌.
+### Google connection file
+
+Use the Google account that owns the toolkit. With `gcloud` installed,
+`gws auth setup` does parts 1 to 3 for you.
+
+1. [Create a Google Cloud project](https://console.cloud.google.com/projectcreate)
+   named `aaif-toolkit`.
+2. [Enable the APIs](https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com,sheets.googleapis.com,docs.googleapis.com,slides.googleapis.com,forms.googleapis.com):
+   Drive, Sheets, Docs, Slides and Forms.
+3. [Set up the consent screen](https://console.cloud.google.com/auth/overview)
+   with the app name `AAIF Toolkit`. Choose **Internal** if every operator's
+   account is in this Workspace. Otherwise choose **External**, leave it in
+   testing mode, and add each operator under
+   [Audience → Test users](https://console.cloud.google.com/auth/audience).
+   Google [expires an External testing app's refresh tokens after 7
+   days](https://developers.google.com/identity/protocols/oauth2), so those
+   operators sign in again weekly.
+4. [Create a client](https://console.cloud.google.com/auth/clients) of type
+   **Desktop app** and download its JSON. That file is the connection file.
+
+| Google says | Cause |
+|---|---|
+| Access blocked | The account is not a test user on an External app |
+| `redirect_uri_mismatch` | The client is not a **Desktop app**; make a new one |
+| `accessNotConfigured` | An API in part 2 is not enabled |
+
+### Slack token
+
+It is a **user** token (`xoxp-`), not a bot token, because the creator of a
+channel joins it and a bot would sit in every chapter room. So the token acts as
+whoever installs the app: it sees what they see, and every room it creates adds
+them. Use an account you are happy to have that happen to.
+
+1. Open [Slack's app page](https://api.slack.com/apps?new_app=1), choose
+   **From a manifest**, and pick the community workspace.
+2. On the **YAML** tab, paste this. **Next**, then **Create**.
+
+   ```yaml
+   display_information:
+     name: AAIF Toolkit
+   oauth_config:
+     scopes:
+       user:
+         - channels:history
+         - channels:read
+         - channels:write
+         - channels:write.invites
+         - chat:write
+         - groups:history
+         - groups:read
+         - groups:write
+         - groups:write.invites
+         - pins:read
+         - pins:write
+         - search:read
+         - users:read
+         - users:read.email
+   ```
+
+3. **Install to Workspace**, then **Allow**. A workspace may need an admin to
+   approve it first.
+4. Under **OAuth & Permissions**, copy the **User OAuth Token**.
+
+`channels:join` is deliberately absent: Slack offers it to bot tokens only, and
+a user token joins with `channels:write`. The write token runs both the audits
+and the write steps; a token stored as `aaif-slack-read-token` alone runs the
+audits but not provision, invite or the directory posts.
+
+### Luma key
+
+The calendar needs Luma Plus, and keys are per calendar. In
+[Luma](https://luma.com/home/calendars), open the calendar, then **Settings →
+Developer → API Keys → Create**. Copy the key straight away, because Luma shows
+it only once.
+
+## Adding the next person
+
+The README's *Set up once* is written for this person, who doesn't need to be
+technical. When they send the request from its step 3:
+
+1. **Share the Chapters folder and the Community Intake Ops sheet** with their
+   Google address, as an editor.
+2. **External consent screen only:** add them as a test user.
+3. **Send the connection file, Slack token and Luma key** through a password
+   manager or another private channel, never the assistant chat. Leave out
+   whatever they won't use.
+
+They can then finish alone. `aaif-check-setup` ("check my setup") tells them
+what is still missing.
+
+## What setup relies on
+
+- **`gws` must be installed before the assistant app opens**, or its shell will
+  not see the binary (`aaif-check-setup` says "installed but this app cannot see
+  it").
+- **The connection file lives at `~/.config/gws/client_secret.json`.** Without
+  it, a Drive call answers "insufficient authentication scopes", which looks
+  like a sign-in problem, so `aaif-check-setup` checks for the file and asks for
+  it instead of recommending a sign-in that cannot work.
+- **Sign in with named scopes**, using the command under *OAuth scopes* below,
+  which `aaif-check-setup` prints. Never a bare `gws auth login`.
+- **Secrets go in the macOS keychain**, under `aaif-slack-write-token` and
+  `luma-api-key`, account `aaif`. The scripts read the keychain after the
+  environment and the repo-root `.env`; the keychain is the route that survives
+  an installed plugin, because Goose and Claude Desktop do not pass a shell
+  environment and a plugin update replaces its install folder.
 
 **Where an installed plugin writes.** Reports (`sync-reports/`), the Slack
 audit cache, the audit pages, Pulse drafts, every engine's `--json-out`, and

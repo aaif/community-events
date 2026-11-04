@@ -9,10 +9,15 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
 ### Added
 - **Runs from Goose and Claude Desktop, for an operator who is not technical.**
   `README.md` is now written for that person: what to ask for, what stays
-  with a human, setup once with a helper, and what to do when something
-  fails. The engine detail, `gws` setup and the standalone-zip list moved to
-  `MAINTAINING.md` (`check_portable_skills.py` reads it there), together with
-  the helper's install steps for both clients.
+  with a human, setup once, and what to do when something fails. The engine
+  detail and the standalone-zip list moved to `MAINTAINING.md`
+  (`check_portable_skills.py` reads it there).
+- **Setup instructions for both kinds of setup.** `MAINTAINING.md` walks the
+  first person through creating the Google client, Slack app and Luma key, and
+  lists what to do for each person after that. The README takes that next
+  person through everything else without a helper. `aaif-check-setup` now
+  reports a missing Google connection file instead of recommending a sign-in
+  that cannot work.
 - **`aaif-check-setup`** — "check my setup" runs a read-only ✅/❌ check of
   Python, the full plugin, `gws` and its Google sign-in, edit access to the
   intake sheet, the Slack token, the Luma key and Chrome. Each ❌ comes with

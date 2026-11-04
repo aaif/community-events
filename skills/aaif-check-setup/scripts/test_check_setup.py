@@ -173,6 +173,7 @@ class TestMain(unittest.TestCase):
 class TestGoogle(unittest.TestCase):
     def run_with(self, result):
         with mock.patch.object(cs, "find_gws", lambda: ("/x/gws", True)), \
+                mock.patch.object(cs, "has_oauth_client", lambda: True), \
                 mock.patch.object(cs.subprocess, "run", lambda *a, **k: result):
             return cs.check_google()
 
@@ -234,13 +235,46 @@ class TestGoogle(unittest.TestCase):
         status, line, fix = self.run_with(done(out="not json at all"))
         self.assertEqual(status, cs.NEEDED)
         self.assertNotIn("VIEW", line)
-        self.assertNotIn("admin", fix)
+        self.assertNotIn("access", fix)
+        self.assertNotIn("editor", fix)
 
     def test_gws_off_path_is_reported_not_run(self):
         with mock.patch.object(cs, "find_gws", lambda: ("/opt/homebrew/bin/gws", False)):
             status, line, _ = cs.check_gws()
         self.assertEqual(status, cs.NEEDED)
         self.assertIn("cannot see it", line)
+
+
+class TestNoOAuthClient(unittest.TestCase):
+    """A sign-in cannot work without a client, so it must not be recommended."""
+
+    def _google(self, *, client):
+        with mock.patch.object(cs, "find_gws", lambda: ("/x/gws", True)), \
+                mock.patch.object(cs, "has_oauth_client", lambda: client), \
+                mock.patch.object(cs.subprocess, "run", lambda *a, **k: done(
+                    1, err="Request had insufficient authentication scopes.")):
+            return cs.check_google()
+
+    def test_no_client_asks_for_the_file_not_a_sign_in(self):
+        status, line, fix = self._google(client=False)
+        self.assertEqual((status, line), (cs.NEEDED, cs.NO_CLIENT))
+        self.assertIn("connection file", fix)
+        self.assertFalse(line.startswith(cs.SIGN_IN_LINES))
+
+    def test_with_a_client_it_is_still_a_scope_problem(self):
+        self.assertEqual(self._google(client=True)[1], cs.SIGN_IN_NO_DRIVE)
+
+    def test_client_file_and_env_routes_are_found(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(
+                os.environ, {"GOOGLE_WORKSPACE_CLI_CONFIG_DIR": d}, clear=True):
+            self.assertFalse(cs.has_oauth_client())
+            open(os.path.join(d, "client_secret.json"), "w").close()
+            self.assertTrue(cs.has_oauth_client())
+        with mock.patch.dict(os.environ, {
+                "GOOGLE_WORKSPACE_CLI_CONFIG_DIR": "/nonexistent",
+                "GOOGLE_WORKSPACE_CLI_CLIENT_ID": "a",
+                "GOOGLE_WORKSPACE_CLI_CLIENT_SECRET": "b"}, clear=True):
+            self.assertTrue(cs.has_oauth_client())
 
 
 class TestKeychainSteps(unittest.TestCase):

@@ -59,8 +59,10 @@ at least one ❌ line.
   does not stick), then you run `gws auth logout`. Never run `gws` with
   `USER` unset — it names its key after `$USER` and mints a second one. It opens a browser; the
   person signs in with their AAIF Google account and allows everything asked.
-  If `gws` says it has no OAuth client configured, stop: that one-time setup
-  belongs to the person who handed the toolkit over, not to this session.
+- **No Google connection file** (`gws` says it has no OAuth client configured)
+  — signing in cannot work yet. Relay the check's next step: the person gets the
+  file from an AAIF admin and follows step 4 of the README's *Set up once*. Never
+  ask them to paste the file or its contents into the chat.
 - **`gws` installed but not visible** — the app was opened before `gws` was
   installed. Quitting the app fully and reopening it is the fix; do not edit
   shell profiles on the person's behalf.

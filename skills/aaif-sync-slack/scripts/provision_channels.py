@@ -491,7 +491,7 @@ def write_token(required=True):
             "cannot be widened, so writes use a separate app token:\n"
             "  1. api.slack.com/apps -> Create New App -> From scratch\n"
             "  2. OAuth & Permissions -> User Token Scopes: channels:write, "
-            "groups:write,\n     chat:write, channels:join, "
+            "groups:write,\n     chat:write, "
             "channels:write.invites, groups:write.invites\n"
             "  3. Install to Workspace, copy the User OAuth Token (xoxp-...)\n"
             "  4. store it in the keychain (a bare -w prompts for it):\n"
