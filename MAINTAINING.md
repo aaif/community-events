@@ -88,6 +88,19 @@ a user token joins with `channels:write`. The write token runs both the audits
 and the write steps; a token stored as `aaif-slack-read-token` alone runs the
 audits but not provision, invite or the directory posts.
 
+**Everyone shares this one token.** The next person gets it from an admin and
+creates nothing.
+
+**A personal, read-only alternative is the Slack CLI's own login.** Install the
+[Slack CLI](https://docs.slack.dev/tools/slack-cli/), run `slack login`, paste
+the `/slackauthticket ...` line it prints into any conversation in the workspace,
+then paste the challenge code Slack shows back into Terminal. The token lands in
+`~/.slack/credentials.json`, the engines' last-resort fallback. Its scopes cannot
+be widened and it has no `channels:history`, so it runs the member and organizer
+audits but not the activity or spam audits, or any write step. It has expired on
+us before, and `aaif-check-setup` does not look there, so its Slack line stays
+⚪ even when this token works. To replace an expired one, run `slack login` again.
+
 ### Luma key
 
 The calendar needs Luma Plus, and keys are per calendar. In
