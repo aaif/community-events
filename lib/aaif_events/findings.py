@@ -27,6 +27,9 @@ One shape for every engine, so the renderer needs no per-engine knowledge:
 
 Rules, because the page is read as the truth about the estate:
 
+* **`action` decides the step's label.** Start it with `apply with --write` or
+  `re-run --write` only when that step's own `--write` clears the finding; the
+  runner reads that prefix as pending work (see `findings_state` in `sync.py`).
 * **Only what the engine measured.** A number here is one the text report also
   prints; nothing is estimated or derived for the page.
 * **A finding's subject is never a person.** `subject` is the chapter,

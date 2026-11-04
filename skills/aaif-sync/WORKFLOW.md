@@ -126,7 +126,7 @@ accepted — needs your decision") and leave the row as it is.
       page.
 - [ ] **2. Read the RESULT line**, then the log of anything that is not
       `in sync`. Outcomes: `in sync`, `DRIFT` (it proposes changes),
-      `needs review` (findings no write clears; does not change the exit code),
+      `needs review` (findings a plain `--write` does not clear; does not change the exit code),
       `wrote+verified`, `PARTIAL` (it could not check everything — usually Slack
       auth), `skipped` (gated, needs approval), `FAILED`.
 - [ ] **3. Show the user what would change and get explicit approval.** The

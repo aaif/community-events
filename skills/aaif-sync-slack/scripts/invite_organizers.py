@@ -177,7 +177,8 @@ def fetch(city_filter=None):
         # Two live accounts for one person. Inviting either could put a second
         # copy of them in a room they are already in, so nobody is invited
         # until a human says which account is theirs.
-        resolved[email] = dict(resolved[email], conflict_ids={live, col})
+        held = set(resolved[email].get("conflict_ids", ())) | {live, col}
+        resolved[email] = dict(resolved[email], conflict_ids=held)
         print("  CONFLICT: %s resolves live to %s but the %r column says %s, also "
               "live — held, not invited, until the column is fixed."
               % (redact_email(email), live, rsi.H_SLACK_ID, col), file=sys.stderr)
@@ -257,13 +258,19 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None
         # Across every address, so a second address on file for the same
         # account cannot invite someone who is held under the first.
         held_ids = {i for h in resolved.values() for i in h.get("conflict_ids", ())}
-        missing, present, seen_uids = [], [], set()
+        missing, present, held, seen_uids, room_held = [], [], [], set(), set()
         for p in roster:
             hit = resolved.get(p["email"]) or {}
-            uid = hit.get("id")
+            # A deactivated account cannot be invited: this person has no
+            # usable account at this address.
+            uid = None if hit.get("deleted") else hit.get("id")
             if hit.get("conflict_ids") or uid in held_ids:
-                # Reported once, as the Slack ID conflict. Either account in
-                # the room is this person, not a stranger.
+                # Not invited, and named in the report: a wrong cell can hold
+                # someone other than the person whose conflict it is. An
+                # account held for someone on this roster is not a stranger.
+                if p["name"] not in held:
+                    held.append(p["name"])
+                room_held.update(hit.get("conflict_ids") or {uid})
                 continue
             if not uid:
                 # Not a failure of this script: they have no account under the
@@ -278,7 +285,7 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None
                 seen_uids.add(uid)
                 missing.append((p["name"], uid))
 
-        known = {uid for _, uid in missing + present} | held_ids
+        known = {uid for _, uid in missing + present} | room_held
         # `unaccounted` means "in this room although the intake never put them
         # here", which is a finding for a chapter's own organizer channel. It is
         # NOT one for the champs room: that room legitimately holds people who
@@ -299,7 +306,7 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None
             strangers, staff_n, undescribed = describe_strangers(api, unaccounted, cfg)
         rows.append({"city": label, "channel": name,
                      "channel_id": chan["id"], "is_private": chan["is_private"],
-                     "missing": missing, "present": present,
+                     "missing": missing, "present": present, "held": held,
                      "strangers": strangers, "staff_in_room": staff_n,
                      "undescribed": undescribed})
     return rows, unresolved, no_channel
@@ -355,14 +362,18 @@ def report(rows, unresolved, no_channel, label="Organizer channel"):
     total = sum(len(r["missing"]) for r in rows)
     print("%s membership — %d live channel(s)\n" % (label, len(rows)))
     for r in sorted(rows, key=lambda x: x["city"]):
-        if not r["missing"]:
+        held = r.get("held", ())
+        if not r["missing"] and not held:
             print("  %-18s #%-28s all %d in" % (r["city"], r["channel"],
                                                 len(r["present"])))
             continue
-        print("  %-18s #%-28s %d to add, %d already in"
-              % (r["city"], r["channel"], len(r["missing"]), len(r["present"])))
+        print("  %-18s #%-28s %d to add, %d already in, %d held"
+              % (r["city"], r["channel"], len(r["missing"]), len(r["present"]),
+                 len(held)))
         for name, uid in r["missing"]:
             print("      + %s (%s)" % (redact_name(name), uid))
+        for name in held:
+            print("      ! %s (held: Slack ID conflict)" % redact_name(name))
 
     if unresolved:
         print("\nAccepted organizers with no Slack account (%d) — cannot be "
@@ -499,11 +510,16 @@ def build_findings(passes, conflicts, mode="report"):
     rep.summary = ("%d to invite (%d room addition(s)) across %d live channel(s); "
                    "%d already in; %d accepted organizer(s) with no Slack account"
                    % (people_to_add, to_add, channels, present, no_account))
+    held = {n for _, rows, _, _ in passes for r in rows for n in r.get("held", ())}
+    if held:
+        rep.summary += "; %d held by a Slack ID conflict" % len(held)
     rep.measure("to invite", people_to_add, "warn" if to_add else "ok")
     rep.measure("room additions", to_add, "warn" if to_add else "ok")
     rep.measure("already in", present, "ok")
     rep.measure("no Slack account", no_account, "warn" if no_account else None)
     rep.measure("Slack ID column conflicts", conflicts, "bad" if conflicts else None)
+    if held:
+        rep.measure("held, not invited", len(held), "warn")
     undescribed = sum(r["undescribed"] for _, rows, _, _ in passes for r in rows)
     if undescribed:
         rep.measure("members Slack could not describe", undescribed, "warn")
@@ -514,6 +530,13 @@ def build_findings(passes, conflicts, mode="report"):
             for name, _uid in r["missing"]:
                 rep.find("invite", "#" + r["channel"], redact_name(name),
                          "warn", gate)
+            if r.get("held"):
+                rep.find("held", "#" + r["channel"],
+                         "%d organizer(s) not invited until a Slack ID conflict "
+                         "is settled: %s"
+                         % (len(r["held"]),
+                            findings.named(redact_name(n) for n in r["held"])),
+                         "warn", "fix the column (see the log)")
             if r["strangers"]:
                 names = findings.named(redact_name(n) for n, _u in r["strangers"])
                 rep.find("not on the intake", "#" + r["channel"],

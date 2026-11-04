@@ -193,9 +193,14 @@ def known_ids():
     intake has never seen. Engines that resolve people to Slack should consult
     it rather than re-deriving a miss they cannot fix.
     """
+    return read_known()[0]
+
+
+def read_known():
+    """(known_ids() result, {canonical email: {ids}} for reviewed rows that disagree)."""
     hdr, rows = read_source()
     if H_SLACK_ID not in hdr:
-        return {}
+        return {}, {}
     ie, ci = hdr.index(H_EMAIL), hdr.index(H_SLACK_ID)
     cem = hdr.index(H_SLACK_EMAIL) if H_SLACK_EMAIL in hdr else None
     out, malformed, disagreeing = {}, [], []
@@ -243,7 +248,10 @@ def known_ids():
               % (len(disagreeing),
                  ", ".join("%s/%s" % (a, b) for _, a, b in disagreeing[:5])),
               file=sys.stderr)
-    return {k: v for k, v in out.items() if v is not None}
+    split = {}
+    for key, a, b in disagreeing:
+        split.setdefault(key, set()).update((a, b))
+    return {k: v for k, v in out.items() if v is not None}, split
 
 
 #: `users.info` errors that really mean "there is no such account" — an answer
@@ -302,15 +310,23 @@ def overlay_known(api, resolved, known=None):
     Only ever fills a MISS. A live lookup that hit is a hard fact — this address
     really is on that account — and must outrank a sheet cell, which may predate
     someone changing their Slack address. Where the two disagree the row is
-    reported as a conflict rather than silently resolved either way.
+    reported as a conflict rather than silently resolved either way. Reviewed
+    rows that disagree with each other are a conflict too: there is no cell to
+    trust, and the lookup alone must not settle it.
+
+    A hit on a deactivated account counts as a miss. Someone who left an old
+    account and rejoined under another address has the new id in the column,
+    and that column is right.
     """
-    known = known_ids() if known is None else known
+    known, split = read_known() if known is None else (known, {})
     gaps = {e: known[canon(e)] for e, got in resolved.items()
-            if not got.get("id") and canon(e) in known}
-    conflicts = [(e, got["id"], known[canon(e)]["id"])
-                 for e, got in resolved.items()
-                 if got.get("id") and canon(e) in known
-                 and known[canon(e)]["id"] != got["id"]]
+            if (not got.get("id") or got.get("deleted")) and canon(e) in known}
+    hits = [(e, got["id"]) for e, got in resolved.items()
+            if got.get("id") and not got.get("deleted")]
+    conflicts = [(e, uid, known[canon(e)]["id"]) for e, uid in hits
+                 if canon(e) in known and known[canon(e)]["id"] != uid]
+    conflicts += [(e, uid, cell) for e, uid in hits
+                  for cell in sorted(split.get(canon(e), ())) if cell != uid]
     if not gaps:
         return 0, conflicts
     info = hydrate(api, [g["id"] for g in gaps.values()])

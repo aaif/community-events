@@ -150,6 +150,25 @@ check("create=False still reports where they would go",
       got, {"Slack ID": 1, "Slack Email": 2})
 
 # ---------- known_ids / overlay_known ----------
+def _overlay(resolved, known=None, split=None):
+    """overlay_known with the sheet scripted and `hydrate` answering every id."""
+    info = {"name": "n", "real_name": "n", "email": "e@x.com"}
+    with mock.patch.object(r, "read_known", lambda: (known or {}, split or {})), \
+         mock.patch.object(r, "hydrate", lambda api, ids: {i: dict(info) for i in ids}):
+        return r.overlay_known(object(), resolved)
+
+
+_res = {"a@x.com": {"id": "UOLD", "deleted": True}}
+_f, _c = _overlay(_res, known={"a@x.com": {"id": "UNEW", "slack_email": ""}})
+check("a deactivated hit gives way to a live column id, with no conflict",
+      (_f, _c, _res["a@x.com"]["id"]), (1, [], "UNEW"))
+_f, _c = _overlay({"a@x.com": {"id": "UL"}}, split={"a@x.com": {"U2", "U3"}})
+check("reviewed rows that disagree are conflicts against the live answer",
+      _c, [("a@x.com", "UL", "U2"), ("a@x.com", "UL", "U3")])
+_f, _c = _overlay({"a@x.com": {"id": "U2"}}, split={"a@x.com": {"U2", "U3"}})
+check("...and the cell matching the live answer is no conflict", _c,
+      [("a@x.com", "U2", "U3")])
+
 SRC_HDR = ["Full name", "Email", "Slack ID", "Slack Email"]
 SRC_ROWS = [
     ["Ada", "a.b@gmail.com", "U0AAAAAAA", "ab@slack.com"],   # gmail-dotted key

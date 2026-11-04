@@ -347,12 +347,19 @@ IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED, REVIEW = (
 NOT_RUN = "not run"
 
 
+#: How an engine says its own `--write` clears a finding. A prefix, because the
+#: words "--write" also appear in actions a plain write cannot clear: another
+#: script's flag, a flag `--write` needs alongside it, a channel to create first.
+APPLY_ACTIONS = ("apply with --write", "re-run --write")
+
+
 def findings_state(doc):
     """(pending, advisory) from an exit-0 step's findings file.
 
-    `pending` is an open finding whose next step is a `--write`: work the step
-    could apply. `advisory` is any other open finding, such as a retirement
-    candidate or an unknown Drive grant, which no write clears. The two must
+    `pending` is an open finding whose action starts with one of APPLY_ACTIONS:
+    work the step could apply. `advisory` is any other open finding, such as a
+    retirement candidate, an unknown Drive grant or a name match to confirm,
+    which a plain write of the step does not clear. The two must
     stay apart: calling advisories DRIFT sent operators to run writes that had
     nothing to do, and would exit 2 every night. A malformed row counts as open
     rather than clean; the renderer reports the file itself as bad.
@@ -364,7 +371,7 @@ def findings_state(doc):
     for f in rows:
         if isinstance(f, dict) and f.get("severity") == "info":
             continue
-        if isinstance(f, dict) and "--write" in str(f.get("action", "")):
+        if isinstance(f, dict) and str(f.get("action", "")).startswith(APPLY_ACTIONS):
             pending = True
         else:
             advisory = True
@@ -694,7 +701,7 @@ def summary_notes(by_name, write_mode):
                      % ", ".join(needs_human))
     review = sorted(n for n, o in by_name.items() if o == REVIEW)
     if review:
-        notes.append("%s finished with findings to read — no write clears them; "
+        notes.append("%s finished with findings to read — writing this step does not clear them; "
                      "see each step's section" % ", ".join(review))
     if PARTIAL in results:
         notes.append("PARTIAL coverage — a step involuntarily skipped part of "

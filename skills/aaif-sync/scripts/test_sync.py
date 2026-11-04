@@ -55,6 +55,18 @@ check("...and PARTIAL still beats both",
       sync.classify(0, False, False, True, pending=True, advisory=True), sync.PARTIAL)
 _w = {"severity": "warn", "action": "apply with --write --i-have-approval"}
 _a = {"severity": "bad", "action": "audit this grant"}
+for _act, _want in (("apply with --write", True),
+                    ("apply with --write, then fill the editorial columns", True),
+                    ("re-run --write", True),
+                    ("confirm the person, then --apply FILE --write", False),
+                    ("run migrate_interested_in.py --write", False),
+                    ("check the intake rows, then --write --apply-removals", False),
+                    ("create the channel, then apply with --write", False),
+                    ("run clean.py cities", False)):
+    check("only a step's own write is pending: %s" % _act,
+          sync.findings_state({"findings": [{"severity": "warn", "action": _act}]})[0],
+          _want)
+
 check("findings_state splits work to apply from advisories, ignoring info",
       [sync.findings_state(d) for d in (
           None, {}, {"findings": [{"severity": "info", "action": "x --write"}]},
@@ -67,7 +79,7 @@ check("a malformed findings shape never raises, and an odd row counts as open",
       [(False, False), (False, True), (False, True)])
 _notes = " ".join(sync.summary_notes({"access": sync.REVIEW, "invite": sync.REVIEW}, False))
 check("advisories never send anyone to run a write",
-      ("needs a human" in _notes.lower(), "--write" in _notes, "no write clears" in _notes),
+      ("needs a human" in _notes.lower(), "--write" in _notes, "does not clear them" in _notes),
       (False, False, True))
 check("needs review alone leaves the exit code at 0",
       sync.exit_code({"access": sync.REVIEW, "clean": sync.IN_SYNC}), 0)
