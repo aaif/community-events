@@ -63,6 +63,10 @@ at least one ❌ line.
   — signing in cannot work yet. Relay the check's next step: the person creates the
   file and moves it into place, steps 3 and 4 of the README's *Set up once*. Never
   ask them to paste the file or its contents into the chat.
+- **"This account cannot open the Community Intake sheet"** — a new person sees
+  this until an admin grants access, and the script still prints the sign-in
+  command after it. Relay the next step. Run that command only if the person
+  already has access and signed in with the wrong account.
 - **`gws` installed but not visible** — the app was opened before `gws` was
   installed. Quitting the app fully and reopening it is the fix; do not edit
   shell profiles on the person's behalf.

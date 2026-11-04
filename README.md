@@ -199,8 +199,8 @@ Only AAIF can give you access, and you only ask once. Send this to an AAIF admin
 
 > I'm setting up the AAIF toolkit. My Google address is ___. Please give me edit
 > access to the Chapters folder and the Community Intake Ops sheet, add me as a
-> collaborator on the AAIF Slack app, and give me admin access to the AAIF Luma
-> calendar.
+> collaborator on the AAIF Slack app and to the private organizer rooms, and give
+> me admin access to the AAIF Luma calendar.
 
 Leave out Slack or Luma if you won't use them. You need a Slack token to run the
 sync, the Slack audit or the community update. Without a Luma key, the toolkit
@@ -213,6 +213,10 @@ your DMs, so keep it to yourself.
 2. Open **OAuth & Permissions**, click **Install to Workspace** or **Reinstall to
    Workspace**, then **Allow**.
 3. Copy the **User OAuth Token**. It starts with `xoxp-`.
+
+Your token only sees private rooms you're in. If the sync or a Slack audit says
+organizer rooms are missing, don't approve creating them. Ask an AAIF admin to
+add you to those rooms, then run it again.
 
 **Create your Luma key.**
 
@@ -275,8 +279,8 @@ does too.
      user (step 3, part 3).
    - *`redirect_uri_mismatch` when you sign in:* your client isn't a **Desktop
      app**. Create a new one and move it into place (step 3, part 4, and step 4).
-   - *`accessNotConfigured` in the setup check:* a Google service is off. Turn them
-     on (step 3, part 2).
+   - *The setup check says a Google service is turned off:* turn them on (step 3,
+     part 2). Signing in again won't fix this.
 6. **Google asks you to sign in again about once a week:** that's normal if you
    chose External in step 3. Say *"sign me in to Google again"*.
 7. **Still stuck:** copy the last message the assistant showed you (it never

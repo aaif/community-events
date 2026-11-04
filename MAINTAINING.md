@@ -96,7 +96,13 @@ When you get one:
    [Slack's app page](https://api.slack.com/apps), choose the app, then
    **Collaborators**. They must already be in the workspace. A collaborator can
    change the app's settings, so add only approved operators.
-4. **Add them as an admin of the Luma calendar.**
+4. **Add them to the private organizer rooms**, if they'll run the sync or the
+   Slack audits, and add an `Ops staff email` row for them on the `Slack Config`
+   tab so later provisioning runs seed them into new rooms. A user token only
+   sees private rooms its owner is in. Without this, the setup check shows ✅ but
+   those rooms read as missing: the audit aborts, invites skip them, and
+   provisioning plans creates that fail with `name_taken`.
+5. **Add them as an admin of the Luma calendar.**
 
 Leave out whatever they won't use.
 
@@ -112,7 +118,9 @@ what is still missing.
    - If they're leaving the workspace, removing them ends it.
    - Otherwise revoke all of the app's tokens on the app's settings page. Every
      operator then creates a new one (README step 5).
-3. Remove them from the Luma calendar and delete the key named after them under
+3. Remove their `Ops staff email` row and take them out of the private organizer
+   rooms.
+4. Remove them from the Luma calendar and delete the key named after them under
    **Settings → Developer → API Keys**.
 
 Also replace any token or key they received from someone else. A token that was
