@@ -92,8 +92,8 @@ and strand `#bangalore`'s members in the old room.
 
 Two prerequisites, neither in place by default: a token with `channels:write`,
 `groups:write` and `chat:write` in `$AAIF_SLACK_WRITE_TOKEN` (user-token scopes
-for create/rename and the farewell pointer; `channels:join` is worth adding so
-the sweep can join a public room before posting in it), and `--i-have-approval`
+for create/rename, joining a public room before posting in it, and the farewell
+pointer), and `--i-have-approval`
 alongside `--write`. Since 2026-08-22 the **read-only report also prefers
 `$AAIF_SLACK_WRITE_TOKEN`** — the Slack CLI credential expired for good and
 cannot be re-scoped, so without the env var the run falls back to a dead
@@ -124,7 +124,7 @@ unpinned and every run says so. Pinning that backlog later needs **both** —
 with `pins:write` alone a run cannot tell a pinned message from an unpinned one,
 so it leaves existing posts alone. `channels:history`/`groups:history` are what
 make the check work at all; without them every chapter is skipped rather than
-risk a duplicate. All five are listed in `OPTIONAL_SCOPES` and printed when
+risk a duplicate. All four are listed in `OPTIONAL_SCOPES` and printed when
 absent.
 
 The write half resolves that token from the environment **then the repo-root

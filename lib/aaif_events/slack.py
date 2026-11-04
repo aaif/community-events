@@ -310,8 +310,8 @@ def load_token(*, path=CRED_PATH, env_path=DOTENV_PATH, log=None):
     Resolution order, one source at a time: the environment, the repo-root
     `.env`, then the macOS keychain, each searched for `AAIF_SLACK_READ_TOKEN`
     and then `AAIF_SLACK_WRITE_TOKEN`; then the Slack CLI credentials at
-    `path`. `aaif-check-setup` searches in this same order (pinned by
-    tests/test_pinned_copies.py). A read token is preferred because this
+    `path`. `aaif-check-setup` searches the first three in this same order
+    (pinned by tests/test_pinned_copies.py) and never reads the CLI credentials. A read token is preferred because this
     client is read-only; the app tokens come first because they are strictly
     more capable than the CLI one, which has expired.
 

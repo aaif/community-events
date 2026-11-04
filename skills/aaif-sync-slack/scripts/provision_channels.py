@@ -91,11 +91,10 @@ this one file.
    `chat:write` (the deprecated sweep's farewell pointer and the folder link),
    in `$AAIF_SLACK_WRITE_TOKEN`. `pins:read`/`pins:write` are OPTIONAL and
    listed in OPTIONAL_SCOPES: without them the folder link is posted unpinned
-   and every run says so, rather than the run refusing. `channels:join` is also
-   worth requesting: the
-   farewell post needs membership in the room being archived, and without the
-   scope a join fails and that room's archive is skipped (reported, not
-   silent). The Slack CLI's own token is read-only and its scopes cannot be
+   and every run says so, rather than the run refusing. The farewell post needs
+   membership in the room being archived: a user token joins with
+   `channels:write` (`channels:join` is bot-only), and a failed join skips that
+   room's archive (reported, not silent). The Slack CLI's own token is read-only and its scopes cannot be
    widened, so this is a separate app token — run the script without it for
    the four setup steps. **Whoever's token it is joins every channel it
    creates.**
@@ -209,7 +208,6 @@ OPTIONAL_SCOPES = {
     "pins:write": "pin the folder link (else it is posted unpinned)",
     "channels:history": "read a public room's messages for the folder-link check",
     "groups:history": "read a PRIVATE organizer room's messages for the same check",
-    "channels:join": "join a public room before posting the deprecated-sweep farewell",
 }
 
 #: Slack renames: the room keeps its identity, members and history, and takes a
@@ -491,7 +489,7 @@ def write_token(required=True):
             "cannot be widened, so writes use a separate app token:\n"
             "  1. api.slack.com/apps -> Create New App -> From scratch\n"
             "  2. OAuth & Permissions -> User Token Scopes: channels:write, "
-            "groups:write,\n     chat:write, channels:join, "
+            "groups:write,\n     chat:write, "
             "channels:write.invites, groups:write.invites\n"
             "  3. Install to Workspace, copy the User OAuth Token (xoxp-...)\n"
             "  4. store it in the keychain (a bare -w prompts for it):\n"
@@ -1478,8 +1476,8 @@ def main():
             # `is_member` reflects the READ token's account; the write token
             # may differ, and joining an already-joined room is a harmless
             # `already_in_channel`. So always join, and treat only a real
-            # failure as one — otherwise a missing `channels:join` scope
-            # surfaces later as a baffling not_in_channel on the farewell.
+            # failure as one — otherwise a failed join surfaces later as a
+            # baffling not_in_channel on the farewell.
             j = call_write(token, "conversations.join", channel=room["id"])
             if not j.get("ok") and j.get("error") not in (
                     "already_in_channel", "method_not_supported_for_channel_type"):
