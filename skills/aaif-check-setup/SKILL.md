@@ -60,9 +60,13 @@ at least one ❌ line.
   `USER` unset — it names its key after `$USER` and mints a second one. It opens a browser; the
   person signs in with their AAIF Google account and allows everything asked.
 - **No Google connection file** (`gws` says it has no OAuth client configured)
-  — signing in cannot work yet. Relay the check's next step: the person gets the
-  file from an AAIF admin and follows step 4 of the README's *Set up once*. Never
+  — signing in cannot work yet. Relay the check's next step: the person creates the
+  file and moves it into place, steps 3 and 4 of the README's *Set up once*. Never
   ask them to paste the file or its contents into the chat.
+- **"This account cannot open the Community Intake sheet"** — a new person sees
+  this until an admin grants access, and the script still prints the sign-in
+  command after it. Relay the next step. Run that command only if the person
+  already has access and signed in with the wrong account.
 - **`gws` installed but not visible** — the app was opened before `gws` was
   installed. Quitting the app fully and reopening it is the fix; do not edit
   shell profiles on the person's behalf.
@@ -71,7 +75,8 @@ at least one ❌ line.
   the keychain or click Always Allow, then re-run the check. Never relay the
   create-a-key steps for this case; a second item with the same name makes
   later lookups ambiguous.
-- **A token or key is missing** — relay the script's Keychain Access steps.
+- **A token or key is missing** — relay the script's whole next step: creating
+  the key, then the Keychain Access steps.
   **Never ask the person to paste a token or key into the chat**, and never
   put one in a command: the chat transcript and the shell history both keep
   it. The terminal form (`security add-generic-password ... -w`) prompts for
