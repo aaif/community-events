@@ -340,19 +340,39 @@ PHASE_NAMES = [p for p, _ in PHASES]
 #: the other unattended Slack reads are per-channel or per-email and cheap.
 UNATTENDED_PHASES = ("preflight", "chapters", "organizers")
 
-IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED = (
-    "in sync", "DRIFT", "wrote+verified", "FAILED", "PARTIAL", "skipped")
+IN_SYNC, DRIFT, WROTE, FAILED, PARTIAL, SKIPPED, REVIEW = (
+    "in sync", "DRIFT", "wrote+verified", "FAILED", "PARTIAL", "skipped", "needs review")
 #: The manifest's word for a step this invocation did not select. Never an
 #: outcome the runner computes for by_name, so it never touches the exit code.
 NOT_RUN = "not run"
 
 
-def has_open_findings(doc):
-    """Whether a findings file names anything still to act on (warn or bad)."""
-    return any(f.get("severity") in ("warn", "bad") for f in (doc or {}).get("findings") or ())
+def findings_state(doc):
+    """(pending, advisory) from an exit-0 step's findings file.
+
+    `pending` is an open finding whose next step is a `--write`: work the step
+    could apply. `advisory` is any other open finding, such as a retirement
+    candidate or an unknown Drive grant, which no write clears. The two must
+    stay apart: calling advisories DRIFT sent operators to run writes that had
+    nothing to do, and would exit 2 every night. A malformed row counts as open
+    rather than clean; the renderer reports the file itself as bad.
+    """
+    rows = doc.get("findings") if isinstance(doc, dict) else None
+    if not isinstance(rows, list):
+        return False, False
+    pending = advisory = False
+    for f in rows:
+        if isinstance(f, dict) and f.get("severity") == "info":
+            continue
+        if isinstance(f, dict) and "--write" in str(f.get("action", "")):
+            pending = True
+        else:
+            advisory = True
+    return pending, advisory
 
 
-def classify(code, wrote_marker, write_mode, partial_marker=False, open_findings=False):
+def classify(code, wrote_marker, write_mode, partial_marker=False,
+             pending=False, advisory=False):
     """Map a step's exit code (+ the markers) onto an outcome.
 
     `wrote_marker` is True when the engine said it applied a write: `written`
@@ -366,10 +386,11 @@ def classify(code, wrote_marker, write_mode, partial_marker=False, open_findings
     in-sync/drift because a half-checked run must never read as a healthy one,
     but never FAILED, which is strictly worse news.
 
-    `open_findings` is an exit 0 whose own findings still list work. Several
-    engines exit 0 from a report run, so 12 pending invites and 47 flagged
-    rows both read "in sync" (found 2026-11-03). The engine's account beats its
-    exit code, unless it wrote this run.
+    `pending` and `advisory` (see `findings_state`) are an exit 0 whose own
+    findings still list something. Several engines exit 0 from a report run, so
+    12 pending invites and 47 flagged rows both read "in sync" (found
+    2026-11-03). Pending work is DRIFT. An advisory is REVIEW, which is not
+    "in sync" but leaves the exit code alone, because no write can clear it.
     """
     if code not in (0, 2):
         return FAILED
@@ -378,7 +399,9 @@ def classify(code, wrote_marker, write_mode, partial_marker=False, open_findings
     if code == 0:
         if write_mode and wrote_marker:
             return WROTE
-        return DRIFT if open_findings else IN_SYNC
+        if pending:
+            return DRIFT
+        return REVIEW if advisory else IN_SYNC
     return DRIFT
 
 
@@ -514,7 +537,7 @@ def run_step(step, log_path, write_mode, approved, unattended=False, nav=None):
     # (verified live 2026-09-20) — the one outcome the marker exists to prevent.
     marked = lambda tag: any(l.lstrip().startswith(tag) for l in lines)  # noqa: E731
     wrote = marked("Verified:")
-    open_findings = False
+    pending = advisory = False
     if step.name in EMITS_FINDINGS:
         # The findings file is the engine's own account of the run. Its absence
         # after an exit 2 means the engine never got as far as a report — a
@@ -528,8 +551,8 @@ def run_step(step, log_path, write_mode, approved, unattended=False, nav=None):
             code = 1
         elif doc is not None:
             wrote = bool(doc.get("written"))
-            open_findings = has_open_findings(doc)
-    return (classify(code, wrote, write_mode, marked("PARTIAL:"), open_findings),
+            pending, advisory = findings_state(doc)
+    return (classify(code, wrote, write_mode, marked("PARTIAL:"), pending, advisory),
             code, time.monotonic() - t0)
 
 
@@ -669,6 +692,10 @@ def summary_notes(by_name, write_mode):
                      "until a human works it (the aaif-triage-intake skill). The "
                      "full digest is in its log"
                      % ", ".join(needs_human))
+    review = sorted(n for n, o in by_name.items() if o == REVIEW)
+    if review:
+        notes.append("%s finished with findings to read — no write clears them; "
+                     "see each step's section" % ", ".join(review))
     if PARTIAL in results:
         notes.append("PARTIAL coverage — a step involuntarily skipped part of "
                      "its scope (usually Slack auth); fix it and re-run")
@@ -677,7 +704,9 @@ def summary_notes(by_name, write_mode):
 
 
 def exit_code(by_name):
-    """0 all in sync; 2 drift/writes/partial/gated; 1 any failure."""
+    """0 all in sync or only needing review; 2 drift/writes/partial/gated; 1 any
+    failure. REVIEW stays out of the 2 on purpose: advisories outlive any one
+    run, and an exit code that is 2 every night signals nothing."""
     results = list(by_name.values())
     if FAILED in results:
         return 1

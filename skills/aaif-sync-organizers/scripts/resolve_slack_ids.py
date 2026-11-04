@@ -517,7 +517,8 @@ def build_findings(n_rows, hits, folded, misses, cands, mode):
     is the row, or the source tab for the one aggregate "no account" finding;
     `detail` may carry a name only where the text report already prints it,
     through the same `--redact` (`redact_name`), and an address never (the
-    log prints them masked; the page has no use for one); and free text from
+    log masks them unless `--no-redact`, which the runner passes, so the log
+    appendix can hold them; findings have no use for one); and free text from
     a sheet cell never reaches it.
     """
     rep = findings.Report("identity", mode)
@@ -544,7 +545,7 @@ def build_findings(n_rows, hits, folded, misses, cands, mode):
                  "(they may have joined under another address): %s"
                  % (len(misses), "; ".join("%s (row %d)" % (redact_name(n), rn)
                                            for rn, n, _e in misses)),
-                 "info", "run with --suggest, or ask them to join Slack")
+                 "info", "see the name-match suggestions, or ask them to join Slack")
     return rep
 
 

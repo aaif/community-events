@@ -45,17 +45,36 @@ def check(label, got, want):
 
 
 # --- classify: the exit-code convention ---------------------------------------
-check("exit 0 with open findings -> drift, not in sync",
-      sync.classify(0, False, False, open_findings=True), sync.DRIFT)
+check("exit 0 with work a --write would apply -> drift, not in sync",
+      sync.classify(0, False, False, pending=True), sync.DRIFT)
+check("exit 0 with only advisories -> needs review, not in sync",
+      sync.classify(0, False, False, advisory=True), sync.REVIEW)
 check("...but a run that wrote is still WROTE",
-      sync.classify(0, True, True, open_findings=True), sync.WROTE)
-check("...and PARTIAL still beats it",
-      sync.classify(0, False, False, True, open_findings=True), sync.PARTIAL)
-check("only warn and bad findings count as open",
-      [sync.has_open_findings(d) for d in (
-          None, {}, {"findings": [{"severity": "info"}]},
-          {"findings": [{"severity": "warn"}]}, {"findings": [{"severity": "bad"}]})],
-      [False, False, False, True, True])
+      sync.classify(0, True, True, pending=True), sync.WROTE)
+check("...and PARTIAL still beats both",
+      sync.classify(0, False, False, True, pending=True, advisory=True), sync.PARTIAL)
+_w = {"severity": "warn", "action": "apply with --write --i-have-approval"}
+_a = {"severity": "bad", "action": "audit this grant"}
+check("findings_state splits work to apply from advisories, ignoring info",
+      [sync.findings_state(d) for d in (
+          None, {}, {"findings": [{"severity": "info", "action": "x --write"}]},
+          {"findings": [_w]}, {"findings": [_a]}, {"findings": [_w, _a]})],
+      [(False, False), (False, False), (False, False),
+       (True, False), (False, True), (True, True)])
+check("a malformed findings shape never raises, and an odd row counts as open",
+      [sync.findings_state(d) for d in ({"findings": 5}, {"findings": ["x"]},
+                                        {"findings": [{"severity": "odd"}]})],
+      [(False, False), (False, True), (False, True)])
+_notes = " ".join(sync.summary_notes({"access": sync.REVIEW, "invite": sync.REVIEW}, False))
+check("advisories never send anyone to run a write",
+      ("needs a human" in _notes.lower(), "--write" in _notes, "no write clears" in _notes),
+      (False, False, True))
+check("needs review alone leaves the exit code at 0",
+      sync.exit_code({"access": sync.REVIEW, "clean": sync.IN_SYNC}), 0)
+check("pending invites exit 2 with the approval note",
+      (sync.exit_code({"invite": sync.DRIFT}),
+       "--i-have-approval" in " ".join(sync.summary_notes({"invite": sync.DRIFT}, False))),
+      (2, True))
 check("report mode, exit 0 -> in sync",
       sync.classify(0, wrote_marker=False, write_mode=False), sync.IN_SYNC)
 check("report mode, exit 2 -> drift",
@@ -393,6 +412,14 @@ check("...but the findings file's written=False outranks the marker",
       drive("stuff\nVerified: ok\n", True), (sync.IN_SYNC, 0))
 check("Verified: mid-line does not count",
       drive("note: Verified: something\n", True), (sync.IN_SYNC, 0))
+check("run_step reads an exit-0 step's findings: work to apply is DRIFT, code kept",
+      drive("x\n", False, findings={"findings": [
+          {"kind": "k", "subject": "s", "detail": "", "severity": "warn",
+           "action": "apply with --write"}]}), (sync.DRIFT, 0))
+check("run_step: an advisory alone is needs review, code kept",
+      drive("x\n", False, findings={"findings": [
+          {"kind": "k", "subject": "s", "detail": "", "severity": "warn",
+           "action": "audit this"}]}), (sync.REVIEW, 0))
 check("a PARTIAL: line is seen even after a blank line",
       drive("report...\n\nPARTIAL: Slack unavailable\n", False, code=2),
       (sync.PARTIAL, 2))
@@ -754,7 +781,7 @@ check("a good render is recorded too, and named on stdout",
 import render_report as rr  # noqa: E402  (the test may read lib; sync.py may not)
 check("every runner outcome has a pill tone in the renderer",
       set(rr.TONE), {sync.IN_SYNC, sync.WROTE, sync.DRIFT, sync.PARTIAL, sync.SKIPPED,
-                     sync.FAILED, sync.NOT_RUN})
+                     sync.FAILED, sync.NOT_RUN, sync.REVIEW})
 with tempfile.TemporaryDirectory() as _td:
     _rc, _seen = _drive(["preflight"], code=2, log_text="3 awaiting review\n", keep=_td)
     _run = os.path.join(_td, sorted(os.listdir(_td))[-1])

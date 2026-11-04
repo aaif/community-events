@@ -510,7 +510,8 @@ check("the one roster member already present is not double-counted as missing",
 
 
 # --- two live accounts for one person: held, neither invited nor a stranger ---
-def _run_collect_conflict():
+def _run_collect_conflict(column_id_alive=True):
+    users = {"UCOL": {"ok": True, "user": {"name": "ada"}}} if column_id_alive else {}
     chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
     chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
               "is_archived": False}]
@@ -518,6 +519,7 @@ def _run_collect_conflict():
          _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
          _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
          _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["UCOL"]), \
+         _mock.patch.object(_FakeInviteApi, "users", users), \
          _mock.patch.object(inv.slackmod, "lookup_emails",
                             lambda api, emails: {"a@x.com": {"id": "ULIVE"}}), \
          _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
@@ -533,6 +535,9 @@ check("a conflicted person is not invited, so no duplicate account joins the roo
 check("...their account in the room is not reported as a stranger",
       _rows[0]["strangers"], [])
 check("...and they are not called account-less", _unresolved, [])
+_rows, _u, _n = _run_collect_conflict(column_id_alive=False)
+check("a column id that is no live account is stale: the live answer is invited",
+      [uid for _name, uid in _rows[0]["missing"]], ["ULIVE"])
 
 _dup_rep = inv.build_findings(
     [("Organizer channel", [{"city": "B", "channel": "b", "channel_id": "C1", "is_private": True,
