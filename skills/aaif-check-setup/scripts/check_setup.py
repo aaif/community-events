@@ -229,7 +229,7 @@ SIGN_IN_WRONG_ACCOUNT = "Signed in, but this account cannot open the Community I
 #: Not on SIGN_IN_LINES: the sign-in command cannot work until this is fixed.
 NO_CLIENT = "`gws` has no usable Google connection file yet, so you cannot sign in."
 #: Not on SIGN_IN_LINES either: signing in again cannot turn a service on.
-API_OFF = "A Google service the toolkit needs is turned off for AAIF's Google connection."
+API_OFF = "A Google service the toolkit needs is turned off for your Google connection."
 SIGN_IN_LINES = (SIGN_IN_UNREADABLE, SIGN_IN_NO_DRIVE, SIGN_IN_NONE, SIGN_IN_WRONG_ACCOUNT)
 
 
@@ -282,8 +282,8 @@ def check_google():
         if (is_sign_in_failure(text) and "failed to decrypt" not in text
                 and not has_oauth_client()):
             return NEEDED, NO_CLIENT, (
-                "Follow step 4 of the README's 'Set up once' section. If you "
-                "don't have the Google connection file, ask an AAIF admin for it.")
+                "Create your Google connection file and move it into place: "
+                "steps 3 and 4 of the README's 'Set up once' section.")
         if "failed to decrypt" in text:
             # Seen live 2026-10-09: gws names its keychain key after $USER, so a
             # run with USER unset minted a second `gws-cli` key under
@@ -307,12 +307,13 @@ def check_google():
                 "permissions; a browser opens — use your AAIF Google account.")
         if "accessnotconfigured" in text or "has not been used in project" in text:
             return NEEDED, API_OFF, (
-                "Send this line to an AAIF admin, who can turn it on (first-time "
-                "setup in MAINTAINING.md).")
+                "Turn the Google services on: step 3, part 2, of the README's "
+                "'Set up once' section.")
         if any(w in text for w in ("404", "not found", "403")):
             return NEEDED, SIGN_IN_WRONG_ACCOUNT, (
-                "Sign in again with the Google account AAIF shared the "
-                "Chapters folder with, or ask an admin for access.")
+                "If you haven't asked AAIF for access yet, do that first (step 5 "
+                "of the README's 'Set up once' section). Otherwise sign in again "
+                "with the Google account AAIF shared the Chapters folder with.")
         return NEEDED, "Google check failed: %s" % why, (
             "Try again; if it repeats, send this line to an AAIF admin.")
     try:
@@ -337,7 +338,7 @@ def check_slack():
         return keychain_refused("Slack token", failure)
     if not token:
         return OPTIONAL, "No Slack token — needed for \"run the sync\", the Slack audit and the community update; writing jobs don't need it.", (
-            "Get the AAIF Slack token from an AAIF admin. "
+            "Create your Slack token: step 5 of the README's 'Set up once' section. "
             + keychain_steps("aaif-slack-write-token", "token"))
     req = urllib.request.Request("https://slack.com/api/auth.test", data=b"",
                                  headers={"Authorization": "Bearer " + token})
@@ -351,7 +352,9 @@ def check_slack():
         return OK, "Slack token in %s works (workspace: %s)." % (
             where, body.get("team", "?")), None
     return NEEDED, "Slack token in %s was refused (%s)." % (where, body.get("error")), (
-        "The token has expired or been revoked; ask an AAIF admin for a new one.")
+        "The token has expired or been revoked. Create a new one (step 5 of the "
+        "README's 'Set up once' section) and replace the saved one, as it "
+        "explains.")
 
 
 def check_luma():
@@ -360,8 +363,8 @@ def check_luma():
         return keychain_refused("Luma key", failure)
     if not key:
         return OPTIONAL, "No Luma key — event pages will come back as copy to paste into Luma by hand.", (
-            "To let the assistant publish to Luma, get the Luma key from an "
-            "AAIF admin. "
+            "To let the assistant publish to Luma, create your key: step 5 of "
+            "the README's 'Set up once' section. "
             + keychain_steps("luma-api-key", "API key"))
     req = urllib.request.Request("https://public-api.luma.com/v1/calendars/get",
                                  headers={"x-luma-api-key": key,
@@ -372,8 +375,8 @@ def check_luma():
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return NEEDED, "Luma key in %s was refused (HTTP %d)." % (where, e.code), (
-                "The key may have been replaced; get the current one from an "
-                "AAIF admin.")
+                "The key may have been deleted. Create a new one and replace the "
+                "saved one: step 5 of the README's 'Set up once' section.")
         # A Luma outage or rate limit is not a bad key: do not send the
         # operator to rotate one that works.
         return NEEDED, "Luma key found in %s, but Luma is not answering right now (HTTP %d)." % (
