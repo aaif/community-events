@@ -229,7 +229,7 @@ SIGN_IN_WRONG_ACCOUNT = "Signed in, but this account cannot open the Community I
 #: Not on SIGN_IN_LINES: the sign-in command cannot work until this is fixed.
 NO_CLIENT = "`gws` has no usable Google connection file yet, so you cannot sign in."
 #: Not on SIGN_IN_LINES either: signing in again cannot turn a service on.
-API_OFF = "A Google service the toolkit needs is turned off for AAIF's Google connection."
+API_OFF = "A Google service the toolkit needs is turned off for your Google connection."
 SIGN_IN_LINES = (SIGN_IN_UNREADABLE, SIGN_IN_NO_DRIVE, SIGN_IN_NONE, SIGN_IN_WRONG_ACCOUNT)
 
 
@@ -311,8 +311,9 @@ def check_google():
                 "'Set up once' section.")
         if any(w in text for w in ("404", "not found", "403")):
             return NEEDED, SIGN_IN_WRONG_ACCOUNT, (
-                "Sign in again with the Google account AAIF shared the "
-                "Chapters folder with, or ask an admin for access.")
+                "If you haven't asked AAIF for access yet, do that first (step 5 "
+                "of the README's 'Set up once' section). Otherwise sign in again "
+                "with the Google account AAIF shared the Chapters folder with.")
         return NEEDED, "Google check failed: %s" % why, (
             "Try again; if it repeats, send this line to an AAIF admin.")
     try:
@@ -352,7 +353,8 @@ def check_slack():
             where, body.get("team", "?")), None
     return NEEDED, "Slack token in %s was refused (%s)." % (where, body.get("error")), (
         "The token has expired or been revoked. Create a new one (step 5 of the "
-        "README's 'Set up once' section) and replace the saved one.")
+        "README's 'Set up once' section) and replace the saved one, as it "
+        "explains.")
 
 
 def check_luma():
@@ -373,8 +375,8 @@ def check_luma():
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return NEEDED, "Luma key in %s was refused (HTTP %d)." % (where, e.code), (
-                "The key may have been deleted. Create a new one under the "
-                "calendar's Settings → Developer and replace the saved one.")
+                "The key may have been deleted. Create a new one and replace the "
+                "saved one: step 5 of the README's 'Set up once' section.")
         # A Luma outage or rate limit is not a bad key: do not send the
         # operator to rotate one that works.
         return NEEDED, "Luma key found in %s, but Luma is not answering right now (HTTP %d)." % (

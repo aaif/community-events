@@ -71,7 +71,8 @@ at least one ❌ line.
   the keychain or click Always Allow, then re-run the check. Never relay the
   create-a-key steps for this case; a second item with the same name makes
   later lookups ambiguous.
-- **A token or key is missing** — relay the script's Keychain Access steps.
+- **A token or key is missing** — relay the script's whole next step: creating
+  the key, then the Keychain Access steps.
   **Never ask the person to paste a token or key into the chat**, and never
   put one in a command: the chat transcript and the shell history both keep
   it. The terminal form (`security add-generic-password ... -w`) prompts for

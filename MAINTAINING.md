@@ -3,7 +3,7 @@
 [README.md](README.md) is for the person who *uses* the toolkit, written for
 someone who is not technical. This file is for whoever keeps it running: how it
 is built, what each engine does, how Google access is wired, and the setup that
-happens once per organization, before anyone can follow the README.
+happens once, before anyone can follow the README.
 
 Packaged as a portable [Agent Plugin](https://agent-plugins.org) with plain
 [Agent Skills](https://agentskills.io) so the same checkout works across Goose,
@@ -23,7 +23,7 @@ Slack and Luma keys there.
 
 ### Slack app
 
-It is a **user** token (`xoxp-`), not a bot token, because the creator of a
+Each operator's token is a **user** token (`xoxp-`), not a bot token, because the creator of a
 channel joins it and a bot would sit in every chapter room. So the token acts as
 whoever installs the app: it sees what they see, and every room it creates adds
 them. Its `search:read` scope also lets anyone holding it search that person's
@@ -94,7 +94,8 @@ When you get one:
    because Workspace settings on either side can block the share.
 3. **Add them as a collaborator on the Slack app**: on
    [Slack's app page](https://api.slack.com/apps), choose the app, then
-   **Collaborators**. They must already be in the workspace.
+   **Collaborators**. They must already be in the workspace. A collaborator can
+   change the app's settings, so add only approved operators.
 4. **Add them as an admin of the Luma calendar.**
 
 Leave out whatever they won't use.
@@ -105,11 +106,17 @@ what is still missing.
 ## Removing a person
 
 1. Remove their Drive shares.
-2. Remove them from the Slack app's **Collaborators** and revoke their token. A
-   user token stops working when its owner leaves the workspace, but not when they
-   only stop being an operator.
-3. Remove them from the Luma calendar and delete their key under **Settings →
-   Developer → API Keys**.
+2. Remove them from the Slack app's **Collaborators**, then end their token. It
+   stays live until someone does, because only they hold it:
+   - Ask them to revoke it, if you trust them to.
+   - If they're leaving the workspace, removing them ends it.
+   - Otherwise revoke all of the app's tokens on the app's settings page. Every
+     operator then creates a new one (README step 5).
+3. Remove them from the Luma calendar and delete the key named after them under
+   **Settings → Developer → API Keys**.
+
+Also replace any token or key they received from someone else. A token that was
+ever passed around still acts as whoever created it.
 
 ## What setup relies on
 

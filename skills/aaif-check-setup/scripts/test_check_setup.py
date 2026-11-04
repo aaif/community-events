@@ -294,10 +294,22 @@ class TestNoOAuthClient(unittest.TestCase):
         self.assertEqual(line, cs.SIGN_IN_UNREADABLE)
 
     def test_a_disabled_service_is_not_a_wrong_account(self):
-        status, line, _ = self._google(
+        status, line, fix = self._google(
             client=True, err='403 {"reason": "accessNotConfigured"}')
         self.assertEqual((status, line), (cs.NEEDED, cs.API_OFF))
+        self.assertIn("step 3, part 2", fix)
         self.assertFalse(line.startswith(cs.SIGN_IN_LINES))
+
+
+class TestAccessNotGrantedYet(unittest.TestCase):
+    def test_no_access_points_at_the_step_that_asks_for_it(self):
+        with mock.patch.object(cs, "find_gws", lambda: ("/x/gws", True)), \
+                mock.patch.object(cs, "has_oauth_client", lambda: True), \
+                mock.patch.object(cs.subprocess, "run", lambda *a, **k: done(
+                    1, err="File not found: 404")):
+            _, line, fix = cs.check_google()
+        self.assertEqual(line, cs.SIGN_IN_WRONG_ACCOUNT)
+        self.assertIn("step 5", fix)
 
 
 class TestFindingTheClient(unittest.TestCase):
@@ -356,6 +368,8 @@ class TestReadmePointer(unittest.TestCase):
         setup = readme[readme.index("## Set up once"):]
         self.assertIn("### 3. Create your Google connection file", setup)
         self.assertIn("### 4. Connect Google", setup)
+        self.assertIn("### 5. Get your access and create your keys", setup)
+        self.assertIn("To replace a key later", setup)
 
 
 class TestKeychainSteps(unittest.TestCase):
