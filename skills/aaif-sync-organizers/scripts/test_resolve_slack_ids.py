@@ -271,6 +271,12 @@ with mock.patch.object(r, "read_source", lambda: (_BAD_HDR, _DUP_ROWS)), \
      contextlib.redirect_stderr(_err):
     _km = r.known_ids()
 check("two reviewed rows naming different ids resolve to neither", _km, {})
+_rows3 = _DUP_ROWS + [["Ada thrice", "ab@gmail.com", "U0GONEGONE", ""]]
+with mock.patch.object(r, "read_source", lambda: (_BAD_HDR, _rows3)), \
+     contextlib.redirect_stderr(io.StringIO()):
+    _split = r.read_known()[1]
+check("every disagreeing row's id is kept, not just the first two",
+      _split, {"ab@gmail.com": {"U0AAAAAAA", "U0BBBBBBB", "U0GONEGONE"}})
 check("...and the disagreement is reported",
       "DIFFERENT" in _err.getvalue(), True)
 

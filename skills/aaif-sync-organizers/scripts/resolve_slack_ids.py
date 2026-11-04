@@ -203,7 +203,7 @@ def read_known():
         return {}, {}
     ie, ci = hdr.index(H_EMAIL), hdr.index(H_SLACK_ID)
     cem = hdr.index(H_SLACK_EMAIL) if H_SLACK_EMAIL in hdr else None
-    out, malformed, disagreeing = {}, [], []
+    out, malformed, disagreeing, split = {}, [], [], {}
     for n, r in enumerate(rows, start=2):   # sheet row numbers, header is row 1
         def at(i):
             return (r[i] or "").strip() if i is not None and i < len(r) else ""
@@ -231,9 +231,11 @@ def read_known():
             # Last-write-wins would pick by sheet order and hand that id to a
             # private-channel invite. There is no answer here worth guessing.
             disagreeing.append((key, prior["id"], sid))
+            split.setdefault(key, set()).update((prior["id"], sid))
             out[key] = None
             continue
         if key in out and out[key] is None:
+            split[key].add(sid)     # a third row can name the one live account
             continue
         out[key] = {"id": sid, "slack_email": at(cem)}
     if malformed:
@@ -248,9 +250,6 @@ def read_known():
               % (len(disagreeing),
                  ", ".join("%s/%s" % (a, b) for _, a, b in disagreeing[:5])),
               file=sys.stderr)
-    split = {}
-    for key, a, b in disagreeing:
-        split.setdefault(key, set()).update((a, b))
     return {k: v for k, v in out.items() if v is not None}, split
 
 
