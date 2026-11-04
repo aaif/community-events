@@ -60,8 +60,8 @@ at least one ❌ line.
   `USER` unset — it names its key after `$USER` and mints a second one. It opens a browser; the
   person signs in with their AAIF Google account and allows everything asked.
 - **No Google connection file** (`gws` says it has no OAuth client configured)
-  — signing in cannot work yet. Relay the check's next step: the person gets the
-  file from an AAIF admin and follows step 4 of the README's *Set up once*. Never
+  — signing in cannot work yet. Relay the check's next step: the person creates the
+  file and moves it into place, steps 3 and 4 of the README's *Set up once*. Never
   ask them to paste the file or its contents into the chat.
 - **`gws` installed but not visible** — the app was opened before `gws` was
   installed. Quitting the app fully and reopening it is the fix; do not edit

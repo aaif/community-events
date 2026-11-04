@@ -16,47 +16,19 @@ manifest is the root `plugin.json`. See [Using in other tools](#using-in-other-t
 
 ## First-time setup
 
-Do this once per organization. It creates the three things every later operator
-reuses: a Google connection file, a Slack token and a Luma key. Keep them in a
-password manager, then follow the README's *Set up once* for yourself.
+Do this once. It creates the Slack app every operator gets their token from, and
+checks the Luma calendar is ready. Then follow the README's *Set up once* for
+yourself. Each person creates their own Google connection file and their own
+Slack and Luma keys there.
 
-### Google connection file
-
-Use the Google account that owns the toolkit. With `gcloud` installed,
-`gws auth setup` can help with parts 1 and 2. It points you at External, so
-still make the choice in part 3.
-
-1. [Create a Google Cloud project](https://console.cloud.google.com/projectcreate)
-   named `aaif-toolkit`.
-2. [Enable the APIs](https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com,sheets.googleapis.com,docs.googleapis.com,slides.googleapis.com,forms.googleapis.com):
-   Drive, Sheets, Docs, Slides and Forms.
-3. [Set up the consent screen](https://console.cloud.google.com/auth/overview)
-   with the app name `AAIF Toolkit`. Choose **Internal** if every operator's
-   account is in this Workspace. Otherwise choose **External**, leave it in
-   testing mode, and add each operator under
-   [Audience → Test users](https://console.cloud.google.com/auth/audience).
-   Google [expires an External testing app's refresh tokens after 7
-   days](https://developers.google.com/identity/protocols/oauth2), so those
-   operators sign in again weekly.
-4. [Create a client](https://console.cloud.google.com/auth/clients) of type
-   **Desktop app** and download its JSON. That file is the connection file. Keep
-   its name, because the README's move command looks for `client_secret*.json`.
-
-| Google says | Cause |
-|---|---|
-| Access blocked | The account is not a test user on an External app |
-| `redirect_uri_mismatch` | The client is not a **Desktop app**; make a new one |
-| `accessNotConfigured` | An API in part 2 is not enabled |
-
-### Slack token
+### Slack app
 
 It is a **user** token (`xoxp-`), not a bot token, because the creator of a
 channel joins it and a bot would sit in every chapter room. So the token acts as
 whoever installs the app: it sees what they see, and every room it creates adds
 them. Its `search:read` scope also lets anyone holding it search that person's
 DMs and private rooms, and its `chat:write` scope lets them post as that person.
-So install it from a dedicated account with no personal DMs or private rooms if
-you can.
+So each person generates their own and never shares it.
 
 1. Open [Slack's app page](https://api.slack.com/apps?new_app=1), choose
    **From a manifest**, and pick the community workspace.
@@ -85,16 +57,14 @@ you can.
    ```
 
 3. **Install to Workspace**, then **Allow**. A workspace may need an admin to
-   approve it first.
-4. Under **OAuth & Permissions**, copy the **User OAuth Token**.
+   approve it first, under **Requested apps**. A custom app has no marketplace
+   listing, so its marketplace link shows an error.
+4. Under **OAuth & Permissions**, copy your **User OAuth Token**.
 
 `channels:join` is deliberately absent: Slack offers it to bot tokens only, and
 a user token joins with `channels:write`. The write token runs both the audits
 and the write steps; a token stored as `aaif-slack-read-token` alone runs the
 audits but not provision, invite or the directory posts.
-
-**Everyone shares this one token.** The next person gets it from an admin and
-creates nothing.
 
 **A personal, read-only alternative is the Slack CLI's own login.** Install the
 [Slack CLI](https://docs.slack.dev/tools/slack-cli/), run `slack login`, paste
@@ -106,47 +76,53 @@ audits but not the activity or spam audits, or any write step. It has expired on
 us before, and `aaif-check-setup` does not look there, so its Slack line stays
 ⚪ even when this token works. To replace an expired one, run `slack login` again.
 
-### Luma key
+### Luma calendar
 
-The calendar needs Luma Plus, and keys are per calendar. In
-[Luma](https://luma.com/home/calendars), open the calendar, then **Settings →
-Developer → API Keys → Create**. Copy the key straight away, because Luma shows
-it only once.
+The calendar needs Luma Plus, and keys are per calendar. Each person creates their
+own under **Settings → Developer → API Keys**.
 
 ## Adding the next person
 
 The README's *Set up once* is written for this person, who doesn't need to be
-technical. The request text in its step 3 is public, so a request proves nothing.
+technical. The request text in its step 5 is public, so a request proves nothing.
 When you get one:
 
 1. **Confirm who is asking**, through a channel you already know, and that AAIF
    has approved them as an operator.
 2. **Share the Chapters folder and the Community Intake Ops sheet** with their
-   Google address, as an editor.
-3. **External consent screen only:** add them as a test user.
-4. **Send the connection file, Slack token and Luma key** through a password
-   manager or another private channel, never the assistant chat. Leave out
-   whatever they won't use.
+   Google address, as an editor. Across organizations, have them open both links,
+   because Workspace settings on either side can block the share.
+3. **Add them as a collaborator on the Slack app**: on
+   [Slack's app page](https://api.slack.com/apps), choose the app, then
+   **Collaborators**. They must already be in the workspace.
+4. **Add them as an admin of the Luma calendar.**
+
+Leave out whatever they won't use.
 
 They can then finish alone. `aaif-check-setup` ("check my setup") tells them
 what is still missing.
 
 ## Removing a person
 
-Everyone shares the same token and key, so the person keeps working access until
-you replace them:
-
-1. Remove their Drive shares and, on an External consent screen, their test user.
-2. Under the Slack app's **OAuth & Permissions**, revoke the token and reinstall
-   the app. In Luma, delete the key and create a new one.
-3. Send the new token and key to everyone who remains. They update the same
-   Keychain items.
+1. Remove their Drive shares.
+2. Remove them from the Slack app's **Collaborators** and revoke their token. A
+   user token stops working when its owner leaves the workspace, but not when they
+   only stop being an operator.
+3. Remove them from the Luma calendar and delete their key under **Settings →
+   Developer → API Keys**.
 
 ## What setup relies on
 
 - **`gws` must be installed before the assistant app opens**, or its shell will
   not see the binary (`aaif-check-setup` says "installed but this app cannot see
   it").
+- **Each person creates their own connection file** because an Internal client
+  only works inside one organization, and an External one in testing mode needs
+  every user added and
+  [expires refresh tokens after 7 days](https://developers.google.com/identity/protocols/oauth2).
+  With `gcloud` installed, `gws auth setup` can help with the project and
+  services, but it points at External. The README's move command looks for
+  `client_secret*.json`, so the file keeps its downloaded name.
 - **The connection file lives at `~/.config/gws/client_secret.json`.** Without
   it and without a sign-in, a Drive call answers 401 on a clean machine, and
   "insufficient authentication scopes" where gcloud credentials exist. Both look

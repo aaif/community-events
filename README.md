@@ -98,9 +98,9 @@ message about a sign-in, token, key or missing tool.
 
 ## Set up once
 
-AAIF's Google connection, Slack app and Luma key already exist, so you only
-connect to them. This takes about 20 minutes and you don't need to be technical.
-If nobody at your organization has set the toolkit up yet, start with
+This takes about 30 minutes and you don't need to be technical. You create your
+own Google connection and your own Slack and Luma keys. AAIF's Slack app already
+exists. If nobody has set it up yet, start with
 [first-time setup](MAINTAINING.md#first-time-setup).
 
 To write posts, bios, invites and recaps, you only need steps 1 and 2.
@@ -136,18 +136,24 @@ toolkit updates itself from then on.
    click **Sync**.
 4. Under **Discover**, find **aaif-events** and click **Add**.
 
-### 3. Ask AAIF for your access
+### 3. Create your Google connection file
 
-Only AAIF can give you these, and you only ask once. Send this to an AAIF admin,
-outside the assistant chat:
+Sign in to Google with your AAIF account first. Each person makes their own file,
+because it can be limited to one organization.
 
-> I'm setting up the AAIF toolkit. My Google address is ___. Please send me the
-> Google connection file, the Slack token and the Luma key privately, and give
-> me edit access to the Chapters folder and the Community Intake Ops sheet.
-
-Leave out Slack or Luma if you won't use them. You need the Slack token to run
-the sync, the Slack audit or the community update. Without a Luma key, the
-toolkit gives you event-page text to paste into Luma by hand.
+1. [Create a project](https://console.cloud.google.com/projectcreate) named
+   `aaif-toolkit`. It's free. If Google won't let you, ask your organization's
+   Google admin to allow it.
+2. [Turn on the Google services](https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com,sheets.googleapis.com,docs.googleapis.com,slides.googleapis.com,forms.googleapis.com)
+   the toolkit uses. Check that `aaif-toolkit` is the selected project.
+3. [Set up the sign-in screen](https://console.cloud.google.com/auth/overview):
+   name it `AAIF Toolkit`, use your own email address, and choose **Internal**.
+   If Internal isn't offered, choose **External** and add yourself as a test user
+   on the [Audience page](https://console.cloud.google.com/auth/audience). With
+   External, Google asks you to sign in again about every 7 days.
+4. [Create a client](https://console.cloud.google.com/auth/clients), choose
+   **Desktop app**, then **Download JSON**. Leave the file in Downloads and don't
+   rename it. Keep it private.
 
 ### 4. Connect Google
 
@@ -163,9 +169,7 @@ by a third party, not by Google or AAIF.
    If Terminal says `command not found: brew`, go to [brew.sh](https://brew.sh),
    paste the line on that page into Terminal, and follow the "Next steps" it
    prints at the end. Then run the line above again.
-2. Take the Google connection file only from the admin you asked in step 3, and
-   save it to your **Downloads** folder without renaming it. Then run this in
-   Terminal:
+2. Move your Google connection file into place by running this in Terminal:
 
    ```bash
    mkdir -p ~/.config/gws && mv ~/Downloads/client_secret*.json ~/.config/gws/client_secret.json && chmod 600 ~/.config/gws/client_secret.json && echo Done
@@ -179,16 +183,41 @@ by a third party, not by Google or AAIF.
 3. Quit your assistant completely (⌘-Q), open it again, and ask it to *"check
    my setup and sign me in to Google"*. A browser window opens. Sign in with
    your AAIF Google account. If Google warns that the app isn't verified, click
-   **Advanced**, then continue. The screen must name **AAIF Toolkit**. If it
-   names anything else, stop and tell an AAIF admin. Otherwise, allow everything
-   it asks for.
+   **Advanced**, then continue. The screen must name **AAIF Toolkit**, the name
+   you gave it in step 3. If it names anything else, stop and ask an AAIF admin.
+   Otherwise, allow everything it asks for.
 
 Only approve a Google sign-in that you started from your assistant, whoever
 sends you a link.
 
-### 5. Save your Slack and Luma keys
+### 5. Get your access and create your keys
 
-Save each key in your Mac's Keychain, *not* in the assistant chat, because the
+Only AAIF can give you access, and you only ask once. Send this to an AAIF admin:
+
+> I'm setting up the AAIF toolkit. My Google address is ___. Please give me edit
+> access to the Chapters folder and the Community Intake Ops sheet, add me as a
+> collaborator on the AAIF Slack app, and give me admin access to the AAIF Luma
+> calendar.
+
+Leave out Slack or Luma if you won't use them. You need a Slack token to run the
+sync, the Slack audit or the community update. Without a Luma key, the toolkit
+gives you event-page text to paste into Luma by hand.
+
+**Create your Slack token.** It acts as you, so keep it to yourself.
+
+1. Open [Slack's app page](https://api.slack.com/apps) and choose the AAIF app.
+2. Open **OAuth & Permissions**, click **Install to Workspace** or **Reinstall to
+   Workspace**, then **Allow**.
+3. Copy the **User OAuth Token**. It starts with `xoxp-`.
+
+**Create your Luma key.**
+
+1. On your [calendars page](https://luma.com/home/calendars), open the AAIF
+   calendar.
+2. Open **Settings → Developer**. Under **API Keys**, click **Create**.
+3. Copy the key straight away, because Luma shows it only once.
+
+**Save each key** in your Mac's Keychain, *not* in the assistant chat, because the
 chat keeps everything you type.
 
 1. Open **Keychain Access**. Press ⌘-Space and type "Keychain Access".
@@ -222,16 +251,21 @@ does too.
    setup check has given the assistant the exact sign-in to use. A browser
    opens; sign in with your AAIF Google account and allow everything it asks
    for. Then check your setup again. If the line says the connection file is
-   missing, signing in can't work yet, so do step 4 of *Set up once* instead.
+   missing, signing in can't work yet, so do steps 3 and 4 of *Set up once*
+   instead.
 3. **"Installed but this app cannot see it":** quit the assistant
    completely (⌘-Q) and open it again.
 4. **The assistant seems to be guessing or doing it differently each time:**
    name the job, e.g. *"use the aaif-recap-post skill"*. Typing `/` in
    Claude Desktop lists every skill.
-5. **Google says "Access blocked" when you sign in:** ask an AAIF admin to add
-   your address as a test user.
-6. **Google asks you to sign in again about once a week:** that can be normal
-   for AAIF's connection. Say *"sign me in to Google again"*.
+5. **Google shows an error when you sign in:**
+   - *"Access blocked":* add yourself as a test user (step 3, part 3).
+   - *`redirect_uri_mismatch`:* your client isn't a **Desktop app**. Create a new
+     one and move it into place (step 3, part 4, and step 4).
+   - *`accessNotConfigured`:* a Google service is off. Turn them on (step 3,
+     part 2).
+6. **Google asks you to sign in again about once a week:** that's normal if you
+   chose External in step 3. Say *"sign me in to Google again"*.
 7. **Still stuck:** copy the last message the assistant showed you (it never
    includes your keys) and send it to an AAIF admin.
 

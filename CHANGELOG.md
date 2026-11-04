@@ -13,9 +13,11 @@ plugin version is mirrored in root `plugin.json` and `.claude-plugin/plugin.json
   detail and the standalone-zip list moved to `MAINTAINING.md`
   (`check_portable_skills.py` reads it there).
 - **Setup instructions for both kinds of setup.** `MAINTAINING.md` walks the
-  first person through creating the Google client, Slack app and Luma key, and
-  lists what to do for each person after that. The README takes that next
-  person through everything else without a helper. `aaif-check-setup` now
+  first person through creating the Slack app, and lists what to do for each
+  person after that. The README takes that next person through everything else
+  without a helper, including creating their own Google connection file and
+  Slack and Luma keys, because operators can be in different organizations and a
+  Slack user token acts as whoever generated it. `aaif-check-setup` now
   reports a missing Google connection file instead of recommending a sign-in
   that cannot work.
 - **`aaif-check-setup`** — "check my setup" runs a read-only ✅/❌ check of

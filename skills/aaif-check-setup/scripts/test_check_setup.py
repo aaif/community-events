@@ -268,7 +268,7 @@ class TestNoOAuthClient(unittest.TestCase):
         status, line, fix = self._google(client=False)
         self.assertEqual((status, line), (cs.NEEDED, cs.NO_CLIENT))
         self.assertIn("connection file", fix)
-        self.assertIn("step 4", fix)
+        self.assertIn("steps 3 and 4", fix)
         self.assertNotIn("sign you in", fix)
         self.assertFalse(line.startswith(cs.SIGN_IN_LINES))
 
@@ -350,10 +350,12 @@ class TestFindingTheClient(unittest.TestCase):
 
 
 class TestReadmePointer(unittest.TestCase):
-    def test_step_4_is_where_the_fixes_say_it_is(self):
+    def test_steps_3_and_4_are_where_the_fixes_say_they_are(self):
         with open(os.path.join(cs.ROOT, "README.md"), encoding="utf-8") as f:
             readme = f.read()
-        self.assertIn("### 4. Connect Google", readme[readme.index("## Set up once"):])
+        setup = readme[readme.index("## Set up once"):]
+        self.assertIn("### 3. Create your Google connection file", setup)
+        self.assertIn("### 4. Connect Google", setup)
 
 
 class TestKeychainSteps(unittest.TestCase):
