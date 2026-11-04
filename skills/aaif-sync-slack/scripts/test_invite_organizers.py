@@ -520,6 +520,7 @@ def _run_collect_conflict(column_id_alive=True):
          _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
          _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["UCOL"]), \
          _mock.patch.object(_FakeInviteApi, "users", users), \
+         _mock.patch.object(inv.ao, "load_config", lambda: {}), \
          _mock.patch.object(inv.slackmod, "lookup_emails",
                             lambda api, emails: {"a@x.com": {"id": "ULIVE"}}), \
          _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
