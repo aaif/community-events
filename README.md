@@ -163,17 +163,28 @@ by a third party, not by Google or AAIF.
    If Terminal says `command not found: brew`, go to [brew.sh](https://brew.sh),
    paste the line on that page into Terminal, and follow the "Next steps" it
    prints at the end. Then run the line above again.
-2. Save the Google connection file to your **Downloads** folder, then move it
-   into place by running this in Terminal:
+2. Take the Google connection file only from the admin you asked in step 3, and
+   save it to your **Downloads** folder without renaming it. Then run this in
+   Terminal:
 
    ```bash
-   mkdir -p ~/.config/gws && mv ~/Downloads/client_secret*.json ~/.config/gws/client_secret.json
+   mkdir -p ~/.config/gws && mv ~/Downloads/client_secret*.json ~/.config/gws/client_secret.json && chmod 600 ~/.config/gws/client_secret.json && echo Done
    ```
 
+   It should print `Done`. If it doesn't:
+   - *`no matches found`:* the file isn't in Downloads, or its name doesn't start
+     with `client_secret`. Move or rename it, then run the line again.
+   - *`not a directory`:* Downloads has more than one copy. Delete the extras,
+     then run the line again.
 3. Quit your assistant completely (⌘-Q), open it again, and ask it to *"check
    my setup and sign me in to Google"*. A browser window opens. Sign in with
-   your AAIF Google account and allow everything it asks for. If Google warns
-   that the app isn't verified, click **Advanced**, then continue.
+   your AAIF Google account. If Google warns that the app isn't verified, click
+   **Advanced**, then continue. The screen must name **AAIF Toolkit**. If it
+   names anything else, stop and tell an AAIF admin. Otherwise, allow everything
+   it asks for.
+
+Only approve a Google sign-in that you started from your assistant, whoever
+sends you a link.
 
 ### 5. Save your Slack and Luma keys
 
@@ -197,7 +208,8 @@ chat keeps everything you type.
 Ask your assistant to **"check my setup"**. Each ❌ line comes with what to do
 next. You're done when every line is ✅ or ⚪. A ⚪ line is optional and only
 matters for the jobs it names. If you'll run the sync or the Slack jobs,
-the Slack line needs to be ✅.
+the Slack line needs to be ✅. To publish event pages to Luma, the Luma line
+does too.
 
 ---
 
@@ -209,7 +221,8 @@ the Slack line needs to be ✅.
    or a sign-in that can't be read): say *"sign me in to Google again"*. The
    setup check has given the assistant the exact sign-in to use. A browser
    opens; sign in with your AAIF Google account and allow everything it asks
-   for. Then check your setup again.
+   for. Then check your setup again. If the line says the connection file is
+   missing, signing in can't work yet, so do step 4 of *Set up once* instead.
 3. **"Installed but this app cannot see it":** quit the assistant
    completely (⌘-Q) and open it again.
 4. **The assistant seems to be guessing or doing it differently each time:**

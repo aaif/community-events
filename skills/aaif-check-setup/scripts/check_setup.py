@@ -72,7 +72,8 @@ def keychain_steps(service, what):
             "File → New Password Item. Keychain Item Name: %s · Account Name: "
             "aaif · Password: paste the %s. Click Add. The first time a job "
             "uses it, macOS asks — click Always Allow. Never paste it into "
-            "the chat." % (service, what))
+            "the chat. If you already saved it, check the name is exactly "
+            "%s." % (service, what, service))
 
 
 def scrub(text, limit=160):
@@ -138,6 +139,7 @@ def find_secrets(pairs):
     found, searched one SOURCE at a time — the environment for every var, then
     the toolkit's .env, then the keychain — exactly as the engines search
     (aaif_events.credentials.stored for one var, slack.load_token for two).
+    Slack's last-resort CLI credentials are not read here.
     Each source is read once: a second `security` call can mean a second
     macOS prompt. `failure` is a keychain refusal when nothing was found."""
     for var, _ in pairs:
@@ -221,26 +223,41 @@ def stray_gws_key():
 
 #: The Google lines a sign-in fixes; main() prints the sign-in command after them.
 SIGN_IN_UNREADABLE = "Your saved Google sign-in can no longer be read."
-SIGN_IN_NO_DRIVE = "Signed in to Google, but without permission to use Drive."
+SIGN_IN_NO_DRIVE = "Your Google sign-in does not include permission to use Drive."
 SIGN_IN_NONE = "You are not signed in to Google through `gws`."
 SIGN_IN_WRONG_ACCOUNT = "Signed in, but this account cannot open the Community Intake sheet."
 #: Not on SIGN_IN_LINES: the sign-in command cannot work until this is fixed.
-NO_CLIENT = "`gws` has no Google connection file yet, so you cannot sign in."
+NO_CLIENT = "`gws` has no usable Google connection file yet, so you cannot sign in."
+#: Not on SIGN_IN_LINES either: signing in again cannot turn a service on.
+API_OFF = "A Google service the toolkit needs is turned off for AAIF's Google connection."
 SIGN_IN_LINES = (SIGN_IN_UNREADABLE, SIGN_IN_NO_DRIVE, SIGN_IN_NONE, SIGN_IN_WRONG_ACCOUNT)
 
 
+def usable_client_file(path):
+    """True when `path` holds an OAuth client: JSON with an `installed` or `web`
+    section. Reads the file only to test its shape and keeps no value from it.
+    An empty or damaged file exists, yet `gws auth login` still refuses it."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and ("installed" in data or "web" in data)
+
+
 def has_oauth_client():
-    """True when `gws auth login` has an OAuth client to sign in with: a client
-    file or the client env vars, the routes gws names in its own "No OAuth
-    client configured" error, or a credentials file. Asks only whether they
-    exist; never reads them."""
-    if os.environ.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE") or (
-            os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_ID")
+    """True when `gws auth login` has an OAuth client to sign in with: the two
+    client variables, or a client file where gws looks for one. A credentials
+    file does not count, because gws 0.22.5's login still refuses without a
+    client when only GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE is set."""
+    if (os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_ID")
             and os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET")):
         return True
-    config = os.environ.get("GOOGLE_WORKSPACE_CLI_CONFIG_DIR") or os.path.expanduser(
-        "~/.config/gws")
-    return os.path.exists(os.path.join(config, "client_secret.json"))
+    override = os.environ.get("GOOGLE_WORKSPACE_CLI_CONFIG_DIR")
+    folders = [override] if override else [
+        os.path.expanduser("~/.config/gws"),
+        os.path.expanduser("~/Library/Application Support/gws")]
+    return any(usable_client_file(os.path.join(d, "client_secret.json")) for d in folders)
 
 
 def check_google():
@@ -259,13 +276,14 @@ def check_google():
         why = scrub(r.stderr or r.stdout)          # for display only
         text = ((r.stderr or "") + (r.stdout or "")).lower()   # every test reads this
         # Seen 2026-11-03: with no client and no sign-in, a Drive call answers
-        # "insufficient authentication scopes", which reads as a sign-in that
-        # lacks Drive. Sending someone to sign in would only fail again.
+        # 401 on a clean machine, and "insufficient authentication scopes" where
+        # gcloud credentials exist. Both read as a sign-in problem, and sending
+        # someone to sign in would only fail again.
         if (is_sign_in_failure(text) and "failed to decrypt" not in text
                 and not has_oauth_client()):
             return NEEDED, NO_CLIENT, (
-                "Ask an AAIF admin for the Google connection file, then follow "
-                "step 4 of the README's 'Set up once' section.")
+                "Follow step 4 of the README's 'Set up once' section. If you "
+                "don't have the Google connection file, ask an AAIF admin for it.")
         if "failed to decrypt" in text:
             # Seen live 2026-10-09: gws names its keychain key after $USER, so a
             # run with USER unset minted a second `gws-cli` key under
@@ -287,6 +305,10 @@ def check_google():
             return NEEDED, SIGN_IN_NONE, (
                 "Ask the assistant to sign you in with the toolkit's "
                 "permissions; a browser opens — use your AAIF Google account.")
+        if "accessnotconfigured" in text or "has not been used in project" in text:
+            return NEEDED, API_OFF, (
+                "Send this line to an AAIF admin, who can turn it on (first-time "
+                "setup in MAINTAINING.md).")
         if any(w in text for w in ("404", "not found", "403")):
             return NEEDED, SIGN_IN_WRONG_ACCOUNT, (
                 "Sign in again with the Google account AAIF shared the "
@@ -296,7 +318,9 @@ def check_google():
     try:
         can_edit = json.loads(r.stdout[r.stdout.index("{"):]).get(
             "capabilities", {}).get("canEdit")
-    except ValueError:
+        if can_edit is None:
+            raise ValueError("no canEdit in the reply")
+    except (ValueError, AttributeError):
         # Not a permissions finding: sending an admin to grant access that
         # already exists would be the wrong fix.
         return NEEDED, "Google answered, but its reply could not be read.", (

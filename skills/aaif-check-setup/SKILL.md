@@ -51,7 +51,7 @@ at least one ❌ line.
 
 - **Not signed in, signed in without Drive permission, or a sign-in that
   "can no longer be read"** — all three take the same sign-in, with the
-  scopes named. The script prints the exact command when a Google line is ❌;
+  scopes named. The script prints the exact command after those lines;
   run that, not a bare `gws auth login` (the default scopes can leave Drive
   out) and not `-s` (an interactive picker this session cannot answer). For
   the unreadable case, the person first deletes every `gws-cli` entry in

@@ -23,7 +23,8 @@ password manager, then follow the README's *Set up once* for yourself.
 ### Google connection file
 
 Use the Google account that owns the toolkit. With `gcloud` installed,
-`gws auth setup` does parts 1 to 3 for you.
+`gws auth setup` can help with parts 1 and 2. It points you at External, so
+still make the choice in part 3.
 
 1. [Create a Google Cloud project](https://console.cloud.google.com/projectcreate)
    named `aaif-toolkit`.
@@ -38,7 +39,8 @@ Use the Google account that owns the toolkit. With `gcloud` installed,
    days](https://developers.google.com/identity/protocols/oauth2), so those
    operators sign in again weekly.
 4. [Create a client](https://console.cloud.google.com/auth/clients) of type
-   **Desktop app** and download its JSON. That file is the connection file.
+   **Desktop app** and download its JSON. That file is the connection file. Keep
+   its name, because the README's move command looks for `client_secret*.json`.
 
 | Google says | Cause |
 |---|---|
@@ -51,7 +53,10 @@ Use the Google account that owns the toolkit. With `gcloud` installed,
 It is a **user** token (`xoxp-`), not a bot token, because the creator of a
 channel joins it and a bot would sit in every chapter room. So the token acts as
 whoever installs the app: it sees what they see, and every room it creates adds
-them. Use an account you are happy to have that happen to.
+them. Its `search:read` scope also lets anyone holding it search that person's
+DMs and private rooms, and its `chat:write` scope lets them post as that person.
+So install it from a dedicated account with no personal DMs or private rooms if
+you can.
 
 1. Open [Slack's app page](https://api.slack.com/apps?new_app=1), choose
    **From a manifest**, and pick the community workspace.
@@ -111,17 +116,31 @@ it only once.
 ## Adding the next person
 
 The README's *Set up once* is written for this person, who doesn't need to be
-technical. When they send the request from its step 3:
+technical. The request text in its step 3 is public, so a request proves nothing.
+When you get one:
 
-1. **Share the Chapters folder and the Community Intake Ops sheet** with their
+1. **Confirm who is asking**, through a channel you already know, and that AAIF
+   has approved them as an operator.
+2. **Share the Chapters folder and the Community Intake Ops sheet** with their
    Google address, as an editor.
-2. **External consent screen only:** add them as a test user.
-3. **Send the connection file, Slack token and Luma key** through a password
+3. **External consent screen only:** add them as a test user.
+4. **Send the connection file, Slack token and Luma key** through a password
    manager or another private channel, never the assistant chat. Leave out
    whatever they won't use.
 
 They can then finish alone. `aaif-check-setup` ("check my setup") tells them
 what is still missing.
+
+## Removing a person
+
+Everyone shares the same token and key, so the person keeps working access until
+you replace them:
+
+1. Remove their Drive shares and, on an External consent screen, their test user.
+2. Under the Slack app's **OAuth & Permissions**, revoke the token and reinstall
+   the app. In Luma, delete the key and create a new one.
+3. Send the new token and key to everyone who remains. They update the same
+   Keychain items.
 
 ## What setup relies on
 
@@ -129,9 +148,10 @@ what is still missing.
   not see the binary (`aaif-check-setup` says "installed but this app cannot see
   it").
 - **The connection file lives at `~/.config/gws/client_secret.json`.** Without
-  it, a Drive call answers "insufficient authentication scopes", which looks
-  like a sign-in problem, so `aaif-check-setup` checks for the file and asks for
-  it instead of recommending a sign-in that cannot work.
+  it and without a sign-in, a Drive call answers 401 on a clean machine, and
+  "insufficient authentication scopes" where gcloud credentials exist. Both look
+  like a sign-in problem, so `aaif-check-setup` checks the file and asks for it
+  instead of recommending a sign-in that cannot work.
 - **Sign in with named scopes**, using the command under *OAuth scopes* below,
   which `aaif-check-setup` prints. Never a bare `gws auth login`.
 - **Secrets go in the macOS keychain**, under `aaif-slack-write-token` and
@@ -579,8 +599,8 @@ the chapter/series source docs and the intake form:
 
 Sign in with exactly those scopes. A bare `gws auth login` can leave Drive out
 ("insufficient authentication scopes"), and `-s` opens a picker an assistant's
-shell cannot answer. `aaif-check-setup` prints this same command when a Google
-check fails:
+shell cannot answer. `aaif-check-setup` prints this same command when signing in
+would fix a Google check:
 
 ```bash
 gws auth login --scopes https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/documents,https://www.googleapis.com/auth/presentations,https://www.googleapis.com/auth/forms.body,https://www.googleapis.com/auth/forms.responses.readonly

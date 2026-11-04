@@ -124,7 +124,7 @@ unpinned and every run says so. Pinning that backlog later needs **both** —
 with `pins:write` alone a run cannot tell a pinned message from an unpinned one,
 so it leaves existing posts alone. `channels:history`/`groups:history` are what
 make the check work at all; without them every chapter is skipped rather than
-risk a duplicate. All five are listed in `OPTIONAL_SCOPES` and printed when
+risk a duplicate. All four are listed in `OPTIONAL_SCOPES` and printed when
 absent.
 
 The write half resolves that token from the environment **then the repo-root
