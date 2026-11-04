@@ -38,7 +38,7 @@ PAGE = "report.html"
 #: outcome -> pill tone. The strings are sync.py's; test_render_report.py pins
 #: this table against sync's outcome constants, and test_sync.py renders a
 #: manifest sync.py actually wrote.
-TONE = {"in sync": "ok", "wrote+verified": "ok", "DRIFT": "warn",
+TONE = {"in sync": "ok", "wrote+verified": "ok", "DRIFT": "warn", "needs review": "warn",
         "PARTIAL": "warn", "skipped": "mute", "FAILED": "bad", "not run": "mute"}
 SEV_TONE = {"bad": "bad", "warn": "warn", "info": "mute"}
 #: An unknown severity sorts and counts as `bad`: a portable writer that
@@ -245,6 +245,7 @@ def phase_sections(steps, docs):
 def overview(steps, docs):
     ran = [s for s in steps if s.get("outcome") not in ("not run",)]
     drift = [s for s in ran if s.get("outcome") in ("DRIFT", "PARTIAL")]
+    review = [s for s in ran if s.get("outcome") == "needs review"]
     wrote = [s for s in ran if s.get("outcome") == "wrote+verified"]
     failed = [s for s in ran if s.get("outcome") == "FAILED"]
     sev = {"bad": 0, "warn": 0, "info": 0}
@@ -255,6 +256,7 @@ def overview(steps, docs):
     cells = [("steps ran", "%d / %d" % (len(ran), len(steps)), ""),
              ("in sync", sum(1 for s in ran if s.get("outcome") == "in sync"), " s-ok"),
              ("with drift", len(drift), " s-warn" if drift else ""),
+             ("to review", len(review), " s-warn" if review else ""),
              ("wrote", len(wrote), " s-ok" if wrote else ""),
              ("failed", len(failed), " s-bad" if failed else ""),
              ("findings to act on", sev["bad"] + sev["warn"],

@@ -25,7 +25,9 @@ Two conventions make a scheduled run workable:
 - **Exit codes are the drift signal.** Every engine exits `0` in sync, `2` when
   its report proposes changes, anything else on failure. The runner aggregates:
   `0` all clean, `2` drift / writes applied / PARTIAL / a human is needed, `1`
-  any failure.
+  any failure. A step that exits `0` is still `DRIFT` if its findings list work
+  a `--write` would apply, and `needs review` if they list only things a plain
+  `--write` does not clear; `needs review` alone stays `0`.
 - **The runner's stdout never names a person.** This repo is public and a CI log
   is a publication, so the summary is step names, outcomes, durations and log
   paths only. The full reports — names, emails, per-person diffs — go to

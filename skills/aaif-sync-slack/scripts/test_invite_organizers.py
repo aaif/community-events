@@ -498,7 +498,7 @@ def _run_collect():
          _mock.patch.object(inv.slackmod, "lookup_emails",
                             lambda api, emails: {"a@x.com": {"id": "U1"}}), \
          _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
-         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+         _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
         return inv.collect()
 
 
@@ -508,6 +508,119 @@ check("collect() runs to completion against a 3-tuple read_intake()",
 check("the one roster member already present is not double-counted as missing",
       (_rows[0]["missing"], [n for n, _ in _rows[0]["present"]]), ([], ["Ada"]))
 
+
+# --- two live accounts for one person: held, neither invited nor a stranger ---
+def _run_collect_conflict(column_id_alive=True):
+    users = {"UCOL": {"ok": True, "user": {"name": "ada"}}} if column_id_alive else {}
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+              "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["UCOL"]), \
+         _mock.patch.object(_FakeInviteApi, "users", users), \
+         _mock.patch.object(inv.ao, "load_config", lambda: {}), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "ULIVE"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "overlay_known",
+                            lambda api, res: (0, [("a@x.com", "ULIVE", "UCOL")])), \
+         _mock.patch("sys.stderr", _io.StringIO()):
+        return inv.collect()
+
+
+_rows, _unresolved, _no_channel = _run_collect_conflict()
+check("a conflicted person is not invited, so no duplicate account joins the room",
+      _rows[0]["missing"], [])
+check("...their account in the room is not reported as a stranger",
+      _rows[0]["strangers"], [])
+check("...and they are not called account-less", _unresolved, [])
+_rows, _u, _n = _run_collect_conflict(column_id_alive=False)
+check("a column id that is no live account is stale: the live answer is invited",
+      [uid for _name, uid in _rows[0]["missing"]], ["ULIVE"])
+
+
+
+def _run_collect(rows_lookup, overlay, roster, members=(), users=None):
+    """collect() over one room, with the lookup and overlay answers scripted."""
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+              "is_archived": False}]
+    described = {u: {"ok": True, "user": {"id": u, "name": u}} for u in users or ()}
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: list(members)), \
+         _mock.patch.object(_FakeInviteApi, "users", described), \
+         _mock.patch.object(inv.ao, "load_config", lambda: {}), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: dict(rows_lookup)), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (roster, 0, {})), \
+         _mock.patch.object(inv.rsi, "overlay_known", overlay), \
+         _mock.patch("sys.stderr", _io.StringIO()):
+        return inv.collect()
+
+
+_two = [{"name": "Ada", "email": "a@x.com", "city": "Boston"},
+        {"name": "Bo", "email": "b@x.com", "city": "Boston"}]
+# Ada's cell holds Bo's real account: Bo must not be invited, must not vanish.
+_rows, _u, _n = _run_collect(
+    {"a@x.com": {"id": "UADA"}, "b@x.com": {"id": "UBO"}},
+    lambda api, res: (0, [("a@x.com", "UADA", "UBO")]), _two, users=["UBO"])
+check("a wrong cell holds the other person too, so nobody is invited",
+      _rows[0]["missing"], [])
+check("...and both are named, so a held person is never silently dropped",
+      _rows[0]["held"], ["Ada", "Bo"])
+# Two rows naming two different live accounts are one conflict, not two people.
+_rows, _u, _n = _run_collect(
+    {"a@x.com": {"id": "ULIVE"}},
+    lambda api, res: (0, [("a@x.com", "ULIVE", "U2"), ("a@x.com", "ULIVE", "U3")]),
+    _two[:1], members=["U2"], users=["U2", "U3"])
+check("disagreeing rows hold the person: no second account invited",
+      (_rows[0]["missing"], _rows[0]["held"]), ([], ["Ada"]))
+check("...and a cell's account already in the room is not a stranger",
+      _rows[0]["strangers"], [])
+# A deactivated hit with no column id to replace it cannot be invited.
+_rows, _u, _n = _run_collect({"a@x.com": {"id": "UOLD", "deleted": True}},
+                             lambda api, res: (0, []), _two[:1])
+check("a deactivated account is reported as no account, never invited",
+      (_rows[0]["missing"], _u), ([], [("Boston", "Ada")]))
+# Held for someone in ANOTHER room: here that account is still a stranger.
+_rows, _u, _n = _run_collect(
+    {"z@x.com": {"id": "UZ"}, "b@x.com": {"id": "UBO"}},
+    lambda api, res: (0, [("z@x.com", "UZ", "UCOL")]), _two[1:],
+    members=["UCOL"], users=["UCOL"])
+check("an account held for someone not on this roster stays a stranger",
+      [uid for _name, uid in _rows[0]["strangers"]], ["UCOL"])
+
+_held_rep = inv.build_findings(
+    [("Organizer channel", [{"city": "B", "channel": "b", "channel_id": "C1", "is_private": True,
+                             "missing": [], "present": [], "held": ["Ada"], "strangers": [],
+                             "staff_in_room": 0, "undescribed": 0}], [], [])],
+    conflicts=1, mode="report")
+check("a held person reaches the page, named, in the room's own finding",
+      ("1 held" in _held_rep.summary,
+       [f for f in _held_rep.to_dict()["findings"] if f["kind"] == "held"][0]["subject"]),
+      (True, "#b"))
+_buf = _io.StringIO()
+with _mock.patch("sys.stdout", _buf):
+    inv.report([{"city": "B", "channel": "b", "missing": [], "present": [], "held": ["Ada"],
+                 "strangers": []}], [], [])
+check("a room with someone held never prints 'all N in'", "all 0 in" in _buf.getvalue(), False)
+
+_dup_rep = inv.build_findings(
+    [("Organizer channel", [{"city": "B", "channel": "b", "channel_id": "C1", "is_private": True,
+                             "missing": [("Ada", "U1")], "present": [], "strangers": [],
+                             "staff_in_room": 0, "undescribed": 0}], [("B", "Cy")], []),
+     ("Local champs", [{"city": "all", "channel": "c", "channel_id": "C2", "is_private": True,
+                        "missing": [("Ada", "U1")], "present": [], "strangers": [],
+                        "staff_in_room": 0, "undescribed": 0}], [("all", "Cy")], [])],
+    conflicts=0, mode="report")
+check("a person in two passes counts once, as people and as no-account",
+      _dup_rep.summary,
+      "1 to invite (2 room addition(s)) across 2 live channel(s); 0 already in; "
+      "1 accepted organizer(s) with no Slack account")
 
 # --- fetch()/collect(fetched=...): a second column reuses the first fetch,
 # it does not hit the sheet or Slack's channel list a second time. This is
@@ -539,7 +652,7 @@ with _mock.patch.object(inv, "read_grid", _counting_read_grid), \
      _mock.patch.object(inv.slackmod, "lookup_emails",
                         lambda api, emails: {"a@x.com": {"id": "U1"}}), \
      _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
-     _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+     _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
     _fetched = inv.fetch()
     inv.collect(column="Organizer Channel", fetched=_fetched)
     inv.collect(column="Country Channel", fetched=_fetched)
@@ -568,7 +681,7 @@ def _run_collect_country():
                             lambda api, emails: {"a@x.com": {"id": "U1"},
                                                  "b@x.com": {"id": "U2"}}), \
          _mock.patch.object(inv.ao, "read_intake", lambda: (_COUNTRY_INTAKE, 0, {})), \
-         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+         _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
         return inv.collect(column="Country Channel")
 
 
@@ -605,7 +718,7 @@ def _run_collect_same_person():
                                                  "ada@new.example": {"id": "U1"}}), \
          _mock.patch.object(inv.ao, "read_intake",
                             lambda: (_SAME_PERSON_INTAKE, 0, {})), \
-         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+         _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
         return inv.collect(column="Country Channel")
 
 
@@ -637,7 +750,7 @@ def _run_run_scope_both():
                             lambda api, emails: {"a@x.com": {"id": "U1"},
                                                  "b@x.com": {"id": "U2"}}), \
          _mock.patch.object(inv.ao, "read_intake", lambda: (_BOTH_INTAKE, 0, {})), \
-         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+         _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
         return inv.run_scope("both")
 
 
@@ -671,11 +784,11 @@ check("the JSON carries the contract's format and this step's name",
       (_doc["format"], _doc["step"], _doc["mode"]), (1, "invite", "report"))
 check("the summary is the one-line headline, counts only",
       _doc["summary"],
-      "1 to invite across 1 live channel(s); 1 already in; "
+      "1 to invite (1 room addition(s)) across 1 live channel(s); 1 already in; "
       "1 accepted organizer(s) with no Slack account")
 check("the tiles are the counts the text report prints, in reading order",
       [(m["label"], m["value"]) for m in _doc["measured"]],
-      [("to invite", 1), ("already in", 1), ("no Slack account", 1),
+      [("to invite", 1), ("room additions", 1), ("already in", 1), ("no Slack account", 1),
        ("Slack ID column conflicts", 1)])
 check("a pending invite is a warn finding on the CHANNEL, naming the person",
       [(f["kind"], f["subject"], f["detail"], f["severity"])
@@ -731,7 +844,7 @@ def _run_collect_champs(members_in_room=()):
                             lambda api, emails: {"a@x.com": {"id": "U1"},
                                                  "b@x.com": {"id": "U2"}}), \
          _mock.patch.object(inv.ao, "read_intake", lambda: (_CHAMPS_INTAKE, 0, {})), \
-         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+         _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
         return inv.collect(column=inv.CHAMPS_COLUMN)
 
 
@@ -760,7 +873,7 @@ def _run_collect_champs_renamed():
              _mock.patch.object(inv.ao, "read_intake",
                                 lambda: ([{"email": "a@x.com", "name": "Ada",
                                            "city": "Boston"}], 0, {})), \
-             _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+             _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
             return inv.collect(column=inv.CHAMPS_COLUMN)
 
 
@@ -901,7 +1014,7 @@ def _run_collect_strangers():
                             lambda api, emails: {"a@x.com": {"id": "U1"}}), \
          _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
          _mock.patch.object(inv.ao, "load_config", _no_config), \
-         _mock.patch.object(inv.rsi, "known_ids", lambda: {}):
+         _mock.patch.object(inv.rsi, "read_known", lambda: ({}, {})):
         return inv.collect(cfg=_cfg)
 
 

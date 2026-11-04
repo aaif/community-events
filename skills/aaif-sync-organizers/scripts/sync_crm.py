@@ -1839,7 +1839,7 @@ def build_findings(mode, people, chapters, changes, held, rejected, skipped, orp
         for row in rows:
             r.find("real-looking row not touched", name,
                    "row %d: %s" % (row["row"], who([row])),
-                   "info", "clear by hand if it is fixture data")
+                   "info", "kept: the intake does not expect them in this chapter. Clear only if it is test data")
     for name, header, old, new, op in demoted:
         r.find("status moved backwards", name,
                "row %d: %s %r -> %r" % (op["rownum"], header, old, new),
@@ -2028,7 +2028,7 @@ def _run(args, workdir):
               "nothing to create until triage accepts an organizer there."
               % (len(waiting), sum(len(o["people"]) for o in waiting)))
     if keepers:
-        print("\nAlready in a CRM and NOT touched (real-looking address — clear by hand "
+        print("\nAlready in a CRM and NOT touched (the intake does not expect them in this chapter; clear by hand only "
               "if it's fixture data):")
         for name, rows in keepers:
             for r in rows:
