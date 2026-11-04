@@ -509,6 +509,44 @@ check("the one roster member already present is not double-counted as missing",
       (_rows[0]["missing"], [n for n, _ in _rows[0]["present"]]), ([], ["Ada"]))
 
 
+# --- two live accounts for one person: held, neither invited nor a stranger ---
+def _run_collect_conflict():
+    chapters = [{"city": "Boston", "current": {"Organizer Channel": "boston-organizers"}}]
+    chans = [{"name": "boston-organizers", "id": "C1", "is_private": True,
+              "is_archived": False}]
+    with _mock.patch.object(inv, "read_grid", lambda c: (None, None, chapters)), \
+         _mock.patch.object(inv.slackmod, "Slack", _FakeInviteApi), \
+         _mock.patch.object(inv.slackmod, "channels", lambda api: chans), \
+         _mock.patch.object(inv.slackmod, "members", lambda api, cid: ["UCOL"]), \
+         _mock.patch.object(inv.slackmod, "lookup_emails",
+                            lambda api, emails: {"a@x.com": {"id": "ULIVE"}}), \
+         _mock.patch.object(inv.ao, "read_intake", lambda: (_INTAKE, 0, {})), \
+         _mock.patch.object(inv.rsi, "overlay_known",
+                            lambda api, res: (0, [("a@x.com", "ULIVE", "UCOL")])), \
+         _mock.patch("sys.stderr", _io.StringIO()):
+        return inv.collect()
+
+
+_rows, _unresolved, _no_channel = _run_collect_conflict()
+check("a conflicted person is not invited, so no duplicate account joins the room",
+      _rows[0]["missing"], [])
+check("...their account in the room is not reported as a stranger",
+      _rows[0]["strangers"], [])
+check("...and they are not called account-less", _unresolved, [])
+
+_dup_rep = inv.build_findings(
+    [("Organizer channel", [{"city": "B", "channel": "b", "channel_id": "C1", "is_private": True,
+                             "missing": [("Ada", "U1")], "present": [], "strangers": [],
+                             "staff_in_room": 0, "undescribed": 0}], [("B", "Cy")], []),
+     ("Local champs", [{"city": "all", "channel": "c", "channel_id": "C2", "is_private": True,
+                        "missing": [("Ada", "U1")], "present": [], "strangers": [],
+                        "staff_in_room": 0, "undescribed": 0}], [("all", "Cy")], [])],
+    conflicts=0, mode="report")
+check("a person in two passes counts once, as people and as no-account",
+      _dup_rep.summary,
+      "1 to invite (2 room addition(s)) across 2 live channel(s); 0 already in; "
+      "1 accepted organizer(s) with no Slack account")
+
 # --- fetch()/collect(fetched=...): a second column reuses the first fetch,
 # it does not hit the sheet or Slack's channel list a second time. This is
 # what makes `--scope both` one round trip, not two.
@@ -671,11 +709,11 @@ check("the JSON carries the contract's format and this step's name",
       (_doc["format"], _doc["step"], _doc["mode"]), (1, "invite", "report"))
 check("the summary is the one-line headline, counts only",
       _doc["summary"],
-      "1 to invite across 1 live channel(s); 1 already in; "
+      "1 to invite (1 room addition(s)) across 1 live channel(s); 1 already in; "
       "1 accepted organizer(s) with no Slack account")
 check("the tiles are the counts the text report prints, in reading order",
       [(m["label"], m["value"]) for m in _doc["measured"]],
-      [("to invite", 1), ("already in", 1), ("no Slack account", 1),
+      [("to invite", 1), ("room additions", 1), ("already in", 1), ("no Slack account", 1),
        ("Slack ID column conflicts", 1)])
 check("a pending invite is a warn finding on the CHANNEL, naming the person",
       [(f["kind"], f["subject"], f["detail"], f["severity"])

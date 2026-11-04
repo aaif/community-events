@@ -165,8 +165,12 @@ def fetch(city_filter=None):
         print("  %d organizer(s) resolved from the %r column rather than an "
               "email lookup." % (filled, rsi.H_SLACK_ID))
     for email, live, col in conflicts:
+        # Two live accounts for one person. Inviting either could put a second
+        # copy of them in a room they are already in, so nobody is invited
+        # until a human says which account is theirs.
+        resolved[email] = dict(resolved[email], conflict_ids={live, col})
         print("  CONFLICT: %s resolves live to %s but the %r column says %s — "
-              "the live answer is used; fix the column."
+              "held, not invited, until the column is fixed."
               % (redact_email(email), live, rsi.H_SLACK_ID, col), file=sys.stderr)
     return api, chapters, chans, by_city, resolved, len(conflicts)
 
@@ -241,11 +245,15 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None
                 roster.append(p)
 
         members = set(slackmod.members(api, chan["id"]))
-        missing, present, seen_uids = [], [], set()
+        missing, present, seen_uids, held_ids = [], [], set(), set()
         for p in roster:
             hit = resolved.get(p["email"]) or {}
             uid = hit.get("id")
-            if not uid:
+            if hit.get("conflict_ids"):
+                # Reported once, as the Slack ID conflict. Either account in
+                # the room is this person, not a stranger.
+                held_ids |= hit["conflict_ids"]
+            elif not uid:
                 # Not a failure of this script: they have no account under the
                 # address the intake holds. Reported, never silently dropped.
                 unresolved.append((label, p["name"]))
@@ -258,7 +266,7 @@ def collect(city_filter=None, column="Organizer Channel", fetched=None, cfg=None
                 seen_uids.add(uid)
                 missing.append((p["name"], uid))
 
-        known = {uid for _, uid in missing + present}
+        known = {uid for _, uid in missing + present} | held_ids
         # `unaccounted` means "in this room although the intake never put them
         # here", which is a finding for a chapter's own organizer channel. It is
         # NOT one for the champs room: that room legitimately holds people who
@@ -464,12 +472,18 @@ def build_findings(passes, conflicts, mode="report"):
     rep = findings.Report("invite", mode)
     to_add = sum(len(r["missing"]) for _, rows, _, _ in passes for r in rows)
     present = sum(len(r["present"]) for _, rows, _, _ in passes for r in rows)
-    no_account = sum(len(u) for _, _, u, _ in passes)
+    # People, not per-room appearances: one organizer with no account shows up
+    # in both the organizer-room pass and the champs pass, and adding the two
+    # reported 61 people when there were 31 (found 2026-11-03).
+    no_account = len({n for _, _, u, _ in passes for _c, n in u})
+    people_to_add = len({uid for _, rows, _, _ in passes for r in rows
+                         for _n, uid in r["missing"]})
     channels = sum(len(rows) for _, rows, _, _ in passes)
-    rep.summary = ("%d to invite across %d live channel(s); %d already in; "
-                   "%d accepted organizer(s) with no Slack account"
-                   % (to_add, channels, present, no_account))
-    rep.measure("to invite", to_add, "warn" if to_add else "ok")
+    rep.summary = ("%d to invite (%d room addition(s)) across %d live channel(s); "
+                   "%d already in; %d accepted organizer(s) with no Slack account"
+                   % (people_to_add, to_add, channels, present, no_account))
+    rep.measure("to invite", people_to_add, "warn" if to_add else "ok")
+    rep.measure("room additions", to_add, "warn" if to_add else "ok")
     rep.measure("already in", present, "ok")
     rep.measure("no Slack account", no_account, "warn" if no_account else None)
     rep.measure("Slack ID column conflicts", conflicts, "bad" if conflicts else None)
@@ -498,14 +512,16 @@ def build_findings(passes, conflicts, mode="report"):
                      "%d accepted organizer(s) cannot be invited: %s"
                      % (len(unresolved),
                         findings.named(redact_name(n) for _c, n in unresolved)),
-                     "warn", "ask them to join Slack; then resolve_slack_ids.py")
+                     "warn", "check identity's name matches (they may use another "
+                     "address); otherwise ask them to join Slack")
         for city, why in no_channel:
             rep.find("channel skipped", city, why, "warn",
                      "provision_channels.py, or fix the chapter row")
     if conflicts:
         rep.find("Slack ID conflict", rsi.H_SLACK_ID,
-                 "%d cell(s) disagree with the live lookup; the live answer "
-                 "was used" % conflicts, "warn", "fix the column (see the log)")
+                 "%d person(s) have two live accounts: the column and the "
+                 "address lookup disagree. Held, not invited" % conflicts,
+                 "warn", "fix the column (see the log)")
     return rep
 
 

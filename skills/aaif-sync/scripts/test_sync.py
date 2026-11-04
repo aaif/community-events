@@ -45,6 +45,17 @@ def check(label, got, want):
 
 
 # --- classify: the exit-code convention ---------------------------------------
+check("exit 0 with open findings -> drift, not in sync",
+      sync.classify(0, False, False, open_findings=True), sync.DRIFT)
+check("...but a run that wrote is still WROTE",
+      sync.classify(0, True, True, open_findings=True), sync.WROTE)
+check("...and PARTIAL still beats it",
+      sync.classify(0, False, False, True, open_findings=True), sync.PARTIAL)
+check("only warn and bad findings count as open",
+      [sync.has_open_findings(d) for d in (
+          None, {}, {"findings": [{"severity": "info"}]},
+          {"findings": [{"severity": "warn"}]}, {"findings": [{"severity": "bad"}]})],
+      [False, False, False, True, True])
 check("report mode, exit 0 -> in sync",
       sync.classify(0, wrote_marker=False, write_mode=False), sync.IN_SYNC)
 check("report mode, exit 2 -> drift",
