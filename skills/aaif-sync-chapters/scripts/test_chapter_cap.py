@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The 100-chapter cap and the Status census. Plain script; exit 1 on failure."""
+"""The chapter cap and the Status census. Plain script; exit 1 on failure."""
 import os
 import sys
 
@@ -88,16 +88,18 @@ check("...and report as untriaged", by.get(""), 2)
 # --- `incoming` is a separate parameter, because it used to be smuggled ------
 # The feed-row guard passed live+new as `live` and restated the breakdown inside
 # `what`, so the headline printed "N live chapters" for a number that was not.
+CAP = sc.CHAPTER_CAP
 check("live + incoming under the cap is allowed",
-      sc.cap_refusal(98, {}, "append", incoming=2), None)
+      sc.cap_refusal(CAP - 2, {}, "append", incoming=2), None)
 check("exactly at the cap with nothing incoming is allowed",
-      sc.cap_refusal(sc.CHAPTER_CAP, {}, "x", incoming=0), None)
-over = sc.cap_refusal(98, {}, "append 3 new chapter row(s)", incoming=3)
+      sc.cap_refusal(CAP, {}, "x", incoming=0), None)
+over = sc.cap_refusal(CAP - 2, {}, "append 3 new chapter row(s)", incoming=3)
 check("live + incoming OVER the cap refuses", over.startswith("ABORT:"), True)
 check("the headline separates live from incoming rather than summing silently",
-      "98 live chapters + 3 new = 101" in over, True)
+      "%d live chapters + 3 new = %d" % (CAP - 2, CAP + 1) in over, True)
 check("a single-chapter refusal keeps the plain headline",
-      sc.cap_refusal(100, {}, "x").splitlines()[0].startswith("ABORT: 100 live chapters —"),
+      sc.cap_refusal(CAP, {}, "x").splitlines()[0].startswith(
+          "ABORT: %d live chapters —" % CAP),
       True)
 
 # --- an out-of-vocabulary Status counts as live AND is surfaced -------------
@@ -114,7 +116,7 @@ check("unknown_statuses is worst (most rows) first, not alphabetical",
       sc.unknown_statuses(by), [("merged", 3), ("Archived", 1)])
 check("the vocabulary itself is not reported as unknown",
       sc.unknown_statuses({"Active": 5, "Merged": 1, "": 3}), [])
-odd = sc.cap_refusal(100, {"Archived": 2}, "x")
+odd = sc.cap_refusal(CAP, {"Archived": 2}, "x")
 check("the refusal warns about out-of-vocabulary values",
       "not in the vocabulary" in odd and "'Archived' (2)" in odd, True)
 

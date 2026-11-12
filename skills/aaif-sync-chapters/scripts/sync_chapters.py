@@ -94,7 +94,9 @@ CHAPTER_STATUSES = ("Active", "Provisioned", "Dormant", "Merged", "Deprecated")
 #: estate grow past the cap simply by nobody filling the column in.
 RETIRED_STATUSES = ("Merged", "Deprecated")
 
-#: Hard ceiling on live chapters (set 2026-09-18). The point is not the number:
+#: Hard ceiling on live chapters (set at 100 on 2026-09-18, raised to 125 on
+#: 2026-11-12 so Columbus and Philadelphia could launch without retiring a
+#: chapter — an operator's call, made at the cap). The point is not the number:
 #: it is that growth has to be paid for by sunsetting or coalescing something,
 #: which is a decision somebody has to make rather than a queue that silently
 #: grows.
@@ -104,12 +106,12 @@ RETIRED_STATUSES = ("Merged", "Deprecated")
 #: create_chapter.py checks the same cap before building a Drive folder, but be
 #: precise about what that check is worth: making a folder does not add a row,
 #: so it cannot detect its own predecessors. Three `create_chapter --write` runs
-#: at 99 live chapters each read 99, each pass, and each build a folder; the
-#: next sync run then refuses all three rows at once. The folder check is an
+#: one short of the cap each read the same count, each pass, and each build a
+#: folder; the next sync run then refuses all three rows at once. The folder check is an
 #: early warning that saves the common single-run case, NOT a guarantee — the
 #: guarantee lives on the row. Closing that gap properly means create_chapter
 #: claiming its row as it creates the folder, which it does not do yet.
-CHAPTER_CAP = 100
+CHAPTER_CAP = 125
 
 # Also blank on new rows, but read-only legacy history — never backfilled, so the
 # report must not tell an operator to fill it.
