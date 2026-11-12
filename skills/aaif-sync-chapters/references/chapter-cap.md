@@ -1,4 +1,4 @@
-# The 100-chapter cap and the chapters-tab `Status` column
+# The chapter cap and the chapters-tab `Status` column
 
 > Load this when a new chapter row is refused, when deciding whether to retire a
 > chapter, or before setting a `Status` value by hand. `chapter_health.py` is the
@@ -32,12 +32,12 @@ version.
 Blank counting as live is deliberate: the alternative lets the estate grow past
 the cap simply by nobody filling the column in.
 
-`CHAPTER_CAP = 100` counts **rows on the chapters tab**, and the feed row is the
+`CHAPTER_CAP` (100 from 2026-09-18, 125 since 2026-11-12) counts **rows on the chapters tab**, and the feed row is the
 only thing that moves that count — so this engine's new-row path is the real
 chokepoint. `create_chapter.py` checks the same cap before building a Drive
 folder, but that check is an early warning, not a guarantee: creating a folder
-adds no row, so three `create_chapter --write` runs at 99 live chapters each
-read 99, each pass, and each build a folder, and the next sync refuses all three
+adds no row, so three `create_chapter --write` runs one short of the cap each
+read the same count, each pass, and each build a folder, and the next sync refuses all three
 rows together. Closing that properly means `create_chapter` claiming its row as
 it creates the folder, which it does not do yet. The number is defined once, in
 `sync_chapters.py`, and `create_chapter.py` imports it; `census_of()` is the one

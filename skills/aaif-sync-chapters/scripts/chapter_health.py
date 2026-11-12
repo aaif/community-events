@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rank chapters by whether anything is actually happening in them. READ-ONLY.
 
-Exists because of the 100-chapter cap (see sync_chapters.CHAPTER_CAP): growth
+Exists because of the chapter cap (see sync_chapters.CHAPTER_CAP): growth
 has to be paid for by retiring or coalescing an existing chapter, and that is a
 decision somebody has to make about a named chapter. This is the evidence for
 that decision, and deliberately nothing more — it proposes a `Status` and never

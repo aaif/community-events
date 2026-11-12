@@ -26,7 +26,7 @@ Usage:
 """
 import argparse, fnmatch, html, json, math, os, re, shutil, sys, tempfile, time, unicodedata, urllib.error, urllib.parse, urllib.request, zipfile
 
-# The 100-chapter cap is defined ONCE, in aaif-sync-chapters. A chapter comes
+# The chapter cap is defined ONCE, in aaif-sync-chapters. A chapter comes
 # into existence in two places — the Drive folder this script makes and the feed
 # row that engine appends — and a second copy of the number here would let the
 # two disagree, which means a half-made chapter whose other half is refused.

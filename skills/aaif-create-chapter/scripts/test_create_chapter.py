@@ -721,12 +721,12 @@ class TestCloneResume(unittest.TestCase):
 
 class TestMainGuards(unittest.TestCase):
     """Argument checks in main(), the plan-by-default / tempdir contract of a
-    --write run, and which invocations consult the 100-chapter cap."""
+    --write run, and which invocations consult the chapter cap."""
 
     def run_main(self, argv, clone=None, cap_calls=None, banner=None):
         """Drive main() with every external call stubbed.
 
-        `assert_under_cap` joined that list when the 100-chapter cap landed: it
+        `assert_under_cap` joined that list when the chapter cap landed: it
         reads the live chapters tab through the `gws` CLI, so leaving it real
         made this suite hit the network on a developer machine and fail outright
         on CI, where `gws` is not installed. `cap_calls` collects the `what`

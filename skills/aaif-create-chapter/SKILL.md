@@ -129,7 +129,7 @@ Run these in order. Nothing is created without `--write`.
 - [ ] **4. Verify** (below). A run is not finished until this passes.
 - [ ] **5. Hand off.** Report the new folder URL. A new chapter is not on the
       website until **`aaif-sync-chapters`** writes its feed row — that engine
-      also enforces the 100-chapter cap, which `create_chapter` only warns about.
+      also enforces the chapter cap, which `create_chapter` only warns about.
 
 ### Recovering a failed or partial run — `--resume`
 
@@ -222,9 +222,9 @@ template or the rebrand engine is broken. Fix that — don't resume.
   python3 <skill-root>/scripts/render_web_banner.py --write
   python3 <skill-root>/scripts/render_web_banner.py --chapter <City> --create --write
   ```
-- **`create_chapter` writes no Chapters List row**, so its 100-chapter cap check
-  is an early warning, not a guarantee: three runs at 99 live chapters each read
-  99, each pass, and the next sync refuses all three rows together.
+- **`create_chapter` writes no Chapters List row**, so its chapter cap check
+  is an early warning, not a guarantee: three runs one short of the cap each read
+  the same count, each pass, and the next sync refuses all three rows together.
 - **The template must stay "clean"**: `San Francisco` contiguous (no run or
   paragraph splits) and the slug normalized to `aaif-sanfrancisco`.
 - **The map-marker fill is shared state.** `create_chapter.GREEN` is `--spec-3`
