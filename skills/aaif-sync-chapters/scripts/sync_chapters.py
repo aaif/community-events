@@ -106,8 +106,8 @@ RETIRED_STATUSES = ("Merged", "Deprecated")
 #: create_chapter.py checks the same cap before building a Drive folder, but be
 #: precise about what that check is worth: making a folder does not add a row,
 #: so it cannot detect its own predecessors. Three `create_chapter --write` runs
-#: one short of the cap each read the same count, each pass, and each build a folder; the
-#: next sync run then refuses all three rows at once. The folder check is an
+#: one short of the cap each read the same count, each pass, and each build a
+#: folder; the next sync run then refuses all three rows at once. The folder check is an
 #: early warning that saves the common single-run case, NOT a guarantee — the
 #: guarantee lives on the row. Closing that gap properly means create_chapter
 #: claiming its row as it creates the folder, which it does not do yet.

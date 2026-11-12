@@ -92,7 +92,7 @@ CAP = sc.CHAPTER_CAP
 check("live + incoming under the cap is allowed",
       sc.cap_refusal(CAP - 2, {}, "append", incoming=2), None)
 check("exactly at the cap with nothing incoming is allowed",
-      sc.cap_refusal(sc.CHAPTER_CAP, {}, "x", incoming=0), None)
+      sc.cap_refusal(CAP, {}, "x", incoming=0), None)
 over = sc.cap_refusal(CAP - 2, {}, "append 3 new chapter row(s)", incoming=3)
 check("live + incoming OVER the cap refuses", over.startswith("ABORT:"), True)
 check("the headline separates live from incoming rather than summing silently",
